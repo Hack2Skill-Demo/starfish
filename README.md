@@ -141,6 +141,7 @@ firestore.rules      what the UI may read and change (tested on the emulator)
 fixtures/incidents/   spike fixtures (synthetic; see docs/spike.md)
 docs/
   design/            the auto-merge policy
+  research/          self-healing systems: the literature, and where Starfish sits
   spike.md           what the spike measures and how to read it
 ```
 
