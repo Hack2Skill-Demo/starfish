@@ -1,0 +1,94 @@
+#!/bin/sh
+# Pre-push hook — verify gate + security audit
+# ============================================================================
+# Installed via the package.json "prepare" script:
+#   git config core.hooksPath .githooks
+#
+# There is no branch-base gate: Starfish has a single trunk (main), so there is
+# no wrong base to catch. Add one if a second trunk is ever introduced.
+#
+# Each gate is bypassable in one shot with `git push --no-verify`.
+
+set -eu
+
+# Verify gate — lint + typecheck, the first two steps of CI's `verify` job, so a real
+# lint error or type error is caught HERE, before it reddens CI. These are the
+# two checks CLAUDE.md's gate runs first; running them at push time makes that
+# automatic instead of a habit.
+#
+# Scope — this gates LOCAL `git push` only. It CANNOT gate commits GitHub makes
+# server-side (Dependabot bumps, web-UI edits): those never invoke a local hook,
+# so CI stays the backstop for them.
+#
+# Not run here: `test` — CI owns it, so this stays a seconds-scale gate.
+# Skipped entirely when pnpm is absent. Bypass:  git push --no-verify
+if command -v pnpm >/dev/null 2>&1; then
+  printf "⏳ pre-push: running lint …\n" >&2
+  lint_status=0
+  lint_output="$(pnpm run lint 2>&1)" || lint_status=$?
+  if [ "$lint_status" -ne 0 ]; then
+    printf '%s\n' "$lint_output" >&2
+    echo "" >&2
+    echo "✖ Push blocked — lint failed (see above)." >&2
+    echo "  Fix the errors (or run 'pnpm run lint:fix') then re-push." >&2
+    echo "  Bypass for a genuine exception:  git push --no-verify" >&2
+    exit 1
+  fi
+  printf "✔ pre-push: lint clean\n" >&2
+
+  printf "⏳ pre-push: running typecheck …\n" >&2
+  tc_status=0
+  tc_output="$(pnpm run typecheck 2>&1)" || tc_status=$?
+  if [ "$tc_status" -ne 0 ]; then
+    printf '%s\n' "$tc_output" >&2
+    echo "" >&2
+    echo "✖ Push blocked — typecheck failed (see above)." >&2
+    echo "  Fix the type errors then re-push." >&2
+    echo "  Bypass for a genuine exception:  git push --no-verify" >&2
+    exit 1
+  fi
+  printf "✔ pre-push: typecheck clean\n" >&2
+fi
+
+# Security audit — only fail on high/critical advisories.
+# Mirrors CI's audit step so new CVEs are caught before the push,
+# not after the PR is open. Uses `pnpm ping` to verify registry connectivity
+# first — skips with a warning if the registry is unreachable so a flaky
+# npm registry never blocks a legitimate push.
+if command -v pnpm >/dev/null 2>&1; then
+  if ! pnpm ping >/dev/null 2>&1; then
+    printf "⚠ pre-push: registry unreachable, skipping security audit\n" >&2
+  else
+    printf "⏳ pre-push: running pnpm audit --audit-level=high …\n" >&2
+    # `|| audit_status=$?` (not a bare `audit_status=$?` after the assignment)
+    # — under `set -e`, a failing command substitution in a plain assignment
+    # statement exits the script immediately, before a following
+    # `audit_status=$?` line is ever reached. Being the LHS of `||` exempts it.
+    audit_status=0
+    audit_output="$(pnpm audit --audit-level=high 2>&1)" || audit_status=$?
+    if [ "$audit_status" -ne 0 ]; then
+      # npm retired the legacy audit endpoint pnpm calls here
+      # (registry.npmjs.org/-/npm/v1/security/audits -> HTTP 410, "Use the bulk
+      # advisory endpoint instead"). That's an upstream API deprecation, not a
+      # vulnerability finding — treat it like "registry unreachable" above (warn
+      # and let CI be the backstop) rather than blocking every push in the repo
+      # on a dead endpoint. Any other audit failure still blocks as before.
+      if printf '%s' "$audit_output" | grep -q 'ERR_PNPM_AUDIT_BAD_RESPONSE' \
+        && printf '%s' "$audit_output" | grep -q 'being retired'; then
+        printf "⚠ pre-push: npm audit endpoint retired (HTTP 410), skipping security audit\n" >&2
+        printf "  pnpm needs to move to the bulk advisory endpoint: https://api-docs.npmjs.com/#tag/Audit\n" >&2
+      else
+        printf '%s\n' "$audit_output" >&2
+        echo "" >&2
+        echo "✖ Push blocked — high-severity vulnerabilities found (see above)." >&2
+        echo "  Fix the advisories (bump deps or add pnpm.overrides) then re-push." >&2
+        echo "  Bypass for a genuine false-positive:  git push --no-verify" >&2
+        exit 1
+      fi
+    else
+      printf "✔ pre-push: security audit clean\n" >&2
+    fi
+  fi
+fi
+
+exit 0

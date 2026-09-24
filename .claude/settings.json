@@ -1,0 +1,38 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/git-branch-guard.sh\"",
+            "if": "Bash(git *)",
+            "statusMessage": "Checking git branch rules…"
+          },
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/pnpm-guard.sh\"",
+            "statusMessage": "Checking package manager…"
+          },
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/pre-push-review-guard.sh\"",
+            "if": "Bash(git *)",
+            "statusMessage": "Checking pre-push code review…"
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/config-boundary-guard.sh\"",
+            "statusMessage": "Checking the config boundary…"
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,69 @@
+#!/bin/sh
+# Commit-msg hook — conventional commit format
+# ============================================================================
+# Installed via the root package.json "prepare" script:
+#   git config core.hooksPath .githooks
+#
+# Enforces the Conventional Commits subject line the repo already uses, so
+# history stays greppable and release tooling can derive changelogs/semver:
+#
+#     type(scope)?(!)?: short description
+#
+# e.g.  feat(ingest): port the counter-check
+#       fix(pre-push): evaluate pushed ref, not HEAD
+#       chore: bump pnpm to 10.33.0
+#       refactor(billing)!: drop legacy invoice shape   (! = breaking change)
+#
+# Allowed types: feat fix chore docs refactor test ci build perf revert style
+#                security  (used for hardening/audit work)
+#
+# Properties:
+#   • Fast        — a single regex against one line; no network, no tooling.
+#   • Deterministic — pure string match; same message → same result in CI.
+#   • Actionable  — on failure, prints the offending subject, the grammar,
+#                   and concrete examples.
+#   • Scoped      — commit-msg: the only moment the message exists to check.
+#
+# Bypass for a genuine exception:  git commit --no-verify
+
+set -eu
+
+msgfile="$1"
+
+# First meaningful line: drop git's comment lines (default '#') and blanks.
+# `git commit -v` appends the diff below a comment marker, so comment-stripping
+# also keeps that out of the check.
+subject="$(sed -e '/^[[:space:]]*#/d' -e '/^[[:space:]]*$/d' "$msgfile" | head -n 1)"
+
+# Auto-generated / special commits we must not gate.
+case "$subject" in
+  "Merge "*|"Revert "*|"fixup! "*|"squash! "*|"amend! "*)
+    exit 0 ;;
+esac
+
+# type(scope)?!?: description
+# - type: one of the allowed set
+# - scope: optional — feature areas (ingest, spike), fn names, #issue refs,
+#   and comma-separated lists are all used in this repo, so allow upper/lower
+#   letters, digits, and . _ / , # -
+# - "!": optional breaking-change marker
+# - ": " then a non-empty description
+pattern='^(feat|fix|chore|docs|refactor|test|ci|build|perf|revert|style|security)(\([a-zA-Z0-9._/,#-]+\))?(!)?: .+'
+
+if printf '%s' "$subject" | grep -Eq "$pattern"; then
+  exit 0
+fi
+
+echo "✖ Commit blocked — subject is not a Conventional Commit." >&2
+echo "  Your subject: ${subject:-(empty)}" >&2
+echo "" >&2
+echo "  Expected:  type(scope)?: description" >&2
+echo "  Types:     feat fix chore docs refactor test ci build perf revert style security" >&2
+echo "  Examples:" >&2
+echo "      feat(ingest): port the counter-check" >&2
+echo "      fix(pre-push): evaluate pushed ref, not HEAD" >&2
+echo "      chore: bump pnpm to 10.33.0" >&2
+echo "      refactor(billing)!: drop legacy invoice shape   (! = breaking)" >&2
+echo "" >&2
+echo "  Bypass for a genuine exception:  git commit --no-verify" >&2
+exit 1

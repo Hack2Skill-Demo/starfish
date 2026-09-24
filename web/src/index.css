@@ -1,0 +1,6 @@
+/* Web fonts must be imported before any other rule, or browsers drop the @import. */
+@import url("https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400..800&family=Bricolage+Grotesque:opsz,wght@12..96,600..800&display=swap") layer(base);
+@import "tailwindcss";
+@import "./styles/theme.css";
+
+@source "./**/*.{ts,tsx}";

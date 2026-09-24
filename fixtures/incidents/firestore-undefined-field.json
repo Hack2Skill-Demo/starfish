@@ -1,0 +1,28 @@
+{
+  "name": "Order write fails when an optional coupon is absent",
+  "measures": "fix-quality",
+  "incident": {
+    "id": "fixture-firestore-undefined-field",
+    "environment": "prod",
+    "fingerprint": "a3f09c1e7d2b6e58",
+    "functionName": "orders-createOrder",
+    "module": "orders",
+    "errorType": "DatabaseError",
+    "errorClass": "runtime_error",
+    "occurrenceCount": 42,
+    "firstOccurredAt": "2026-09-21T08:02:11.004Z",
+    "lastOccurredAt": "2026-09-21T09:47:53.310Z",
+    "logCounterCheck": { "window": "24h", "count": 42 },
+    "message": "Cannot use \"undefined\" as a Firestore value (found in field \"couponCode\"). If you want to ignore undefined values, enable `ignoreUndefinedProperties`."
+  },
+  "context": [
+    {
+      "path": "functions/src/orders/createOrder.ts",
+      "excerpt": "export const createOrder = onCall(async (req) => {\n  const uid = requireUid(req);\n  const input = parseOrderInput(req.data); // { items: Item[]; couponCode?: string }\n  const total = priceItems(input.items);\n\n  const ref = db.collection(\"orders\").doc();\n  await ref.set({\n    uid,\n    items: input.items,\n    total,\n    couponCode: input.couponCode,\n    status: \"pending\",\n    createdAt: FieldValue.serverTimestamp(),\n  });\n  return { orderId: ref.id };\n});"
+    }
+  ],
+  "groundTruth": {
+    "wasUrgent": true,
+    "summary": "Real bug, synthetic fixture. Every order placed without a coupon fails, because Firestore rejects an explicit undefined field. The minimal fix spreads the optional field conditionally (`...(input.couponCode != null && { couponCode: input.couponCode })`). Turning on ignoreUndefinedProperties globally also stops the error, but it changes behaviour for every write in the codebase, so it is not the minimal fix."
+  }
+}

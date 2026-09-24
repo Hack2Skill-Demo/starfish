@@ -1,0 +1,79 @@
+name: CI
+
+# The same gate as `pnpm run verify` (lint → typecheck → test → build), plus the
+# high-severity dependency audit the pre-push hook runs. Structured for the case
+# where Actions minutes are the binding constraint:
+#
+#   1. NO `push:` TRIGGER. Branch protection gates the PR, so re-running the
+#      suite on the merge commit re-litigates a tree already validated green.
+#      `workflow_dispatch` covers the rare case a merge commit needs checking.
+#   2. DRAFT PRs ARE SKIPPED. Agent-authored PRs open as drafts and take several
+#      pushes before they're ready. Marking ready fires `ready_for_review`.
+#   3. Superseded runs are cancelled (concurrency below).
+#
+# The job is skipped by `if:` rather than filtered by trigger so it still
+# REPORTS: a required check that never reports blocks the PR forever. Don't
+# rename the `verify` job — it is the required check.
+on:
+  pull_request:
+    branches: [main]
+    # `ready_for_review` is REQUIRED: without it, marking a draft ready fires no
+    # event and the PR sits with a skipped check. The other three are GitHub's
+    # defaults, which must be restated once `types:` is set.
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    if: ${{ github.event_name == 'workflow_dispatch' || !github.event.pull_request.draft }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # pnpm before setup-node, so its `cache: pnpm` can find the store.
+      # corepack reads the pinned version from package.json#packageManager.
+      - name: Enable pnpm
+        run: corepack enable pnpm
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          # CI deliberately runs newer than the >=22 floor. Pinned
+          # to an exact patch: 24.17.0 broke google-auth-library's STS exchange.
+          node-version: '24.16.0'
+          cache: 'pnpm'
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint
+        run: pnpm run lint
+
+      - name: Typecheck
+        run: pnpm run typecheck
+
+      - name: Test
+        run: pnpm run test
+
+      - name: Build (web)
+        run: pnpm run build
+
+      # firestore.rules is the web UI's security boundary, so it runs against
+      # the real emulator, not a mock. The runner image ships a JDK.
+      - name: Firestore rules (emulator)
+        run: pnpm run test:rules
+
+      - name: Hook tests
+        run: |
+          bash .claude/hooks/git-branch-guard.test.sh
+          bash .claude/hooks/config-boundary-guard.test.sh
+
+      - name: Dependency audit (high and above)
+        run: pnpm audit --audit-level=high

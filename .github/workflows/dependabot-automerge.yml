@@ -1,0 +1,51 @@
+name: Dependabot auto-merge
+
+# Auto-merges routine Dependabot dependency bumps so nobody has to click "merge"
+# on them by hand. Scope is deliberately narrow — see the `if:` on the merge step:
+#
+#   • Only PRs opened by dependabot[bot] (the job `if:` guard).
+#   • Only patch and minor bumps. Major bumps still open a PR and wait for a human,
+#     because a major is where a breaking change lives.
+#   • For a GROUPED PR (the `production-deps` / `dev-deps` groups), fetch-metadata
+#     reports the HIGHEST bump across the group, so a group that contains any major
+#     reports "major" and is skipped — the safe direction.
+#
+# This does NOT merge immediately. `gh pr merge --auto` turns on GitHub's native
+# auto-merge, which merges only once every REQUIRED status check passes and the PR
+# is mergeable. A bump that turns CI red therefore never merges — it sits red for a
+# human, exactly like today.
+#
+# PREREQUISITES (repo settings, one-time, not expressible in this file):
+#   1. Settings → General → "Allow auto-merge" must be enabled.
+#   2. Branch protection on `main` must mark the CI `verify` job as a REQUIRED
+#      status check — otherwise auto-merge fires the moment the
+#      PR is mergeable, before CI has a verdict. With them required, auto-merge waits.
+# If either is missing, this workflow is a no-op-ish safety (the merge just won't
+# happen / won't gate on CI); it never force-merges past a red check.
+#
+# WHY `pull_request` AND NOT `pull_request_target`: since GitHub's 2021 change,
+# a workflow triggered by a Dependabot PR can be granted write permissions via the
+# `permissions:` block below, so the safer `pull_request` trigger (which checks out
+# nothing and runs no PR code — this job runs no checkout at all) is sufficient.
+
+on: pull_request
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  dependabot-automerge:
+    if: ${{ github.actor == 'dependabot[bot]' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fetch Dependabot metadata
+        id: meta
+        uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3.1.0
+
+      - name: Enable auto-merge for patch and minor bumps
+        if: ${{ steps.meta.outputs.update-type == 'version-update:semver-patch' || steps.meta.outputs.update-type == 'version-update:semver-minor' }}
+        run: gh pr merge --auto --squash "$PR_URL"
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,0 +1,36 @@
+#!/bin/sh
+# Pre-commit hook — secret-leak prevention
+# ============================================================================
+# Installed via the root package.json "prepare" script:
+#   git config core.hooksPath .githooks
+#
+# 1. Blocks committing credential-bearing files (per-module .npmrc PATs,
+#    .env secrets) that are easy to leak by accident.
+# 2. Runs gitleaks on staged changes when the binary is installed
+#    (https://github.com/gitleaks/gitleaks — `brew install gitleaks`).
+#    Not having gitleaks locally is fine — it's a best-effort local backstop.
+
+staged=$(git diff --cached --name-only --diff-filter=ACMR)
+
+# .npmrc anywhere, and real .env variants (templates like .env.example and
+# .env.test stay committable).
+blocked=$(printf '%s\n' "$staged" | grep -E '(^|/)\.npmrc$|(^|/)\.env$|(^|/)\.env\.(local|production|staging)$' || true)
+
+if [ -n "$blocked" ]; then
+  echo "✖ Commit blocked — these files must never be committed:" >&2
+  # Quoted + sed-indent so paths containing spaces print one-per-line intact.
+  printf '%s\n' "$blocked" | sed 's/^/    /' >&2
+  echo "  They carry credentials (.npmrc PATs, .env secrets). Use .env.example" >&2
+  echo "  for templates. To bypass for a genuinely safe file: git commit --no-verify" >&2
+  exit 1
+fi
+
+if command -v gitleaks >/dev/null 2>&1; then
+  if ! gitleaks protect --staged --redact; then
+    echo "✖ Commit blocked — gitleaks found potential secrets in staged changes." >&2
+    echo "  False positive? Add it to .gitleaks.toml's allowlist (with triage note)." >&2
+    exit 1
+  fi
+fi
+
+exit 0

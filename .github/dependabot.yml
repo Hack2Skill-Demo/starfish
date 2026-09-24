@@ -1,0 +1,38 @@
+version: 2
+
+# Minor/patch bumps are grouped into one PR per
+# group and auto-merged on green by .github/workflows/dependabot-automerge.yml;
+# majors open individually for a deliberate review.
+
+updates:
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 10
+    labels:
+      - "dependencies"
+    groups:
+      production-deps:
+        dependency-type: "production"
+        update-types:
+          - "minor"
+          - "patch"
+      dev-deps:
+        dependency-type: "development"
+        update-types:
+          - "minor"
+          - "patch"
+
+  # Actions are pinned to full commit SHAs, so they never move on their own;
+  # this keeps them current via PRs that bump the SHA and its version comment.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "github-actions"

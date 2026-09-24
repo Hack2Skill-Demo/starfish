@@ -1,0 +1,76 @@
+rules_version = '2';
+
+// Starfish Firestore rules. These are what enforce access for the web UI, which
+// reads and triages incidents straight from Firestore.
+//
+// The engine (src/) writes with the Admin SDK and bypasses these rules.
+//
+// Deploy these to Starfish's OWN named database (firebase.json targets
+// "starfish"), never to your app's default database: a rules file governs a
+// whole database, so deploying this one there would replace your app's rules.
+//
+// Collection names below are the defaults. If you configure different ones
+// (STARFISH_INCIDENT_COLLECTION / VITE_STARFISH_INCIDENT_COLLECTION,
+// VITE_STARFISH_USERS_COLLECTION), change them here too: this file is
+// deployment config, like firestore.indexes.json.
+//
+// Model: roles live on an operator record and are read fresh on every request,
+// never cached in a token.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function operatorRoles() {
+      return get(/databases/$(database)/documents/starfish_users/$(request.auth.uid)).data.roles;
+    }
+
+    function isOperator() {
+      return request.auth != null
+        && exists(/databases/$(database)/documents/starfish_users/$(request.auth.uid))
+        && operatorRoles().hasAny(['admin', 'operator']);
+    }
+
+    // Operators read only their own record. Roles are granted from the Admin SDK
+    // or the console, never by the client.
+    match /starfish_users/{uid} {
+      allow read: if request.auth != null && request.auth.uid == uid;
+      allow write: if false;
+    }
+
+    // The operator transitions, the same as nextStatus() in web/src/lib/incidents.ts.
+    // Checked against the STORED status, so a stale browser tab can't overwrite
+    // another operator's decision. `logged` is never a target: only the system
+    // sets it. A resolved incident is never reopened: the engine opens a fresh one
+    // when it recurs (src/ingest/store.ts), and reopening the old one would leave
+    // two open incidents for one fingerprint.
+    function validTransition(from, to) {
+      return (from == 'new' && to == 'acknowledged')
+        || (from in ['new', 'acknowledged', 'logged'] && to in ['resolved', 'ignored'])
+        || (from == 'ignored' && to == 'new');
+    }
+
+    match /incidents/{incidentId} {
+      allow read: if isOperator();
+
+      // Triage only: status and its bookkeeping, nothing else, attributed to the
+      // caller and stamped by the server. `resolvedAt` exists exactly when the
+      // incident is resolved, and is the server's time.
+      allow update: if isOperator()
+        && request.resource.data.diff(resource.data).affectedKeys()
+             .hasOnly(['status', 'updatedAt', 'statusChangedBy', 'resolvedAt'])
+        && validTransition(resource.data.status, request.resource.data.status)
+        && request.resource.data.statusChangedBy == request.auth.uid
+        && request.resource.data.updatedAt == request.time
+        && (request.resource.data.status == 'resolved'
+              ? request.resource.data.resolvedAt == request.time
+              : !('resolvedAt' in request.resource.data));
+
+      // Incidents are created and removed by the engine only.
+      allow create, delete: if false;
+    }
+
+    // Everything else is closed.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

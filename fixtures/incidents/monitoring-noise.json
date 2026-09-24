@@ -1,0 +1,23 @@
+{
+  "name": "Monitoring-derived incident with a zero log counter-check",
+  "measures": "declines-correctly",
+  "incident": {
+    "id": "fixture-monitoring-noise",
+    "environment": "dev",
+    "fingerprint": "5b1d2e0c9a7f4431",
+    "functionName": "reportsNightlyJob",
+    "module": "platform",
+    "errorType": "MonitoringError",
+    "errorClass": "runtime_error",
+    "occurrenceCount": 1,
+    "firstOccurredAt": "2026-09-20T23:15:06.669Z",
+    "lastOccurredAt": "2026-09-20T23:15:06.669Z",
+    "logCounterCheck": { "window": "24h", "count": 0 },
+    "message": "Cloud Monitoring reported failed invocations for this function, but no matching Cloud Logging ERROR entry was found (GEN_2/Cloud Run functions may not emit ERROR-severity logs). See Cloud Monitoring for exact error counts."
+  },
+  "context": [],
+  "groundTruth": {
+    "wasUrgent": false,
+    "summary": "Should be declined. The incident is synthesized from a Cloud Monitoring signal, not a parsed log entry: the message is a fixed explanatory string, not a stack. Single occurrence, dev environment, and the independent 24h log counter-check returns 0. There is no user-facing breakage and no code fault to patch. Opening a PR for this is noise, which burns the human review budget the loop depends on."
+  }
+}
