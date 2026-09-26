@@ -110,7 +110,8 @@ src/
     parseLogEntry  parse + noise suppression + the shared log filter
     classify       error type (source class > code > HTTP status > keywords), service
     fingerprint    sha256(functionName : first 100 chars of message), stable across versions
-    store          the single write path: dedup by fingerprint, never reopen resolved
+    store          the single write path: dedup by fingerprint; a resolved one that fires
+                   again is re-opened as `recurred` (a regression)
     counterCheck   independent raw-log recount + redacted samples
     aggregate      the scheduled job tying it together
 ```

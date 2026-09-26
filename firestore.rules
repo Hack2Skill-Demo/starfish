@@ -39,12 +39,13 @@ service cloud.firestore {
     // The operator transitions, the same as nextStatus() in web/src/lib/incidents.ts.
     // Checked against the STORED status, so a stale browser tab can't overwrite
     // another operator's decision. `logged` is never a target: only the system
-    // sets it. A resolved incident is never reopened: the engine opens a fresh one
-    // when it recurs (src/ingest/store.ts), and reopening the old one would leave
-    // two open incidents for one fingerprint.
+    // sets it, and `recurred` likewise: only the engine re-opens a resolved
+    // incident, when its error actually fires again (src/ingest/store.ts). An
+    // operator can't reopen a resolved incident; `recurred` is open, so it can be
+    // resolved or ignored like any other open incident.
     function validTransition(from, to) {
       return (from == 'new' && to == 'acknowledged')
-        || (from in ['new', 'acknowledged', 'logged'] && to in ['resolved', 'ignored'])
+        || (from in ['new', 'acknowledged', 'logged', 'recurred'] && to in ['resolved', 'ignored'])
         || (from == 'ignored' && to == 'new');
     }
 

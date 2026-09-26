@@ -58,12 +58,14 @@ const WINDOW_VALUES: readonly WindowValue[] = WINDOW_OPTIONS.map((o) => o.value)
 const DEFAULT_WINDOW: WindowValue = "24h";
 
 // Status colours follow docs/design/theme.md: error = needs action, warning =
-// needs attention, info = in flight, success = done, gray = inactive.
+// needs attention, info = in flight, success = done, gray = inactive. A
+// regression is orange: it needs action like `new`, and must not read as one.
 const STATUS_STYLES: Record<IncidentStatus, string> = {
   new: "bg-error-100 text-error-700 dark:bg-error-900/30 dark:text-error-400",
   acknowledged: "bg-warning-100 text-warning-700 dark:bg-warning-900/30 dark:text-warning-400",
   logged: "bg-info-100 text-info-700 dark:bg-info-900/30 dark:text-info-500",
   resolved: "bg-success-100 text-success-700 dark:bg-success-900/30 dark:text-success-400",
+  recurred: "bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400",
   ignored: "bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400",
 };
 
@@ -72,6 +74,7 @@ export const STATUS_LABELS: Record<IncidentStatus, string> = {
   acknowledged: "Acknowledged",
   logged: "Logged",
   resolved: "Resolved",
+  recurred: "Recurred",
   ignored: "Ignored",
 };
 
@@ -409,6 +412,28 @@ export default function Incidents() {
                             <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${STATUS_STYLES[row.status]}`}>
                               {STATUS_LABELS[row.status]}
                             </span>
+                            {/* Shown whenever it has ever regressed, not only while
+                                recurred: a resolved incident that came back twice
+                                is worth knowing about before trusting the fix. */}
+                            {row.recurrenceCount > 0 && (
+                              <p
+                                className="mt-1 flex items-center gap-1 text-xs font-medium text-orange-700 dark:text-orange-400"
+                                title={row.lastRecurredAt ? `Came back ${formatRelativeTime(row.lastRecurredAt)} after it was resolved` : "Came back after it was resolved"}
+                              >
+                                <RotateCcw className="h-3 w-3" aria-hidden="true" />
+                                {row.recurrenceCount === 1 ? "Regression" : `Regression ×${row.recurrenceCount}`}
+                              </p>
+                            )}
+                            {row.recurrenceCount > 0 && row.previousIssueUrl && (
+                              <a
+                                href={row.previousIssueUrl}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="text-xs font-medium text-orange-700 hover:underline dark:text-orange-400"
+                              >
+                                was {row.previousIssueNumber ? `#${row.previousIssueNumber}` : "the previous issue"}
+                              </a>
+                            )}
                           </td>
                           {canTriage && (
                             <td className="px-4 py-3">

@@ -31,6 +31,8 @@ export interface AggregationResult {
   entriesProcessed: number;
   incidentsCreated: number;
   incidentsUpdated: number;
+  /** Resolved incidents re-opened as `recurred`: regressions. */
+  incidentsRecurred: number;
   /** True when the read stopped at MAX_ENTRIES_PER_RUN; occurrence counts are then a floor. */
   capped: boolean;
 }
@@ -44,6 +46,7 @@ export async function aggregateErrors(
     entriesProcessed: 0,
     incidentsCreated: 0,
     incidentsUpdated: 0,
+    incidentsRecurred: 0,
     capped: false,
   };
 
@@ -126,16 +129,19 @@ export async function aggregateErrors(
     // caller believing writes landed that did not.
     let created = 0;
     let updated = 0;
+    let recurred = 0;
 
     for (const input of slice) {
       const outcome = await upsertIncident(db, config.incidentCollection, batch, input, now);
       if (outcome === "new") created += 1;
+      else if (outcome === "recurred") recurred += 1;
       else updated += 1;
     }
 
     await batch.commit();
     result.incidentsCreated += created;
     result.incidentsUpdated += updated;
+    result.incidentsRecurred += recurred;
   }
 
   return result;

@@ -65,6 +65,35 @@ describe("toRow", () => {
     });
     expect(row.githubPrState).toBeUndefined();
   });
+
+  it("carries a regression's count and the issue whose fix didn't hold", () => {
+    const row = toRow(
+      "r",
+      {
+        status: "recurred",
+        recurrenceCount: 2,
+        lastRecurredAt: Timestamp.fromMillis(now),
+        lastResolution: { githubIssueNumber: 42, githubIssueUrl: "https://example.test/issues/42" },
+      },
+      24,
+      now
+    );
+    expect(row).toMatchObject({
+      status: "recurred",
+      recurrenceCount: 2,
+      lastRecurredAt: new Date(now).toISOString(),
+      previousIssueNumber: 42,
+      previousIssueUrl: "https://example.test/issues/42",
+    });
+  });
+
+  it("reads a malformed regression record as no regression", () => {
+    const row = toRow("r", { recurrenceCount: "twice", lastResolution: "lol", lastRecurredAt: 5 }, 24, now);
+    expect(row.recurrenceCount).toBe(0);
+    expect(row.previousIssueNumber).toBeUndefined();
+    expect(row.previousIssueUrl).toBeUndefined();
+    expect(row.lastRecurredAt).toBeUndefined();
+  });
 });
 
 describe("nextStatus — the transitions operators may make", () => {
@@ -77,6 +106,10 @@ describe("nextStatus — the transitions operators may make", () => {
     ["ignored", "reopen", "new"],
     ["resolved", "resolve", null],
     ["new", "reopen", null],
+    ["recurred", "resolve", "resolved"],
+    ["recurred", "ignore", "ignored"],
+    ["recurred", "acknowledge", null],
+    ["recurred", "reopen", null],
   ] as const)("%s + %s -> %s", (from, action, to) => {
     expect(nextStatus(from, action)).toBe(to);
   });

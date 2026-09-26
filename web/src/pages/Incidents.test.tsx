@@ -30,6 +30,7 @@ const base: IncidentRow = {
   lastOccurredAt: "2026-09-24T11:00:00.000Z",
   status: "new",
   sourceProjectId: "demo",
+  recurrenceCount: 0,
 };
 const rows: IncidentRow[] = [
   base,
@@ -81,6 +82,37 @@ describe("Incidents page", () => {
 
     const ignored = screen.getByText("orders-updateOrder").closest("tr")!;
     expect(within(ignored).getByRole("button", { name: "Reopen orders-updateOrder" })).toBeInTheDocument();
+  });
+
+  it("marks a regression and links the issue whose fix didn't hold", async () => {
+    mocks.listIncidents.mockResolvedValue({
+      rows: [
+        ...rows,
+        {
+          ...base,
+          id: "3",
+          functionName: "billing-charge",
+          status: "recurred",
+          recurrenceCount: 2,
+          previousIssueNumber: 42,
+          previousIssueUrl: "https://example.test/issues/42",
+        },
+      ],
+      capped: false,
+    });
+    renderPage();
+    const row = (await screen.findByText("billing-charge")).closest("tr")!;
+    expect(within(row).getByText("Recurred")).toBeInTheDocument();
+    expect(within(row).getByText("Regression ×2")).toBeInTheDocument();
+    expect(within(row).getByRole("link", { name: "was #42" })).toHaveAttribute("href", "https://example.test/issues/42");
+    // A regression is open work: resolve or ignore, never acknowledge or reopen.
+    expect(within(row).getByRole("button", { name: "Resolve billing-charge" })).toBeInTheDocument();
+    expect(within(row).getByRole("button", { name: "Ignore billing-charge" })).toBeInTheDocument();
+    expect(within(row).queryByRole("button", { name: /Acknowledge|Reopen/ })).toBeNull();
+
+    // A first occurrence carries no regression marker.
+    const fresh = screen.getByText("mailDrainer").closest("tr")!;
+    expect(within(fresh).queryByText(/Regression/)).toBeNull();
   });
 
   it("shows the empty state for a quiet window", async () => {

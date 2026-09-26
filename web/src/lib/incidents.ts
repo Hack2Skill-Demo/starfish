@@ -23,7 +23,7 @@ import {
 import { firestore } from "./firebase";
 import { webConfig } from "./config";
 
-export const INCIDENT_STATUSES = ["new", "acknowledged", "logged", "resolved", "ignored"] as const;
+export const INCIDENT_STATUSES = ["new", "acknowledged", "logged", "resolved", "recurred", "ignored"] as const;
 export type IncidentStatus = (typeof INCIDENT_STATUSES)[number];
 export type PrState = "open" | "merged" | "closed";
 
@@ -57,6 +57,13 @@ export interface IncidentRow {
   githubPrNumber?: number;
   githubPrUrl?: string;
   githubPrState?: PrState;
+  /** Times a resolved incident has come back. 0 for one that never regressed. */
+  recurrenceCount: number;
+  /** When the latest regression was seen. */
+  lastRecurredAt?: string;
+  /** The issue that tracked the fix the latest regression broke, when there was one. */
+  previousIssueNumber?: number;
+  previousIssueUrl?: string;
 }
 
 const MS_PER_HOUR = 3600_000;
@@ -85,6 +92,7 @@ function str(v: unknown): string | undefined {
 export function toRow(id: string, d: Record<string, unknown>, windowHours: number, nowMs = Date.now()): IncidentRow {
   const status = INCIDENT_STATUSES.includes(d.status as IncidentStatus) ? (d.status as IncidentStatus) : "new";
   const prState = d.githubPrState;
+  const last = (d.lastResolution ?? {}) as Record<string, unknown>;
   return {
     id,
     functionName: str(d.functionName) ?? "(unknown)",
@@ -109,6 +117,10 @@ export function toRow(id: string, d: Record<string, unknown>, windowHours: numbe
     githubPrNumber: typeof d.githubPrNumber === "number" ? d.githubPrNumber : undefined,
     githubPrUrl: str(d.githubPrUrl),
     githubPrState: prState === "open" || prState === "merged" || prState === "closed" ? prState : undefined,
+    recurrenceCount: typeof d.recurrenceCount === "number" ? d.recurrenceCount : 0,
+    lastRecurredAt: str(iso(d.lastRecurredAt)),
+    previousIssueNumber: typeof last.githubIssueNumber === "number" ? last.githubIssueNumber : undefined,
+    previousIssueUrl: str(last.githubIssueUrl),
   };
 }
 
@@ -139,12 +151,13 @@ export type IncidentAction = "acknowledge" | "resolve" | "ignore" | "reopen";
  * The status an action moves to, or null when it doesn't apply from the current
  * status. firestore.rules enforces the same table against the stored status.
  *
- * Reopen applies only to an ignored incident. A resolved one stays resolved:
- * when it recurs the engine opens a fresh incident, and reopening the old one
- * would leave two open incidents for one fingerprint.
+ * Reopen applies only to an ignored incident. An operator never reopens a
+ * resolved one: the engine does, as `recurred`, when its error actually fires
+ * again (src/ingest/store.ts). `recurred` is open, so it can be resolved or
+ * ignored like any other open incident.
  */
 export function nextStatus(current: IncidentStatus, action: IncidentAction): IncidentStatus | null {
-  const open = current === "new" || current === "acknowledged" || current === "logged";
+  const open = current === "new" || current === "acknowledged" || current === "logged" || current === "recurred";
   switch (action) {
     case "acknowledge":
       return current === "new" ? "acknowledged" : null;

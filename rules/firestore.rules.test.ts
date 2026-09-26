@@ -92,13 +92,19 @@ describe("incidents: triage writes", () => {
     await assertSucceeds(triage("op1", { status: "new", resolvedAt: deleteField() })); // ignored -> new
     await seedStatus("logged");
     await assertSucceeds(triage("op1", { status: "resolved", resolvedAt: serverTimestamp() }));
+    await seedStatus("recurred"); // a regression is open: resolve or ignore it
+    await assertSucceeds(triage("op1", { status: "resolved", resolvedAt: serverTimestamp() }));
+    await seedStatus("recurred");
+    await assertSucceeds(triage("op1", { status: "ignored", resolvedAt: deleteField() }));
   });
 
-  it("never lets a client set logged, or reopen a resolved incident", async () => {
+  it("never lets a client set logged or recurred, or reopen a resolved incident", async () => {
     await assertFails(triage("op1", { status: "logged" })); // new -> logged
+    await assertFails(triage("op1", { status: "recurred" })); // new -> recurred
     await seedStatus("resolved");
     await assertFails(triage("op1", { status: "new" }));
     await assertFails(triage("op1", { status: "acknowledged" }));
+    await assertFails(triage("op1", { status: "recurred" })); // only the engine re-opens
   });
 
   it("rejects a stale tab overwriting another operator's resolve", async () => {
