@@ -133,4 +133,10 @@ describe("fetchRecentErrorSamples", () => {
     const failing: EntryReader = { getEntries: () => Promise.reject(new Error("x")) };
     expect(await fetchRecentErrorSamples(failing, source, "fn", { nowMs })).toEqual([]);
   });
+
+  it("returns [] for a malformed function name without querying another function's logs", async () => {
+    const logging = reader([2]);
+    expect(await fetchRecentErrorSamples(logging, source, "my.fn", { nowMs })).toEqual([]);
+    expect(logging.requests).toHaveLength(0);
+  });
 });

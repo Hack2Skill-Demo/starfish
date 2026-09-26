@@ -193,6 +193,11 @@ export async function fetchRecentErrorSamples(
   functionName: string,
   opts: CheckOptions = {}
 ): Promise<ErrorLogSample[]> {
+  // Same rule as the counter-check: buildLogFilter would strip a bad character
+  // and query a different function ("my.fn" becomes "myfn"), handing the fixer
+  // another function's stack traces as if they were this incident's.
+  if (typeof functionName !== "string" || !FUNCTION_NAME_RE.test(functionName)) return [];
+
   const windowHours = opts.windowHours ?? COUNTER_CHECK_WINDOW_HOURS;
   const since = new Date((opts.nowMs ?? Date.now()) - windowHours * MS_PER_HOUR);
   try {
