@@ -114,7 +114,8 @@ apparent over-engineering is scar tissue from real incidents, and the tests in
 - an unattributable function resolves to `"platform"` — never to whichever service is
   listed first, which is a real bug that mislabelled alerts for weeks
 - audit logs and callable-framework GET probes are dropped at both query and parse time
-- a resolved incident is never reopened; a recurrence opens a fresh one
+- a resolved incident that fires again is re-opened as `recurred`, a regression that keeps
+  the resolution that didn't hold; an ignored one is never re-opened (`store.test.ts`)
 - an open incident is found by its fingerprint, so a busy function's burst can't fork one
   incident into several (`store.test.ts`)
 - a log's `error` field is kept apart from its title: the title keys the fingerprint, the

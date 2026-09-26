@@ -54,19 +54,30 @@ export interface LogCounterCheck {
  * - `acknowledged` an operator is aware of it
  * - `logged`       tracked in an external issue (set automatically once one is filed)
  * - `resolved`     fixed; manually, or automatically when the linked issue closes
+ * - `recurred`     a REGRESSION: it was `resolved` and its fingerprint fired again,
+ *                  so the fix didn't hold. Set by the engine on the resolved document
+ *                  itself (src/ingest/store.ts), which keeps the broken resolution in
+ *                  `lastResolution`. Open until it is resolved again.
  * - `ignored`      deliberately not actioned
  */
-export const INCIDENT_STATUSES = ["new", "acknowledged", "logged", "resolved", "ignored"] as const;
+export const INCIDENT_STATUSES = ["new", "acknowledged", "logged", "resolved", "recurred", "ignored"] as const;
 export type IncidentStatus = (typeof INCIDENT_STATUSES)[number];
 
 /**
- * Statuses that count as OPEN. A recurrence accrues onto an open incident; a
- * closed one stays closed and the recurrence opens a fresh incident.
+ * Statuses that count as OPEN. A recurrence accrues onto an open incident.
+ * `recurred` is open: a regression is live work. Of the closed statuses, a
+ * `resolved` incident that fires again is re-opened as `recurred`, while an
+ * `ignored` one is left alone and the recurrence opens a fresh incident.
  *
  * Every query that means "open" must use this constant. Adding a status to one
  * query and not another is how a single incident forks into several documents.
  */
-export const OPEN_INCIDENT_STATUSES = ["new", "acknowledged", "logged"] as const satisfies readonly IncidentStatus[];
+export const OPEN_INCIDENT_STATUSES = [
+  "new",
+  "acknowledged",
+  "logged",
+  "recurred",
+] as const satisfies readonly IncidentStatus[];
 
 /** Where an incident sits in the engine's own workflow. */
 export type TriageState = "pending" | "acting" | "declined" | "resolved";
@@ -106,6 +117,31 @@ export interface StoredIncident {
   statusChangedBy?: string;
   /** Set when an operator resolves the incident; cleared on any other status. */
   resolvedAt?: Timestamp;
+  /** The linked issue and fix PR. Read by the UI; nothing writes them yet (GitHub integration isn't built). */
+  githubIssueNumber?: number;
+  githubIssueUrl?: string;
+  githubPrNumber?: number;
+  githubPrUrl?: string;
+  /** How many times a resolved incident has come back. Absent until the first regression. */
+  recurrenceCount?: number;
+  /** When the latest regression was seen. */
+  lastRecurredAt?: Timestamp;
+  /** The resolution the latest regression broke, so an operator can see what didn't hold. */
+  lastResolution?: IncidentResolution;
+}
+
+/**
+ * A snapshot of how an incident was resolved, kept when it regresses. Absent
+ * fields are omitted, since Firestore rejects undefined. `resolvedBy` is an
+ * operator uid: it is for the UI, and must never be sent to the model.
+ */
+export interface IncidentResolution {
+  resolvedAt?: Timestamp;
+  resolvedBy?: string;
+  githubIssueNumber?: number;
+  githubIssueUrl?: string;
+  githubPrNumber?: number;
+  githubPrUrl?: string;
 }
 
 /** What the triage step has to decide before anything else happens. */

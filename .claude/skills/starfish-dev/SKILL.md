@@ -79,8 +79,8 @@ incident, one shared revision cycle, and "no confident one-step fix → hand to 
 | Classification: source class > structured code > HTTP status > keywords | A bare provider 401 sat as `UnknownError` for months |
 | Unattributable → `"platform"`, never the first configured service | A default return mislabelled alerts for weeks |
 | Open incident found **by fingerprint** | A 10-doc function scan forked one incident into many during a burst |
-| Resolved is never reopened; recurrence opens fresh | "It came back" is a different, more urgent fact |
-| Recurrence never undoes a triage decision | A declined incident must stay declined |
+| A resolved incident that fires again is re-opened as `recurred`, keeping `lastResolution`; ignored is never re-opened | "It came back after we fixed it" is a more urgent fact than "it's new", and needs the history of the fix that failed |
+| A recurrence onto an open incident never undoes a triage decision (a regression re-queues it) | A declined incident must stay declined; a fix that failed must be decided again |
 | `jsonPayload.error` kept separate from the title | The title keys the fingerprint; the error is the cause |
 | Audit logs and callable GET probes dropped at query **and** parse time | Both poisoned the store in production |
 

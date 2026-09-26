@@ -52,8 +52,10 @@ The authoritative detail lives in `CLAUDE.md` and the `starfish-dev` skill.
 - **Ingest invariants** (each pinned by a test — a change that breaks one is Critical):
   classification order is source class > structured code > HTTP status > keywords; an
   unattributable function is `"platform"`, never the first configured service; a resolved
-  incident is never reopened; an open incident is found **by fingerprint**, never by scanning
-  a function's open docs; a recurrence never undoes a triage decision; `fingerprint` is
+  incident that fires again is re-opened as `recurred` (never by an operator, never an ignored
+  one, never for occurrences older than its `resolvedAt`); an open incident is found **by
+  fingerprint**, never by scanning a function's open docs; a recurrence onto an open incident
+  never undoes a triage decision (a regression re-queues it: the fix failed); `fingerprint` is
   stable across versions, so existing incidents keep deduplicating.
 - **Firestore writes**: `undefined` is rejected — optional fields must be spread
   conditionally. Batches cap at 500 writes. A batch commit failure must not leave counters
