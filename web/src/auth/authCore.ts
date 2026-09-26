@@ -10,10 +10,10 @@ import { createContext, useContext } from "react";
 import type { User } from "firebase/auth";
 
 /** Starfish operator roles. Source of truth: `<usersCollection>/{uid}.roles`. */
-export type StarfishRole = "admin" | "operator";
+export type StarfishRole = "admin" | "operator" | "viewer";
 
 /** All roles, in descending order of privilege. */
-export const STARFISH_ROLES: readonly StarfishRole[] = ["admin", "operator"];
+export const STARFISH_ROLES: readonly StarfishRole[] = ["admin", "operator", "viewer"];
 
 /** The highest-privilege role in a roles array, or null. Display only — gate on `roles`. */
 export function primaryRole(roles: readonly string[]): StarfishRole | null {

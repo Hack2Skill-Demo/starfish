@@ -57,6 +57,14 @@ describe("RequireRole", () => {
   });
 });
 
+it("admits a viewer to incidents but denies admin-only routes", () => {
+  const view = renderAt({ user, roles: ["viewer"] });
+  expect(screen.getByText("secret page")).toBeInTheDocument();
+  view.unmount();
+  renderAt({ user, roles: ["viewer"] }, ["admin"]);
+  expect(screen.getByText("denied page")).toBeInTheDocument();
+});
+
 describe("normalizeRoles", () => {
   it("keeps only known roles and rejects non-arrays", () => {
     expect(normalizeRoles(["admin", "root", 7])).toEqual(["admin"]);

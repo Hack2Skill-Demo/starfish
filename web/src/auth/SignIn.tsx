@@ -4,7 +4,7 @@
  */
 import { useState } from "react";
 import { useLocation, useNavigate } from "react-router";
-import { signInWithEmailAndPassword } from "firebase/auth";
+import { sendPasswordResetEmail, signInWithEmailAndPassword } from "firebase/auth";
 import { Loader2, Eye, EyeOff, AlertCircle } from "lucide-react";
 import PageMeta from "../components/PageMeta";
 import { Button } from "../components/ui/Button";
@@ -29,6 +29,12 @@ export function signInErrorMessage(code: string | undefined): string {
   }
 }
 
+function resetErrorMessage(code: string | undefined): string {
+  if (code === "auth/invalid-email") return "Invalid email address";
+  if (code === "auth/too-many-requests") return "Too many requests. Please try again later.";
+  return "Could not send the reset link. Please try again.";
+}
+
 const inputClass =
   "h-11 w-full rounded-lg border border-gray-200 bg-transparent px-4 py-2.5 text-sm shadow-xs placeholder:text-gray-400 focus:border-brand-300 focus:outline-none focus:ring focus:ring-brand-500/10 disabled:bg-gray-100 disabled:text-gray-500 dark:border-gray-700 dark:bg-gray-900 dark:text-white/90 dark:placeholder:text-white/30 dark:disabled:bg-gray-800";
 
@@ -47,6 +53,8 @@ export function returnPath(state: unknown): string {
 export function SignIn() {
   const navigate = useNavigate();
   const location = useLocation();
+  const [resetMode, setResetMode] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
@@ -56,15 +64,26 @@ export function SignIn() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
+    setNotice(null);
     if (!email.trim()) return setError("Email is required");
-    if (!password) return setError("Password is required");
+    if (!resetMode && !password) return setError("Password is required");
 
     setIsLoading(true);
     try {
-      await signInWithEmailAndPassword(firebaseAuth(), email.trim(), password);
-      navigate(returnPath(location.state), { replace: true });
+      if (resetMode) {
+        await sendPasswordResetEmail(firebaseAuth(), email.trim());
+        setNotice("If an account exists for this email, you’ll receive a password reset link.");
+      } else {
+        await signInWithEmailAndPassword(firebaseAuth(), email.trim(), password);
+        navigate(returnPath(location.state), { replace: true });
+      }
     } catch (err) {
-      setError(signInErrorMessage((err as { code?: string }).code));
+      const code = (err as { code?: string }).code;
+      if (resetMode && (code === "auth/user-not-found" || code === "auth/user-disabled")) {
+        setNotice("If an account exists for this email, you’ll receive a password reset link.");
+      } else {
+        setError(resetMode ? resetErrorMessage(code) : signInErrorMessage(code));
+      }
     } finally {
       setIsLoading(false);
     }
@@ -96,6 +115,10 @@ export function SignIn() {
               </div>
             )}
 
+            <h2 className="mb-5 text-center text-xl font-semibold dark:text-white">
+              {resetMode ? "Reset password" : "Sign in"}
+            </h2>
+            {notice && <p role="status" className="mb-5 text-sm text-gray-600 dark:text-gray-300">{notice}</p>}
             <form onSubmit={handleSubmit} className="space-y-5" noValidate>
               <div>
                 <label htmlFor="email" className="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">
@@ -111,7 +134,7 @@ export function SignIn() {
                   className={inputClass}
                 />
               </div>
-              <div>
+              {!resetMode && <div>
                 <label htmlFor="password" className="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">
                   Password
                 </label>
@@ -136,18 +159,22 @@ export function SignIn() {
                     {showPassword ? <EyeOff className="h-5 w-5" /> : <Eye className="h-5 w-5" />}
                   </button>
                 </div>
-              </div>
+              </div>}
               <Button type="submit" disabled={isLoading} className="w-full">
                 {isLoading ? (
                   <>
                     <Loader2 className="h-4 w-4 animate-spin" />
-                    Signing in...
+                    {resetMode ? "Sending..." : "Signing in..."}
                   </>
                 ) : (
-                  "Sign In"
+                  resetMode ? "Send reset link" : "Sign In"
                 )}
               </Button>
             </form>
+            <button type="button" disabled={isLoading} className="mt-5 w-full text-sm text-brand-600 hover:underline disabled:opacity-50"
+              onClick={() => { setResetMode(!resetMode); setError(null); setNotice(null); setPassword(""); }}>
+              {resetMode ? "Back to sign in" : "Forgot password?"}
+            </button>
           </div>
         </div>
       </div>

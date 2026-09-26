@@ -11,7 +11,7 @@ import {
   initializeTestEnvironment,
   type RulesTestEnvironment,
 } from "@firebase/rules-unit-testing";
-import { deleteDoc, deleteField, doc, getDoc, serverTimestamp, setDoc, updateDoc, Timestamp } from "firebase/firestore";
+import { collection, getDocs, query, where, orderBy, limit, deleteDoc, deleteField, doc, getDoc, serverTimestamp, setDoc, updateDoc, Timestamp } from "firebase/firestore";
 
 let env: RulesTestEnvironment;
 
@@ -29,6 +29,8 @@ beforeEach(async () => {
     const db = ctx.firestore();
     await setDoc(doc(db, "starfish_users/admin1"), { roles: ["admin"] });
     await setDoc(doc(db, "starfish_users/op1"), { roles: ["operator"] });
+    await setDoc(doc(db, "starfish_users/viewer1"), { roles: ["viewer"] });
+    await setDoc(doc(db, "demo_incidents/d1"), { environment: "demo", lastOccurredAt: Timestamp.now(), status: "new" });
     await setDoc(doc(db, "starfish_users/nobody"), { roles: [] });
     await setDoc(doc(db, "incidents/i1"), {
       functionName: "mailDrainer",
@@ -147,5 +149,40 @@ describe("everything else", () => {
   it("is closed", async () => {
     await assertFails(getDoc(doc(as("admin1"), "config/anything")));
     await assertFails(setDoc(doc(as("admin1"), "config/anything"), { x: 1 }));
+  });
+});
+
+
+describe("viewer boundary", () => {
+  it("reads curated demo evidence and its own role, not private incidents or settings", async () => {
+    const db = as("viewer1");
+    await assertSucceeds(getDoc(doc(db, "starfish_users/viewer1")));
+    await assertSucceeds(getDoc(doc(db, "demo_incidents/d1")));
+    await assertSucceeds(getDocs(query(collection(db, "demo_incidents"), where("environment", "==", "demo"), where("lastOccurredAt", ">=", Timestamp.fromMillis(0)), orderBy("lastOccurredAt", "desc"), limit(200))));
+    await assertFails(getDoc(doc(db, "incidents/i1")));
+    await assertFails(getDocs(collection(db, "incidents")));
+    await assertFails(getDoc(doc(db, "starfish_config/current")));
+    await assertFails(getDoc(doc(db, "starfish_users/admin1")));
+  });
+  it("cannot mutate either feed, grant roles or write settings", async () => {
+    const db = as("viewer1");
+    for (const path of ["incidents/i1", "demo_incidents/d1"]) {
+      await assertFails(updateDoc(doc(db, path), { status: "acknowledged", updatedAt: serverTimestamp(), statusChangedBy: "viewer1" }));
+      await assertFails(setDoc(doc(db, path), { status: "new" }));
+      await assertFails(deleteDoc(doc(db, path)));
+    }
+    await assertFails(updateDoc(doc(db, "starfish_users/viewer1"), { roles: ["admin"] }));
+    await assertFails(setDoc(doc(db, "starfish_config/current"), { autoMerge: true }));
+  });
+  it("denies anonymous/unprovisioned reads and client publication even by admins", async () => {
+    await assertFails(getDoc(doc(anon(), "demo_incidents/d1")));
+    await assertFails(getDoc(doc(as("nobody"), "demo_incidents/d1")));
+    await assertFails(setDoc(doc(as("admin1"), "demo_incidents/new"), { status: "new" }));
+  });
+  it("revoking a viewer role takes effect on the next data request", async () => {
+    const db = as("viewer1");
+    await assertSucceeds(getDoc(doc(db, "demo_incidents/d1")));
+    await env.withSecurityRulesDisabled(ctx => updateDoc(doc(ctx.firestore(), "starfish_users/viewer1"), { roles: [] }));
+    await assertFails(getDoc(doc(db, "demo_incidents/d1")));
   });
 });

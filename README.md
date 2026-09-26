@@ -146,6 +146,14 @@ docs/
   spike.md           what the spike measures and how to read it
 ```
 
+## Login and access
+
+Email/password login supports admin, operator and read-only viewer accounts, with
+password recovery through Firebase. Viewers read a separate curated demo feed and cannot
+read private engine incidents or change data. See [account setup and deployment checks](docs/login.md).
+No public signup is provided. Live account provisioning and deployed login verification
+remain deployment tasks.
+
 ## Development
 
 ```bash

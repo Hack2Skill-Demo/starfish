@@ -18,6 +18,8 @@ export interface WebConfig {
   incidentCollection: string;
   /** Operator records: {uid} → { roles: StarfishRole[] }. */
   usersCollection: string;
+  /** Curated synthetic evidence only; viewers cannot read the engine store. */
+  demoIncidentCollection: string;
   /** Label for the environment the incidents come from. */
   environment: string;
   /** Region the watched Cloud Functions deploy to, for Cloud Logging links. */
@@ -40,6 +42,7 @@ export function webConfig(): WebConfig {
     databaseId: env.VITE_STARFISH_DATABASE_ID || "starfish",
     incidentCollection: env.VITE_STARFISH_INCIDENT_COLLECTION || "incidents",
     usersCollection: env.VITE_STARFISH_USERS_COLLECTION || "starfish_users",
+    demoIncidentCollection: env.VITE_STARFISH_DEMO_INCIDENT_COLLECTION || "demo_incidents",
     environment: env.VITE_STARFISH_ENV || "dev",
     functionsRegion: env.VITE_FUNCTIONS_REGION || "us-central1",
     useEmulators: env.VITE_USE_EMULATORS === "1",

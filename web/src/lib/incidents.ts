@@ -124,12 +124,12 @@ export function toRow(id: string, d: Record<string, unknown>, windowHours: numbe
   };
 }
 
-export async function listIncidents(windowHours: number): Promise<{ rows: IncidentRow[]; capped: boolean }> {
-  const { incidentCollection, environment } = webConfig();
+export async function listIncidents(windowHours: number, demoOnly = false): Promise<{ rows: IncidentRow[]; capped: boolean }> {
+  const { incidentCollection, demoIncidentCollection, environment } = webConfig();
   const since = Timestamp.fromMillis(Date.now() - windowHours * MS_PER_HOUR);
   const snap = await getDocs(
     query(
-      collection(firestore(), incidentCollection),
+      collection(firestore(), demoOnly ? demoIncidentCollection : incidentCollection),
       // Environments share a store but never mix on screen (the engine labels
       // every incident). Needs the composite index in firestore.indexes.json.
       where("environment", "==", environment),

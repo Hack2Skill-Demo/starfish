@@ -19,7 +19,8 @@
     "verify": "node scripts/verify-gate.mjs",
     "test:rules": "pnpm dlx firebase-tools@14 emulators:exec --only firestore --project demo-starfish-rules 'vitest run -c rules/vitest.config.ts'",
     "build": "pnpm -C web build",
-    "dev:emulated": "pnpm dlx firebase-tools@14 emulators:exec --only auth,firestore --project demo-starfish 'node scripts/seed-emulator.mjs && VITE_USE_EMULATORS=1 VITE_FIREBASE_API_KEY=demo VITE_FIREBASE_AUTH_DOMAIN=demo-starfish.firebaseapp.com VITE_FIREBASE_PROJECT_ID=demo-starfish VITE_FIREBASE_APP_ID=demo VITE_STARFISH_ENV=demo pnpm -C web dev'"
+    "dev:emulated": "pnpm dlx firebase-tools@14 emulators:exec --only auth,firestore --project demo-starfish 'node scripts/seed-emulator.mjs && VITE_USE_EMULATORS=1 VITE_FIREBASE_API_KEY=demo VITE_FIREBASE_AUTH_DOMAIN=demo-starfish.firebaseapp.com VITE_FIREBASE_PROJECT_ID=demo-starfish VITE_FIREBASE_APP_ID=demo VITE_STARFISH_ENV=demo pnpm -C web dev'",
+    "provision:user": "node scripts/provision-user.mjs"
   },
   "dependencies": {
     "@google-cloud/logging": "^11.2.0",

@@ -14,7 +14,7 @@ import { webConfig } from "../lib/config";
 import { StarfishLogo } from "./StarfishLogo";
 import { menuItems, visibleMenuItems, activeMenuItem } from "./menuConfig";
 
-const ROLE_LABELS = { admin: "Admin", operator: "Operator" } as const;
+const ROLE_LABELS = { admin: "Admin", operator: "Operator", viewer: "Viewer" } as const;
 const L2_KEY = "starfish.nav.l2Collapsed";
 
 function readCollapsed(): boolean {

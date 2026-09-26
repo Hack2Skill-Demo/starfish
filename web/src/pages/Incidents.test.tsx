@@ -63,6 +63,16 @@ describe("Incidents page", () => {
     mocks.applyAction.mockResolvedValue(undefined);
   });
 
+  it("shows viewers only the demo feed without triage actions", async () => {
+    renderPage(["viewer"]);
+    expect(await screen.findByText("mailDrainer")).toBeInTheDocument();
+    expect(mocks.listIncidents).toHaveBeenCalledWith(24, true);
+    expect(screen.queryByRole("link", { name: /Logs/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Acknowledge mailDrainer" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^(Resolve |Ignore |Reopen )/ })).toBeNull();
+    expect(mocks.applyAction).not.toHaveBeenCalled();
+  });
+
   it("lists incidents with windowed counts, status, and a Logs link", async () => {
     renderPage();
     expect(await screen.findByText("mailDrainer")).toBeInTheDocument();

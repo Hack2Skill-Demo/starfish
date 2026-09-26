@@ -132,10 +132,11 @@ The operator UI: sign-in, an auth provider with race guards, a two-level layout,
 React 19, Vite, Tailwind 4, react-router, TanStack Query; Starfish's own theme in
 `web/src/styles/theme.css` and components in `web/src/components/ui/`.
 
-- **Access:** Firebase Auth email/password. Roles (`admin`, `operator`) live on the operator
+- **Access:** Firebase Auth email/password. Roles (`admin`, `operator`, `viewer`) live on the operator
   record `starfish_users/{uid}.roles` and are read fresh on every token event, never cached
   in a claim, so a revoked role takes effect on the next request. Grant access by writing that record from the Admin
-  SDK or the console.
+  SDK or the console. Viewers read only curated `demo_incidents`; admin/operator roles
+  retain access to engine incidents. See `docs/login.md` for provisioning and recovery.
 - **Data:** the UI reads and triages incidents straight from Firestore, filtered to its own
   environment. `firestore.rules` is the security boundary and enforces the status
   transitions; `pnpm test:rules` runs it against the emulator (Java needed).

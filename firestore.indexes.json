@@ -4,8 +4,28 @@
       "collectionGroup": "incidents",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "environment", "order": "ASCENDING" },
-        { "fieldPath": "lastOccurredAt", "order": "DESCENDING" }
+        {
+          "fieldPath": "environment",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "lastOccurredAt",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "demo_incidents",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "environment",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "lastOccurredAt",
+          "order": "DESCENDING"
+        }
       ]
     }
   ],

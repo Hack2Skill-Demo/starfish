@@ -24,6 +24,7 @@ const db = getFirestore(process.env.STARFISH_DATABASE_ID || "starfish");
 const users = [
   { uid: "admin", email: "admin@starfish.local", roles: ["admin"] },
   { uid: "operator", email: "operator@starfish.local", roles: ["operator"] },
+  { uid: "viewer", email: "viewer@starfish.local", roles: ["viewer"] },
   { uid: "nobody", email: "nobody@starfish.local", roles: [] },
 ];
 for (const u of users) {
@@ -68,9 +69,12 @@ const incidents = [
   },
 ];
 for (const [i, inc] of incidents.entries()) {
-  await db.doc(`incidents/seed-${i}`).set({
+  const record = {
     environment: "demo", fingerprint: `seed${i}`, triageState: "pending", sourceProjectId: "demo-starfish",
     createdAt: inc.firstOccurredAt, updatedAt: inc.lastOccurredAt, ...inc,
-  });
+  };
+  await db.doc(`incidents/seed-${i}`).set(record);
+  // These fixtures are synthetic. Never copy live incidents into the demo feed.
+  await db.doc(`demo_incidents/seed-${i}`).set(record);
 }
 console.log(`seed-emulator: ${users.length} users (password "starfish"), ${incidents.length} incidents`);

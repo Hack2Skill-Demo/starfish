@@ -29,6 +29,19 @@ service cloud.firestore {
         && operatorRoles().hasAny(['admin', 'operator']);
     }
 
+    function isViewer() {
+      return request.auth != null
+        && exists(/databases/$(database)/documents/starfish_users/$(request.auth.uid))
+        && operatorRoles().hasAny(['viewer']);
+    }
+
+    // Only trusted tooling publishes curated synthetic evidence here. Never copy
+    // production incidents into this collection: reads return whole documents.
+    match /demo_incidents/{incidentId} {
+      allow read: if isOperator() || isViewer();
+      allow write: if false;
+    }
+
     // Operators read only their own record. Roles are granted from the Admin SDK
     // or the console, never by the client.
     match /starfish_users/{uid} {

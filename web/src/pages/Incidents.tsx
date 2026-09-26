@@ -107,7 +107,7 @@ export function filterRows(rows: IncidentRow[], f: { status: string; service: st
 
 export default function Incidents() {
   const { user, roles } = useAuth();
-  const canTriage = roles.length > 0; // every Starfish role may triage
+  const canTriage = roles.some((role) => role === "admin" || role === "operator");
   const queryClient = useQueryClient();
 
   const [searchParams, setSearchParams] = useSearchParams();
@@ -121,8 +121,9 @@ export default function Incidents() {
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
 
   const { data, isLoading, isError, refetch, isFetching } = useQuery({
-    queryKey: ["incidents", windowHours],
-    queryFn: () => listIncidents(windowHours),
+    queryKey: ["incidents", user?.uid, canTriage ? "operator" : "viewer", windowHours],
+    queryFn: () => listIncidents(windowHours, !canTriage),
+    enabled: !!user && roles.length > 0,
   });
   const mutation = useMutation({
     mutationFn: ({ row, action }: { row: IncidentRow; action: IncidentAction }) =>
@@ -176,7 +177,7 @@ export default function Incidents() {
           <div>
             <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Incidents</h1>
             <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
-              Production errors from the last {windowHours}h, grouped by fingerprint
+              {canTriage ? "Production errors" : "Read-only demo evidence"} from the last {windowHours}h, grouped by fingerprint
             </p>
           </div>
           <div className="flex items-center gap-2">
@@ -342,7 +343,7 @@ export default function Incidents() {
                                   {row.tenantId ? ` · ${row.tenantId}` : ""}
                                 </p>
                                 <div className="mt-1 flex flex-wrap items-center gap-2">
-                                  {logsUrl && (
+                                  {canTriage && logsUrl && (
                                     <a
                                       href={logsUrl}
                                       target="_blank"
