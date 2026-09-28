@@ -16,7 +16,7 @@
   "dependencies": {
     "@tanstack/react-query": "^5.103.2",
     "clsx": "^2.1.1",
-    "firebase": "12.16.0",
+    "firebase": "12.19.0",
     "lucide-react": "^1.48.0",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
