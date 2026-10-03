@@ -68,9 +68,9 @@ describe("aggregateErrors", () => {
     entries.splice(0, entries.length, {
       metadata: { timestamp: "2026-09-21T00:00:00.000Z", resource: { labels: { function_name: "pay" } } },
       data: {
-        message: `charge failed ${SEEDED_SECRETS.stripeKey}`,
+        message: `charge failed ${SEEDED_SECRETS.stripe}`,
         error: `upstream said ${all}`,
-        stack: `Error: x\n    at call (https://u:${"p4ss"}@host/${SEEDED_SECRETS.githubToken})`,
+        stack: `Error: x\n    at call (https://u:${"p4ss"}@host/${SEEDED_SECRETS.github})`,
         errorName: `Err ${SEEDED_SECRETS.jwt}`,
       },
     });

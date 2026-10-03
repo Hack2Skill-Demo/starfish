@@ -246,10 +246,10 @@ describe("upsertIncident: regressions", () => {
 describe("upsertIncident redaction", () => {
   const dirty: IncidentInput = {
     ...input,
-    errorMessage: `auth failed for bob@y.org ${SEEDED_SECRETS.googleApiKey}`,
-    errorDetail: `password=hunter2 ${SEEDED_SECRETS.bearer}`,
-    stackTrace: `at x ${SEEDED_SECRETS.awsKeyId}`,
-    errorName: `E ${SEEDED_SECRETS.slackToken}`,
+    errorMessage: `auth failed for bob@y.org ${SEEDED_SECRETS.google}`,
+    errorDetail: `password=hunter2 ${SEEDED_SECRETS.bearerHeader}`,
+    stackTrace: `at x ${SEEDED_SECRETS.awsId}`,
+    errorName: `E ${SEEDED_SECRETS.slack}`,
   };
 
   it("never writes a credential or email even when the caller didn't redact (new incident)", async () => {

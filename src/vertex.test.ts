@@ -15,12 +15,12 @@ const { askJson } = await import("./vertex.js");
 
 describe("askJson", () => {
   it("redacts and bounds the model output quoted in its parse error", async () => {
-    responseText = `not json ${SEEDED_SECRETS.githubToken} ${"y".repeat(3000)}`;
+    responseText = `not json ${SEEDED_SECRETS.github} ${"y".repeat(3000)}`;
 
     const err = await askJson("p", "s", {}).catch((e: unknown) => e as Error);
 
     expect(err).toBeInstanceOf(Error);
-    expect((err as Error).message).not.toContain(SEEDED_SECRETS.githubToken);
+    expect((err as Error).message).not.toContain(SEEDED_SECRETS.github);
     expect((err as Error).message.length).toBeLessThan(1300);
   });
 });

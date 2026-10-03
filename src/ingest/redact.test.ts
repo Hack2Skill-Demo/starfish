@@ -60,7 +60,7 @@ describe("redactCredentials", () => {
   it("leaves source code assignments intact but still removes token formats", () => {
     const code = "const token = getToken();\nconst password = process.env.DB_PASSWORD;";
     expect(redactCredentials(code)).toBe(code);
-    expect(redactCredentials(`const k = "${SEEDED_SECRETS.githubToken}";`)).toBe(
+    expect(redactCredentials(`const k = "${SEEDED_SECRETS.github}";`)).toBe(
       'const k = "[redacted-secret]";'
     );
   });
@@ -73,20 +73,20 @@ describe("redactPii", () => {
   });
 
   it("redacts emails and credentials together", () => {
-    const out = redactPii(`user bob@y.org sent ${SEEDED_SECRETS.githubToken}`);
+    const out = redactPii(`user bob@y.org sent ${SEEDED_SECRETS.github}`);
     expect(out).toBe("user [redacted-email] sent [redacted-secret]");
   });
 });
 
 describe("sanitize", () => {
   it("redacts before bounding, so a secret straddling the cap can't survive in part", () => {
-    const text = "x".repeat(3990) + " " + SEEDED_SECRETS.githubToken;
+    const text = "x".repeat(3990) + " " + SEEDED_SECRETS.github;
     const out = sanitize(text) ?? "";
     expect(out).not.toContain("ghp_");
   });
 
   it("still redacts a token glued to a preceding word character", () => {
-    expect(redactCredentials(`tok_${SEEDED_SECRETS.githubToken}`)).not.toContain("ghp_");
+    expect(redactCredentials(`tok_${SEEDED_SECRETS.github}`)).not.toContain("ghp_");
   });
 
   it("passes undefined through", () => {
