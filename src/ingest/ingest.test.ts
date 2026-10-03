@@ -4,7 +4,7 @@ import { detectErrorType, detectService, extractErrorCode } from "./classify.js"
 import { buildLogFilter, parseLogEntry, type RawLogEntry } from "./parseLogEntry.js";
 import { DEFAULT_IGNORED_MESSAGES, DEFAULT_LOG_RESOURCE_TYPES } from "../config.js";
 import { mergeOccurrenceBuckets, hourBucketKey, MS_PER_HOUR } from "./buckets.js";
-import { redactPii, truncate } from "./redact.js";
+import { redact, truncate } from "./redact.js";
 
 describe("fingerprint", () => {
   it("is stable across a varying message tail", () => {
@@ -194,7 +194,7 @@ describe("occurrence buckets", () => {
 
 describe("redaction", () => {
   it("redacts emails", () => {
-    expect(redactPii("failed for jane.doe@example.org")).toBe("failed for [redacted-email]");
+    expect(redact("failed for jane.doe@example.org")).toBe("failed for [redacted-email]");
   });
 
   it("bounds text that redaction cannot clean", () => {
