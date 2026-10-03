@@ -1,7 +1,26 @@
+/**
+ * The one redaction policy. Every path that persists incident text or sends it
+ * out of the process — the store, the model context, model error reporting,
+ * spike output, and later issues/PRs and Slack — goes through this file, so a
+ * secret caught in one place is caught in all of them.
+ *
+ * Two layers, because neither is enough alone:
+ *  - VALUES that look like credentials, wherever they sit (a token in a message,
+ *    a stack frame, a URL, a JSON dump). Key names are a convention; shapes are not.
+ *  - KEYS that name a credential, for structured fields where the value has no
+ *    recognisable shape (a bare password).
+ *
+ * This is pattern matching and will miss novel formats. Free-form PII — names,
+ * addresses, record ids — is not pattern-detectable at all, which is why
+ * `truncate` exists alongside: bounding how much raw production text leaves the
+ * system is the guard that doesn't depend on a regex being clever.
+ */
 const EMAIL_RE = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g;
 
 /** Hard cap on text handed to the model, independent of what redaction catches. */
 export const MAX_TEXT_LEN = 4000;
+
+const SECRET_MARKER = "[redacted-secret]";
 
 /** `Bearer <token>` (an Authorization header value), whatever token follows. */
 const BEARER_RE = /\bBearer\s+[A-Za-z0-9._~+/=-]+/gi;
@@ -17,34 +36,91 @@ const GOOGLE_API_KEY_RE = /\bAIza[0-9A-Za-z_-]{35,}/g;
 const URL_CREDENTIAL_PARAM_RE =
   /([?&](?:token|access_token|id_token|refresh_token|api_key|apikey|key|sig|signature|x-goog-signature|x-goog-credential|x-amz-signature|x-amz-credential|x-amz-security-token)=)[^&\s#"'<>)\]]+/gi;
 
-const SECRET_MARKER = "[redacted-secret]";
+/** PEM blocks (private keys), including one cut off by truncation before its END line. */
+const PRIVATE_KEY_RE =
+  /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)/g;
+
+/** `scheme://user:password@host` — the credential in a connection string or URL. */
+const URL_USERINFO_RE = /(\b[a-z][a-z0-9+.-]*:\/\/)[^\s/:@]+:[^\s/@]+@/gi;
 
 /**
- * Redact credential-shaped VALUES: bearer tokens, JWTs, Google API keys and
- * credential-carrying URL query parameters. Key-name filtering can't catch these
- * on its own: a token logged under an innocent key, or inside a message, reads as
- * ordinary text. Bearer runs before JWT so `Bearer eyJ…` collapses to one marker.
+ * Other formats whose shape alone identifies them. Prefixes distinctive enough on
+ * their own (`ghp_`, `xoxb-`) carry no leading `\b`: a token glued to a word
+ * character ("tok_ghp_…") must not survive for want of a word boundary.
+ */
+const OTHER_TOKEN_RES: RegExp[] = [
+  // Google OAuth access / refresh tokens
+  /ya29\.[\w.-]{20,}/g,
+  /\b1\/\/[\w-]{30,}/g,
+  // GitHub tokens
+  /(?:gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{30,})/g,
+  // AWS access key id
+  /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/g,
+  // Slack tokens and webhook URLs
+  /xox[abprs]-[A-Za-z0-9-]{10,}/g,
+  /https:\/\/hooks\.slack\.com\/services\/[\w/]+/g,
+  // Stripe-style secret / restricted keys
+  /\b[sr]k_(?:live|test)_[A-Za-z0-9]{16,}/g,
+  // npm, SendGrid
+  /\bnpm_[A-Za-z0-9]{30,}/g,
+  /\bSG\.[\w-]{16,}\.[\w-]{16,}/g,
+];
+
+/**
+ * Names of fields that hold a credential, for dropping structured fields.
+ * Deliberately broad: dropping a harmless field costs a little context, leaking
+ * one costs a credential. `key$` catches accessKey/privateKey/signingKey without
+ * matching every field that merely contains "key".
+ */
+const SENSITIVE_KEY_RE =
+  /token|secret|passw|auth|api[-_]?key|key$|cookie|credential|jwt|bearer|signature|session/i;
+
+export function isSensitiveKey(key: string): boolean {
+  return SENSITIVE_KEY_RE.test(key);
+}
+
+/**
+ * `password: hunter2`, `api_key=abc`, `"token":"abc"` — name and separator kept,
+ * value dropped. Narrower than `SENSITIVE_KEY_RE` on purpose: this runs over free
+ * text, where a bare `auth` substring would mangle "Unauthorized: invalid grant"
+ * (and move its fingerprint). The name must be followed directly by `:` or `=`.
+ */
+const KEY_VALUE_RE =
+  /(["']?[\w.-]*(?:token|secret|passw(?:or)?d|api[-_]?key|authorization|cookie|credentials?|private[-_]?key|access[-_]?key|signature)["']?\s*[:=]\s*)(?!\[redacted-)(?:"[^"]*"|'[^']*'|[^\s,;&"'}\])]+)/gi;
+
+/**
+ * Redact credential-shaped VALUES: bearer tokens, JWTs, Google API keys, other
+ * well-known token formats, private keys, URL userinfo and credential-carrying URL
+ * query parameters. Key-name filtering can't catch these on its own: a token logged
+ * under an innocent key, or inside a message, reads as ordinary text. Bearer runs
+ * before JWT so `Bearer eyJ…` collapses to one marker.
+ *
+ * Shapes only — safe over source code, where `token = getToken()` is an
+ * assignment, not a leak. `redactPii` adds the key=value rule for log text.
  */
 export function redactCredentials(text: string): string {
-  return String(text ?? "")
+  let out = String(text ?? "")
+    .replace(PRIVATE_KEY_RE, SECRET_MARKER)
+    .replace(URL_USERINFO_RE, `$1${SECRET_MARKER}@`)
     .replace(URL_CREDENTIAL_PARAM_RE, `$1${SECRET_MARKER}`)
     .replace(BEARER_RE, SECRET_MARKER)
     .replace(JWT_RE, SECRET_MARKER)
     .replace(GOOGLE_API_KEY_RE, SECRET_MARKER);
+  for (const re of OTHER_TOKEN_RES) out = out.replace(re, SECRET_MARKER);
+  return out;
 }
 
 /**
- * Strip the PII and credentials we can reliably pattern-match before an error
- * message or stack is stored or reaches the model.
- *
- * Emails and credential-shaped values are the dependably detectable cases in error
- * text. Free-form PII — names, addresses, record ids — is not pattern-detectable,
- * which is exactly why `truncate` exists alongside this: bounding how much raw
- * production text leaves the system at all is the guard that doesn't depend on a
- * regex being clever.
+ * Strip the PII and credentials we can reliably pattern-match before incident text
+ * is stored or reaches the model: credential shapes, credential-named `key=value`
+ * pairs (shapes first, so "Authorization: Bearer abc" loses the whole credential),
+ * and emails. Idempotent, so it is safe to apply at several layers: the store
+ * re-applies it to whatever a caller hands it.
  */
 export function redactPii(text: string): string {
-  return redactCredentials(text).replace(EMAIL_RE, "[redacted-email]");
+  return redactCredentials(text)
+    .replace(KEY_VALUE_RE, `$1${SECRET_MARKER}`)
+    .replace(EMAIL_RE, "[redacted-email]");
 }
 
 export function truncate(text: string, max = MAX_TEXT_LEN): string {

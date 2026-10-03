@@ -14,7 +14,7 @@
  */
 import type { LogCounterCheck } from "../types.js";
 import { buildLogFilter, extractErrorDetail, type LogSource } from "./parseLogEntry.js";
-import { redactPii } from "./redact.js";
+import { isSensitiveKey, redactPii } from "./redact.js";
 
 export const COUNTER_CHECK_WINDOW_HOURS = 24;
 /**
@@ -41,15 +41,6 @@ const SAMPLE_ERROR_MAX = 1000;
 
 /** Already surfaced as message / error / stack, so not repeated in context. */
 const SAMPLE_SKIP_KEYS = new Set(["message", "error", "stack", "stackTrace"]);
-/**
- * Keys that plausibly hold credentials — never handed to the model. Deliberately
- * broad: dropping a harmless field costs a little context, leaking one costs a
- * credential. `key$` catches accessKey/privateKey/signingKey without matching
- * every field that merely contains "key".
- */
-const SENSITIVE_KEY_RE =
-  /token|secret|passw|auth|api[-_]?key|key$|cookie|credential|jwt|bearer|signature|session/i;
-
 /**
  * The slice of the Cloud Logging client used here, declared locally so tests can
  * inject a fake. `getEntries` resolves `[entries, nextPageRequest | null, …]`.
@@ -159,7 +150,7 @@ export function toSample(entry: unknown): ErrorLogSample | null {
     if (typeof rawStack === "string") stack = rawStack;
     for (const [k, v] of Object.entries(json)) {
       if (Object.keys(context).length >= MAX_CONTEXT_KEYS) break;
-      if (SAMPLE_SKIP_KEYS.has(k) || SENSITIVE_KEY_RE.test(k)) continue;
+      if (SAMPLE_SKIP_KEYS.has(k) || isSensitiveKey(k)) continue;
       if (typeof v === "string" || typeof v === "number" || typeof v === "boolean") {
         context[k] = clip(String(v), MAX_CONTEXT_VALUE);
       }

@@ -8,6 +8,7 @@ vi.mock("@google-cloud/logging", () => ({
   },
 }));
 
+const { SEEDED_SECRETS } = await import("./testSecrets.js");
 const { aggregateErrors } = await import("./aggregate.js");
 const { DEFAULT_IGNORED_MESSAGES, DEFAULT_LOG_RESOURCE_TYPES } = await import("../config.js");
 
@@ -59,5 +60,26 @@ describe("aggregateErrors", () => {
       errorMessage: "No user for [redacted-email]",
       occurrenceCount: 2,
     });
+  });
+
+  it("stores no seeded credential from the message, error, stack or name", async () => {
+    const secrets = Object.values(SEEDED_SECRETS);
+    const all = secrets.join(" ");
+    entries.splice(0, entries.length, {
+      metadata: { timestamp: "2026-09-21T00:00:00.000Z", resource: { labels: { function_name: "pay" } } },
+      data: {
+        message: `charge failed ${SEEDED_SECRETS.stripe}`,
+        error: `upstream said ${all}`,
+        stack: `Error: x\n    at call (https://u:${"p4ss"}@host/${SEEDED_SECRETS.github})`,
+        errorName: `Err ${SEEDED_SECRETS.jwt}`,
+      },
+    });
+    const { db, created } = fakeDb();
+
+    await aggregateErrors(db, config, new Date(0));
+
+    const stored = JSON.stringify(created);
+    for (const secret of secrets) expect(stored).not.toContain(secret);
+    expect(stored).not.toContain("p4ss");
   });
 });

@@ -106,7 +106,7 @@ Cloud Logging · Cloud Monitoring · Secret Manager
 
 Early, but not from scratch. The ingestion half is adapted from an incident pipeline the
 authors run in production for their own product: Cloud Logging query and false-positive suppression, error
-classification, fingerprint dedup, rolling occurrence buckets, PII redaction. Most of its
+classification, fingerprint dedup, rolling occurrence buckets, redaction. Most of its
 apparent over-engineering is scar tissue from real incidents, and the tests in
 `src/ingest/ingest.test.ts` pin the behaviours that were learned the expensive way:
 
@@ -125,6 +125,20 @@ apparent over-engineering is scar tissue from real incidents, and the tests in
   everything stored and everything sent to the model, not just the counter-check samples
 - a log's `error` field is kept apart from its title: the title keys the fingerprint, the
   error is the cause a fixer needs
+
+- one redaction policy (`src/ingest/redact.ts`) covers emails and credentials: token
+  shapes (JWTs, bearer headers, Google/GitHub/AWS/Slack/Stripe keys), private keys,
+  URL credentials and credential-named `key=value` pairs. The store re-applies it on
+  every write, so no caller can persist a seeded secret; the model prompt, model error
+  messages and the spike's printed output go through it too (`redact.test.ts`)
+
+**Redaction limits.** It is pattern matching: a credential in a format nobody listed will
+get through, and free-form PII (names, addresses, record ids) is not detectable at all —
+`truncate` bounds how much raw text leaves, it does not clean it. Only new writes are
+covered: incidents stored before this policy are not scrubbed, so the store must be
+cleared or re-ingested before real data is exposed to anyone. There is no Slack, issue/PR
+or judge-facing output yet, so the output allowlist for those surfaces is still to be
+built with them (issue #18).
 
 Alongside it, the **counter-check** (`src/ingest/counterCheck.ts`): an independent raw-log
 recount of a function's errors over 24h, plus a few redacted recent samples. It is built for

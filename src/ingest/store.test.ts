@@ -3,6 +3,7 @@ import { Timestamp, FieldValue } from "firebase-admin/firestore";
 import type { Firestore, WriteBatch } from "firebase-admin/firestore";
 import { upsertIncident, type IncidentInput } from "./store.js";
 import { computeErrorFingerprint } from "./fingerprint.js";
+import { SEEDED_SECRETS } from "./testSecrets.js";
 
 type Where = [string, string, unknown];
 
@@ -241,3 +242,40 @@ describe("upsertIncident: regressions", () => {
     ]);
   });
 });
+
+describe("upsertIncident redaction", () => {
+  const dirty: IncidentInput = {
+    ...input,
+    errorMessage: `auth failed for bob@y.org ${SEEDED_SECRETS.google}`,
+    errorDetail: `password=hunter2 ${SEEDED_SECRETS.bearerHeader}`,
+    stackTrace: `at x ${SEEDED_SECRETS.awsId}`,
+    errorName: `E ${SEEDED_SECRETS.slack}`,
+  };
+
+  it("never writes a credential or email even when the caller didn't redact (new incident)", async () => {
+    const { db, batch, writes } = fakeDb([]);
+    await upsertIncident(db, "incidents", batch, dirty, Timestamp.now());
+
+    const written = JSON.stringify(writes);
+    for (const needle of ["bob@y.org", "hunter2", ...Object.values(SEEDED_SECRETS)]) {
+      expect(written).not.toContain(needle);
+    }
+    // Redaction happens before the fingerprint, so it keys on the redacted text.
+    const data = writes[0]?.data;
+    expect(data?.fingerprint).toBe(computeErrorFingerprint(dirty.functionName, data?.errorMessage as string));
+  });
+
+  it("never writes a credential when accruing onto an existing incident", async () => {
+    const message = "auth failed for [redacted-email] [redacted-secret]";
+    const { db, batch, writes } = fakeDb([
+      { id: "open", data: stored("2026-09-20T00:00:00.000Z", { errorMessage: message, triageState: "pending" }) },
+    ]);
+    await upsertIncident(db, "incidents", batch, dirty, Timestamp.now());
+
+    const written = JSON.stringify(writes);
+    for (const needle of ["bob@y.org", "hunter2", ...Object.values(SEEDED_SECRETS)]) {
+      expect(written).not.toContain(needle);
+    }
+  });
+});
+

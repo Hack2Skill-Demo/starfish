@@ -13,6 +13,7 @@
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { askJson, modelName } from "./vertex.js";
+import { redactPii, redactCredentials } from "./ingest/redact.js";
 import type { SpikeFixture, TriageVerdict } from "./types.js";
 
 const FIXTURE_DIR = join(import.meta.dirname, "../fixtures/incidents");
@@ -72,16 +73,13 @@ const FIX_SCHEMA = {
 
 function renderIncident(f: SpikeFixture): string {
   const { incident, context } = f;
+  // Source excerpts get shape-only redaction: `token = getToken()` is code, and
+  // rewriting it would corrupt the patch context the fixer works from.
   const ctx = context
-    .map((c) => `--- ${c.path} ---\n${c.excerpt}`)
+    .map((c) => `--- ${c.path} ---\n${redactCredentials(c.excerpt)}`)
     .join("\n\n");
-  return [
-    `INCIDENT`,
-    JSON.stringify(incident, null, 2),
-    ``,
-    `SOURCE CONTEXT`,
-    ctx,
-  ].join("\n");
+  // Production text like any other: nothing credential-shaped reaches the model.
+  return [`INCIDENT`, redactPii(JSON.stringify(incident, null, 2)), ``, `SOURCE CONTEXT`, ctx].join("\n");
 }
 
 async function loadFixtures(): Promise<SpikeFixture[]> {
@@ -91,6 +89,11 @@ async function loadFixtures(): Promise<SpikeFixture[]> {
       JSON.parse(await readFile(join(FIXTURE_DIR, f), "utf8")) as SpikeFixture
     )
   );
+}
+
+/** Model output can echo or invent credential-shaped text; it is redacted before it prints. */
+function show(text: string): void {
+  console.log(redactPii(text));
 }
 
 async function run(fixture: SpikeFixture): Promise<void> {
@@ -103,17 +106,17 @@ async function run(fixture: SpikeFixture): Promise<void> {
   const triage = await askJson<TriageVerdict>(rendered, TRIAGE_SYSTEM, TRIAGE_SCHEMA);
   console.log("\n── TRIAGE ──");
   console.log(`urgent: ${triage.urgent}`);
-  console.log(triage.reasoning);
-  if (triage.suspectedCause) console.log(`suspected cause: ${triage.suspectedCause}`);
+  show(triage.reasoning);
+  if (triage.suspectedCause) show(`suspected cause: ${triage.suspectedCause}`);
 
   const urgent = triage.urgent === true;
 
   if (urgent) {
     const fix = await askJson<ProposedFix>(rendered, FIX_SYSTEM, FIX_SCHEMA);
     console.log("\n── PROPOSED FIX ──");
-    console.log(`root cause: ${fix.rootCause}`);
-    console.log(`risk: ${fix.risk}`);
-    console.log(fix.patch || "(no patch — the model declined)");
+    show(`root cause: ${fix.rootCause}`);
+    show(`risk: ${fix.risk}`);
+    show(fix.patch || "(no patch — the model declined)");
   } else {
     console.log("\n── PROPOSED FIX ──\n(skipped — triage declined to act)");
   }
@@ -138,7 +141,7 @@ for (const fixture of fixtures) {
     await run(fixture);
   } catch (e) {
     failures += 1;
-    console.log(`\n!! ${fixture.name} failed: ${e instanceof Error ? e.message : String(e)}`);
+    show(`\n!! ${fixture.name} failed: ${e instanceof Error ? e.message : String(e)}`);
   }
 }
 if (failures > 0) process.exitCode = 1;

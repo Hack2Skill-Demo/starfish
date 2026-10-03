@@ -1,5 +1,6 @@
 import { GoogleGenAI } from "@google/genai";
 import { loadConfig } from "./config.js";
+import { sanitize } from "./ingest/redact.js";
 
 let client: GoogleGenAI | undefined;
 
@@ -53,6 +54,8 @@ export async function askJson<T>(
   try {
     return JSON.parse(text) as T;
   } catch {
-    throw new Error(`model returned non-JSON output:\n${text}`);
+    // The model may echo incident text back, and this message reaches logs and
+    // terminals: redact and bound it like any other outbound text.
+    throw new Error(`model returned non-JSON output:\n${sanitize(text, 1000)}`);
   }
 }
