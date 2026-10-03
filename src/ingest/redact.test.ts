@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { SEEDED_SECRETS } from "./testSecrets.js";
-import { redact, redactSecrets, sanitize, isSensitiveKey } from "./redact.js";
+import { redact, redactSecrets, redactSecretShapes, sanitize, isSensitiveKey } from "./redact.js";
 
 describe("redactSecrets", () => {
   for (const [name, secret] of Object.entries(SEEDED_SECRETS)) {
@@ -38,11 +38,32 @@ describe("redactSecrets", () => {
     expect(out).toBe("Authorization: [redacted-secret]");
   });
 
+  it("leaves common auth error text alone, so fingerprints don't move", () => {
+    for (const text of [
+      "Unauthorized: invalid grant",
+      "Token expired: please sign in again",
+      "authentication failed: bad request",
+      "Missing authorization header",
+    ]) {
+      expect(redactSecrets(text)).toBe(text);
+    }
+  });
+
   it("leaves ordinary error text alone", () => {
     const text = "TypeError: Cannot read properties of undefined (reading 'uid') at handler (index.js:42:7)";
     expect(redactSecrets(text)).toBe(text);
     expect(redactSecrets("Basic auth is disabled; Bearer token missing")).toBe(
       "Basic auth is disabled; Bearer token missing"
+    );
+  });
+});
+
+describe("redactSecretShapes", () => {
+  it("leaves source code assignments intact but still removes token formats", () => {
+    const code = "const token = getToken();\nconst password = process.env.DB_PASSWORD;";
+    expect(redactSecretShapes(code)).toBe(code);
+    expect(redactSecretShapes(`const k = "${SEEDED_SECRETS.githubToken}";`)).toBe(
+      'const k = "[redacted-secret]";'
     );
   });
 });

@@ -13,7 +13,7 @@
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { askJson, modelName } from "./vertex.js";
-import { redact } from "./ingest/redact.js";
+import { redact, redactSecretShapes } from "./ingest/redact.js";
 import type { SpikeFixture, TriageVerdict } from "./types.js";
 
 const FIXTURE_DIR = join(import.meta.dirname, "../fixtures/incidents");
@@ -73,14 +73,13 @@ const FIX_SCHEMA = {
 
 function renderIncident(f: SpikeFixture): string {
   const { incident, context } = f;
+  // Source excerpts get shape-only redaction: `token = getToken()` is code, and
+  // rewriting it would corrupt the patch context the fixer works from.
   const ctx = context
-    .map((c) => `--- ${c.path} ---\n${c.excerpt}`)
+    .map((c) => `--- ${c.path} ---\n${redactSecretShapes(c.excerpt)}`)
     .join("\n\n");
-  // Fixture incidents and source excerpts are production text like any other:
-  // a hardcoded key in a source file must not reach the model.
-  return redact(
-    [`INCIDENT`, JSON.stringify(incident, null, 2), ``, `SOURCE CONTEXT`, ctx].join("\n")
-  );
+  // Production text like any other: nothing credential-shaped reaches the model.
+  return [`INCIDENT`, redact(JSON.stringify(incident, null, 2)), ``, `SOURCE CONTEXT`, ctx].join("\n");
 }
 
 async function loadFixtures(): Promise<SpikeFixture[]> {

@@ -40,9 +40,14 @@ export function isSensitiveKey(key: string): boolean {
   return SENSITIVE_KEY_RE.test(key);
 }
 
-/** `password: hunter2`, `api_key=abc`, `"token":"abc"` — name and separator kept, value dropped. */
+/**
+ * `password: hunter2`, `api_key=abc`, `"token":"abc"` — name and separator kept,
+ * value dropped. Narrower than `SENSITIVE_KEY_RE` on purpose: this runs over free
+ * text, where a bare `auth` substring would mangle "Unauthorized: invalid grant"
+ * (and move its fingerprint). The name must be followed directly by `:` or `=`.
+ */
 const KEY_VALUE_RE =
-  /(["']?[\w.-]*(?:token|secret|passw(?:or)?d|passwd|api[-_]?key|apikey|auth(?:orization)?|cookie|credential|private[-_]?key|access[-_]?key|client[-_]?secret|signature)[\w.-]*["']?\s*[:=]\s*)(?!\[redacted-)(?:"[^"]*"|'[^']*'|[^\s,;&"'}\])]+)/gi;
+  /(["']?[\w.-]*(?:token|secret|passw(?:or)?d|api[-_]?key|authorization|cookie|credentials?|private[-_]?key|access[-_]?key|signature)["']?\s*[:=]\s*)(?!\[redacted-)(?:"[^"]*"|'[^']*'|[^\s,;&"'}\])]+)/gi;
 
 /**
  * Values whose shape alone identifies them. Prefixes distinctive enough on their
@@ -76,15 +81,24 @@ const SECRET_VALUE_RES: RegExp[] = [
 /** Hard cap on text handed to the model, independent of what redaction catches. */
 export const MAX_TEXT_LEN = 4000;
 
-/** Credentials only: private keys, URL credentials, key=value pairs, token shapes. */
-export function redactSecrets(text: string): string {
+/**
+ * Credentials by shape only: private keys, URL credentials and token formats. Safe
+ * over source code, where `token = getToken()` is an assignment, not a leak —
+ * `redactSecrets` would rewrite it and corrupt the patch context a fixer needs.
+ */
+export function redactSecretShapes(text: string): string {
   let out = String(text ?? "")
     .replace(PRIVATE_KEY_RE, SECRET_MARK)
     .replace(URL_CREDENTIAL_RE, `$1${SECRET_MARK}@`);
-  // Shapes before key=value: "Authorization: Bearer abc" must lose the whole
-  // credential, not just the word "Bearer".
   for (const re of SECRET_VALUE_RES) out = out.replace(re, SECRET_MARK);
-  return out.replace(KEY_VALUE_RE, `$1${SECRET_MARK}`);
+  return out;
+}
+
+/** Credentials in log text: the shapes above plus credential-named key=value pairs. */
+export function redactSecrets(text: string): string {
+  // Shapes first: "Authorization: Bearer abc" must lose the whole credential,
+  // not just the word "Bearer".
+  return redactSecretShapes(text).replace(KEY_VALUE_RE, `$1${SECRET_MARK}`);
 }
 
 /**
