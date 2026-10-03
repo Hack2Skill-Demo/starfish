@@ -7,6 +7,7 @@
  * the whole loop depends on.
  */
 import { DEFAULT_IGNORED_MESSAGES, type StarfishConfig } from "../config.js";
+import { canonicalFunctionName } from "./fingerprint.js";
 
 /** Minimal structural shape of a Cloud Logging entry. */
 export interface RawLogEntry {
@@ -167,7 +168,12 @@ function quote(value: string): string {
  * nothing to do with the incident.
  *
  * `functionName`, when given, scopes to one function. It is reduced to the
- * charset GCP resource labels allow, so it cannot break out of the literal.
+ * charset GCP resource labels allow, so it cannot break out of the literal. It is
+ * matched under both spellings the same function carries: a first-generation
+ * `function_name` label is the id exactly as deployed, while a second-generation
+ * `service_name` is lowercased with `_` mapped to `-` (see `canonicalFunctionName`).
+ * Label comparisons are exact, so matching one spelling on both labels would count
+ * zero for an incident whose stored name is the other spelling.
  */
 export function buildLogFilter(source: LogSource, since: Date, functionName?: string): string {
   const clauses = [
@@ -176,8 +182,11 @@ export function buildLogFilter(source: LogSource, since: Date, functionName?: st
     `timestamp>${quote(since.toISOString())}`,
   ];
   if (functionName !== undefined) {
-    const fn = quote(functionName.replace(/[^A-Za-z0-9_-]/g, ""));
-    clauses.push(`(resource.labels.function_name=${fn} OR resource.labels.service_name=${fn})`);
+    const safe = functionName.replace(/[^A-Za-z0-9_-]/g, "");
+    // Lowercasing and `_` → `-` stay inside the label charset, so this is literal-safe too.
+    clauses.push(
+      `(resource.labels.function_name=${quote(safe)} OR resource.labels.service_name=${quote(canonicalFunctionName(safe))})`
+    );
   }
   for (const m of source.ignoredMessages) {
     clauses.push(`NOT textPayload:${quote(m)}`, `NOT jsonPayload.message:${quote(m)}`);

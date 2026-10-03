@@ -118,6 +118,11 @@ apparent over-engineering is scar tissue from real incidents, and the tests in
   the resolution that didn't hold; an ignored one is never re-opened (`store.test.ts`)
 - an open incident is found by its fingerprint, so a busy function's burst can't fork one
   incident into several (`store.test.ts`)
+- a fingerprint ignores what varies per occurrence (ids, paths, timestamps, counts) but not
+  what makes a bug distinct (status codes, quoted property names), and treats a function's
+  first- and second-generation spellings as one
+- credentials (bearer tokens, JWTs, API keys, signed-URL parameters) are redacted from
+  everything stored and everything sent to the model, not just the counter-check samples
 - a log's `error` field is kept apart from its title: the title keys the fingerprint, the
   error is the cause a fixer needs
 

@@ -13,7 +13,7 @@
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { askJson, modelName } from "./vertex.js";
-import { redact, redactSecretShapes } from "./ingest/redact.js";
+import { redactPii, redactCredentials } from "./ingest/redact.js";
 import type { SpikeFixture, TriageVerdict } from "./types.js";
 
 const FIXTURE_DIR = join(import.meta.dirname, "../fixtures/incidents");
@@ -76,10 +76,10 @@ function renderIncident(f: SpikeFixture): string {
   // Source excerpts get shape-only redaction: `token = getToken()` is code, and
   // rewriting it would corrupt the patch context the fixer works from.
   const ctx = context
-    .map((c) => `--- ${c.path} ---\n${redactSecretShapes(c.excerpt)}`)
+    .map((c) => `--- ${c.path} ---\n${redactCredentials(c.excerpt)}`)
     .join("\n\n");
   // Production text like any other: nothing credential-shaped reaches the model.
-  return [`INCIDENT`, redact(JSON.stringify(incident, null, 2)), ``, `SOURCE CONTEXT`, ctx].join("\n");
+  return [`INCIDENT`, redactPii(JSON.stringify(incident, null, 2)), ``, `SOURCE CONTEXT`, ctx].join("\n");
 }
 
 async function loadFixtures(): Promise<SpikeFixture[]> {
@@ -93,7 +93,7 @@ async function loadFixtures(): Promise<SpikeFixture[]> {
 
 /** Model output can echo or invent credential-shaped text; it is redacted before it prints. */
 function show(text: string): void {
-  console.log(redact(text));
+  console.log(redactPii(text));
 }
 
 async function run(fixture: SpikeFixture): Promise<void> {

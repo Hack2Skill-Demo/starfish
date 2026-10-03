@@ -19,7 +19,7 @@
 import { Timestamp, FieldValue } from "firebase-admin/firestore";
 import type { Firestore, WriteBatch, QueryDocumentSnapshot } from "firebase-admin/firestore";
 import { computeErrorFingerprint } from "./fingerprint.js";
-import { redact } from "./redact.js";
+import { redactPii } from "./redact.js";
 import { hourBucketKey, mergeOccurrenceBuckets } from "./buckets.js";
 import { OPEN_INCIDENT_STATUSES, type IncidentResolution, type StoredIncident } from "../types.js";
 
@@ -135,17 +135,17 @@ export function buildRecurrenceUpdate(
 /**
  * The store is the single write path, so it is where redaction is enforced
  * rather than trusted: whatever a caller passes, no credential or email reaches
- * Firestore. `redact` is idempotent, so text the aggregator already sanitized
+ * Firestore. `redactPii` is idempotent, so text the aggregator already sanitized
  * (and bounded) comes back unchanged. Applied before the fingerprint so a
  * secret that varies per request can't split one incident into many.
  */
 function redactInput(input: IncidentInput): IncidentInput {
   return {
     ...input,
-    errorMessage: redact(input.errorMessage),
-    ...(input.errorDetail != null && { errorDetail: redact(input.errorDetail) }),
-    ...(input.stackTrace != null && { stackTrace: redact(input.stackTrace) }),
-    ...(input.errorName != null && { errorName: redact(input.errorName) }),
+    errorMessage: redactPii(input.errorMessage),
+    ...(input.errorDetail != null && { errorDetail: redactPii(input.errorDetail) }),
+    ...(input.stackTrace != null && { stackTrace: redactPii(input.stackTrace) }),
+    ...(input.errorName != null && { errorName: redactPii(input.errorName) }),
   };
 }
 

@@ -1,11 +1,11 @@
 import { describe, it, expect } from "vitest";
 import { SEEDED_SECRETS } from "./testSecrets.js";
-import { redact, redactSecrets, redactSecretShapes, sanitize, isSensitiveKey } from "./redact.js";
+import { redactPii, redactCredentials, sanitize, isSensitiveKey } from "./redact.js";
 
-describe("redactSecrets", () => {
+describe("redactCredentials", () => {
   for (const [name, secret] of Object.entries(SEEDED_SECRETS)) {
     it(`removes a ${name}`, () => {
-      const out = redactSecrets(`call failed: ${secret} (retrying)`);
+      const out = redactCredentials(`call failed: ${secret} (retrying)`);
       expect(out).not.toContain(secret);
       expect(out).toContain("[redacted-secret]");
       expect(out).toContain("call failed:");
@@ -13,28 +13,28 @@ describe("redactSecrets", () => {
   }
 
   it("removes a private key block that truncation cut off before its END line", () => {
-    const out = redactSecrets("key: -----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA7");
+    const out = redactCredentials("key: -----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA7");
     expect(out).not.toContain("MIIEowIBAAKCAQEA7");
   });
 
   it("removes credentials embedded in a URL, keeping scheme and host", () => {
-    expect(redactSecrets("connect postgres://admin:hunter2@db.internal:5432/app failed")).toBe(
+    expect(redactCredentials("connect postgres://admin:hunter2@db.internal:5432/app failed")).toBe(
       "connect postgres://[redacted-secret]@db.internal:5432/app failed"
     );
   });
 
   it("removes the value of a credential-named field in text and JSON dumps", () => {
-    expect(redactSecrets("login failed password=hunter2 user=bob")).toBe(
+    expect(redactPii("login failed password=hunter2 user=bob")).toBe(
       "login failed password=[redacted-secret] user=bob"
     );
-    const dump = redactSecrets('{"user":"bob","apiKey":"k-123456","client_secret": "s3cr3t"}');
+    const dump = redactPii('{"user":"bob","apiKey":"k-123456","client_secret": "s3cr3t"}');
     expect(dump).not.toContain("k-123456");
     expect(dump).not.toContain("s3cr3t");
     expect(dump).toContain('"user":"bob"');
   });
 
   it("removes the whole Authorization header value, not just the scheme", () => {
-    const out = redactSecrets("Authorization: Bearer abcdef0123456789");
+    const out = redactPii("Authorization: Bearer abcdef0123456789");
     expect(out).toBe("Authorization: [redacted-secret]");
   });
 
@@ -45,37 +45,35 @@ describe("redactSecrets", () => {
       "authentication failed: bad request",
       "Missing authorization header",
     ]) {
-      expect(redactSecrets(text)).toBe(text);
+      expect(redactPii(text)).toBe(text);
     }
   });
 
   it("leaves ordinary error text alone", () => {
     const text = "TypeError: Cannot read properties of undefined (reading 'uid') at handler (index.js:42:7)";
-    expect(redactSecrets(text)).toBe(text);
-    expect(redactSecrets("Basic auth is disabled; Bearer token missing")).toBe(
-      "Basic auth is disabled; Bearer token missing"
-    );
+    expect(redactCredentials(text)).toBe(text);
+    expect(redactCredentials("Basic auth is disabled")).toBe("Basic auth is disabled");
   });
 });
 
-describe("redactSecretShapes", () => {
+describe("redactCredentials", () => {
   it("leaves source code assignments intact but still removes token formats", () => {
     const code = "const token = getToken();\nconst password = process.env.DB_PASSWORD;";
-    expect(redactSecretShapes(code)).toBe(code);
-    expect(redactSecretShapes(`const k = "${SEEDED_SECRETS.githubToken}";`)).toBe(
+    expect(redactCredentials(code)).toBe(code);
+    expect(redactCredentials(`const k = "${SEEDED_SECRETS.githubToken}";`)).toBe(
       'const k = "[redacted-secret]";'
     );
   });
 });
 
-describe("redact", () => {
+describe("redactPii", () => {
   it("is idempotent, so layers can each apply it", () => {
-    const once = redact(`mail bob@y.org ${SEEDED_SECRETS.jwt} password=x`);
-    expect(redact(once)).toBe(once);
+    const once = redactPii(`mail bob@y.org ${SEEDED_SECRETS.jwt} password=x`);
+    expect(redactPii(once)).toBe(once);
   });
 
   it("redacts emails and credentials together", () => {
-    const out = redact(`user bob@y.org sent ${SEEDED_SECRETS.githubToken}`);
+    const out = redactPii(`user bob@y.org sent ${SEEDED_SECRETS.githubToken}`);
     expect(out).toBe("user [redacted-email] sent [redacted-secret]");
   });
 });
@@ -88,7 +86,7 @@ describe("sanitize", () => {
   });
 
   it("still redacts a token glued to a preceding word character", () => {
-    expect(redactSecrets(`tok_${SEEDED_SECRETS.githubToken}`)).not.toContain("ghp_");
+    expect(redactCredentials(`tok_${SEEDED_SECRETS.githubToken}`)).not.toContain("ghp_");
   });
 
   it("passes undefined through", () => {

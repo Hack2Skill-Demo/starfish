@@ -14,7 +14,7 @@
  */
 import type { LogCounterCheck } from "../types.js";
 import { buildLogFilter, extractErrorDetail, type LogSource } from "./parseLogEntry.js";
-import { isSensitiveKey, redact } from "./redact.js";
+import { isSensitiveKey, redactPii } from "./redact.js";
 
 export const COUNTER_CHECK_WINDOW_HOURS = 24;
 /**
@@ -119,7 +119,7 @@ export interface ErrorLogSample {
 }
 
 function clip(text: string, max: number): string {
-  return redact(text).slice(0, max);
+  return redactPii(text).slice(0, max);
 }
 
 export function toSample(entry: unknown): ErrorLogSample | null {

@@ -1,8 +1,3 @@
 # The engine is the root package; the operator UI lives in web/.
 packages:
   - web
-
-# GHSA-m9gg-hp2v-232j: firebase's @firebase/firestore pins @grpc/grpc-js 1.9.x
-# (dev-only here, for the rules tests). Force the patched line until firebase moves.
-overrides:
-  "@grpc/grpc-js@<1.13.6": "^1.13.6"

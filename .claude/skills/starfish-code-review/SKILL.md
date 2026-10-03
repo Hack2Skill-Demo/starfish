@@ -56,7 +56,8 @@ The authoritative detail lives in `CLAUDE.md` and the `starfish-dev` skill.
   one, never for occurrences older than its `resolvedAt`); an open incident is found **by
   fingerprint**, never by scanning a function's open docs; a recurrence onto an open incident
   never undoes a triage decision (a regression re-queues it: the fix failed); `fingerprint` is
-  stable across versions, so existing incidents keep deduplicating.
+  stable for a given version of `normalizeErrorMessage` / `canonicalFunctionName` — changing what
+  is hashed forks every open incident once, so it must be deliberate and called out in the PR.
 - **Firestore writes**: `undefined` is rejected — optional fields must be spread
   conditionally. Batches cap at 500 writes. A batch commit failure must not leave counters
   claiming writes that didn't land.
