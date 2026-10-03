@@ -12,7 +12,9 @@ rules_version = '2';
 // Collection names below are the defaults. If you configure different ones
 // (STARFISH_INCIDENT_COLLECTION / VITE_STARFISH_INCIDENT_COLLECTION,
 // VITE_STARFISH_USERS_COLLECTION), change them here too: this file is
-// deployment config, like firestore.indexes.json.
+// deployment config, like firestore.indexes.json. The engine's incident keys
+// (STARFISH_INCIDENT_KEY_COLLECTION, "incident_keys") are engine-only and fall
+// to the closing rule at the bottom.
 //
 // Model: roles live on an operator record and are read fresh on every request,
 // never cached in a token.

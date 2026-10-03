@@ -118,6 +118,10 @@ apparent over-engineering is scar tissue from real incidents, and the tests in
   the resolution that didn't hold; an ignored one is never re-opened (`store.test.ts`)
 - an open incident is found by its fingerprint, so a busy function's burst can't fork one
   incident into several (`store.test.ts`)
+- every write is one Firestore transaction through a per-fingerprint key document, so
+  concurrent ingest runs converge on one incident, lose no hourly count, and an operator
+  resolving an incident mid-run either lands after the occurrence or turns it into exactly
+  one recurrence (`store.emulator.test.ts`, on the emulator)
 - a fingerprint ignores what varies per occurrence (ids, paths, timestamps, counts) but not
   what makes a bug distinct (status codes, quoted property names), and treats a function's
   first- and second-generation spellings as one
@@ -171,7 +175,7 @@ docs/
 pnpm install            # also points git at .githooks/
 cp .env.example .env    # set GOOGLE_CLOUD_PROJECT
 pnpm run verify         # the gate: lint · typecheck · test · build
-pnpm test:rules         # firestore.rules on the emulator (needs Java)
+pnpm test:emulator      # firestore.rules + store concurrency on the emulator (needs Java)
 pnpm -C web dev         # operator UI on :5177 (copy web/.env.example to web/.env)
 pnpm dev:emulated       # the UI against seeded local emulators, no GCP project needed
 pnpm spike              # fix-quality spike (needs Vertex AI access)

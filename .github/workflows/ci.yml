@@ -65,10 +65,11 @@ jobs:
       - name: Build (web)
         run: pnpm run build
 
-      # firestore.rules is the web UI's security boundary, so it runs against
-      # the real emulator, not a mock. The runner image ships a JDK.
-      - name: Firestore rules (emulator)
-        run: pnpm run test:rules
+      # firestore.rules is the web UI's security boundary, and the store's
+      # transactions are what keep concurrent writers on one incident: both run
+      # against the real emulator, not a mock. The runner image ships a JDK.
+      - name: Firestore rules and store (emulator)
+        run: pnpm run test:emulator
 
       - name: Hook tests
         run: |

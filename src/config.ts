@@ -21,6 +21,14 @@ export interface StarfishConfig {
   /** Firestore collection holding incidents. */
   incidentCollection: string;
   /**
+   * Firestore collection of incident keys: one document per (environment,
+   * fingerprint) naming the incident that fingerprint accrues onto. Every write
+   * goes through it inside a transaction, which is what makes concurrent ingest
+   * runs and operator triage converge on one incident (src/ingest/store.ts).
+   * Engine-only: firestore.rules keeps clients out of it.
+   */
+  incidentKeyCollection: string;
+  /**
    * Firestore database id. Defaults to a dedicated named database, "starfish",
    * so Starfish's rules and indexes never touch the watched app's own database.
    * "(default)" opts back into the default database.
@@ -79,6 +87,7 @@ export function loadConfig(): StarfishConfig {
     model: process.env.STARFISH_MODEL ?? "gemini-3.1-pro-preview",
     environment: process.env.STARFISH_ENV ?? "dev",
     incidentCollection: process.env.STARFISH_INCIDENT_COLLECTION ?? "incidents",
+    incidentKeyCollection: process.env.STARFISH_INCIDENT_KEY_COLLECTION ?? "incident_keys",
     databaseId: process.env.STARFISH_DATABASE_ID || "starfish",
     servicePatterns: parseServicePatterns(process.env.STARFISH_SERVICE_PATTERNS),
     defaultLookbackHours: Number(process.env.STARFISH_LOOKBACK_HOURS ?? 24),

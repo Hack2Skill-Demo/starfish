@@ -148,4 +148,9 @@ describe("everything else", () => {
     await assertFails(getDoc(doc(as("admin1"), "config/anything")));
     await assertFails(setDoc(doc(as("admin1"), "config/anything"), { x: 1 }));
   });
+
+  it("includes the engine's incident keys: a client can't repoint one", async () => {
+    await assertFails(getDoc(doc(as("admin1"), "incident_keys/k")));
+    await assertFails(setDoc(doc(as("admin1"), "incident_keys/k"), { incidentId: "i1" }));
+  });
 });
