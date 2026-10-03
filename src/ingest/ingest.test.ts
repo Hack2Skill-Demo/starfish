@@ -1,10 +1,10 @@
 import { describe, it, expect } from "vitest";
-import { computeErrorFingerprint } from "./fingerprint.js";
+import { canonicalFunctionName, computeErrorFingerprint, normalizeErrorMessage } from "./fingerprint.js";
 import { detectErrorType, detectService, extractErrorCode } from "./classify.js";
 import { buildLogFilter, parseLogEntry, type RawLogEntry } from "./parseLogEntry.js";
 import { DEFAULT_IGNORED_MESSAGES, DEFAULT_LOG_RESOURCE_TYPES } from "../config.js";
 import { mergeOccurrenceBuckets, hourBucketKey, MS_PER_HOUR } from "./buckets.js";
-import { redactPii, truncate } from "./redact.js";
+import { redactCredentials, redactPii, sanitize, truncate } from "./redact.js";
 
 describe("fingerprint", () => {
   it("is stable across a varying message tail", () => {
@@ -23,6 +23,38 @@ describe("fingerprint", () => {
     expect(() =>
       computeErrorFingerprint(undefined as unknown as string, null as unknown as string)
     ).not.toThrow();
+  });
+
+  it("collapses per-occurrence ids, paths, timestamps and counts into one fingerprint", () => {
+    const a = computeErrorFingerprint("api", "Upload failed for uploads/t1/docs/run-e53584a0-v1.pdf after 30000ms at 2026-09-24T15:04:05Z");
+    const b = computeErrorFingerprint("api", "Upload failed for uploads/t2/docs/run-84456140-v2.pdf after 120ms at 2026-09-25T09:00:00Z");
+    expect(a).toBe(b);
+  });
+
+  it("keeps distinct bugs apart: quoted property names and status codes still differ", () => {
+    expect(computeErrorFingerprint("api", "Cannot read properties of undefined (reading 'lrn')")).not.toBe(
+      computeErrorFingerprint("api", "Cannot read properties of undefined (reading 'name')")
+    );
+    expect(computeErrorFingerprint("api", "provider returned status 401")).not.toBe(
+      computeErrorFingerprint("api", "provider returned status 500")
+    );
+  });
+
+  it("normalizes before cutting at 100 chars, so the boundary can't split variants", () => {
+    const head = "x".repeat(90);
+    expect(computeErrorFingerprint("api", `${head} id 1234567890123`)).toBe(
+      computeErrorFingerprint("api", `${head} id 99`)
+    );
+  });
+
+  it("treats both spellings of one function as the same function", () => {
+    expect(canonicalFunctionName("syncOrders_v2")).toBe("syncorders-v2");
+    expect(computeErrorFingerprint("syncOrders_v2", "boom")).toBe(computeErrorFingerprint("syncorders-v2", "boom"));
+  });
+
+  it("normalization is idempotent", () => {
+    const once = normalizeErrorMessage("fail 42 at https://x.example/a?b=1 for a@b.co uuid 123e4567-e89b-12d3-a456-426614174000");
+    expect(normalizeErrorMessage(once)).toBe(once);
   });
 });
 
@@ -173,6 +205,13 @@ describe("buildLogFilter", () => {
     expect(filter).not.toContain("cloud_function");
   });
 
+  it("scopes to a function under both of its label spellings", () => {
+    const filter = buildLogFilter(source, since, "syncOrders_v2");
+    expect(filter).toContain(
+      '(resource.labels.function_name="syncOrders_v2" OR resource.labels.service_name="syncorders-v2")'
+    );
+  });
+
   it("escapes configured messages so they cannot break out of the literal", () => {
     const filter = buildLogFilter({ logResourceTypes: ["x"], ignoredMessages: ['say "hi"'] }, since);
     expect(filter).toContain('NOT textPayload:"say \\"hi\\""');
@@ -195,6 +234,24 @@ describe("occurrence buckets", () => {
 describe("redaction", () => {
   it("redacts emails", () => {
     expect(redactPii("failed for jane.doe@example.org")).toBe("failed for [redacted-email]");
+  });
+
+  it("redacts credential-shaped values wherever they sit in the text", () => {
+    const jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.c2lnbmF0dXJl";
+    expect(redactCredentials(`rejected ${jwt}`)).toBe("rejected [redacted-secret]");
+    expect(redactCredentials("sent Authorization: Bearer abc.def-123")).toBe("sent Authorization: [redacted-secret]");
+    expect(redactCredentials(`key ${"AIza"}${"x".repeat(35)}`)).toBe("key [redacted-secret]");
+    expect(redactCredentials(null as unknown as string)).toBe("");
+  });
+
+  it("redacts credential URL parameters but keeps the URL readable", () => {
+    expect(redactCredentials("GET https://s.example/o/f.png?alt=media&token=abc-123-def failed")).toBe(
+      "GET https://s.example/o/f.png?alt=media&token=[redacted-secret] failed"
+    );
+  });
+
+  it("sanitize, which guards everything stored and sent to the model, redacts credentials too", () => {
+    expect(sanitize("401 for Bearer abc.def-123 user a@b.co")).toBe("401 for [redacted-secret] user [redacted-email]");
   });
 
   it("bounds text that redaction cannot clean", () => {

@@ -109,7 +109,8 @@ src/
   ingest/          Cloud Logging → classified, fingerprinted, deduped incidents
     parseLogEntry  parse + noise suppression + the shared log filter
     classify       error type (source class > code > HTTP status > keywords), service
-    fingerprint    sha256(functionName : first 100 chars of message), stable across versions
+    fingerprint    sha256(canonical functionName : first 100 chars of the normalized message);
+                   volatile ids/paths/timestamps/counts are collapsed first
     store          the single write path: dedup by fingerprint; a resolved one that fires
                    again is re-opened as `recurred` (a regression)
     counterCheck   independent raw-log recount + redacted samples

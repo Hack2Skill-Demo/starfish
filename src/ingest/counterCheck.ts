@@ -51,12 +51,6 @@ const SENSITIVE_KEY_RE =
   /token|secret|passw|auth|api[-_]?key|key$|cookie|credential|jwt|bearer|signature|session/i;
 
 /**
- * Credential-shaped VALUES, whatever key they sit under: a JWT, a bearer header,
- * a Google API key. Key names are a convention; these shapes are not.
- */
-const SECRET_VALUE_RE = /\beyJ[\w-]{8,}\.[\w-]+\.[\w-]*|\bBearer\s+[\w.~+/-]+=*|\bAIza[\w-]{30,}/g;
-
-/**
  * The slice of the Cloud Logging client used here, declared locally so tests can
  * inject a fake. `getEntries` resolves `[entries, nextPageRequest | null, …]`.
  */
@@ -134,7 +128,7 @@ export interface ErrorLogSample {
 }
 
 function clip(text: string, max: number): string {
-  return redactPii(text).replace(SECRET_VALUE_RE, "[redacted-secret]").slice(0, max);
+  return redactPii(text).slice(0, max);
 }
 
 export function toSample(entry: unknown): ErrorLogSample | null {
