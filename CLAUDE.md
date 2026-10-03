@@ -36,7 +36,7 @@ pnpm install          # pnpm only — never npm/npx/yarn (pnpm-guard.sh enforces
 pnpm run verify       # THE gate: lint → typecheck → test → build, near-silent when green
 pnpm run verify -- --only=coverage   # coverage percentages without the table
 pnpm test             # engine + web unit tests
-pnpm test:rules       # firestore.rules against the emulator (Java required)
+pnpm test:emulator    # firestore.rules + store concurrency against the emulator (Java required)
 pnpm -C web dev       # the operator UI on :5177
 pnpm spike            # the Gemini fix-quality spike (needs .env + Vertex access)
 bash .claude/hooks/git-branch-guard.test.sh        # hook suites
@@ -112,7 +112,8 @@ src/
     fingerprint    sha256(canonical functionName : first 100 chars of the normalized message);
                    volatile ids/paths/timestamps/counts are collapsed first
     store          the single write path: dedup by fingerprint; a resolved one that fires
-                   again is re-opened as `recurred` (a regression)
+                   again is re-opened as `recurred` (a regression). One transaction per
+                   upsert, through a per-(environment, fingerprint) key document
     counterCheck   independent raw-log recount + redacted samples
     aggregate      the scheduled job tying it together
 ```
@@ -139,7 +140,7 @@ React 19, Vite, Tailwind 4, react-router, TanStack Query; Starfish's own theme i
   SDK or the console.
 - **Data:** the UI reads and triages incidents straight from Firestore, filtered to its own
   environment. `firestore.rules` is the security boundary and enforces the status
-  transitions; `pnpm test:rules` runs it against the emulator (Java needed).
+  transitions; `pnpm test:emulator` runs it against the emulator (Java needed).
 - **Database:** Starfish keeps its store in its own named database, `starfish` by default
   (`STARFISH_DATABASE_ID` / `VITE_STARFISH_DATABASE_ID`), which `firebase.json` targets for
   rules and indexes. Never deploy `firestore.rules` to the watched app's database: a rules

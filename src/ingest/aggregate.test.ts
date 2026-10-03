@@ -18,6 +18,7 @@ const config = {
   model: "m",
   environment: "prod",
   incidentCollection: "incidents",
+  incidentKeyCollection: "incident_keys",
   databaseId: "starfish",
   servicePatterns: {},
   defaultLookbackHours: 24,
@@ -25,17 +26,21 @@ const config = {
   ignoredMessages: DEFAULT_IGNORED_MESSAGES,
 };
 
-/** Firestore with no existing incidents that records what gets created. */
-function fakeDb() {
+/** Firestore with no existing incidents or keys that records the incidents created. */
+function fakeDb(failOn?: string) {
   const created: Record<string, unknown>[] = [];
-  const query = { where: () => query, limit: () => query, get: async () => ({ docs: [] }) };
+  const query = { where: () => query, limit: () => query };
+  const tx = {
+    get: async () => ({ docs: [], exists: false, data: () => undefined, get: () => undefined }),
+    set: (ref: { collection: string }, data: Record<string, unknown>) => {
+      if (failOn !== undefined && data.errorMessage === failOn) throw new Error("commit failed");
+      if (ref.collection === "incidents") created.push(data);
+    },
+    update: () => undefined,
+  };
   const db = {
-    collection: () => ({ ...query, doc: () => ({ id: `doc${created.length}` }) }),
-    batch: () => ({
-      set: (_ref: unknown, data: Record<string, unknown>) => created.push(data),
-      update: () => undefined,
-      commit: async () => undefined,
-    }),
+    collection: (collection: string) => ({ ...query, doc: () => ({ collection, id: `doc${created.length}` }) }),
+    runTransaction: async (fn: (t: typeof tx) => Promise<unknown>) => fn(tx),
   } as unknown as Firestore;
   return { db, created };
 }
@@ -81,5 +86,14 @@ describe("aggregateErrors", () => {
     const stored = JSON.stringify(created);
     for (const secret of secrets) expect(stored).not.toContain(secret);
     expect(stored).not.toContain("p4ss");
+  });
+
+  it("settles every upsert before reporting a failed one", async () => {
+    entries.splice(0, entries.length, entry("first failure"), entry("second failure"), entry("third failure"));
+    const { db, created } = fakeDb("second failure");
+
+    await expect(aggregateErrors(db, config, new Date(0))).rejects.toThrow("1 of 3 incident upserts failed");
+    // The failure doesn't strand the others: they committed and the next run accrues onto them.
+    expect(created.map((c) => c.errorMessage).sort()).toEqual(["first failure", "third failure"]);
   });
 });

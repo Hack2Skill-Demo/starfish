@@ -15,8 +15,6 @@ import { computeErrorFingerprint } from "./fingerprint.js";
 import { sanitize } from "./redact.js";
 import { upsertIncident, type IncidentInput } from "./store.js";
 
-/** Firestore batches cap at 500 writes; stay under it with room for retries. */
-const BATCH_SIZE = 400;
 const PAGE_SIZE = 500;
 /**
  * Upper bound on entries read per run. `getEntries` auto-paginates by default,
@@ -26,6 +24,12 @@ const PAGE_SIZE = 500;
  * counter-check, not this job, is what reports the true volume.
  */
 export const MAX_ENTRIES_PER_RUN = 5000;
+/**
+ * Upsert transactions in flight at once. Each grouped input has its own
+ * fingerprint, so they never contend with each other; the bound keeps a burst
+ * of distinct errors from opening hundreds of transactions together.
+ */
+const UPSERT_CONCURRENCY = 8;
 
 export interface AggregationResult {
   entriesProcessed: number;
@@ -120,28 +124,27 @@ export async function aggregateErrors(
   }
 
   const now = Timestamp.now();
-  const inputs = [...grouped.values()].map((g) => g.input);
 
-  for (let i = 0; i < inputs.length; i += BATCH_SIZE) {
-    const slice = inputs.slice(i, i + BATCH_SIZE);
-    const batch = db.batch();
-    // Track this batch's tallies separately: a commit failure must not leave the
-    // caller believing writes landed that did not.
-    let created = 0;
-    let updated = 0;
-    let recurred = 0;
-
-    for (const input of slice) {
-      const outcome = await upsertIncident(db, config.incidentCollection, batch, input, now);
-      if (outcome === "new") created += 1;
-      else if (outcome === "recurred") recurred += 1;
-      else updated += 1;
+  // One transaction per incident (see store.ts), a few at a time. Every upsert
+  // is awaited before the run reports: a failure throws only after the rest
+  // have settled, and the incidents that committed are accrued onto next run.
+  const queue = [...grouped.values()].map((g) => g.input);
+  const failures: unknown[] = [];
+  const worker = async () => {
+    for (let input = queue.shift(); input; input = queue.shift()) {
+      try {
+        const outcome = await upsertIncident(db, config, input, now);
+        if (outcome === "new") result.incidentsCreated += 1;
+        else if (outcome === "recurred") result.incidentsRecurred += 1;
+        else result.incidentsUpdated += 1;
+      } catch (err) {
+        failures.push(err);
+      }
     }
-
-    await batch.commit();
-    result.incidentsCreated += created;
-    result.incidentsUpdated += updated;
-    result.incidentsRecurred += recurred;
+  };
+  await Promise.all(Array.from({ length: Math.min(UPSERT_CONCURRENCY, queue.length) }, worker));
+  if (failures.length > 0) {
+    throw new AggregateError(failures, `${failures.length} of ${grouped.size} incident upserts failed`);
   }
 
   return result;
