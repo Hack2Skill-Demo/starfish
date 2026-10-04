@@ -53,9 +53,16 @@ the value as a new version (over stdin, never printed or passed as an argument) 
 the job as `STARFISH_GITHUB_TOKEN`; without a version, Cloud Run would refuse the deploy, so it is
 not mounted.
 
-**Nothing in the engine reads that variable yet.** The step that opens pull requests (the
-`openPullRequest` interface in `src/agent/loop.ts`) is not built; it will be the first reader. The
-secret is plumbing, not a feature, until then.
+`loadGithubToken()` (`src/config.ts`) reads that variable, and the pull-request opener
+(`src/integrations/githubPr.ts`) is its only user. The opener is tested against a local git remote
+and a fake GitHub API, **not against real GitHub**, and no job runs the agent loop, so the secret is
+still plumbing until one does. The deploy script does not set `STARFISH_GITHUB_REPO`; without it the
+opener cannot be built.
+
+Starfish pushes only to branches named `starfish/<id>` and the engine checks that, but a GitHub App's
+permission cannot be limited to a branch prefix. If "Starfish can write only its own branches" is to be
+a guarantee and not a convention, protect the base branch and restrict who may push, with a branch
+protection rule or a ruleset on the repository, including who may bypass it.
 
 ## The job does not read its own errors
 

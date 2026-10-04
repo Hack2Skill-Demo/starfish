@@ -73,6 +73,21 @@ export interface StarfishConfig {
   /** The most model calls one cycle may make (triage, each fix attempt, each review): a spend cap. */
   modelCallBudget: number;
   /**
+   * The one repository Starfish opens pull requests in, as `owner/name` (src/integrations/githubPr.ts).
+   * Empty means none: nothing can be opened. It is also checked against what the API says the token
+   * reaches, so a token for another repository cannot be used by mistake.
+   */
+  githubRepo: string;
+  /** The branch pull requests target. Starfish never pushes to it. */
+  githubBaseBranch: string;
+  /** The GitHub REST API root. Only `https://`, or plain `http://` to localhost for tests. */
+  githubApiUrl: string;
+  /** Where the repository is fetched from and pushed to. Empty means `https://github.com/<githubRepo>.git`. */
+  githubRemoteUrl: string;
+  /** The author and committer on the commit Starfish pushes. */
+  githubCommitName: string;
+  githubCommitEmail: string;
+  /**
    * Firestore collection of operator records ({uid} -> { roles }). The engine reads it to check that
    * whoever asks for an admin action is an admin, the same record firestore.rules reads. Must match
    * the web's VITE_STARFISH_USERS_COLLECTION and the rules, which hardcode `starfish_users`.
@@ -218,6 +233,12 @@ export function loadConfig(): StarfishConfig {
     dryRun: parseBoolean(process.env.STARFISH_DRY_RUN, true, "STARFISH_DRY_RUN"),
     reviewRequired: parseBoolean(process.env.STARFISH_REVIEW_REQUIRED, true, "STARFISH_REVIEW_REQUIRED"),
     modelCallBudget: positiveNumber(process.env.STARFISH_MODEL_CALL_BUDGET, 6, "STARFISH_MODEL_CALL_BUDGET"),
+    githubRepo: (process.env.STARFISH_GITHUB_REPO ?? "").trim(),
+    githubBaseBranch: (process.env.STARFISH_GITHUB_BASE_BRANCH ?? "").trim() || "main",
+    githubApiUrl: (process.env.STARFISH_GITHUB_API_URL ?? "").trim() || "https://api.github.com",
+    githubRemoteUrl: (process.env.STARFISH_GITHUB_REMOTE_URL ?? "").trim(),
+    githubCommitName: (process.env.STARFISH_GITHUB_COMMIT_NAME ?? "").trim() || "Starfish",
+    githubCommitEmail: (process.env.STARFISH_GITHUB_COMMIT_EMAIL ?? "").trim() || "starfish@users.noreply.github.com",
     usersCollection: process.env.STARFISH_USERS_COLLECTION || "starfish_users",
     auditCollection: process.env.STARFISH_AUDIT_COLLECTION || "starfish_audit",
     excludedServices: parseList(process.env.STARFISH_EXCLUDED_SERVICES, ",") ?? DEFAULT_EXCLUDED_SERVICES,
@@ -232,6 +253,24 @@ export function loadConfig(): StarfishConfig {
     ignoredMessages:
       parseList(process.env.STARFISH_IGNORED_MESSAGES, "|") ?? DEFAULT_IGNORED_MESSAGES,
   };
+}
+
+/**
+ * The GitHub token for the pull-request step, or undefined. Deliberately not a field of
+ * StarfishConfig: a config object is copied into snapshots and test fixtures, and a secret
+ * must not travel with it. Mounted from Secret Manager on Cloud Run (docs/deploy.md).
+ */
+export function loadGithubToken(): string | undefined {
+  const token = (process.env.STARFISH_GITHUB_TOKEN ?? "").trim();
+  return token === "" ? undefined : token;
+}
+
+/**
+ * The two variables a child `git` needs to find itself and a home directory, and nothing else: a child
+ * process must not inherit the engine's environment (the GitHub token is in it).
+ */
+export function loadChildProcessBasics(): { PATH?: string; HOME?: string } {
+  return { PATH: process.env.PATH, HOME: process.env.HOME };
 }
 
 /** A number above zero, or the default when unset. A window of zero or negative length would never advance. */

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { loadConfig } from "./config.js";
+import { loadChildProcessBasics, loadConfig, loadGithubToken } from "./config.js";
 
 // Env vars that loadConfig reads; cleared first so the developer's own .env/shell can't leak in.
 const KEYS = [
@@ -169,6 +169,66 @@ describe("loadConfig: the loop's switches", () => {
     expect(loadConfig()).toMatchObject({ reviewRequired: false, modelCallBudget: 10 });
     vi.stubEnv("STARFISH_MODEL_CALL_BUDGET", "0");
     expect(() => loadConfig()).toThrow("STARFISH_MODEL_CALL_BUDGET");
+  });
+});
+
+describe("loadConfig: the pull-request target", () => {
+  const KEYS = [
+    "STARFISH_GITHUB_REPO",
+    "STARFISH_GITHUB_BASE_BRANCH",
+    "STARFISH_GITHUB_API_URL",
+    "STARFISH_GITHUB_REMOTE_URL",
+    "STARFISH_GITHUB_COMMIT_NAME",
+    "STARFISH_GITHUB_COMMIT_EMAIL",
+    "STARFISH_GITHUB_TOKEN",
+  ];
+  beforeEach(() => {
+    for (const k of KEYS) vi.stubEnv(k, "");
+    vi.stubEnv("GOOGLE_CLOUD_PROJECT", "home-project");
+  });
+  afterEach(() => vi.unstubAllEnvs());
+
+  it("names no repository by default, so nothing can be opened, and targets main on GitHub", () => {
+    expect(loadConfig()).toMatchObject({
+      githubRepo: "",
+      githubBaseBranch: "main",
+      githubApiUrl: "https://api.github.com",
+      githubRemoteUrl: "",
+      githubCommitName: "Starfish",
+      githubCommitEmail: "starfish@users.noreply.github.com",
+    });
+  });
+
+  it("reads each setting from its variable", () => {
+    vi.stubEnv("STARFISH_GITHUB_REPO", " acme/shop ");
+    vi.stubEnv("STARFISH_GITHUB_BASE_BRANCH", "develop");
+    vi.stubEnv("STARFISH_GITHUB_API_URL", "https://ghe.example/api/v3");
+    vi.stubEnv("STARFISH_GITHUB_REMOTE_URL", "https://ghe.example/acme/shop.git");
+    vi.stubEnv("STARFISH_GITHUB_COMMIT_NAME", "Bot");
+    vi.stubEnv("STARFISH_GITHUB_COMMIT_EMAIL", "bot@example.test");
+    expect(loadConfig()).toMatchObject({
+      githubRepo: "acme/shop",
+      githubBaseBranch: "develop",
+      githubApiUrl: "https://ghe.example/api/v3",
+      githubRemoteUrl: "https://ghe.example/acme/shop.git",
+      githubCommitName: "Bot",
+      githubCommitEmail: "bot@example.test",
+    });
+  });
+
+  it("keeps the token out of the config object: it is read on its own, and only when asked", () => {
+    vi.stubEnv("STARFISH_GITHUB_TOKEN", " sekret ");
+    expect(JSON.stringify(loadConfig())).not.toContain("sekret");
+    expect(loadGithubToken()).toBe("sekret");
+    vi.stubEnv("STARFISH_GITHUB_TOKEN", "  ");
+    expect(loadGithubToken()).toBeUndefined();
+  });
+
+  it("hands a child process only PATH and HOME", () => {
+    vi.stubEnv("PATH", "/bin");
+    vi.stubEnv("HOME", "/home/x");
+    vi.stubEnv("STARFISH_GITHUB_TOKEN", "sekret");
+    expect(loadChildProcessBasics()).toEqual({ PATH: "/bin", HOME: "/home/x" });
   });
 });
 
