@@ -75,7 +75,7 @@ the engine read itself. An explicit `STARFISH_EXCLUDED_SERVICES` in `EXTRA_ENV_V
 ## After the first deploy
 
 ```bash
-PROJECT_ID=my-project scripts/smoke-gcp.sh     # plants one error, runs the job, checks the incident arrived
+PROJECT_ID=my-project SMOKE_ACTOR_UID=<admin uid> scripts/smoke-gcp.sh   # plants one error, runs the job, checks THAT incident, retires it
 pnpm status                                    # is the engine alive? (needs GOOGLE_CLOUD_PROJECT and STARFISH_ENV)
 gcloud run jobs executions list --job=starfish-ingest --region=us-central1 --project=my-project
 ```

@@ -52,7 +52,7 @@ SCHEDULE='*/5 * * * *' BUDGET_USD=20 BILLING_ACCOUNT=0123AB-456CDE-789FGH script
 pnpm grant-operator --email you@example.com --role admin --create
 
 # 4. Prove the ingest works end to end: plants one error, waits ~7 minutes, runs the job, checks.
-scripts/smoke-gcp.sh
+SMOKE_ACTOR_UID=<admin uid> scripts/smoke-gcp.sh
 
 # 5. The operator UI, on its own Hosting site (not the project's default one).
 scripts/deploy-web.sh                          # prints https://<project>-starfish.web.app
@@ -60,11 +60,15 @@ scripts/deploy-web.sh                          # prints https://<project>-starfi
 
 Then open the URL, sign in with the link from step 3, and you should see the planted incident. `pnpm status`
 at any time says whether the engine is alive (exit 0 = last run ok and recent). `--min-incidents N` also requires
-incidents in the store; `--min-entries N` requires that the *last run* read at least N log entries, which is what
-the smoke test uses, because an old incident would satisfy the first one on its own.
+incidents in the store; `--min-entries N` requires that the *last run* read at least N log entries (on a project
+with real errors of its own that proves little, so the smoke test does not use it).
 
-The smoke test writes one real incident named `starfish-smoke` into the store. Delete it in the Firestore
-console before showing the public demo.
+The smoke test writes one real incident named `starfish-smoke` into the store and checks **that** incident
+(`pnpm smoke-check`: a `starfish-smoke` incident whose last occurrence is after the moment it planted the error),
+so it holds even where the logs are not quiet. It then **retires** it with `SMOKE_ACTOR_UID` (the uid of an admin
+operator you granted with `pnpm grant-operator`; required), audited, and reads the retirement back. A retired
+incident is in no list. If cleanup fails the script says which incident document to delete in the Firestore console
+and exits non-zero. Written and dry-run tested; never run against a real project (#6).
 
 **Redeploying later without a local `gcloud`:** the Deploy engine workflow (`.github/workflows/deploy.yml`, Actions → Deploy engine → Run workflow) runs step 2 from GitHub Actions with no stored key. Use it once the one-time Workload Identity setup is done (a console step, in [`deploy.md`](deploy.md#deploy-from-github-actions-75); the workflow is written and pinned by a test, never run). Until then, or for the very first deploy, run `scripts/deploy-gcp.sh` by hand as above. The web UI is not part of the workflow: step 5 stays a local `scripts/deploy-web.sh` (#92).
 

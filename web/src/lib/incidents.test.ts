@@ -1,12 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
 
 const getDoc = vi.hoisted(() => vi.fn());
-vi.mock("firebase/firestore", async (orig) => ({ ...(await orig<typeof import("firebase/firestore")>()), getDoc, doc: vi.fn(() => ({})) }));
+const getDocs = vi.hoisted(() => vi.fn());
+vi.mock("firebase/firestore", async (orig) => ({ ...(await orig<typeof import("firebase/firestore")>()), getDoc, getDocs, doc: vi.fn(() => ({})), collection: vi.fn(() => ({})), query: vi.fn(() => ({})), where: vi.fn(), orderBy: vi.fn(), limit: vi.fn() }));
 vi.mock("./firebase", () => ({ firestore: vi.fn() }));
 vi.mock("./config", () => ({ webConfig: () => ({ incidentCollection: "incidents" }) }));
 
 import { Timestamp } from "firebase/firestore";
-import { countInWindow, getIncident, nextStatus, toRow } from "./incidents";
+import { countInWindow, getIncident, listIncidents, nextStatus, toRow } from "./incidents";
 
 const HOUR = 3600_000;
 const now = Date.parse("2026-09-24T12:00:00.000Z");
@@ -143,5 +144,15 @@ describe("getIncident", () => {
     expect(await getIncident("abc", "demo")).toBeNull();
     getDoc.mockResolvedValue(snap({ ...stored, retired: true }));
     expect(await getIncident("abc", "demo")).toBeNull();
+  });
+});
+
+describe("listIncidents", () => {
+  it("leaves a retired incident out of the list, as it is to the store and to the evidence page", async () => {
+    const d = (id: string, data: Record<string, unknown>) => ({ id, data: () => ({ functionName: id, environment: "demo", status: "resolved", ...data }) });
+    getDocs.mockResolvedValue({ docs: [d("live", {}), d("gone", { retired: true })], size: 2 });
+    const { rows, capped } = await listIncidents(24, "demo");
+    expect(rows.map((r) => r.id)).toEqual(["live"]);
+    expect(capped).toBe(false);
   });
 });
