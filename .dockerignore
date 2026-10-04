@@ -1,0 +1,18 @@
+**/node_modules
+.git
+.github
+.claude
+.githooks
+.env
+.env.*
+.verify-logs
+.spike-output
+coverage
+docs
+fixtures
+rules
+scripts
+# web/package.json is copied by the Dockerfile on its own; nothing else of web/ belongs in the engine.
+web/*
+!web/package.json
+**/*.test.ts
