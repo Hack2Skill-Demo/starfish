@@ -38,6 +38,7 @@ pnpm run verify -- --only=coverage   # coverage percentages without the table
 pnpm test             # engine + web unit tests
 pnpm test:emulator    # firestore.rules + store concurrency against the emulator (Java required)
 pnpm -C web dev       # the operator UI on :5177
+pnpm audit:contrast   # WCAG AA audit of the rendered UI (needs `pnpm dev:emulated` + a Chromium)
 pnpm spike            # the Gemini fix-quality spike (needs .env + Vertex access)
 bash .claude/hooks/git-branch-guard.test.sh        # hook suites
 bash .claude/hooks/pre-push-review-guard.test.sh

@@ -140,7 +140,7 @@ export function StarfishLayout() {
                 to={item.path}
                 onClick={() => setSidebarOpen(false)}
                 className={`block rounded-lg px-3 py-2 text-sm transition-colors ${
-                  active?.id === item.id ? "bg-brand-600 text-white" : "text-gray-400 hover:bg-gray-800 hover:text-white"
+                  active?.id === item.id ? "bg-brand-700 text-white" : "text-gray-400 hover:bg-gray-800 hover:text-white"
                 }`}
               >
                 {item.label}

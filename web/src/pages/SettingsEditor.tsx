@@ -67,7 +67,7 @@ const FIELDS: Record<
 };
 
 const INPUT =
-  "w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 disabled:bg-gray-100 disabled:text-gray-400 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-100 dark:disabled:bg-gray-800";
+  "w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 placeholder:text-gray-500 disabled:bg-gray-100 disabled:text-gray-400 dark:border-gray-700 dark:placeholder:text-gray-400 dark:bg-gray-900 dark:text-gray-100 dark:disabled:bg-gray-800";
 
 const SETTINGS_QUERY = ["settings", "admin"] as const;
 const CHANGES_QUERY = ["settings", "changes"] as const;
@@ -120,7 +120,7 @@ export function SettingsEditor() {
     },
   });
 
-  if (stored.isPending) return <p className="text-sm text-gray-500 dark:text-gray-400">Loading settings…</p>;
+  if (stored.isPending) return <p className="text-sm text-gray-600 dark:text-gray-400">Loading settings…</p>;
   if (stored.isError || !form) {
     return (
       <p role="alert" className="text-sm text-error-700 dark:text-error-400">
@@ -151,7 +151,7 @@ export function SettingsEditor() {
         <h2 id="runtime-settings" className="text-lg font-semibold text-gray-900 dark:text-white">
           Runtime settings
         </h2>
-        <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
+        <p className="mt-1 text-sm text-gray-600 dark:text-gray-400">
           Override the engine&apos;s defaults. A field left on its default uses the engine&apos;s environment variables.
           The engine applies a saved document at the start of each run, but the scheduled job that runs it is not
           deployed yet, so nothing reads these today. Secrets are not stored here.
@@ -235,7 +235,7 @@ export function SettingsEditor() {
             Reset to defaults
           </Button>
           {storedRevision > 0 && (
-            <span className="text-xs text-gray-500 dark:text-gray-400">Revision {storedRevision}</span>
+            <span className="text-xs text-gray-600 dark:text-gray-400">Revision {storedRevision}</span>
           )}
         </div>
       </form>
@@ -243,16 +243,16 @@ export function SettingsEditor() {
       <div>
         <h3 className="font-medium text-gray-900 dark:text-white">Recent changes</h3>
         {changes.isError ? (
-          <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">Couldn&apos;t read the change history.</p>
+          <p className="mt-1 text-sm text-gray-600 dark:text-gray-400">Couldn&apos;t read the change history.</p>
         ) : !changes.data || changes.data.length === 0 ? (
-          <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">No changes yet.</p>
+          <p className="mt-1 text-sm text-gray-600 dark:text-gray-400">No changes yet.</p>
         ) : (
           <ul className="mt-2 divide-y divide-gray-200 text-sm dark:divide-gray-700">
             {changes.data.map((c) => (
               <li key={c.id} className="flex flex-wrap items-baseline gap-x-3 gap-y-1 py-2">
-                <span className="font-mono text-xs text-gray-500 dark:text-gray-400">r{c.revision}</span>
+                <span className="font-mono text-xs text-gray-600 dark:text-gray-400">r{c.revision}</span>
                 <span className="text-gray-700 dark:text-gray-300">{formatDateTime(c.at)}</span>
-                <span className="font-mono text-xs text-gray-500 dark:text-gray-400">by {c.by}</span>
+                <span className="font-mono text-xs text-gray-600 dark:text-gray-400">by {c.by}</span>
                 <span className="text-gray-900 dark:text-white">
                   {c.changed.length > 0 ? `changed ${c.changed.join(", ")}` : "saved with no change"}
                 </span>

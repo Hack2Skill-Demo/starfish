@@ -13,7 +13,7 @@ const Incidents = lazy(() => import("./pages/Incidents"));
 const Settings = lazy(() => import("./pages/Settings"));
 const NotFound = lazy(() => import("./pages/NotFound"));
 
-const pageFallback = <div className="py-12 text-center text-gray-400">Loading…</div>;
+const pageFallback = <div className="py-12 text-center text-gray-600 dark:text-gray-400">Loading…</div>;
 
 export default function App() {
   return (
