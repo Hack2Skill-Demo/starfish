@@ -66,6 +66,8 @@ the smoke test uses, because an old incident would satisfy the first one on its 
 The smoke test writes one real incident named `starfish-smoke` into the store. Delete it in the Firestore
 console before showing the public demo.
 
+**Redeploying later without a local `gcloud`:** the Deploy engine workflow runs step 2 from GitHub Actions with no stored key; the one-time Workload Identity setup is in [`deploy.md`](deploy.md#deploy-from-github-actions-75) (written, never run).
+
 ## What you will still not have after this
 
 Be honest with yourself about this list before the demo:
