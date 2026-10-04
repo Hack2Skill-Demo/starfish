@@ -128,7 +128,7 @@ export default function Overview() {
                 .filter((p) => counts.byPath[p] > 0)
                 .map((p) => (
                   <li key={p}>
-                    <Link to="/runs" className="flex justify-between gap-3 text-gray-900 hover:underline dark:text-gray-100">
+                    <Link to={`/runs?path=${p}`} className="flex justify-between gap-3 text-gray-900 hover:underline dark:text-gray-100">
                       <span>{PATH_LABELS[p]}</span>
                       <span className="font-mono">{counts.byPath[p]}</span>
                     </Link>

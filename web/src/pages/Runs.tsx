@@ -23,6 +23,7 @@ import {
   runStatus,
   safeUrl,
   triageRule,
+  type CyclePath,
   type CycleRow,
   type EventRow,
   type Step,
@@ -63,8 +64,17 @@ export default function Runs() {
     );
   }, [environment, ready]);
 
+  // `?path=` narrows the list to runs that ended a given way (the Overview links here). An unknown value filters nothing.
+  const rawPath = params.get("path");
+  const pathFilter = rawPath !== null && rawPath in PATH_LABELS ? (rawPath as CyclePath) : null;
+  const visible = cycles && pathFilter ? cycles.filter((c) => c.path === pathFilter) : cycles;
   const selectedId = params.get("run");
-  const selected = cycles?.find((c) => c.id === selectedId) ?? cycles?.[0] ?? null;
+  const selected = visible?.find((c) => c.id === selectedId) ?? visible?.[0] ?? null;
+  const select = (id: string) => {
+    const next = new URLSearchParams(params);
+    next.set("run", id);
+    setParams(next, { replace: true });
+  };
 
   return (
     <div className="space-y-4">
@@ -93,16 +103,24 @@ export default function Runs() {
           />
         </div>
       ) : (
-        <div className="grid gap-4 lg:grid-cols-[20rem_1fr]">
-          <RunList
-            cycles={cycles}
-            capped={capped}
-            selectedId={selected?.id ?? null}
-            now={now}
-            onSelect={(id) => setParams({ run: id }, { replace: true })}
-          />
-          {selected && <RunDetail cycle={selected} environment={environment} now={now} />}
-        </div>
+        <>
+          {pathFilter && (
+            <p className="text-sm text-gray-700 dark:text-gray-300" data-testid="path-filter">
+              Showing runs that ended: <strong>{PATH_LABELS[pathFilter]}</strong> ({visible?.length ?? 0}).{" "}
+              <Link to="/runs" className="font-medium text-brand-700 hover:underline dark:text-brand-400">
+                Show all runs
+              </Link>
+            </p>
+          )}
+          {visible && visible.length === 0 ? (
+            <p className="text-sm text-gray-600 dark:text-gray-400">No run ended this way.</p>
+          ) : (
+            <div className="grid gap-4 lg:grid-cols-[20rem_1fr]">
+              <RunList cycles={visible ?? []} capped={capped} selectedId={selected?.id ?? null} now={now} onSelect={select} />
+              {selected && <RunDetail cycle={selected} environment={environment} now={now} />}
+            </div>
+          )}
+        </>
       )}
     </div>
   );
