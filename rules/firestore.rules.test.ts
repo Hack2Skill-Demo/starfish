@@ -12,10 +12,14 @@ import {
   type RulesTestEnvironment,
 } from "@firebase/rules-unit-testing";
 import {
+  collection,
   deleteDoc,
   deleteField,
   doc,
   getDoc,
+  getDocs,
+  query,
+  where,
   serverTimestamp,
   setDoc,
   updateDoc,
@@ -508,3 +512,88 @@ describe("runtime settings", () => {
     });
   });
 });
+
+describe("guests (anonymous sessions)", () => {
+  const guest = () =>
+    env.authenticatedContext("guest1", { firebase: { sign_in_provider: "anonymous" } }).firestore();
+  /** A signed-in email account that holds no Starfish role: NOT a guest. */
+  const emailNoRole = () =>
+    env.authenticatedContext("nobody", { firebase: { sign_in_provider: "password" } }).firestore();
+
+  beforeEach(async () => {
+    await env.withSecurityRulesDisabled(async (ctx) => {
+      const db = ctx.firestore();
+      await setDoc(doc(db, "incidents/demo-1"), { environment: "demo", status: "new", functionName: "f", updatedAt: Timestamp.now() });
+      await setDoc(doc(db, "incidents/prod-1"), { environment: "prod", status: "new", functionName: "f", updatedAt: Timestamp.now() });
+      await setDoc(doc(db, "starfish_settings_public/current"), { version: 1, revision: 1, environment: "demo", updatedAt: Timestamp.now() });
+      await setDoc(doc(db, "starfish_settings/current"), { version: 1, revision: 1, environment: "demo" });
+      await setDoc(doc(db, "starfish_settings/last_good"), { version: 1, environment: "demo" });
+      await setDoc(doc(db, "starfish_settings_audit/a1"), { revision: 1, by: "admin1" });
+      await setDoc(doc(db, "incident_keys/k1"), { incidentId: "demo-1" });
+    });
+  });
+
+  it("reads demo incidents, one by one and by a query that filters on the demo environment", async () => {
+    await assertSucceeds(getDoc(doc(guest(), "incidents/demo-1")));
+    await assertSucceeds(getDocs(query(collection(guest(), "incidents"), where("environment", "==", "demo"))));
+  });
+
+  it("reads nothing outside the demo environment: not a prod incident, not an unfiltered query, not a record with no environment", async () => {
+    await assertFails(getDoc(doc(guest(), "incidents/prod-1")));
+    await assertFails(getDocs(query(collection(guest(), "incidents"), where("environment", "==", "prod"))));
+    await assertFails(getDocs(collection(guest(), "incidents"))); // would include prod-1
+    await assertFails(getDoc(doc(guest(), "incidents/i1"))); // i1 has no environment at all
+  });
+
+  it("reads the operator copy of the settings, so the UI knows which environment to ask for", async () => {
+    await assertSucceeds(getDoc(doc(guest(), "starfish_settings_public/current")));
+  });
+
+  it("can't read the settings, the audit trail, the engine's copies, the keys, or anyone's operator record", async () => {
+    for (const path of [
+      "starfish_settings/current",
+      "starfish_settings/last_good",
+      "starfish_settings_audit/a1",
+      "incident_keys/k1",
+      "starfish_users/admin1",
+      "starfish_users/op1",
+      "config/anything",
+    ]) {
+      await assertFails(getDoc(doc(guest(), path)));
+    }
+  });
+
+  it("can't write anything: no triage, no create, no delete, no settings, no operator record", async () => {
+    const db = guest();
+    await assertFails(
+      updateDoc(doc(db, "incidents/demo-1"), {
+        status: "acknowledged",
+        updatedAt: serverTimestamp(),
+        statusChangedBy: "guest1",
+      })
+    );
+    await assertFails(setDoc(doc(db, "incidents/new-one"), { environment: "demo", status: "new" }));
+    await assertFails(deleteDoc(doc(db, "incidents/demo-1")));
+    await assertFails(setDoc(doc(db, "starfish_settings_public/current"), { version: 1, revision: 2, environment: "x", updatedAt: serverTimestamp() }));
+    await assertFails(setDoc(doc(db, "starfish_settings/current"), { version: 1 }));
+    await assertFails(setDoc(doc(db, "starfish_users/guest1"), { roles: ["admin"] }));
+  });
+
+  it("is a guest only by being anonymous: a signed-in email account with no role reads nothing", async () => {
+    await assertFails(getDoc(doc(emailNoRole(), "incidents/demo-1")));
+    await assertFails(getDoc(doc(emailNoRole(), "starfish_settings_public/current")));
+  });
+
+  it("leaves operators and admins exactly as they were", async () => {
+    await assertSucceeds(getDoc(doc(as("op1"), "incidents/prod-1")));
+    await assertSucceeds(getDoc(doc(as("op1"), "incidents/demo-1")));
+    await assertFails(getDoc(doc(as("op1"), "starfish_settings/current")));
+    await assertSucceeds(getDoc(doc(as("admin1"), "starfish_settings/current")));
+  });
+
+  it("an unauthenticated visitor still reads nothing", async () => {
+    await assertFails(getDoc(doc(anon(), "incidents/demo-1")));
+    await assertFails(getDoc(doc(anon(), "starfish_settings_public/current")));
+  });
+});
+
