@@ -167,6 +167,11 @@ apparent over-engineering is scar tissue from real incidents, and the tests in
   passes. **Not built:** the endpoint or admin action that calls it (the demo's reset script needs
   one), and the fast-revert watch (#9) it is meant to disarm; `retired` is the flag that watch must
   honour
+- ingest can be run on demand by an admin (`src/ingest/trigger.ts`): the **same** `runIngest` as a scheduled
+  run (same windows, checkpoint and last-run record, and two together converge), behind an admin check
+  made from the operator record and an audit entry written before the run. **Not built:** the endpoint
+  or Settings action that calls it, and the short schedule for recording the demo, which lives in Cloud
+  Scheduler (#6); a setting nothing reads would be a control that does nothing
 - a fingerprint ignores what varies per occurrence (ids, paths, timestamps, counts) but not
   what makes a bug distinct (status codes, quoted property names), and treats a function's
   first- and second-generation spellings as one

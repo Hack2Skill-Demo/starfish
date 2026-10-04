@@ -124,6 +124,7 @@ src/
     store          the single write path: dedup by fingerprint; a resolved one that fires
                    again is re-opened as `recurred` (a regression). One transaction per
                    upsert, through a per-(environment, fingerprint) key document
+    trigger        admin-only "run ingest now": the same runIngest, audited before it runs
     retire         admin closes an incident for good and frees its fingerprint (key removed, audited);
                    store.ts treats a retired incident as absent, so the next occurrence is a new one
     counterCheck   independent raw-log recount + redacted samples
