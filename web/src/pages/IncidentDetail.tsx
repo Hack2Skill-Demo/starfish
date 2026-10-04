@@ -9,6 +9,8 @@ import { Link, useParams } from "react-router";
 import { ArrowLeft, Check, CircleDashed, ExternalLink, Minus } from "lucide-react";
 import PageMeta from "../components/PageMeta";
 import { Badge, type BadgeTone } from "../components/ui/Badge";
+import { HourlyBars } from "../components/HourlyBars";
+import { hourlySeries } from "../lib/overviewModel";
 import { formatDateTime } from "../lib/formatters";
 import { buildEvidence, currentCycleId, type EvidenceStage, type EvidenceStatus } from "../lib/evidence";
 import { getIncident, type IncidentRow } from "../lib/incidents";
@@ -75,6 +77,9 @@ function Evidence({ row, cycle, runPending, runFailed }: { row: IncidentRow; cyc
   // While the run record loads, or if it can't be read, nothing is claimed about the later stages.
   const evidence = buildEvidence(row, cycle);
   const runUnknown = runPending || runFailed;
+  // The last 24 hours of this incident's own buckets; nothing is drawn when it had none.
+  const hours = hourlySeries([row], Date.now(), 24);
+  const series = hours.some((b) => b.count > 0) ? hours : null;
 
   return (
     <>
@@ -107,14 +112,14 @@ function Evidence({ row, cycle, runPending, runFailed }: { row: IncidentRow; cyc
 
       <ol aria-label="Evidence" className="space-y-3">
         {evidence.stages.map((stage, i) => (
-          <StageCard key={stage.id} stage={stage} index={i + 1} hidden={runUnknown && stage.id !== "detected" && stage.id !== "counter-check"} />
+          <StageCard key={stage.id} stage={stage} index={i + 1} hidden={runUnknown && stage.id !== "detected" && stage.id !== "counter-check"} chart={stage.id === "detected" ? series : null} />
         ))}
       </ol>
     </>
   );
 }
 
-function StageCard({ stage, index, hidden }: { stage: EvidenceStage; index: number; hidden: boolean }) {
+function StageCard({ stage, index, hidden, chart }: { stage: EvidenceStage; index: number; hidden: boolean; chart: ReturnType<typeof hourlySeries> | null }) {
   if (hidden) return null;
   const { label, tone, Icon } = STATUS[stage.status];
   return (
@@ -127,6 +132,7 @@ function StageCard({ stage, index, hidden }: { stage: EvidenceStage; index: numb
         <Badge tone={tone}>{label}</Badge>
       </div>
       {stage.note && <p className="mt-2 text-sm text-gray-700 dark:text-gray-300">{stage.note}</p>}
+      {chart && <HourlyBars series={chart} label="Occurrences by hour, last 24 hours" />}
       {stage.fields.length > 0 && (
         <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
           {stage.fields.map((f) => (

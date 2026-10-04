@@ -12,8 +12,9 @@ import { Link } from "react-router";
 import { useQuery } from "@tanstack/react-query";
 import PageMeta from "../components/PageMeta";
 import { Badge } from "../components/ui/Badge";
+import { HourlyBars } from "../components/HourlyBars";
 import { EngineStatus } from "../components/EngineStatus";
-import { formatDateTime, formatRelativeTime } from "../lib/formatters";
+import { formatRelativeTime } from "../lib/formatters";
 import { listIncidents } from "../lib/incidents";
 import { subscribeCycles } from "../lib/runs";
 import { PATH_LABELS, runStatus, type CycleRow } from "../lib/runsModel";
@@ -97,18 +98,7 @@ export default function Overview() {
               {total.toLocaleString()} occurrences in the last {WINDOW_HOURS} hours; busiest hour {peak.toLocaleString()}.
               {incidents.data?.capped && " Counts cover the most recently active incidents only."}
             </p>
-            <ol className="mt-3 flex h-24 items-end gap-0.5" aria-label="Occurrences by hour">
-              {series.map((b) => (
-                <li key={b.startMs} title={`${formatDateTime(b.startMs)}: ${b.count}`} className="flex h-full flex-1 items-end">
-                  <div
-                    aria-hidden
-                    className="w-full rounded-t bg-brand-600 dark:bg-brand-400"
-                    style={{ height: `${Math.max((b.count / peak) * 100, b.count > 0 ? 3 : 0)}%`, minHeight: b.count > 0 ? 2 : 0 }}
-                  />
-                  <span className="sr-only">{`${formatDateTime(b.startMs)}: ${b.count}`}</span>
-                </li>
-              ))}
-            </ol>
+            <HourlyBars series={series} />
           </>
         )}
       </section>
@@ -128,7 +118,7 @@ export default function Overview() {
                 .filter((p) => counts.byPath[p] > 0)
                 .map((p) => (
                   <li key={p}>
-                    <Link to="/runs" className="flex justify-between gap-3 text-gray-900 hover:underline dark:text-gray-100">
+                    <Link to={`/runs?path=${p}`} className="flex justify-between gap-3 text-gray-900 hover:underline dark:text-gray-100">
                       <span>{PATH_LABELS[p]}</span>
                       <span className="font-mono">{counts.byPath[p]}</span>
                     </Link>

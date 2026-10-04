@@ -23,6 +23,7 @@ import {
   runStatus,
   safeUrl,
   triageRule,
+  type CyclePath,
   type CycleRow,
   type EventRow,
   type Step,
@@ -63,8 +64,17 @@ export default function Runs() {
     );
   }, [environment, ready]);
 
+  // `?path=` narrows the list to runs that ended a given way (the Overview links here). An unknown value filters nothing.
+  const rawPath = params.get("path");
+  const pathFilter = rawPath !== null && rawPath in PATH_LABELS ? (rawPath as CyclePath) : null;
+  const visible = cycles && pathFilter ? cycles.filter((c) => c.path === pathFilter) : cycles;
   const selectedId = params.get("run");
-  const selected = cycles?.find((c) => c.id === selectedId) ?? cycles?.[0] ?? null;
+  const selected = visible?.find((c) => c.id === selectedId) ?? visible?.[0] ?? null;
+  const select = (id: string) => {
+    const next = new URLSearchParams(params);
+    next.set("run", id);
+    setParams(next, { replace: true });
+  };
 
   return (
     <div className="space-y-4">
@@ -93,16 +103,24 @@ export default function Runs() {
           />
         </div>
       ) : (
-        <div className="grid gap-4 lg:grid-cols-[20rem_1fr]">
-          <RunList
-            cycles={cycles}
-            capped={capped}
-            selectedId={selected?.id ?? null}
-            now={now}
-            onSelect={(id) => setParams({ run: id }, { replace: true })}
-          />
-          {selected && <RunDetail cycle={selected} environment={environment} now={now} />}
-        </div>
+        <>
+          {pathFilter && (
+            <p className="text-sm text-gray-700 dark:text-gray-300" data-testid="path-filter">
+              Showing runs that ended: <strong>{PATH_LABELS[pathFilter]}</strong> ({visible?.length ?? 0}).{" "}
+              <Link to="/runs" className="font-medium text-brand-700 hover:underline dark:text-brand-400">
+                Show all runs
+              </Link>
+            </p>
+          )}
+          {visible && visible.length === 0 ? (
+            <p className="text-sm text-gray-600 dark:text-gray-400">No run ended this way.</p>
+          ) : (
+            <div className="grid gap-4 lg:grid-cols-[20rem_1fr]">
+              <RunList cycles={visible ?? []} capped={capped} selectedId={selected?.id ?? null} now={now} onSelect={select} />
+              {selected && <RunDetail cycle={selected} environment={environment} now={now} />}
+            </div>
+          )}
+        </>
       )}
     </div>
   );
@@ -236,7 +254,7 @@ function RunDetail({ cycle, environment, now }: { cycle: CycleRow; environment: 
         <>
           <ol aria-label="Steps" className="space-y-2">
             {water.steps.map((step) => (
-              <StepRow key={step.stage} step={step} />
+              <StepRow key={step.stage} step={step} href={step.stage === "pr" ? prUrl : undefined} />
             ))}
           </ol>
           {water.notes.length > 0 && (
@@ -259,7 +277,7 @@ function RunDetail({ cycle, environment, now }: { cycle: CycleRow; environment: 
 
 const STEP_LABEL = { done: "Done", running: "Running", "not-reached": "Not reached" } as const;
 
-function StepRow({ step }: { step: Step }) {
+function StepRow({ step, href }: { step: Step; href?: string }) {
   const Icon = step.status === "done" ? Check : step.status === "running" ? Loader2 : CircleDashed;
   return (
     <li className="rounded-lg border border-gray-200 p-3 dark:border-gray-700" data-step={step.stage} data-status={step.status}>
@@ -281,6 +299,11 @@ function StepRow({ step }: { step: Step }) {
         )}
       </div>
       {step.summary && <p className="mt-1 text-sm text-gray-700 dark:text-gray-300">{step.summary}</p>}
+      {href && step.status === "done" && (
+        <a href={href} target="_blank" rel="noreferrer noopener" className="mt-1 inline-flex items-center gap-1 break-all text-sm font-medium text-brand-700 hover:underline dark:text-brand-400">
+          Open the pull request <ExternalLink className="h-3 w-3" aria-hidden />
+        </a>
+      )}
       {step.status === "done" && step.offset !== undefined && step.width !== undefined && (
         <div className="mt-2 h-2 rounded bg-gray-100 dark:bg-gray-700" aria-hidden>
           <div

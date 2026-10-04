@@ -83,6 +83,7 @@ describe("Overview page", () => {
     expect(tile("Regressions")).toHaveTextContent("1");
     const did = screen.getByRole("region", { name: "What the agent did" });
     expect(within(did).getByText("Pull request opened")).toBeInTheDocument();
+    expect(within(did).getByRole("link", { name: /Pull request opened/ })).toHaveAttribute("href", "/runs?path=pr");
     expect(within(did).getByText("Declined: no fix attempted")).toBeInTheDocument();
     expect(within(did).getByText("Not finished")).toBeInTheDocument();
   });

@@ -128,10 +128,49 @@ describe("Runs page", () => {
     expect(screen.getByRole("link", { name: /Pull request #9/ })).toHaveAttribute("href", "https://github.com/o/r/pull/9");
   });
 
+  it("narrows the list to runs that ended a given way, says so, and ignores an unknown value", () => {
+    const two = [cycle("inc-a_r0", { state: "declined", leaseExpiresAt: null, path: "decline" }), cycle("inc-b_r0", { state: "waiting-human", leaseExpiresAt: null, path: "pr" })];
+    const first = renderRuns("/runs?path=pr");
+    act(() => mocks.cyclesCb!(two, false));
+    expect(screen.getByTestId("path-filter")).toHaveTextContent("Pull request opened");
+    const list = screen.getByRole("region", { name: "Runs" });
+    expect(within(list).getByText("inc-b")).toBeInTheDocument();
+    expect(within(list).queryByText("inc-a")).toBeNull();
+    first.unmount();
+
+    renderRuns("/runs?path=bogus");
+    act(() => mocks.cyclesCb!(two, false));
+    expect(screen.queryByTestId("path-filter")).toBeNull();
+    expect(within(screen.getByRole("region", { name: "Runs" })).getByText("inc-a")).toBeInTheDocument();
+  });
+
+  it("says when no run ended the chosen way", () => {
+    renderRuns("/runs?path=failed");
+    act(() => mocks.cyclesCb!([cycle("inc-a_r0", { path: "pr" })], false));
+    expect(screen.getByText("No run ended this way.")).toBeInTheDocument();
+  });
+
+  it("keeps the filter when you pick a run", async () => {
+    renderRuns("/runs?path=pr");
+    act(() => mocks.cyclesCb!([cycle("inc-a_r0", { path: "pr" }), cycle("inc-b_r0", { path: "pr" })], false));
+    await userEvent.click(screen.getByRole("button", { name: /inc-b/ }));
+    expect(screen.getByTestId("path-filter")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "inc-b" })).toBeInTheDocument();
+  });
+
   it("links a run to its incident's evidence page", () => {
     renderRuns();
     act(() => mocks.cyclesCb!([cycle("inc-a_r0")], false));
     expect(screen.getByRole("link", { name: "Evidence for this incident" })).toHaveAttribute("href", "/incidents/inc-a");
+  });
+
+  it("links the pull request from its own step too, but only once that step happened", () => {
+    renderRuns();
+    act(() => mocks.cyclesCb!([cycle("inc-a_r0", { state: "waiting-human", leaseExpiresAt: null, summary: { pr: { url: "https://github.com/o/r/pull/9", number: 9 } } })], false));
+    act(() => mocks.eventsCb!([]));
+    expect(screen.queryByRole("link", { name: /Open the pull request/ })).toBeNull();
+    act(() => mocks.eventsCb!([event(1, "pr", "opened", "Opened a pull request", 1000)]));
+    expect(screen.getByRole("link", { name: /Open the pull request/ })).toHaveAttribute("href", "https://github.com/o/r/pull/9");
   });
 
   it("does not link a pull request URL that isn't https", () => {
