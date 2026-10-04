@@ -5,13 +5,91 @@
  * their own project.
  */
 
-function required(name: string, value: string | undefined): string {
-  if (!value) throw new Error(`${name} is not set — copy web/.env.example to web/.env`);
-  return value;
+/** The four Firebase web-app fields the SDK needs to reach a project. */
+export interface FirebaseWebConfig {
+  apiKey: string;
+  authDomain: string;
+  projectId: string;
+  appId: string;
+}
+
+/** Where Firebase Hosting serves the web-app config of the project a site belongs to. */
+export const FIREBASE_INIT_PATH = "/__/firebase/init.json";
+
+const FIREBASE_FIELDS = ["apiKey", "authDomain", "projectId", "appId"] as const;
+
+/** The four fields from a parsed object, or the names of those missing or empty. */
+function pickFirebaseConfig(raw: unknown): { config: FirebaseWebConfig } | { missing: string[] } {
+  const obj = (raw ?? {}) as Record<string, unknown>;
+  const missing = FIREBASE_FIELDS.filter((f) => typeof obj[f] !== "string" || obj[f] === "");
+  if (missing.length > 0) return { missing };
+  return {
+    config: {
+      apiKey: obj.apiKey as string,
+      authDomain: obj.authDomain as string,
+      projectId: obj.projectId as string,
+      appId: obj.appId as string,
+    },
+  };
+}
+
+/**
+ * Where the Firebase config comes from, in order:
+ *   1. `VITE_FIREBASE_*`, when all four are set. Local development and the
+ *      emulators (`pnpm dev:emulated`): nothing is served at the init path there.
+ *   2. Firebase Hosting's `/__/firebase/init.json`, which Hosting serves for the
+ *      project a site belongs to. This is the deployed path: the bundle carries no
+ *      project identifiers, so one build runs against any project it is hosted in.
+ * Partial `VITE_FIREBASE_*` is an error rather than a silent fall-through to
+ * Hosting, which would connect a half-configured dev build to the wrong project.
+ */
+export async function resolveFirebaseConfig(
+  env: Record<string, string | undefined>,
+  fetchImpl: typeof fetch = fetch
+): Promise<FirebaseWebConfig> {
+  const fromEnv = {
+    apiKey: env.VITE_FIREBASE_API_KEY,
+    authDomain: env.VITE_FIREBASE_AUTH_DOMAIN,
+    projectId: env.VITE_FIREBASE_PROJECT_ID,
+    appId: env.VITE_FIREBASE_APP_ID,
+  };
+  const setCount = Object.values(fromEnv).filter(Boolean).length;
+  if (setCount === FIREBASE_FIELDS.length) return fromEnv as FirebaseWebConfig;
+  if (setCount > 0) {
+    const unset = FIREBASE_FIELDS.filter((f) => !fromEnv[f]).map(
+      (f) => `VITE_FIREBASE_${f.replace(/[A-Z]/g, (c) => `_${c}`).toUpperCase()}`
+    );
+    throw new Error(`${unset.join(", ")} not set: set all four VITE_FIREBASE_* values or none (see web/.env.example)`);
+  }
+
+  let res: Response;
+  try {
+    res = await fetchImpl(FIREBASE_INIT_PATH, { cache: "no-store" });
+  } catch (err) {
+    throw new Error(`Could not reach ${FIREBASE_INIT_PATH}: ${err instanceof Error ? err.message : String(err)}`, {
+      cause: err,
+    });
+  }
+  if (!res.ok) {
+    throw new Error(
+      `${FIREBASE_INIT_PATH} returned ${res.status}. Serve Starfish from Firebase Hosting, or set the VITE_FIREBASE_* values for local development (web/.env.example).`
+    );
+  }
+  let body: unknown;
+  try {
+    body = await res.json();
+  } catch {
+    // Hosting rewrites unknown paths to index.html, which is how a site that
+    // isn't on Firebase Hosting answers this request.
+    throw new Error(`${FIREBASE_INIT_PATH} did not return JSON: this site is not served by Firebase Hosting`);
+  }
+  const picked = pickFirebaseConfig(body);
+  if ("missing" in picked) throw new Error(`${FIREBASE_INIT_PATH} is missing ${picked.missing.join(", ")}`);
+  return picked.config;
 }
 
 export interface WebConfig {
-  firebase: { apiKey: string; authDomain: string; projectId: string; appId: string };
+  firebase: FirebaseWebConfig;
   /** Firestore database id; must match the engine's STARFISH_DATABASE_ID. */
   databaseId: string;
   /** Must match the engine's STARFISH_INCIDENT_COLLECTION. */
@@ -28,15 +106,19 @@ export interface WebConfig {
 
 let cached: WebConfig | undefined;
 
-export function webConfig(): WebConfig {
-  const env = import.meta.env;
-  cached ??= {
-    firebase: {
-      apiKey: required("VITE_FIREBASE_API_KEY", env.VITE_FIREBASE_API_KEY),
-      authDomain: required("VITE_FIREBASE_AUTH_DOMAIN", env.VITE_FIREBASE_AUTH_DOMAIN),
-      projectId: required("VITE_FIREBASE_PROJECT_ID", env.VITE_FIREBASE_PROJECT_ID),
-      appId: required("VITE_FIREBASE_APP_ID", env.VITE_FIREBASE_APP_ID),
-    },
+/**
+ * Resolve the config once, before anything renders. `webConfig()` stays
+ * synchronous for every caller; it just can't be called before this settles.
+ * Safe to call again: after success it is a no-op.
+ */
+export async function bootstrapWebConfig(
+  env: Record<string, string | undefined> = import.meta.env,
+  fetchImpl: typeof fetch = fetch
+): Promise<WebConfig> {
+  if (cached) return cached;
+  const firebase = await resolveFirebaseConfig(env, fetchImpl);
+  cached = {
+    firebase,
     databaseId: env.VITE_STARFISH_DATABASE_ID || "starfish",
     incidentCollection: env.VITE_STARFISH_INCIDENT_COLLECTION || "incidents",
     usersCollection: env.VITE_STARFISH_USERS_COLLECTION || "starfish_users",
@@ -44,5 +126,10 @@ export function webConfig(): WebConfig {
     functionsRegion: env.VITE_FUNCTIONS_REGION || "us-central1",
     useEmulators: env.VITE_USE_EMULATORS === "1",
   };
+  return cached;
+}
+
+export function webConfig(): WebConfig {
+  if (!cached) throw new Error("webConfig() called before bootstrapWebConfig() settled");
   return cached;
 }
