@@ -37,12 +37,13 @@ Where it currently holds, and where it doesn't:
 |---|---|
 | Service attribution | ✅ config patterns — no hardcoded service list |
 | Project, environment, collection, database, lookback | ✅ config (engine `src/config.ts`, UI `web/src/lib/config.ts`); these are the defaults, and the engine's need a redeploy to change |
-| Watched project, environment label, log resource types, service patterns, noise list | ⚠️ an admin edits them on the Settings page; the engine validates the saved document and applies it over the defaults, falling back to the last good one (`src/runtimeSettings.ts`). `firestore.rules` let only admins write it, each save in one batch with an immutable audit entry (before and after) and a separate operator copy; the engine's last-good copy and any secret-shaped key are closed to clients. The editor and the engine run the same validator (`src/settingsSchema.ts`). Rules check each list's shape and size but not each entry (they have no loops); the engine checks entries on read. Tested on the emulator, and the editor's own save is the one the rules suite runs. **Not built:** a scheduled job that calls the engine's reader (#6), so today nothing reads a saved document; secrets (Secret Manager and its endpoint). Single-target: one watched project per deployment |
+| Watched project, environment label, log resource types, service patterns, noise list | ⚠️ an admin edits them on the Settings page; the engine validates the saved document and applies it over the defaults, falling back to the last good one (`src/runtimeSettings.ts`). `firestore.rules` let only admins write it, each save in one batch with an immutable audit entry (before and after) and a separate operator copy; the engine's last-good copy and any secret-shaped key are closed to clients. The editor and the engine run the same validator (`src/settingsSchema.ts`). Rules check each list's shape and size but not each entry (they have no loops); the engine checks entries on read. Tested on the emulator, and the editor's own save is the one the rules suite runs. `pnpm ingest` reads it on each run (`src/ingest/run.ts`), but **nothing schedules that yet** (#6), so today a saved document is read only when someone runs it; secrets (Secret Manager and its endpoint). Single-target: one watched project per deployment |
 | Vertex project, model and region | ⚠️ environment only (`STARFISH_VERTEX_PROJECT_ID`, defaulting to `GOOGLE_CLOUD_PROJECT`, so Gemini can run in a different project from the store): `vertex.ts` reads them itself, so a settings document can't change them yet |
 | Firebase project the UI connects to | ✅ read at startup from Hosting's `/__/firebase/init.json`, so one build serves any project (`VITE_FIREBASE_*` is the local-dev fallback). Untested against a real Hosting site until the deploy path (#6) exists |
 | UI environment label | ✅ follows the runtime settings once signed in (the build-time `VITE_STARFISH_ENV` is the fallback when none is set or the read fails) |
 | UI collections and region | ⚠️ still `VITE_*`, baked in at build time |
 | Collection names in `firestore.rules` | ⚠️ hardcoded `incidents` / `starfish_users`; rules can't read config, so a renamed collection means editing the rules file |
+| Ingest lag, longest window, run-record collection | ⚠️ environment only (`STARFISH_INGEST_LAG_MINUTES`, `STARFISH_INGEST_MAX_WINDOW_HOURS`, `STARFISH_RUN_COLLECTION`); the rules name `starfish_runs` too |
 | Log source resource types | ⚠️ config, but attribution reads only `function_name` / `service_name`, so only Cloud Functions and Cloud Run work |
 | Framework-noise suppression list | ✅ config, callable GET-probe noise by default |
 | Incident store | ❌ assumes Firestore |
@@ -146,10 +147,14 @@ apparent over-engineering is scar tissue from real incidents, and the tests in
   concurrent ingest runs converge on one incident, lose no hourly count, and an operator
   resolving an incident mid-run either lands after the occurrence or turns it into exactly
   one recurrence (`store.emulator.test.ts`, on the emulator)
-- an upsert can carry the ingest window it came from; the incident key remembers the windows
-  it applied, so a window replayed after a partly failed run counts once, even under
-  concurrency (`store.emulator.test.ts`). **Not wired yet:** the aggregator doesn't assign
-  windows, so nothing passes one today (#6)
+- an ingest run reads one bounded window of logs at a time, (start, end], ending a few minutes
+  behind the clock so late-arriving entries are in it. The window is saved as *pending* before
+  anything is read, the checkpoint advances only after every upsert of it has committed, and a
+  retry replays the same window, and two runs that overlap are given the same one (claimed in a transaction); the incident key remembers the windows it applied, so a window
+  replayed after a half-failed run counts once, even under concurrency (`run.emulator.test.ts`,
+  `store.emulator.test.ts`). A read that hits the 5,000-entry cap is flagged on the run record,
+  not called complete. `pnpm ingest` runs this once; nothing schedules it yet (#6). The checkpoint
+  is per (watched project, environment) and is not carried over when settings change either
 - a fingerprint ignores what varies per occurrence (ids, paths, timestamps, counts) but not
   what makes a bug distinct (status codes, quoted property names), and treats a function's
   first- and second-generation spellings as one

@@ -17,6 +17,7 @@ vi.mock("@google-cloud/logging", () => ({
 
 const { SEEDED_SECRETS } = await import("./testSecrets.js");
 const { aggregateErrors } = await import("./aggregate.js");
+const { windowOf } = await import("./window.js");
 const { DEFAULT_IGNORED_MESSAGES, DEFAULT_LOG_RESOURCE_TYPES } = await import("../config.js");
 
 const config = {
@@ -34,7 +35,11 @@ const config = {
   defaultLookbackHours: 24,
   logResourceTypes: DEFAULT_LOG_RESOURCE_TYPES,
   ignoredMessages: DEFAULT_IGNORED_MESSAGES,
+  ingestLagMinutes: 5,
+  ingestMaxWindowHours: 6,
+  runCollection: "starfish_runs",
 };
+const window = windowOf(new Date("2026-09-20T23:00:00.000Z"), new Date("2026-09-21T01:00:00.000Z"));
 
 /** Firestore with no existing incidents or keys that records the incidents created. */
 function fakeDb(failOn?: string) {
@@ -67,7 +72,7 @@ describe("aggregateErrors", () => {
     entries.splice(0, entries.length, entry("No user for alice@x.com"), entry("No user for bob@y.org"));
     const { db, created } = fakeDb();
 
-    const result = await aggregateErrors(db, config, new Date(0));
+    const result = await aggregateErrors(db, config, window);
 
     expect(result.incidentsCreated).toBe(1);
     expect(created).toHaveLength(1);
@@ -91,7 +96,7 @@ describe("aggregateErrors", () => {
     });
     const { db, created } = fakeDb();
 
-    await aggregateErrors(db, config, new Date(0));
+    await aggregateErrors(db, config, window);
 
     const stored = JSON.stringify(created);
     for (const secret of secrets) expect(stored).not.toContain(secret);
@@ -102,7 +107,7 @@ describe("aggregateErrors", () => {
     entries.splice(0, entries.length, entry("first failure"), entry("second failure"), entry("third failure"));
     const { db, created } = fakeDb("second failure");
 
-    await expect(aggregateErrors(db, config, new Date(0))).rejects.toThrow("1 of 3 incident upserts failed");
+    await expect(aggregateErrors(db, config, window)).rejects.toThrow("1 of 3 incident upserts failed");
     // The failure doesn't strand the others: they committed and the next run accrues onto them.
     expect(created.map((c) => c.errorMessage).sort()).toEqual(["first failure", "third failure"]);
   });
@@ -116,7 +121,7 @@ describe("aggregateErrors", () => {
     await aggregateErrors(
       db,
       { ...config, watchedProjectId: "watched-app-1", logResourceTypes: ["gae_app"], ignoredMessages: ["probe"] },
-      new Date(0)
+      window
     );
 
     expect(logging.projects).toEqual([{ projectId: "watched-app-1" }]);

@@ -62,6 +62,19 @@ export interface StarfishConfig {
   servicePatterns: Record<string, string>;
   /** How far back the first aggregation run looks when no checkpoint exists. */
   defaultLookbackHours: number;
+  /**
+   * How far behind real time an ingest window ends. Cloud Logging makes an entry searchable
+   * some time after it happened; a window that ended at "now" would be closed before its last
+   * entries arrived, and they would never be counted.
+   */
+  ingestLagMinutes: number;
+  /** The longest span one ingest window may cover, so catching up after downtime is done in bounded reads. */
+  ingestMaxWindowHours: number;
+  /**
+   * Firestore collection for the ingest run state: `state` (the checkpoint and the window in
+   * flight; engine-only) and `last_run` (the outcome of the latest run, which the UI shows).
+   */
+  runCollection: string;
   /** Cloud Logging `resource.type` values whose ERROR entries count as incidents. */
   logResourceTypes: string[];
   /**
@@ -113,6 +126,13 @@ export function loadConfig(): StarfishConfig {
     databaseId: process.env.STARFISH_DATABASE_ID || "starfish",
     servicePatterns: parseServicePatterns(process.env.STARFISH_SERVICE_PATTERNS),
     defaultLookbackHours: Number(process.env.STARFISH_LOOKBACK_HOURS ?? 24),
+    ingestLagMinutes: positiveNumber(process.env.STARFISH_INGEST_LAG_MINUTES, 5, "STARFISH_INGEST_LAG_MINUTES"),
+    ingestMaxWindowHours: positiveNumber(
+      process.env.STARFISH_INGEST_MAX_WINDOW_HOURS,
+      6,
+      "STARFISH_INGEST_MAX_WINDOW_HOURS"
+    ),
+    runCollection: process.env.STARFISH_RUN_COLLECTION || "starfish_runs",
     logResourceTypes: requireNonEmpty(
       parseList(process.env.STARFISH_LOG_RESOURCE_TYPES, ",") ?? DEFAULT_LOG_RESOURCE_TYPES,
       "STARFISH_LOG_RESOURCE_TYPES"
@@ -120,6 +140,14 @@ export function loadConfig(): StarfishConfig {
     ignoredMessages:
       parseList(process.env.STARFISH_IGNORED_MESSAGES, "|") ?? DEFAULT_IGNORED_MESSAGES,
   };
+}
+
+/** A number above zero, or the default when unset. A window of zero or negative length would never advance. */
+function positiveNumber(raw: string | undefined, fallback: number, name: string): number {
+  if (raw === undefined || raw === "") return fallback;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) throw new Error(`${name} must be a number above zero, got "${raw}"`);
+  return n;
 }
 
 /** `"api:api,worker:jobs"` → `{ api: "api", worker: "jobs" }`. Empty is valid. */

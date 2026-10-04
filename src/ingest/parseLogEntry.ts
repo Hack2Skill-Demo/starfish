@@ -175,12 +175,14 @@ function quote(value: string): string {
  * Label comparisons are exact, so matching one spelling on both labels would count
  * zero for an incident whose stored name is the other spelling.
  */
-export function buildLogFilter(source: LogSource, since: Date, functionName?: string): string {
+export function buildLogFilter(source: LogSource, since: Date, functionName?: string, until?: Date): string {
   const clauses = [
     `(${source.logResourceTypes.map((t) => `resource.type=${quote(t)}`).join(" OR ")})`,
     "severity>=ERROR",
     `timestamp>${quote(since.toISOString())}`,
   ];
+  // An ingest window is (since, until]: the boundary entry belongs to exactly one window.
+  if (until !== undefined) clauses.push(`timestamp<=${quote(until.toISOString())}`);
   if (functionName !== undefined) {
     const safe = functionName.replace(/[^A-Za-z0-9_-]/g, "");
     // Lowercasing and `_` → `-` stay inside the label charset, so this is literal-safe too.

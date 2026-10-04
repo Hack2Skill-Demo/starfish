@@ -16,7 +16,8 @@ rules_version = '2';
 // (STARFISH_INCIDENT_KEY_COLLECTION, "incident_keys") are engine-only and fall
 // to the closing rule at the bottom. The runtime settings use starfish_settings
 // (STARFISH_SETTINGS_COLLECTION), with their operator copy and audit trail in
-// starfish_settings_public and starfish_settings_audit.
+// starfish_settings_public and starfish_settings_audit. The ingest run records use
+// starfish_runs (STARFISH_RUN_COLLECTION).
 //
 // Model: roles live on an operator record and are read fresh on every request,
 // never cached in a token.
@@ -210,7 +211,20 @@ service cloud.firestore {
       allow delete: if false;
     }
 
-    // Everything else is closed.
+    // ---- Ingest runs (src/ingest/run.ts) -------------------------------------
+    //
+    // starfish_runs/last_run  the outcome of the latest run, for the UI: when it ran, over what
+    //                         window, what it found, whether it was capped or failed. Counts and
+    //                         field names only, never log text.
+    // starfish_runs/state     the checkpoint and the window in flight. Engine-only: a client that
+    //                         could move it could make the engine skip or re-read stretches of logs.
+    // Clients never write either. A guest reads last_run only for the demo environment, like incidents.
+    match /starfish_runs/last_run {
+      allow read: if isOperator() || (isGuest() && resource.data.environment == 'demo');
+      allow write: if false;
+    }
+
+    // Everything else is closed (including starfish_runs/state).
     match /{document=**} {
       allow read, write: if false;
     }
