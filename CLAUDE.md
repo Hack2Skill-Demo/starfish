@@ -150,6 +150,11 @@ React 19, Vite, Tailwind 4, react-router, TanStack Query; Starfish's own theme i
   record `starfish_users/{uid}.roles` and are read fresh on every token event, never cached
   in a claim, so a revoked role takes effect on the next request. Grant access by writing that record from the Admin
   SDK or the console.
+- **Guests (rules built, UI not yet):** an anonymous Firebase Auth session may *read* incidents whose
+  `environment` is `demo` and the operator copy of the settings, and nothing else; it never writes.
+  A signed-in email account with no role is not a guest. The public demo (#12) uses this so a judge
+  needs no account; a private deployment just leaves Anonymous sign-in disabled. Anonymous sign-in
+  is project-wide, so see #32 before enabling it in a project shared with another app.
 - **Data:** the UI reads and triages incidents straight from Firestore, filtered to its own
   environment. `firestore.rules` is the security boundary and enforces the status
   transitions; `pnpm test:emulator` runs it against the emulator (Java needed).
