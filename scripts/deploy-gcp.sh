@@ -22,6 +22,9 @@
 #   STARFISH_GITHUB_TOKEN  if set, stored as a new version of the starfish-github-token secret. Not
 #                        GITHUB_TOKEN: that name is the Actions workflow's own token, and many shells export a
 #                        personal one, neither of which should reach Secret Manager by accident
+#   BUDGET_USD           if set (with BILLING_ACCOUNT), create a budget that EMAILS billing admins at 50% and
+#                        90% of this monthly amount for PROJECT_ID. An alert, not a cap: nothing stops spending
+#   BILLING_ACCOUNT      the billing account id (0123AB-456CDE-789FGH), needed with BUDGET_USD
 #   SKIP_FIRESTORE_RULES=1   do not deploy firestore.rules and firestore.indexes.json
 #   RUN_AFTER_DEPLOY=1       execute the job once and wait for it
 #   DRY_RUN=1                print the commands instead of running them
@@ -41,6 +44,8 @@ FIRESTORE_LOCATION="${FIRESTORE_LOCATION:-$REGION}"
 SCHEDULE="${SCHEDULE:-0 * * * *}"
 SCHEDULE_TIME_ZONE="${SCHEDULE_TIME_ZONE:-Etc/UTC}"
 EXTRA_ENV_VARS="${EXTRA_ENV_VARS:-}"
+BUDGET_USD="${BUDGET_USD:-}"
+BILLING_ACCOUNT="${BILLING_ACCOUNT:-}"
 SKIP_FIRESTORE_RULES="${SKIP_FIRESTORE_RULES:-0}"
 RUN_AFTER_DEPLOY="${RUN_AFTER_DEPLOY:-0}"
 DRY_RUN="${DRY_RUN:-0}"
@@ -56,6 +61,12 @@ die() { echo "deploy-gcp: $*" >&2; exit 1; }
 [ -n "$PROJECT_ID" ] || die "PROJECT_ID is required"
 [ "$STARFISH_DATABASE_ID" != "(default)" ] ||
   die "STARFISH_DATABASE_ID=(default) is refused: deploying firestore.rules to the default database would replace the watched app's own rules"
+if [ -n "$BUDGET_USD" ]; then
+  [ -n "$BILLING_ACCOUNT" ] || die "BUDGET_USD needs BILLING_ACCOUNT (gcloud billing accounts list)"
+  case "$BUDGET_USD" in
+    ''|*[!0-9]*) die "BUDGET_USD must be a whole number of US dollars: $BUDGET_USD" ;;
+  esac
+fi
 if [ "$DRY_RUN" != "1" ]; then
   command -v gcloud >/dev/null || die "gcloud is not installed"
 fi
@@ -86,6 +97,14 @@ has_secret_version() {
     --filter=state=ENABLED --limit=1 --format='value(name)' 2>/dev/null)" ]
 }
 
+BUDGET_NAME="starfish-$PROJECT_ID"
+# Is there already a budget by that name? Always "no" in a dry run.
+has_budget() {
+  [ "$DRY_RUN" != "1" ] || return 1
+  [ -n "$(gcloud billing budgets list --billing-account="$BILLING_ACCOUNT" \
+    --filter="displayName=$BUDGET_NAME" --format='value(name)' 2>/dev/null)" ]
+}
+
 # A new service account is not visible to IAM for a few seconds: retry the binding.
 retry() {
   local attempt
@@ -111,6 +130,16 @@ run gcloud services enable --project="$PROJECT_ID" \
 run gcloud services enable aiplatform.googleapis.com --project="$VERTEX_PROJECT_ID"
 if [ "$WATCHED_PROJECT_ID" != "$PROJECT_ID" ]; then
   run gcloud services enable logging.googleapis.com --project="$WATCHED_PROJECT_ID"
+fi
+
+if [ -n "$BUDGET_USD" ]; then
+  step "Budget alert: \$$BUDGET_USD a month on $PROJECT_ID (emails billing admins; does not stop spending)"
+  run gcloud services enable billingbudgets.googleapis.com --project="$PROJECT_ID"
+  if ! has_budget; then
+    run gcloud billing budgets create --billing-account="$BILLING_ACCOUNT" --display-name="$BUDGET_NAME" \
+      --budget-amount="${BUDGET_USD}USD" --filter-projects="projects/$PROJECT_ID" \
+      --threshold-rule=percent=0.5 --threshold-rule=percent=0.9
+  fi
 fi
 
 step "Service accounts: $ENGINE_SA runs the job, $SCHEDULER_SA only starts it"

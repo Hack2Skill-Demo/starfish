@@ -39,7 +39,7 @@ Where it currently holds, and where it doesn't:
 | Project, environment, collection, database, lookback | ✅ config (engine `src/config.ts`, UI `web/src/lib/config.ts`); these are the defaults, and the engine's need a redeploy to change |
 | Watched project, environment label, log resource types, service patterns, noise list | ⚠️ an admin edits them on the Settings page; the engine validates the saved document and applies it over the defaults, falling back to the last good one (`src/runtimeSettings.ts`). `firestore.rules` let only admins write it, each save in one batch with an immutable audit entry (before and after) and a separate operator copy; the engine's last-good copy and any secret-shaped key are closed to clients. The editor and the engine run the same validator (`src/settingsSchema.ts`). Rules check each list's shape and size but not each entry (they have no loops); the engine checks entries on read. Tested on the emulator, and the editor's own save is the one the rules suite runs. `pnpm ingest` reads it on each run (`src/ingest/run.ts`), and `scripts/deploy-gcp.sh` defines the scheduled job that runs it, but that script has **not been run against a real project yet** (#6), so until it has, a saved document is read only when someone runs `pnpm ingest`; secrets (Secret Manager and its endpoint). Single-target: one watched project per deployment |
 | Vertex project, model and region | ⚠️ environment only (`STARFISH_VERTEX_PROJECT_ID`, defaulting to `GOOGLE_CLOUD_PROJECT`, so Gemini can run in a different project from the store): `vertex.ts` reads them itself, so a settings document can't change them yet |
-| Firebase project the UI connects to | ✅ read at startup from Hosting's `/__/firebase/init.json`, so one build serves any project (`VITE_FIREBASE_*` is the local-dev fallback). Untested against a real Hosting site until the deploy path (#6) exists |
+| Firebase project the UI connects to | ✅ read at startup from Hosting's `/__/firebase/init.json`, so one build serves any project (`VITE_FIREBASE_*` is the local-dev fallback). `scripts/deploy-web.sh` deploys it to its own Hosting site; written and dry-run tested, **untested against a real Hosting site** (#12) |
 | UI environment label | ✅ follows the runtime settings once signed in (the build-time `VITE_STARFISH_ENV` is the fallback when none is set or the read fails) |
 | UI collections and region | ⚠️ still `VITE_*`, baked in at build time |
 | Collection names in `firestore.rules` | ⚠️ hardcoded `incidents` / `starfish_users`; rules can't read config, so a renamed collection means editing the rules file |
@@ -141,6 +141,7 @@ is tested; "deployed" would mean it has run in a real project, and **nothing has
 | Cloud Run (a job) | runs one ingest per tick, as its own least-privilege service account | `Dockerfile` and deploy script written; not deployed |
 | Cloud Scheduler | starts that job on a cron (`SCHEDULE`, hourly by default) | in the deploy script; not deployed |
 | Secret Manager | the GitHub token the pull-request step will need | secret, access grant and mount are in the deploy script; **nothing in the engine reads it yet**, because the step that opens pull requests is not built |
+| Firebase Hosting | the operator UI, on its own site (not the project's default one) | `scripts/deploy-web.sh` and the Hosting config written; not deployed |
 | Cloud Build, Artifact Registry | build the image (`gcloud run jobs deploy --source`) | in the deploy script; not deployed |
 | Cloud Monitoring | a second signal beside logs (see the blind spot above) | planned |
 
@@ -314,9 +315,12 @@ pnpm dev:emulated       # the UI against seeded local emulators, no GCP project 
 pnpm spike              # fix-quality spike (needs Vertex AI access)
 ```
 
-To deploy the ingest job and its schedule to a project (needs `gcloud`; `DRY_RUN=1` prints every
-command and changes nothing): `PROJECT_ID=<project> scripts/deploy-gcp.sh`. What it creates, the
-identities and what to check after: [`docs/deploy.md`](docs/deploy.md).
+To deploy to a project, follow [`docs/setup.md`](docs/setup.md): a read-only preflight
+(`scripts/preflight-gcp.sh`), the ingest job and its schedule (`scripts/deploy-gcp.sh`), the first
+admin (`pnpm grant-operator`), an end-to-end smoke test (`scripts/smoke-gcp.sh`), and the UI on its
+own Hosting site (`scripts/deploy-web.sh`). Each script takes `DRY_RUN=1`. All of it is written and
+tested against stubs and the emulators; **none has run against a real project yet**. What the deploy
+creates and the identities: [`docs/deploy.md`](docs/deploy.md).
 
 Requires Node 22+ and a GCP project with the Vertex AI API enabled. Starfish keeps its
 incident store in its own Firestore database, `starfish`, so its rules and indexes never
