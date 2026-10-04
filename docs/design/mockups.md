@@ -14,7 +14,7 @@ The mockups follow the decisions already tracked in the issues:
 - **The demo app shares Starfish's GCP project** (#32).
 - **The screens are tracked as issues:** Live runs (#33), Overview (#38), incident detail (#39), phone escalation (#37), and Settings as part of runtime configuration (#7).
 
-Every screen is also saved as a static HTML page in [`html/`](html/), 29 pages including each
+Every screen is also saved as a static HTML page in [`html/`](html/), 31 pages including each
 Live runs case and each incident-story step. Open [`html/index.html`](html/index.html) in a browser
 after cloning; the links between screens work. GitHub shows HTML files as source, not as pages. The pages
 need nothing but a browser: no build and no runtime. Their only external request is Google Fonts, and
@@ -31,9 +31,20 @@ The screenshots below are rendered at 1× from the same designs.
 | **Incident story** | One incident step by step: detected, counter-check, triage, fix diff, verify gate, adversarial review, PR. |
 | **Slack and GitHub** | The messages Starfish posts (`#ops-alerts`, `#on-call`, `#ops-log`) and the issue and evidence-PR bodies it writes. |
 | **Phone escalation** | When Slack goes unanswered: a pre-recorded call to the on-call person with keypad options. |
+| **The demo app** | The shop with each feature's broken and working states, and the Scenario lab (a thin client page inside the shop): access code, the four core buttons, the active cycle with its deadline, the health strip and the catalog. |
 | **Settings** | Connections, the engine's rules table, and on-call. View-only for the public. |
 
 ![Overview](screens/overview.png)
+
+### The demo app
+
+The shop with each feature's broken and working states, then the Scenario lab.
+
+![The demo shop](screens/demo-shop.png)
+
+![The Scenario lab](screens/scenario-lab.png)
+
+> The notify case now disables the Cloud Translation API, not Cloud Storage (disabling Cloud Storage would break deploys; it is the recommended choice in [#68](https://github.com/Hack2Skill-Demo/starfish/issues/68), not yet decided), and the Engine screen lists dependencies and CI config among the never-auto-merged classes. The screenshots of the Overview, the notify run, the incidents table, the Slack messages and the Engine rules below were taken before those edits; the HTML pages are current.
 
 ### Live runs, one per MVP case
 
