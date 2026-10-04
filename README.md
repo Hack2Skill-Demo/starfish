@@ -316,7 +316,7 @@ merges, passes the token to git in the environment and not on a command line, an
 SHA-256 is not the one that was verified. The engine's check is a convention: that Starfish can write
 only its own branches has to be enforced by branch protection or a ruleset on the repository, because
 a GitHub App's permission cannot be scoped to a branch prefix. Not built: the GitHub issue for the
-incident, Slack, reconciling a later merge or CI result. No job runs the loop. It is plain code, not on Google's Agent Development Kit: in `@google/adk` 2.2.0
+incident, Slack, reconciling a later merge or CI result. No job runs the loop. The pieces of one *pass* over the store exist as plain functions (`src/agent/pass.ts`, #74): choosing open incidents with no settled cycle for their current recurrence, mapping a stack trace to files that really are in the repository (never a path read from the log, never `node_modules` or an excluded path, no guessing when a match is ambiguous), and a bounded driver that runs one cycle at a time and stops when cycles keep throwing. **Not built:** the entrypoint, the checkout of the target repository at a pinned revision, the Cloud Run job and its schedule, and above all the **isolation of the verify step**, which runs the target repository's own tests and is not a sandbox; how it is isolated is an open decision, and until it is made nothing should run the loop unattended against real credentials. It is plain code, not on Google's Agent Development Kit: in `@google/adk` 2.2.0
 `SequentialAgent`, the class #8 names, is deprecated in favour of `Workflow`, which is marked
 experimental, so wrapping the loop in ADK is a decision still open.
 
