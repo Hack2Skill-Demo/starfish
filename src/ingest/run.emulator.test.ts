@@ -8,7 +8,8 @@ import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { deleteApp, initializeApp } from "firebase-admin/app";
 import { getFirestore, Timestamp } from "firebase-admin/firestore";
 import type { Firestore } from "firebase-admin/firestore";
-import { DEFAULT_IGNORED_MESSAGES, DEFAULT_LOG_RESOURCE_TYPES, type StarfishConfig } from "../config.js";
+import type { StarfishConfig } from "../config.js";
+import { testConfig } from "../testConfig.js";
 import type { ResolvedConfig } from "../runtimeSettings.js";
 
 if (!process.env.FIRESTORE_EMULATOR_HOST) {
@@ -40,28 +41,16 @@ const horizon = new Date(now.getTime() - 5 * 60_000);
 let config: StarfishConfig;
 beforeEach(() => {
   const run = randomUUID().slice(0, 8);
-  config = {
+  config = testConfig({
     projectId: "demo-starfish-rules",
-    watchedProjectId: "watched-app",
     vertexProjectId: "demo-starfish-rules",
-    location: "us-central1",
-    model: "m",
-    environment: "prod",
+    watchedProjectId: "watched-app",
     settingsCollection: `settings_${run}`,
     incidentCollection: `incidents_${run}`,
     incidentKeyCollection: `keys_${run}`,
     runCollection: `runs_${run}`,
     databaseId: "run-tests",
-    servicePatterns: {},
-    defaultLookbackHours: 24,
-    verifyCommand: "",
-    verifyTimeoutSeconds: 600,
-    patchExcludedPaths: [],
-    ingestLagMinutes: 5,
-    ingestMaxWindowHours: 6,
-    logResourceTypes: [...DEFAULT_LOG_RESOURCE_TYPES],
-    ignoredMessages: [...DEFAULT_IGNORED_MESSAGES],
-  };
+  });
   logs.entries = [];
   logs.filters = [];
 });

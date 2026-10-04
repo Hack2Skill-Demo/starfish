@@ -51,6 +51,18 @@ export interface StarfishConfig {
    * pattern with no `/` matches that name at any depth. Matching ignores case.
    */
   patchExcludedPaths: string[];
+  /**
+   * Firestore collection of agent cycles: one document per (incident, recurrence), holding the
+   * lease that stops two workers acting on the same cycle, with the cycle's run events in a
+   * subcollection (src/agent/cycle.ts).
+   */
+  cycleCollection: string;
+  /** How long a worker's lease on a cycle lasts before another may take it over. */
+  leaseSeconds: number;
+  /** The most a cycle may take overall, however many times its lease is renewed or taken over. */
+  cycleDeadlineMinutes: number;
+  /** How many times a cycle may be started (the first try included) before it is given up on. */
+  maxCycleAttempts: number;
   /** Firestore collection holding incidents. */
   incidentCollection: string;
   /**
@@ -173,6 +185,10 @@ export function loadConfig(): StarfishConfig {
       "STARFISH_INGEST_MAX_WINDOW_HOURS"
     ),
     runCollection: process.env.STARFISH_RUN_COLLECTION || "starfish_runs",
+    cycleCollection: process.env.STARFISH_CYCLE_COLLECTION || "starfish_cycles",
+    leaseSeconds: positiveNumber(process.env.STARFISH_LEASE_SECONDS, 300, "STARFISH_LEASE_SECONDS"),
+    cycleDeadlineMinutes: positiveNumber(process.env.STARFISH_CYCLE_DEADLINE_MINUTES, 60, "STARFISH_CYCLE_DEADLINE_MINUTES"),
+    maxCycleAttempts: positiveNumber(process.env.STARFISH_MAX_CYCLE_ATTEMPTS, 3, "STARFISH_MAX_CYCLE_ATTEMPTS"),
     logResourceTypes: requireNonEmpty(
       parseList(process.env.STARFISH_LOG_RESOURCE_TYPES, ",") ?? DEFAULT_LOG_RESOURCE_TYPES,
       "STARFISH_LOG_RESOURCE_TYPES"

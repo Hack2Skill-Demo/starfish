@@ -18,30 +18,9 @@ vi.mock("@google-cloud/logging", () => ({
 const { SEEDED_SECRETS } = await import("./testSecrets.js");
 const { aggregateErrors } = await import("./aggregate.js");
 const { windowOf } = await import("./window.js");
-const { DEFAULT_IGNORED_MESSAGES, DEFAULT_LOG_RESOURCE_TYPES } = await import("../config.js");
+const { testConfig } = await import("../testConfig.js");
 
-const config = {
-  projectId: "p",
-  watchedProjectId: "p",
-  vertexProjectId: "p",
-  settingsCollection: "starfish_settings",
-  location: "l",
-  model: "m",
-  environment: "prod",
-  incidentCollection: "incidents",
-  incidentKeyCollection: "incident_keys",
-  databaseId: "starfish",
-  servicePatterns: {},
-  defaultLookbackHours: 24,
-  logResourceTypes: DEFAULT_LOG_RESOURCE_TYPES,
-  ignoredMessages: DEFAULT_IGNORED_MESSAGES,
-  verifyCommand: "",
-  verifyTimeoutSeconds: 600,
-  patchExcludedPaths: [],
-  ingestLagMinutes: 5,
-  ingestMaxWindowHours: 6,
-  runCollection: "starfish_runs",
-};
+const config = testConfig({ projectId: "p", location: "l" });
 const window = windowOf(new Date("2026-09-20T23:00:00.000Z"), new Date("2026-09-21T01:00:00.000Z"));
 
 /** Firestore with no existing incidents or keys that records the incidents created. */

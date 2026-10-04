@@ -17,7 +17,8 @@ rules_version = '2';
 // to the closing rule at the bottom. The runtime settings use starfish_settings
 // (STARFISH_SETTINGS_COLLECTION), with their operator copy and audit trail in
 // starfish_settings_public and starfish_settings_audit. The ingest run records use
-// starfish_runs (STARFISH_RUN_COLLECTION).
+// starfish_runs (STARFISH_RUN_COLLECTION); the agent cycles and their run events use
+// starfish_cycles (STARFISH_CYCLE_COLLECTION).
 //
 // Model: roles live on an operator record and are read fresh on every request,
 // never cached in a token.
@@ -222,6 +223,23 @@ service cloud.firestore {
     match /starfish_runs/last_run {
       allow read: if isOperator() || (isGuest() && resource.data.environment == 'demo');
       allow write: if false;
+    }
+
+    // ---- Agent cycles (src/agent/cycle.ts) -----------------------------------
+    //
+    // starfish_cycles/{incident}_r{n}          one cycle: its state, stage and lease holder.
+    // starfish_cycles/{id}/events/{seq}        the run events the Live runs screen renders.
+    // Both carry the incident's environment, so a guest reads only the demo's. Only the engine
+    // writes: the lease is what stops two workers acting on a cycle, and a client that could touch
+    // it could make the engine act twice or not at all. Events hold redacted, bounded text.
+    match /starfish_cycles/{cycleId} {
+      allow read: if isOperator() || (isGuest() && resource.data.environment == 'demo');
+      allow write: if false;
+
+      match /events/{seq} {
+        allow read: if isOperator() || (isGuest() && resource.data.environment == 'demo');
+        allow write: if false;
+      }
     }
 
     // Everything else is closed (including starfish_runs/state).
