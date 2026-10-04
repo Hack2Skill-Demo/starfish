@@ -217,8 +217,15 @@ and redacts what it shows and what it returns. It applies and runs nothing; the 
 judges. Tested with a stubbed model; whether Gemini actually writes patches a human would is
 still the spike's open question, not something these tests can say.
 
-What does **not** exist yet is the rest of that half: adversarial review, the PR, and the
-orchestration that would run the stages. That is the work, and it is gated on one question the
+The **adversarial reviewer** (`src/agent/reviewer.ts`) is the fourth, same status. It refuses to
+review a patch unless the verify gate's result says `passed` *and* carries the hash of that
+exact patch. The model lists the attacks it tried, each `held`, `flagged` or `broken`; **the
+verdict is computed in code from those outcomes**, never taken from the model (any broken attack
+blocks, any flag approves with flags), and a review with no attacks is an error rather than
+"found nothing".
+
+What does **not** exist yet is the PR opener and the orchestration that would run the stages
+(state, leases, retries, spend caps, one PR per recurrence cycle). That is the work, and it is gated on one question the
 [spike](docs/spike.md) exists to answer — does Gemini actually produce the patch a human
 wrote?
 
@@ -228,7 +235,7 @@ src/
   vertex.ts          Vertex AI client
   spike.ts           the fix-quality spike
   ingest/            logs -> classified, deduped incidents + counter-check
-  agent/             triage, fixer and verify gate: stage contracts, run by no job yet
+  agent/             triage, fixer, verify gate, reviewer: stage contracts, run by no job yet
 web/                 operator UI: sign-in, incidents, settings
 firestore.rules      what the UI may read and change (tested on the emulator)
 fixtures/incidents/   spike fixtures (synthetic; see docs/spike.md)

@@ -65,6 +65,20 @@ function diffOf(files: Record<string, string | null>, tweak?: (dir: string) => v
   }
 }
 
+/** Is `pid` a live process? A zombie (killed, not yet reaped) is not. */
+function isRunning(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+  } catch {
+    return false;
+  }
+  try {
+    return !execFileSync("ps", ["-o", "stat=", "-p", String(pid)], { encoding: "utf8" }).trim().startsWith("Z");
+  } catch {
+    return false; // ps exits non-zero when the process is gone
+  }
+}
+
 const verify = (patch: string, config = cfg(), extra: object = {}) => verifyPatch({ sourceDir: src, patch, config, ...extra });
 const goodPatch = () => diffOf({ "greeting.txt": "hello new\n" });
 const leftovers = () => readdirSync(tmpdir()).filter((n) => n.startsWith("starfish-verify-"));
@@ -267,8 +281,11 @@ describe("verifyPatch: the command's world", () => {
     expect(r).toMatchObject({ status: "timeout", rule: "command-timeout" });
     expect(Date.now() - started).toBeLessThan(10_000);
     const pid = Number(readFileSync(marker, "utf8").trim());
-    await new Promise((res) => setTimeout(res, 300));
-    expect(() => process.kill(pid, 0)).toThrow();
+    // Killed is not the same as reaped: a killed grandchild whose parent is gone stays a zombie until
+    // init collects it, and `kill(pid, 0)` still succeeds for a zombie. A zombie is not running.
+    const deadline = Date.now() + 5000;
+    while (isRunning(pid) && Date.now() < deadline) await new Promise((res) => setTimeout(res, 50));
+    expect(isRunning(pid)).toBe(false);
   });
 
   it("redacts and bounds the output, which can echo whatever the code under test printed", async () => {
