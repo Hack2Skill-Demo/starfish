@@ -26,6 +26,7 @@ beforeEach(() => {
   base = {
     projectId: "starfish-home",
     watchedProjectId: "starfish-home",
+    vertexProjectId: "starfish-home",
     location: "us-central1",
     model: "m",
     environment: "dev",
