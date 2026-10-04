@@ -117,9 +117,9 @@ describe("returnPath", () => {
   it("returns to the page the guard bounced from, query included", () => {
     expect(returnPath({ from: { pathname: "/settings", search: "?x=1" } })).toBe("/settings?x=1");
   });
-  it("falls back to incidents for missing, external or looping targets", () => {
-    expect(returnPath(null)).toBe("/incidents");
-    expect(returnPath({ from: { pathname: "//evil.example" } })).toBe("/incidents");
-    expect(returnPath({ from: { pathname: "/signin" } })).toBe("/incidents");
+  it("falls back to the overview for missing, external or looping targets", () => {
+    expect(returnPath(null)).toBe("/overview");
+    expect(returnPath({ from: { pathname: "//evil.example" } })).toBe("/overview");
+    expect(returnPath({ from: { pathname: "/signin" } })).toBe("/overview");
   });
 });

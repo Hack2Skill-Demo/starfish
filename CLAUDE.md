@@ -167,7 +167,8 @@ Conventions that carry real weight (the `starfish-dev` skill has the reasoning):
 
 ## UI (`web/`)
 
-The operator UI: sign-in, an auth provider with race guards, a two-level layout, the
+The operator UI: sign-in, an auth provider with race guards, a two-level layout, an **Overview**
+page (the landing page; counts of stored records only, `lib/overviewModel.ts`), the
 **Incidents** page, a **Runs** page (live subscription to `{cycleCollection}` and its events,
 `web/src/lib/runs.ts`; the waterfall logic is pure in `runsModel.ts`: a step with no event is "not
 reached", a cycle whose lease ran out is not "in progress"), an **incident evidence** page (`/incidents/:id`, `lib/evidence.ts`: only stored records, never a placeholder result), and a **Settings** page: the Gemini, GitHub and Slack connections, and an

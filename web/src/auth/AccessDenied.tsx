@@ -18,7 +18,7 @@ export function AccessDenied() {
       </div>
     );
   }
-  if (roles.some((r) => STARFISH_ROLES.includes(r))) return <Navigate to="/incidents" replace />;
+  if (roles.some((r) => STARFISH_ROLES.includes(r))) return <Navigate to="/overview" replace />;
 
   const handleSignOut = async () => {
     try {

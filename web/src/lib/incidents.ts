@@ -46,6 +46,8 @@ export interface IncidentRow {
   occurrenceCount: number;
   /** Occurrences inside the selected window, from the hourly buckets. */
   windowedCount: number;
+  /** The engine's hourly occurrence buckets (epoch hour → count), when the document has any. */
+  occurrencesByHour?: Record<string, number>;
   firstOccurredAt: string;
   lastOccurredAt: string;
   status: IncidentStatus;
@@ -81,6 +83,16 @@ export function countInWindow(buckets: Record<string, number> | undefined, hours
   return total;
 }
 
+/** The bucket map with only numeric hours and finite counts, or undefined when nothing usable is left. */
+function cleanBuckets(v: unknown): Record<string, number> | undefined {
+  if (typeof v !== "object" || v === null || Array.isArray(v)) return undefined;
+  const out: Record<string, number> = {};
+  for (const [k, n] of Object.entries(v)) {
+    if (Number.isFinite(Number(k)) && typeof n === "number" && Number.isFinite(n) && n >= 0) out[k] = n;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
 function iso(v: unknown): string {
   return v instanceof Timestamp ? v.toDate().toISOString() : typeof v === "string" ? v : "";
 }
@@ -107,6 +119,7 @@ export function toRow(id: string, d: Record<string, unknown>, windowHours: numbe
     stackTrace: str(d.stackTrace),
     occurrenceCount: typeof d.occurrenceCount === "number" ? d.occurrenceCount : 0,
     windowedCount: countInWindow(d.occurrencesByHour as Record<string, number> | undefined, windowHours, nowMs),
+    ...(cleanBuckets(d.occurrencesByHour) && { occurrencesByHour: cleanBuckets(d.occurrencesByHour) }),
     firstOccurredAt: iso(d.firstOccurredAt),
     lastOccurredAt: iso(d.lastOccurredAt),
     status,

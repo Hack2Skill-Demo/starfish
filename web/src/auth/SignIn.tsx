@@ -40,7 +40,7 @@ const inputClass =
 export function returnPath(state: unknown): string {
   const from = (state as { from?: { pathname?: unknown; search?: unknown } } | null)?.from;
   const pathname = typeof from?.pathname === "string" ? from.pathname : "";
-  if (!pathname.startsWith("/") || pathname.startsWith("//") || pathname === "/signin") return "/incidents";
+  if (!pathname.startsWith("/") || pathname.startsWith("//") || pathname === "/signin") return "/overview";
   return pathname + (typeof from?.search === "string" ? from.search : "");
 }
 

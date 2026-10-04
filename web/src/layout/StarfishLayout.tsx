@@ -69,7 +69,7 @@ export function StarfishLayout() {
       >
         {/* L1: icon rail */}
         <div className="flex w-16 flex-col items-center border-r border-white/5 bg-gray-900 py-4">
-          <Link to="/incidents" onClick={() => setSidebarOpen(false)} className="mb-4" aria-label="Starfish home">
+          <Link to="/overview" onClick={() => setSidebarOpen(false)} className="mb-4" aria-label="Starfish home">
             <StarfishLogo variant="mark" tone="dark" size={32} title="" />
           </Link>
           {l2Collapsed && (

@@ -8,8 +8,8 @@ export default function NotFound() {
       <div className="flex min-h-[60vh] flex-col items-center justify-center text-center">
         <p className="font-display text-6xl font-bold text-gray-500 dark:text-gray-500">404</p>
         <h1 className="mt-4 text-xl font-semibold text-gray-900 dark:text-white">Page not found</h1>
-        <Link to="/incidents" className="mt-6 text-sm font-medium text-brand-700 hover:underline dark:text-brand-400">
-          Back to incidents
+        <Link to="/overview" className="mt-6 text-sm font-medium text-brand-700 hover:underline dark:text-brand-400">
+          Back to the overview
         </Link>
       </div>
     </>
