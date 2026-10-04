@@ -70,7 +70,7 @@ operator you granted with `pnpm grant-operator`; required), audited, and reads t
 incident is in no list. If cleanup fails the script says which incident document to delete in the Firestore console
 and exits non-zero. Written and dry-run tested; never run against a real project (#6).
 
-**Redeploying later without a local `gcloud`:** the Deploy engine workflow (`.github/workflows/deploy.yml`, Actions → Deploy engine → Run workflow) runs step 2 from GitHub Actions with no stored key. Use it once the one-time Workload Identity setup is done (a console step, in [`deploy.md`](deploy.md#deploy-from-github-actions-75); the workflow is written and pinned by a test, never run). Until then, or for the very first deploy, run `scripts/deploy-gcp.sh` by hand as above. The web UI is not part of the workflow: step 5 stays a local `scripts/deploy-web.sh` (#92).
+**Redeploying later without a local `gcloud`:** the Deploy engine workflow (`.github/workflows/deploy.yml`, Actions → Deploy engine → Run workflow) runs step 2 from GitHub Actions with no stored key. Use it once the one-time Workload Identity setup is done (a console step, in [`deploy.md`](deploy.md#deploy-from-github-actions-75); the workflow is written and pinned by a test, never run). Until then, or for the very first deploy, run `scripts/deploy-gcp.sh` by hand as above. The web UI has its own workflow, Deploy web UI (`.github/workflows/deploy-web.yml`, [`deploy.md`](deploy.md#deploy-the-web-ui-from-github-actions-92); written and never run, and whether the Firebase CLI accepts its credentials is unverified); step 5 below stays the dependable path.
 
 ## What you will still not have after this
 

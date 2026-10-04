@@ -204,6 +204,29 @@ than holding a key. A real run is the check that no value leaks, and it has not 
 A `dry_run` still signs in, so it is the cheapest proof that the pool, provider and bindings work before the
 deployer has any project role.
 
+## Deploy the web UI from GitHub Actions (#92)
+
+`.github/workflows/deploy-web.yml` runs `scripts/deploy-web.sh`, unchanged: **Actions → Deploy web UI → Run
+workflow**. It uses the same Workload Identity pool, provider, `starfish-deployer` account and `deploy`
+environment as the engine deploy above, so there is nothing new to set up in the pool; it is `workflow_dispatch`
+only, keyless, uses no GitHub secret, and has the same decisions on trigger and approval (follow whatever you
+chose for the engine). Unlike the engine deploy it runs `pnpm install --frozen-lockfile` first, because it builds the UI.
+
+> **Status: written and pinned by a test (`scripts/deploy-workflow.test.mjs`), never run, and the script itself
+> has only been dry-run tested.** Whether the Firebase CLI accepts the federated credentials the auth step
+> writes (Application Default Credentials) is **not verified**; that is the first thing a run will show. If it
+> does not, the fallback is still `firebase login` and `scripts/deploy-web.sh` from a terminal.
+
+**What the deployer needs on top of the engine's list** (a starting set, not a verified minimum; the first run
+will name what is missing): Firebase Hosting Admin (`roles/firebasehosting.admin`) to create the site and release
+to it, and a role holding `firebase.apps.create` for the one-time web-app registration (the script registers a
+web app named `starfish` when the project has none). Keep both off the engine's runtime identity.
+
+**Repository variables** (nothing deployment-specific is in the workflow): the same three required ones, plus
+`STARFISH_ENV` (the label the page shows; **`demo` for the public page**), `STARFISH_DATABASE_ID`, and
+`STARFISH_WEB_HOSTING_SITE` (default `<project>-starfish`, its own site so the watched app's keeps the default).
+Anonymous sign-in is **not** turned on by the workflow: it is project-wide (see `setup.md`). Input: `dry_run`.
+
 ## What is most likely to go wrong the first time
 
 None of this has run against a real project. The likely first failures, and what they mean:
@@ -217,7 +240,8 @@ None of this has run against a real project. The likely first failures, and what
 
 ## Not covered
 
-- **The web UI** deploys to Hosting with `scripts/deploy-web.sh`; the Actions workflow does not run it.
+- **The web UI** deploys to Hosting with `scripts/deploy-web.sh`, from a terminal or from the Deploy web UI
+  workflow above (never run).
 - **An alert when ingestion stops.** The UI shows it; nothing pages anyone (an item on #6).
 - **An authenticated "run now" endpoint.** `src/ingest/trigger.ts` is the function; nothing serves
   it. For recording a demo, a short `SCHEDULE` or `gcloud run jobs execute` does the job.

@@ -1,0 +1,86 @@
+name: Deploy web UI
+
+# Runs scripts/deploy-web.sh from Actions, so the judges' link (#12) can be redeployed by a teammate with no
+# local `firebase login` (#92), the same way the engine can (deploy.yml, #75). One-time setup:
+# docs/deploy.md ("Deploy the web UI from GitHub Actions").
+#
+# Decisions, on purpose (the same as the engine's; neither is made here beyond following #75):
+#   - workflow_dispatch ONLY. A merge to main cannot change what judges see by itself.
+#   - The job runs in the `deploy` environment, the one the Workload Identity provider accepts
+#     (docs/deploy.md), so that environment's protection rules are the gate. Do not rename it.
+#   - No service-account key and no GitHub secret: the job swaps its OIDC token for short-lived credentials,
+#     and the Firebase CLI reads them as Application Default Credentials. That last step has NOT been run.
+#   - Everything deployment-specific is a repository variable; this file names none.
+#   - The environment label the page shows is STARFISH_ENV (it must be `demo` for the public page to show its
+#     data to guests). Anonymous sign-in is NOT turned on here: it is project-wide, a decision for a person.
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Print the plan and change nothing (still builds and signs in, so it proves the Workload Identity setup)
+        type: boolean
+        default: false
+
+# One web deploy at a time, and never cancel one halfway.
+concurrency:
+  group: deploy-web
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: deploy
+    # `id-token: write` lets this job ask GitHub for the OIDC token Google exchanges. Granted to this job only.
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check the repository variables
+        env:
+          GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          GCP_DEPLOY_SERVICE_ACCOUNT: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
+          STARFISH_GCP_PROJECT_ID: ${{ vars.STARFISH_GCP_PROJECT_ID }}
+        run: |
+          missing=0
+          for name in GCP_WORKLOAD_IDENTITY_PROVIDER GCP_DEPLOY_SERVICE_ACCOUNT STARFISH_GCP_PROJECT_ID; do
+            if [ -z "${!name}" ]; then
+              echo "::error::Repository variable $name is not set (docs/deploy.md, 'Deploy the web UI from GitHub Actions')"
+              missing=1
+            fi
+          done
+          exit "$missing"
+
+      - name: Enable pnpm
+        run: corepack enable pnpm
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24.16.0'
+
+      # The script builds the UI, so unlike the engine deploy this one needs the repository's dependencies.
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
+
+      # Values reach the script through the environment, never by interpolation into the shell text.
+      # An unset variable is an empty string, which the script treats as "use my default".
+      - name: Deploy
+        env:
+          PROJECT_ID: ${{ vars.STARFISH_GCP_PROJECT_ID }}
+          HOSTING_SITE: ${{ vars.STARFISH_WEB_HOSTING_SITE }}
+          STARFISH_ENV: ${{ vars.STARFISH_ENV }}
+          STARFISH_DATABASE_ID: ${{ vars.STARFISH_DATABASE_ID }}
+          DRY_RUN: ${{ inputs.dry_run && '1' || '0' }}
+        run: scripts/deploy-web.sh

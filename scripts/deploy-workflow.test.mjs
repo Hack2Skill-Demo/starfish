@@ -60,10 +60,55 @@ describe(".github/workflows/deploy.yml", () => {
   });
 });
 
+describe(".github/workflows/deploy-web.yml", () => {
+  const web = read("deploy-web.yml");
+  const webScript = readFileSync(new URL("./deploy-web.sh", import.meta.url), "utf8");
+
+  it("is started by hand and by nothing else", () => {
+    const on = code(web).match(/^on:\n((?: {2,}.*\n|\n)+)/m)?.[1] ?? "";
+    expect(on).toMatch(/^ {2}workflow_dispatch:/m);
+    expect(on.match(/^ {2}[a-z_]+:/gm)).toHaveLength(1);
+  });
+
+  it("authenticates keylessly in the protected environment, asks for the OIDC token on one job, and uses no secret", () => {
+    const body = code(web);
+    expect(body).toContain("google-github-actions/auth@");
+    expect(body).toContain("workload_identity_provider:");
+    expect(body).not.toContain("credentials_json");
+    expect(body).not.toMatch(/\bsecrets\./);
+    expect(body).not.toMatch(/GITHUB_TOKEN|STARFISH_GITHUB_TOKEN/);
+    expect(body).not.toMatch(/set -x|xtrace/);
+    expect(body.match(/id-token: write/g)).toHaveLength(1);
+    expect(body).toMatch(/^ {4}environment: deploy$/m);
+  });
+
+  it("builds from a locked install, signs in before it deploys, and runs the script unchanged", () => {
+    const body = code(web);
+    expect(body).toMatch(/run: pnpm install --frozen-lockfile$/m);
+    expect(body.indexOf("google-github-actions/auth@")).toBeLessThan(body.indexOf("- name: Deploy"));
+    expect(web).toMatch(/run: scripts\/deploy-web\.sh$/m);
+    expect(code(web).match(/run: [^\n]*\$\{\{/g)).toBeNull();
+  });
+
+  it("holds no deployment-specific value, and passes only settings the script documents", () => {
+    const body = code(web);
+    expect(body).not.toMatch(/[a-z0-9-]+\.iam\.gserviceaccount\.com/);
+    expect(body).not.toMatch(/projects\/\d+/);
+    const env = (body.split("- name: Deploy")[1] ?? "").match(/^ {10}([A-Z_]+): (.*)$/gm) ?? [];
+    expect(env.length).toBeGreaterThan(0);
+    for (const line of env) {
+      const [name, value] = line.trim().split(/: (.*)/);
+      expect(webScript, `${name} is not a setting of deploy-web.sh`).toMatch(new RegExp(`^#   ${name}\\b`, "m"));
+      if (name !== "DRY_RUN") expect(value, `${name} must come from a repository variable`).toMatch(/^\$\{\{ vars\./);
+    }
+  });
+});
+
 describe("every workflow", () => {
   it("pins each third-party action to a full commit SHA", () => {
     const files = readdirSync(dir).filter((f) => f.endsWith(".yml"));
     expect(files).toContain("deploy.yml");
+    expect(files).toContain("deploy-web.yml");
     for (const f of files) {
       for (const [, ref] of code(read(f)).matchAll(/^\s*-?\s*uses:\s*(\S+)/gm)) {
         expect(ref, `${f}: ${ref}`).toMatch(/^[^@\s]+@[0-9a-f]{40}$/);
