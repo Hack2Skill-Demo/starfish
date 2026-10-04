@@ -162,11 +162,17 @@ apparent over-engineering is scar tissue from real incidents, and the tests in
 
 **Redaction limits.** It is pattern matching: a credential in a format nobody listed will
 get through, and free-form PII (names, addresses, record ids) is not detectable at all —
-`truncate` bounds how much raw text leaves, it does not clean it. Only new writes are
-covered: incidents stored before this policy are not scrubbed, so the store must be
-cleared or re-ingested before real data is exposed to anyone. There is no Slack, issue/PR
-or judge-facing output yet, so the output allowlist for those surfaces is still to be
-built with them (issue #18).
+`truncate` bounds how much raw text leaves, it does not clean it. The store redacts new
+writes; incidents stored **before** the policy are scrubbed in place by `pnpm scrub` (a dry
+run that counts what it would change; `pnpm scrub -- --apply --project=<id>` rewrites, and
+refuses unless the project matches `GOOGLE_CLOUD_PROJECT`). It redacts the same four fields the
+store does, recomputes each changed record's fingerprint (the store fingerprints the redacted
+text, so otherwise the next occurrence would fork a duplicate), removes the stale incident
+key, and is safe to re-run (`scrub.test.ts`, `scrub.emulator.test.ts`). Run it before real
+data is exposed to anyone. It does not touch Firestore exports or backups, logs, or anything
+outside the incident collection, and it finds only what the pattern list finds. There is no
+Slack, issue/PR or judge-facing output yet, so the output allowlist for those surfaces is
+still to be built with them (issue #18).
 
 Alongside it, the **counter-check** (`src/ingest/counterCheck.ts`): an independent raw-log
 recount of a function's errors over 24h, plus a few redacted recent samples. It is built for
