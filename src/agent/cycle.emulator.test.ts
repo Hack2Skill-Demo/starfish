@@ -8,7 +8,7 @@ import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { deleteApp, initializeApp } from "firebase-admin/app";
 import { getFirestore } from "firebase-admin/firestore";
 import type { Firestore } from "firebase-admin/firestore";
-import { acquireLease, cycleId, finishCycle, recordEvent, renewLease, sanitizeEvent, type CycleConfig, type CycleKey } from "./cycle.js";
+import { acquireLease, cycleId, finishCycle, recordEvent, releaseLease, renewLease, sanitizeEvent, type CycleConfig, type CycleKey } from "./cycle.js";
 import { SEEDED_SECRETS } from "../ingest/testSecrets.js";
 
 if (!process.env.FIRESTORE_EMULATOR_HOST) {
@@ -151,6 +151,30 @@ describe("fencing: a worker that lost its lease can do nothing", () => {
     expect(await finishCycle(db, cfg, "inc1_r0", "a", at(1), "done", "pr-opened")).toEqual({ ok: true });
     expect(await cycle()).toMatchObject({ state: "done", outcome: "pr-opened", owner: null, leaseExpiresAt: null });
     expect(await recordEvent(db, cfg, "inc1_r0", "a", at(2), ev())).toEqual({ ok: false, reason: "lease-lost" });
+  });
+});
+
+describe("releaseLease", () => {
+  it("lets another worker take the cycle straight away, as another attempt", async () => {
+    await acquireLease(db, cfg, key, "a", t0);
+    expect(await releaseLease(db, cfg, "inc1_r0", "a", at(1), "counter-check missing")).toEqual({ ok: true });
+    expect(await cycle()).toMatchObject({ state: "running", owner: null, releasedBecause: "counter-check missing" });
+    expect(await acquireLease(db, cfg, key, "b", at(2))).toMatchObject({ acquired: true, attempt: 2, resumed: true });
+  });
+
+  it("is bounded by the attempts cap, so a cycle that keeps being released ends", async () => {
+    cfg = { ...cfg, maxCycleAttempts: 2 };
+    await acquireLease(db, cfg, key, "a", t0);
+    await releaseLease(db, cfg, "inc1_r0", "a", at(1), "x");
+    await acquireLease(db, cfg, key, "b", at(2));
+    await releaseLease(db, cfg, "inc1_r0", "b", at(3), "x");
+    expect(await acquireLease(db, cfg, key, "c", at(4))).toEqual({ acquired: false, reason: "retries-exhausted" });
+  });
+
+  it("is fenced: only the current holder can release", async () => {
+    await acquireLease(db, cfg, key, "a", t0);
+    expect(await releaseLease(db, cfg, "inc1_r0", "intruder", at(1), "x")).toEqual({ ok: false, reason: "lease-lost" });
+    expect((await cycle()).owner).toBe("a");
   });
 });
 

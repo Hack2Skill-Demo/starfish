@@ -138,3 +138,37 @@ describe("loadConfig: agent cycles", () => {
   });
 });
 
+describe("loadConfig: the loop's switches", () => {
+  const KEYS = ["STARFISH_DRY_RUN", "STARFISH_REVIEW_REQUIRED", "STARFISH_MODEL_CALL_BUDGET"];
+  beforeEach(() => {
+    for (const k of KEYS) vi.stubEnv(k, "");
+    vi.stubEnv("GOOGLE_CLOUD_PROJECT", "home-project");
+  });
+  afterEach(() => vi.unstubAllEnvs());
+
+  it("defaults to a dry run with review required and a budget of six model calls", () => {
+    expect(loadConfig()).toMatchObject({ dryRun: true, reviewRequired: true, modelCallBudget: 6 });
+  });
+
+  it.each([["false", false], ["0", false], ["No", false], ["true", true], ["1", true], [" YES ", true]])(
+    "reads STARFISH_DRY_RUN=%s as %s",
+    (raw, expected) => {
+      vi.stubEnv("STARFISH_DRY_RUN", raw);
+      expect(loadConfig().dryRun).toBe(expected);
+    }
+  );
+
+  it.each(["maybe", "off", "2"])("refuses STARFISH_DRY_RUN=%s rather than guessing which way it was meant", (bad) => {
+    vi.stubEnv("STARFISH_DRY_RUN", bad);
+    expect(() => loadConfig()).toThrow("STARFISH_DRY_RUN");
+  });
+
+  it("reads the review switch and the budget, and refuses a budget that would stop every cycle", () => {
+    vi.stubEnv("STARFISH_REVIEW_REQUIRED", "false");
+    vi.stubEnv("STARFISH_MODEL_CALL_BUDGET", "10");
+    expect(loadConfig()).toMatchObject({ reviewRequired: false, modelCallBudget: 10 });
+    vi.stubEnv("STARFISH_MODEL_CALL_BUDGET", "0");
+    expect(() => loadConfig()).toThrow("STARFISH_MODEL_CALL_BUDGET");
+  });
+});
+
