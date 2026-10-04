@@ -695,3 +695,35 @@ describe("agent cycles and their run events", () => {
   });
 });
 
+describe("the audit trail of admin actions", () => {
+  const guest = () =>
+    env.authenticatedContext("guest1", { firebase: { sign_in_provider: "anonymous" } }).firestore();
+
+  beforeEach(async () => {
+    await env.withSecurityRulesDisabled((ctx) =>
+      setDoc(doc(ctx.firestore(), "starfish_audit/e1"), { action: "retire-incident", incidentId: "i1", actorUid: "admin1" })
+    );
+  });
+
+  it("an admin reads it", async () => {
+    await assertSucceeds(getDoc(doc(as("admin1"), "starfish_audit/e1")));
+  });
+
+  it("nobody else does: not an operator, an account with no role, a guest, or a visitor", async () => {
+    for (const db of [as("op1"), as("nobody"), guest(), anon()]) await assertFails(getDoc(doc(db, "starfish_audit/e1")));
+  });
+
+  it("no client writes it, an admin included", async () => {
+    for (const db of [as("admin1"), as("op1"), guest(), anon()]) {
+      await assertFails(setDoc(doc(db, "starfish_audit/e2"), { action: "x" }));
+      await assertFails(updateDoc(doc(db, "starfish_audit/e1"), { actorUid: "someone-else" }));
+      await assertFails(deleteDoc(doc(db, "starfish_audit/e1")));
+    }
+  });
+
+  it("an operator still cannot retire or un-retire an incident through the triage update", async () => {
+    await env.withSecurityRulesDisabled((ctx) => setDoc(doc(ctx.firestore(), "incidents/i1"), { functionName: "f", status: "new", updatedAt: Timestamp.now() }));
+    await assertFails(updateDoc(doc(as("op1"), "incidents/i1"), { retired: true, status: "resolved", resolvedAt: serverTimestamp(), statusChangedBy: "op1", updatedAt: serverTimestamp() }));
+  });
+});
+

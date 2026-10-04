@@ -17,6 +17,8 @@ export function testConfig(over: Partial<StarfishConfig> = {}): StarfishConfig {
     incidentKeyCollection: "incident_keys",
     runCollection: "starfish_runs",
     cycleCollection: "starfish_cycles",
+    usersCollection: "starfish_users",
+    auditCollection: "starfish_audit",
     databaseId: "starfish",
     servicePatterns: {},
     defaultLookbackHours: 24,
