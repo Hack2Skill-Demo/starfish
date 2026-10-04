@@ -42,7 +42,10 @@ const SETTINGS_KEYS = [
   "logResourceTypes",
   "servicePatterns",
   "ignoredMessages",
-  // Written with the document by whoever edited it; carried, not used by the engine.
+  // Written with the document by whoever edited it (the rules require them);
+  // carried, not used by the engine.
+  "revision",
+  "auditId",
   "updatedAt",
   "updatedBy",
 ] as const;
@@ -127,6 +130,12 @@ export function validateSettings(raw: unknown): Validation {
     } else settings.ignoredMessages = [...(list as string[])];
   }
 
+  if (raw.revision !== undefined && !(Number.isInteger(raw.revision) && (raw.revision as number) >= 0)) {
+    problems.push("revision: a non-negative integer");
+  }
+  if (raw.auditId !== undefined && (typeof raw.auditId !== "string" || raw.auditId.length > 64)) {
+    problems.push("auditId: a string of at most 64 characters");
+  }
   if (raw.updatedBy !== undefined && (typeof raw.updatedBy !== "string" || raw.updatedBy.length > 128)) {
     problems.push("updatedBy: a string of at most 128 characters");
   }

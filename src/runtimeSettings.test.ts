@@ -69,6 +69,8 @@ describe("validateSettings", () => {
       ignoredMessages: ["probe"],
       updatedBy: "uid1",
       updatedAt: { toMillis: () => 1 },
+      revision: 3,
+      auditId: "audit-0001",
     };
     expect(validateSettings(full)).toEqual({
       ok: true,
@@ -141,6 +143,9 @@ describe("validateSettings", () => {
     expect(validateSettings({ version: 1, ignoredMessages: Array(101).fill("x") }).ok).toBe(false);
     expect(validateSettings({ version: 1, servicePatterns: ["x"] }).ok).toBe(false);
     expect(validateSettings({ version: 1, updatedAt: "yesterday" }).ok).toBe(false);
+    expect(validateSettings({ version: 1, revision: 1.5 }).ok).toBe(false);
+    expect(validateSettings({ version: 1, revision: -1 }).ok).toBe(false);
+    expect(validateSettings({ version: 1, auditId: 7 }).ok).toBe(false);
   });
 
   it("never echoes a value into its problems: a bad value may be a pasted credential", () => {
