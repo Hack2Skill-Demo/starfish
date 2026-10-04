@@ -37,6 +37,8 @@ export interface AggregationResult {
   incidentsUpdated: number;
   /** Resolved incidents re-opened as `recurred`: regressions. */
   incidentsRecurred: number;
+  /** Incidents whose window had already been applied, so this run changed nothing for them. */
+  incidentsReplayed: number;
   /** True when the read stopped at MAX_ENTRIES_PER_RUN; occurrence counts are then a floor. */
   capped: boolean;
 }
@@ -51,6 +53,7 @@ export async function aggregateErrors(
     incidentsCreated: 0,
     incidentsUpdated: 0,
     incidentsRecurred: 0,
+    incidentsReplayed: 0,
     capped: false,
   };
 
@@ -136,6 +139,7 @@ export async function aggregateErrors(
         const outcome = await upsertIncident(db, config, input, now);
         if (outcome === "new") result.incidentsCreated += 1;
         else if (outcome === "recurred") result.incidentsRecurred += 1;
+        else if (outcome === "duplicate") result.incidentsReplayed += 1;
         else result.incidentsUpdated += 1;
       } catch (err) {
         failures.push(err);

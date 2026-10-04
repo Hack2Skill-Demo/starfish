@@ -33,6 +33,15 @@
  *   - hourly buckets are merged from a read no other writer can slip past.
  * Incidents written before keys existed have none; the first upsert finds them
  * by query, as before, and writes the key that pins them from then on.
+ *
+ * Replays: a scheduled run reads a bounded window of logs, and a run that fails
+ * part-way is retried over the SAME window. Upserts that already committed must
+ * not count those occurrences twice, so an input may carry a `windowId`, and the
+ * key records the windows it has applied (the last APPLIED_WINDOWS_RETAINED). An
+ * upsert for a window the key already holds changes nothing and reports
+ * "duplicate". The record and the accrual commit in one transaction, so there is
+ * no state where one happened without the other. Callers must give a window the
+ * same id every time it is retried, and different windows different ids.
  */
 import { createHash } from "node:crypto";
 import { Timestamp, FieldValue } from "firebase-admin/firestore";
@@ -61,10 +70,21 @@ export interface IncidentInput {
   tenantId?: string;
   requestId?: string;
   sourceProjectId?: string;
+  /**
+   * The ingest window these occurrences were read from. Makes the upsert replay-safe: the
+   * same window applied twice counts once. Omit it and every call counts (nothing to dedupe).
+   */
+  windowId?: string;
 }
 
-/** What upsertIncident did: created a document, accrued onto one, or re-opened a resolved one. */
-export type UpsertOutcome = "new" | "updated" | "recurred";
+/**
+ * What upsertIncident did: created a document, accrued onto one, re-opened a resolved one,
+ * or recognised a window it had already applied and changed nothing ("duplicate").
+ */
+export type UpsertOutcome = "new" | "updated" | "recurred" | "duplicate";
+
+/** Applied windows remembered per key. A retry only ever replays the latest window or two. */
+export const APPLIED_WINDOWS_RETAINED = 32;
 
 /** Max same-fingerprint resolved documents read when looking for a regression target. */
 const RESOLVED_LOOKUP_LIMIT = 10;
@@ -84,6 +104,8 @@ interface IncidentKey {
   environment: string;
   fingerprint: string;
   updatedAt: Timestamp;
+  /** Ingest windows already applied to this fingerprint, oldest first, bounded. */
+  appliedWindows?: string[];
 }
 
 /**
@@ -227,15 +249,29 @@ export async function upsertIncident(
     async (tx) => {
       // Every read comes before any write: Firestore transactions require it.
       const keySnap = await tx.get(keyRef);
+      const applied = readAppliedWindows(keySnap);
+      // A window this fingerprint already took is a replay: write nothing, count nothing.
+      if (input.windowId !== undefined && applied.includes(input.windowId)) return "duplicate";
       const keyed = await readKeyedIncident(db, tx, store, keySnap, fingerprint);
       // The key names a document that still holds this fingerprint: it decides.
       // Otherwise (no key yet, or a stale one) fall back to the lookup that
       // predates keys, so incidents stored before them are adopted, not forked.
       const target = keyed ?? (await findUnkeyedIncident(db, tx, store, input.environment, fingerprint));
 
+      // Written when the pointer moves, and whenever a window must be recorded; an
+      // unchanged key with nothing to record is left alone (no write for nothing).
       const pointKeyAt = (incidentId: string) => {
-        if (keySnap.get("incidentId") === incidentId) return;
-        const key: IncidentKey = { incidentId, environment: input.environment, fingerprint, updatedAt: now };
+        const moved = keySnap.get("incidentId") !== incidentId;
+        if (!moved && input.windowId === undefined) return;
+        const appliedWindows =
+          input.windowId === undefined ? applied : [...applied, input.windowId].slice(-APPLIED_WINDOWS_RETAINED);
+        const key: IncidentKey = {
+          incidentId,
+          environment: input.environment,
+          fingerprint,
+          updatedAt: now,
+          ...(appliedWindows.length > 0 && { appliedWindows }),
+        };
         tx.set(keyRef, key);
       };
 
@@ -275,6 +311,12 @@ export async function upsertIncident(
     },
     { maxAttempts: UPSERT_MAX_ATTEMPTS }
   );
+}
+
+/** The windows a key has applied. Tolerates a missing or malformed field: nothing applied. */
+function readAppliedWindows(keySnap: DocumentSnapshot): string[] {
+  const raw: unknown = keySnap.get("appliedWindows");
+  return Array.isArray(raw) ? raw.filter((w): w is string => typeof w === "string") : [];
 }
 
 function isOpen(status: unknown): boolean {

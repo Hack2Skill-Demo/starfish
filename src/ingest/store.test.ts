@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { Timestamp, FieldValue } from "firebase-admin/firestore";
 import type { Firestore } from "firebase-admin/firestore";
-import { incidentKeyId, upsertIncident, UPSERT_MAX_ATTEMPTS, type IncidentInput } from "./store.js";
+import { APPLIED_WINDOWS_RETAINED, incidentKeyId, upsertIncident, UPSERT_MAX_ATTEMPTS, type IncidentInput } from "./store.js";
 import { computeErrorFingerprint } from "./fingerprint.js";
 import { SEEDED_SECRETS } from "./testSecrets.js";
 
@@ -16,7 +16,10 @@ const STORE = { incidentCollection: "incidents", incidentKeyCollection: "inciden
  * resolved lookups see different documents) and ignores the rest, which is why
  * the store re-verifies content itself. `keys` seeds the incident-key collection: key id → incident id.
  */
-function fakeDb(docs: { id: string; data: Record<string, unknown> }[], keys: Record<string, string> = {}) {
+function fakeDb(
+  docs: { id: string; data: Record<string, unknown> }[],
+  keys: Record<string, string | { incidentId: string; appliedWindows?: unknown }> = {}
+) {
   const queries: Where[][] = [];
   const reads: string[] = [];
   const txOptions: unknown[] = [];
@@ -52,7 +55,9 @@ function fakeDb(docs: { id: string; data: Record<string, unknown> }[], keys: Rec
     collection === STORE.incidentKeyCollection
       ? keys[id] === undefined
         ? undefined
-        : { incidentId: keys[id] }
+        : typeof keys[id] === "string"
+          ? { incidentId: keys[id] }
+          : keys[id]
       : docs.find((d) => d.id === id)?.data;
 
   // Incident writes and key writes are kept apart, so a test about the incident
@@ -400,6 +405,71 @@ describe("upsertIncident: incident keys", () => {
     const outcome = await upsertIncident(db, STORE, input, Timestamp.now());
     expect(outcome).toBe("new");
     expect(writes[0]).toMatchObject({ op: "set", id: "new-doc" });
+  });
+});
+
+describe("upsertIncident: replayed windows", () => {
+  const fp = computeErrorFingerprint(input.functionName, input.errorMessage);
+  const keyId = incidentKeyId("prod", fp);
+  const open = () => ({ id: "keyed", data: stored("2026-09-20T00:00:00.000Z", { status: "acknowledged" }) });
+  const ignoredDoc = () => ({ id: "keyed", data: stored("2026-09-20T00:00:00.000Z", { status: "ignored" }) });
+
+  it("changes nothing for a window the key has already applied", async () => {
+    const { db, writes, keyWrites } = fakeDb([open()], { [keyId]: { incidentId: "keyed", appliedWindows: ["w1"] } });
+    const outcome = await upsertIncident(db, STORE, { ...input, windowId: "w1" }, Timestamp.now());
+    expect(outcome).toBe("duplicate");
+    expect(writes).toHaveLength(0);
+    expect(keyWrites).toHaveLength(0);
+  });
+
+  it("accrues a new window and records it on the key, keeping the earlier ones", async () => {
+    const { db, writes, keyWrites } = fakeDb([open()], { [keyId]: { incidentId: "keyed", appliedWindows: ["w1"] } });
+    const outcome = await upsertIncident(db, STORE, { ...input, windowId: "w2" }, Timestamp.now());
+    expect(outcome).toBe("updated");
+    expect(writes).toHaveLength(1);
+    // The pointer did not move, but the window still has to be recorded.
+    expect(keyWrites).toHaveLength(1);
+    expect(keyWrites[0]?.data).toMatchObject({ incidentId: "keyed", appliedWindows: ["w1", "w2"] });
+  });
+
+  it("records the window on a brand-new incident's key", async () => {
+    const { db, keyWrites } = fakeDb([]);
+    expect(await upsertIncident(db, STORE, { ...input, windowId: "w1" }, Timestamp.now())).toBe("new");
+    expect(keyWrites[0]?.data).toMatchObject({ incidentId: "new-doc", appliedWindows: ["w1"] });
+  });
+
+  it("keeps only the most recent windows", async () => {
+    const many = Array.from({ length: APPLIED_WINDOWS_RETAINED }, (_, i) => `old${i}`);
+    const { db, keyWrites } = fakeDb([open()], { [keyId]: { incidentId: "keyed", appliedWindows: many } });
+    await upsertIncident(db, STORE, { ...input, windowId: "latest" }, Timestamp.now());
+    const kept = keyWrites[0]?.data.appliedWindows as string[];
+    expect(kept).toHaveLength(APPLIED_WINDOWS_RETAINED);
+    expect(kept.at(-1)).toBe("latest");
+    expect(kept).not.toContain("old0");
+  });
+
+  it("carries the recorded windows over when the key moves to a fresh incident", async () => {
+    const { db, keyWrites } = fakeDb([ignoredDoc()], { [keyId]: { incidentId: "keyed", appliedWindows: ["w1"] } });
+    await upsertIncident(db, STORE, { ...input, windowId: "w2" }, Timestamp.now());
+    expect(keyWrites[0]?.data).toMatchObject({ incidentId: "new-doc", appliedWindows: ["w1", "w2"] });
+  });
+
+  it("does not forget recorded windows when a call carries no windowId", async () => {
+    const { db, keyWrites } = fakeDb([ignoredDoc()], { [keyId]: { incidentId: "keyed", appliedWindows: ["w1"] } });
+    await upsertIncident(db, STORE, input, Timestamp.now());
+    expect(keyWrites[0]?.data.appliedWindows).toEqual(["w1"]);
+  });
+
+  it("treats a malformed record as nothing applied rather than failing the write", async () => {
+    const { db } = fakeDb([open()], { [keyId]: { incidentId: "keyed", appliedWindows: "not-a-list" } });
+    expect(await upsertIncident(db, STORE, { ...input, windowId: "w1" }, Timestamp.now())).toBe("updated");
+  });
+
+  it("without a windowId every call counts (nothing to dedupe on)", async () => {
+    const { db, writes } = fakeDb([open()], { [keyId]: "keyed" });
+    await upsertIncident(db, STORE, input, Timestamp.now());
+    await upsertIncident(db, STORE, input, Timestamp.now());
+    expect(writes).toHaveLength(2);
   });
 });
 
