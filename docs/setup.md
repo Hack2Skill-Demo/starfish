@@ -66,7 +66,7 @@ the smoke test uses, because an old incident would satisfy the first one on its 
 The smoke test writes one real incident named `starfish-smoke` into the store. Delete it in the Firestore
 console before showing the public demo.
 
-**Redeploying later without a local `gcloud`:** the Deploy engine workflow runs step 2 from GitHub Actions with no stored key; the one-time Workload Identity setup is in [`deploy.md`](deploy.md#deploy-from-github-actions-75) (written, never run).
+**Redeploying later without a local `gcloud`:** the Deploy engine workflow (`.github/workflows/deploy.yml`, Actions → Deploy engine → Run workflow) runs step 2 from GitHub Actions with no stored key. Use it once the one-time Workload Identity setup is done (a console step, in [`deploy.md`](deploy.md#deploy-from-github-actions-75); the workflow is written and pinned by a test, never run). Until then, or for the very first deploy, run `scripts/deploy-gcp.sh` by hand as above. The web UI is not part of the workflow: step 5 stays a local `scripts/deploy-web.sh` (#92).
 
 ## What you will still not have after this
 
@@ -74,14 +74,20 @@ Be honest with yourself about this list before the demo:
 
 - **No incidents unless something errors.** An engine that finds nothing on a quiet project is working. The
   demo needs a source of real errors: the demo app with its faults (#5), which is not built.
-- **The loop does not run.** Triage, fix, verify and review exist as tested stages, and nothing deploys them
-  (#74). So today's deployed Starfish *finds and shows* incidents; it does not yet *fix* any.
-- **No Slack, no pull request, no phone call** (#17, #37). The mounted GitHub token is read by nothing yet.
+- **The loop is not deployed.** Triage, fix, verify and review exist as tested stages, the loop that orders them
+  exists, and so do the pieces of one pass over the store (candidate selection, input assembly, `pnpm agent`).
+  Nothing deploys it as a job (#74): the entrypoint refuses to start until the verify step's isolation is set on
+  purpose, and that isolation is an open decision. So today's deployed Starfish *finds and shows* incidents;
+  it does not yet *fix* any.
+- **No Slack, no phone call, no issue filed** (#17, #37). The pull-request opener exists
+  (`src/integrations/githubPr.ts`, tested against a local git remote and a fake GitHub API, **never against real
+  GitHub**) and the mounted GitHub token has that one reader, but nothing that runs deployed calls it.
 - **No alert when ingestion stops**, only the UI's "engine stopped" line (#6).
 - **No App Check, no seeded evidence history** (#12). The public page shows what really happened and no more.
 
 Everything here is in the issues; the order that gets to the headline demo fastest is #5 (something to break),
-#74 (the loop as a job), #8's PR opener, then #11.
+#74 (the loop as a job, once the verify step's isolation is decided), then #11 (the index heal: only its parser
+and target guard exist).
 
 ## If a step fails
 
