@@ -14,8 +14,9 @@ The mockups follow the decisions already tracked in the issues:
 - **The demo app shares Starfish's GCP project** (#32).
 - **The screens are tracked as issues:** Live runs (#33), Overview (#38), incident detail (#39), phone escalation (#37), and Settings as part of runtime configuration (#7).
 
-Screenshots are rendered at 1× from the design canvas. The canvas itself is a private Claude
-artifact; ask the team for access.
+Screenshots are rendered at 1× from the design canvas, a Claude artifact called "Starfish Screens":
+<https://claude.ai/artifact/JuG4twJ3QNLjNMoqFVNVbj>. It is private to its owner until shared, so ask the team
+for access. Every screen here can be re-rendered from it.
 
 ## The demo flow
 

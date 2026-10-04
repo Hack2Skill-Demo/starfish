@@ -117,7 +117,9 @@ The public demo is designed to need no sign-in, with visitors as view-only guest
 
 ![Live runs: a missing-index fault, from first error to an evidence PR waiting for a human](docs/design/screens/live-runs-index.png)
 
-Every screen, and what each one is for: [`docs/design/mockups.md`](docs/design/mockups.md).
+Every screen, and what each one is for: [`docs/design/mockups.md`](docs/design/mockups.md). The editable
+design canvas is [Starfish Screens](https://claude.ai/artifact/JuG4twJ3QNLjNMoqFVNVbj) (private until
+shared; ask the team for access).
 
 ## Google Cloud stack
 
