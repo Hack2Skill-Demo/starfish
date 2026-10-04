@@ -19,7 +19,8 @@
     "verify": "node scripts/verify-gate.mjs",
     "test:emulator": "pnpm dlx firebase-tools@14 emulators:exec --only firestore --project demo-starfish-rules 'vitest run -c vitest.emulator.config.ts'",
     "build": "pnpm -C web build",
-    "dev:emulated": "pnpm dlx firebase-tools@14 emulators:exec --only auth,firestore --project demo-starfish 'node scripts/seed-emulator.mjs && VITE_USE_EMULATORS=1 VITE_FIREBASE_API_KEY=demo VITE_FIREBASE_AUTH_DOMAIN=demo-starfish.firebaseapp.com VITE_FIREBASE_PROJECT_ID=demo-starfish VITE_FIREBASE_APP_ID=demo VITE_STARFISH_ENV=demo pnpm -C web dev'"
+    "dev:emulated": "pnpm dlx firebase-tools@14 emulators:exec --only auth,firestore --project demo-starfish 'node scripts/seed-emulator.mjs && VITE_USE_EMULATORS=1 VITE_FIREBASE_API_KEY=demo VITE_FIREBASE_AUTH_DOMAIN=demo-starfish.firebaseapp.com VITE_FIREBASE_PROJECT_ID=demo-starfish VITE_FIREBASE_APP_ID=demo VITE_STARFISH_ENV=demo pnpm -C web dev'",
+    "audit:contrast": "node scripts/contrast-audit.mjs"
   },
   "dependencies": {
     "@google-cloud/logging": "^11.2.0",
@@ -34,6 +35,7 @@
     "eslint": "^10.11.0",
     "eslint-plugin-react-hooks": "^7.1.1",
     "firebase": "12.19.0",
+    "playwright-core": "1.63.0",
     "globals": "^17.12.0",
     "tsx": "^4.19.0",
     "typescript": "^5.6.0",

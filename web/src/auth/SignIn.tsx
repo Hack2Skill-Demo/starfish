@@ -30,7 +30,7 @@ export function signInErrorMessage(code: string | undefined): string {
 }
 
 const inputClass =
-  "h-11 w-full rounded-lg border border-gray-200 bg-transparent px-4 py-2.5 text-sm shadow-xs placeholder:text-gray-400 focus:border-brand-300 focus:outline-none focus:ring focus:ring-brand-500/10 disabled:bg-gray-100 disabled:text-gray-500 dark:border-gray-700 dark:bg-gray-900 dark:text-white/90 dark:placeholder:text-white/30 dark:disabled:bg-gray-800";
+  "h-11 w-full rounded-lg border border-gray-200 bg-transparent px-4 py-2.5 text-sm shadow-xs placeholder:text-gray-500 focus:border-brand-300 focus:outline-none focus:ring focus:ring-brand-500/10 disabled:bg-gray-100 disabled:text-gray-500 dark:border-gray-700 dark:bg-gray-900 dark:text-white/90 dark:placeholder:text-gray-400 dark:disabled:bg-gray-800";
 
 /**
  * Where to go after signing in: the page the route guard bounced the operator
@@ -131,7 +131,7 @@ export function SignIn() {
                     onClick={() => setShowPassword(!showPassword)}
                     disabled={isLoading}
                     aria-label={showPassword ? "Hide password" : "Show password"}
-                    className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 disabled:cursor-not-allowed dark:hover:text-gray-300"
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-700 disabled:cursor-not-allowed dark:text-gray-400 dark:hover:text-gray-300"
                   >
                     {showPassword ? <EyeOff className="h-5 w-5" /> : <Eye className="h-5 w-5" />}
                   </button>

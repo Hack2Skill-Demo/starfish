@@ -14,7 +14,7 @@ export function AccessDenied() {
   if (loading) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-gray-50 dark:bg-gray-900">
-        <div className="text-gray-500 dark:text-gray-400">Loading...</div>
+        <div className="text-gray-600 dark:text-gray-400">Loading...</div>
       </div>
     );
   }
@@ -40,11 +40,11 @@ export function AccessDenied() {
         <div className="mb-6 space-y-3 text-center">
           <p className="text-gray-600 dark:text-gray-400">You don&apos;t have permission to access Starfish.</p>
           {user?.email && (
-            <p className="text-sm text-gray-500">
+            <p className="text-sm text-gray-600 dark:text-gray-400">
               Signed in as: <span className="font-medium">{user.email}</span>
             </p>
           )}
-          <p className="text-sm text-gray-500">
+          <p className="text-sm text-gray-600 dark:text-gray-400">
             An admin grants access by adding a <code>roles</code> array to your record in{" "}
             <code>{webConfig().usersCollection}</code>.
           </p>

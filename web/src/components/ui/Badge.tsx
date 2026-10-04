@@ -9,7 +9,7 @@ const TONES: Record<BadgeTone, string> = {
   success: "bg-success-50 text-success-700 dark:bg-success-500/15 dark:text-success-400",
   warning: "bg-warning-50 text-warning-700 dark:bg-warning-500/15 dark:text-warning-400",
   error: "bg-error-50 text-error-700 dark:bg-error-500/15 dark:text-error-400",
-  info: "bg-info-50 text-info-700 dark:bg-info-500/15 dark:text-info-400",
+  info: "bg-info-50 text-info-800 dark:bg-info-500/15 dark:text-info-400",
 };
 
 /** A small pill label. `tone` picks the colour; there is one size. */

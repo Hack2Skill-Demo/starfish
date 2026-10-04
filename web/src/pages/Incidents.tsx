@@ -64,7 +64,7 @@ const DEFAULT_WINDOW: WindowValue = "24h";
 const STATUS_STYLES: Record<IncidentStatus, string> = {
   new: "bg-error-100 text-error-700 dark:bg-error-900/30 dark:text-error-400",
   acknowledged: "bg-warning-100 text-warning-700 dark:bg-warning-900/30 dark:text-warning-400",
-  logged: "bg-info-100 text-info-700 dark:bg-info-900/30 dark:text-info-500",
+  logged: "bg-info-100 text-info-800 dark:bg-info-900/30 dark:text-info-500",
   resolved: "bg-success-100 text-success-700 dark:bg-success-900/30 dark:text-success-400",
   recurred: "bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400",
   ignored: "bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400",
@@ -81,7 +81,7 @@ export const STATUS_LABELS: Record<IncidentStatus, string> = {
 
 // GitHub's own PR colours: open green, merged purple, closed-unmerged red.
 const PR_STYLES: Record<PrState, string> = {
-  open: "text-green-600 hover:text-green-700 dark:text-green-400",
+  open: "text-success-700 hover:text-success-800 dark:text-green-400",
   merged: "text-purple-600 hover:text-purple-700 dark:text-purple-400",
   closed: "text-red-600 hover:text-red-700 dark:text-red-400",
 };
@@ -182,7 +182,7 @@ export default function Incidents() {
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Incidents</h1>
-            <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
+            <p className="mt-1 text-sm text-gray-600 dark:text-gray-400">
               Production errors from the last {windowHours}h, grouped by fingerprint
             </p>
           </div>
@@ -205,7 +205,7 @@ export default function Incidents() {
             <button
               onClick={() => refetch()}
               disabled={isFetching}
-              className="flex items-center gap-2 rounded-lg bg-brand-500 px-4 py-2 text-sm font-medium text-white hover:bg-brand-600 disabled:opacity-50"
+              className="flex items-center gap-2 rounded-lg bg-brand-700 px-4 py-2 text-sm font-medium text-white hover:bg-brand-800 disabled:opacity-50"
             >
               <RefreshCw className={`h-4 w-4 ${isFetching ? "animate-spin" : ""}`} />
               Refresh
@@ -230,7 +230,7 @@ export default function Incidents() {
               onClick={() => setParam("status", s)}
               className={`rounded-full px-3 py-1 text-sm font-medium transition-colors ${
                 status === s
-                  ? "bg-brand-500 text-white"
+                  ? "bg-brand-700 text-white"
                   : "bg-gray-100 text-gray-600 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-400 dark:hover:bg-gray-700"
               }`}
             >
@@ -252,7 +252,7 @@ export default function Incidents() {
               ))}
             </select>
             <div className="relative">
-              <div className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3 text-gray-400">
+              <div className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3 text-gray-500 dark:text-gray-400">
                 <Search className="h-4 w-4" />
               </div>
               <input
@@ -261,7 +261,7 @@ export default function Incidents() {
                 placeholder="Filter by function…"
                 value={fnSearch}
                 onChange={(e) => setParam("fn", e.target.value, true)}
-                className="rounded-lg border border-gray-200 bg-white py-2 pl-9 pr-3 text-sm focus:border-brand-300 focus:outline-none focus:ring focus:ring-brand-500/10 dark:border-gray-700 dark:bg-gray-800 dark:text-white"
+                className="rounded-lg border border-gray-200 bg-white py-2 pl-9 pr-3 text-sm placeholder:text-gray-500 focus:border-brand-300 focus:outline-none focus:ring focus:ring-brand-500/10 dark:border-gray-700 dark:bg-gray-800 dark:text-white dark:placeholder:text-gray-400"
               />
             </div>
           </div>
@@ -269,7 +269,7 @@ export default function Incidents() {
 
         <div className="overflow-hidden rounded-lg border border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-800">
           {isLoading ? (
-            <div className="flex items-center justify-center py-12 text-gray-400">
+            <div className="flex items-center justify-center py-12 text-gray-600 dark:text-gray-400">
               <RefreshCw className="mr-2 h-5 w-5 animate-spin" />
               Loading incidents…
             </div>
@@ -338,7 +338,7 @@ export default function Incidents() {
                                 disabled={!hasDetail}
                                 aria-expanded={isExpanded}
                                 aria-label={isExpanded ? "Hide incident details" : "Show incident details"}
-                                className="mt-0.5 rounded p-0.5 text-gray-400 hover:bg-gray-100 hover:text-gray-600 disabled:cursor-default disabled:opacity-30 dark:hover:bg-gray-700"
+                                className="mt-0.5 rounded p-0.5 text-gray-500 hover:bg-gray-100 hover:text-gray-700 disabled:cursor-default disabled:opacity-30 dark:text-gray-400 dark:hover:bg-gray-700 dark:hover:text-gray-200"
                               >
                                 {isExpanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
                               </button>
@@ -354,7 +354,7 @@ export default function Incidents() {
                                       href={logsUrl}
                                       target="_blank"
                                       rel="noopener noreferrer"
-                                      className="inline-flex items-center gap-1 text-xs font-medium text-info-600 hover:underline dark:text-info-500"
+                                      className="inline-flex items-center gap-1 text-xs font-medium text-info-800 hover:underline dark:text-info-500"
                                     >
                                       <ExternalLink className="h-3 w-3" />
                                       Logs
@@ -365,7 +365,7 @@ export default function Incidents() {
                                       href={row.githubIssueUrl}
                                       target="_blank"
                                       rel="noopener noreferrer"
-                                      className="inline-flex items-center gap-1 text-xs font-medium text-info-600 hover:underline dark:text-info-500"
+                                      className="inline-flex items-center gap-1 text-xs font-medium text-info-800 hover:underline dark:text-info-500"
                                     >
                                       <CircleDot className="h-3 w-3" />
                                       {row.githubIssueNumber ? `#${row.githubIssueNumber}` : "Issue"}
@@ -394,7 +394,7 @@ export default function Incidents() {
                               {row.errorName && row.errorName !== row.errorType && (
                                 <span className="text-xs text-gray-500 dark:text-gray-400">{row.errorName}</span>
                               )}
-                              {row.errorCode && <span className="text-xs text-gray-400">{row.errorCode}</span>}
+                              {row.errorCode && <span className="text-xs text-gray-500 dark:text-gray-400">{row.errorCode}</span>}
                             </div>
                             <p className="mt-1 max-w-xs truncate text-sm text-gray-600 2xl:max-w-md dark:text-gray-400" title={row.errorMessage}>
                               {row.errorMessage}
@@ -446,7 +446,7 @@ export default function Incidents() {
                             <td className="px-4 py-3">
                               <div className="flex items-center gap-1">
                                 {busy ? (
-                                  <RefreshCw className="h-4 w-4 animate-spin text-gray-400" />
+                                  <RefreshCw className="h-4 w-4 animate-spin text-gray-500 dark:text-gray-400" />
                                 ) : (
                                   actions.map((a) => {
                                     const Icon = { acknowledge: Check, resolve: CheckCircle, ignore: EyeOff, reopen: RotateCcw }[a];
@@ -457,7 +457,7 @@ export default function Incidents() {
                                         onClick={() => handleAction(row, a)}
                                         aria-label={`${label} ${row.functionName}`}
                                         title={label}
-                                        className="rounded p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-700 dark:hover:bg-gray-700"
+                                        className="rounded p-1.5 text-gray-500 hover:bg-gray-100 hover:text-gray-700 dark:text-gray-400 dark:hover:bg-gray-700 dark:hover:text-gray-200"
                                       >
                                         <Icon className="h-4 w-4" />
                                       </button>
