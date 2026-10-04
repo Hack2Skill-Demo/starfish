@@ -45,7 +45,17 @@ export interface ParsedLogEntry {
 }
 
 /** The slice of config that decides which log entries count as incidents. */
-export type LogSource = Pick<StarfishConfig, "logResourceTypes" | "ignoredMessages">;
+export type LogSource = Pick<StarfishConfig, "logResourceTypes" | "ignoredMessages"> & {
+  /** Functions and services never read (see `StarfishConfig.excludedServices`). */
+  excludedServices?: readonly string[];
+};
+
+/** True when `name` is one of `excluded`, compared on the canonical spelling. */
+export function isExcludedService(name: string | undefined, excluded: readonly string[]): boolean {
+  if (!name || excluded.length === 0) return false;
+  const canonical = canonicalFunctionName(name);
+  return excluded.some((e) => canonicalFunctionName(e) === canonical);
+}
 
 /**
  * Pull a readable string out of a `jsonPayload.error` value. Handlers usually log
@@ -81,11 +91,17 @@ function extractProjectId(entry: RawLogEntry): string | undefined {
 
 export function parseLogEntry(
   entry: RawLogEntry,
-  ignoredMessages: readonly string[] = DEFAULT_IGNORED_MESSAGES
+  ignoredMessages: readonly string[] = DEFAULT_IGNORED_MESSAGES,
+  excludedServices: readonly string[] = []
 ): ParsedLogEntry | null {
   const labels = entry.metadata?.resource?.labels;
   const functionName = labels?.function_name ?? labels?.service_name;
   if (!functionName) return null;
+  // Checked on both labels: an entry can carry a function_name AND a service_name (a gen2 function is
+  // both), and either one naming an excluded service keeps it out.
+  if (isExcludedService(labels?.function_name, excludedServices) || isExcludedService(labels?.service_name, excludedServices)) {
+    return null;
+  }
 
   const data = entry.data;
   let errorMessage = "";
@@ -189,6 +205,15 @@ export function buildLogFilter(source: LogSource, since: Date, functionName?: st
     clauses.push(
       `(resource.labels.function_name=${quote(safe)} OR resource.labels.service_name=${quote(canonicalFunctionName(safe))})`
     );
+  }
+  for (const name of source.excludedServices ?? []) {
+    // Both spellings on both labels: a first-generation function_name keeps the id as deployed, a
+    // service_name is canonical. The charset reduction keeps the literal safe, like `functionName` above.
+    const safe = name.replace(/[^A-Za-z0-9_-]/g, "");
+    if (!safe) continue;
+    for (const spelling of new Set([safe, canonicalFunctionName(safe)])) {
+      clauses.push(`NOT resource.labels.function_name=${quote(spelling)}`, `NOT resource.labels.service_name=${quote(spelling)}`);
+    }
   }
   for (const m of source.ignoredMessages) {
     clauses.push(`NOT textPayload:${quote(m)}`, `NOT jsonPayload.message:${quote(m)}`);

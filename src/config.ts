@@ -80,6 +80,16 @@ export interface StarfishConfig {
   usersCollection: string;
   /** Firestore collection of audit entries for admin actions on the engine (src/ingest/retire.ts). */
   auditCollection: string;
+  /**
+   * Functions and services whose errors are never ingested, matched on the canonical spelling
+   * (lowercased, `_` as `-`) against both the function and the service label. Starfish's own deployed
+   * service goes here: when it shares a project with the app it watches (#32), reading its own errors
+   * would turn its failures into incidents, and the fixer could then propose patches to Starfish itself.
+   * Default `starfish`; set it to whatever the Cloud Run service or job is actually called.
+   * Deliberately environment-only, not an admin-editable setting: it is a safety guard against a
+   * feedback loop, not an operational preference.
+   */
+  excludedServices: string[];
   /** Firestore collection holding incidents. */
   incidentCollection: string;
   /**
@@ -126,6 +136,9 @@ export interface StarfishConfig {
    */
   ignoredMessages: string[];
 }
+
+/** Starfish's own service name: never ingested (see `excludedServices`). */
+export const DEFAULT_EXCLUDED_SERVICES = ["starfish"];
 
 /** Never editable by a proposed patch, on top of whatever the deployment lists. Secrets and CI, mainly. */
 export const DEFAULT_PATCH_EXCLUDED_PATHS = [
@@ -207,6 +220,7 @@ export function loadConfig(): StarfishConfig {
     modelCallBudget: positiveNumber(process.env.STARFISH_MODEL_CALL_BUDGET, 6, "STARFISH_MODEL_CALL_BUDGET"),
     usersCollection: process.env.STARFISH_USERS_COLLECTION || "starfish_users",
     auditCollection: process.env.STARFISH_AUDIT_COLLECTION || "starfish_audit",
+    excludedServices: parseList(process.env.STARFISH_EXCLUDED_SERVICES, ",") ?? DEFAULT_EXCLUDED_SERVICES,
     cycleCollection: process.env.STARFISH_CYCLE_COLLECTION || "starfish_cycles",
     leaseSeconds: positiveNumber(process.env.STARFISH_LEASE_SECONDS, 300, "STARFISH_LEASE_SECONDS"),
     cycleDeadlineMinutes: positiveNumber(process.env.STARFISH_CYCLE_DEADLINE_MINUTES, 60, "STARFISH_CYCLE_DEADLINE_MINUTES"),

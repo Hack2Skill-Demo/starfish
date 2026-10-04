@@ -45,6 +45,7 @@ function snapshot(config: StarfishConfig): StarfishConfig {
     ...config,
     logResourceTypes: Object.freeze([...config.logResourceTypes]) as string[],
     ignoredMessages: Object.freeze([...config.ignoredMessages]) as string[],
+    excludedServices: Object.freeze([...config.excludedServices]) as string[],
     servicePatterns: Object.freeze({ ...config.servicePatterns }),
   });
 }
