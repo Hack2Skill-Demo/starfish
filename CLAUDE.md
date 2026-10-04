@@ -170,7 +170,7 @@ Conventions that carry real weight (the `starfish-dev` skill has the reasoning):
 The operator UI: sign-in, an auth provider with race guards, a two-level layout, the
 **Incidents** page, a **Runs** page (live subscription to `{cycleCollection}` and its events,
 `web/src/lib/runs.ts`; the waterfall logic is pure in `runsModel.ts`: a step with no event is "not
-reached", a cycle whose lease ran out is not "in progress"), and a **Settings** page: the Gemini, GitHub and Slack connections, and an
+reached", a cycle whose lease ran out is not "in progress"), an **incident evidence** page (`/incidents/:id`, `lib/evidence.ts`: only stored records, never a placeholder result), and a **Settings** page: the Gemini, GitHub and Slack connections, and an
 admin editor for the runtime settings (`src/runtimeSettings.ts` reads what it saves).
 React 19, Vite, Tailwind 4, react-router, TanStack Query; Starfish's own theme in
 `web/src/styles/theme.css` and components in `web/src/components/ui/`.

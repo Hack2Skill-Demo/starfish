@@ -6,7 +6,7 @@
  * guest a list. The cycle list is newest-update first and needs the composite index in
  * firestore.indexes.json; a cycle's events are few, so they are read in full and put in order here.
  */
-import { collection, limit, onSnapshot, orderBy, query, where, type Unsubscribe } from "firebase/firestore";
+import { collection, doc, getDoc, limit, onSnapshot, orderBy, query, where, type Unsubscribe } from "firebase/firestore";
 import { firestore } from "./firebase";
 import { webConfig } from "./config";
 import { parseCycle, parseEvent, type CycleRow, type EventRow } from "./runsModel";
@@ -54,4 +54,15 @@ export function subscribeEvents(
     (snap) => onData(snap.docs.flatMap((d) => parseEvent(d.id, d.data()) ?? []).sort((a, b) => a.seq - b.seq)),
     onError
   );
+}
+
+/**
+ * One cycle by id, or null when there is none for this environment. The incident page reads its
+ * current recurrence's cycle by id (`{incidentId}_r{n}`), which needs no index.
+ */
+export async function readCycle(id: string, environment: string): Promise<CycleRow | null> {
+  const snap = await getDoc(doc(firestore(), webConfig().cycleCollection, id));
+  if (!snap.exists()) return null;
+  const row = parseCycle(snap.id, snap.data());
+  return row && row.environment === environment ? row : null;
 }

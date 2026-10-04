@@ -11,6 +11,7 @@ import { AccessDenied } from "./auth/AccessDenied";
 import { StarfishLayout } from "./layout/StarfishLayout";
 
 const Incidents = lazy(() => import("./pages/Incidents"));
+const IncidentDetail = lazy(() => import("./pages/IncidentDetail"));
 const Runs = lazy(() => import("./pages/Runs"));
 const Settings = lazy(() => import("./pages/Settings"));
 const NotFound = lazy(() => import("./pages/NotFound"));
@@ -32,6 +33,7 @@ export default function App() {
         >
           <Route index element={<Navigate to="/incidents" replace />} />
           <Route path="incidents" element={<Incidents />} />
+          <Route path="incidents/:id" element={<IncidentDetail />} />
           <Route path="runs" element={<Runs />} />
           <Route
             path="settings"

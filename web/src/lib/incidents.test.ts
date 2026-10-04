@@ -1,10 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 
+const getDoc = vi.hoisted(() => vi.fn());
+vi.mock("firebase/firestore", async (orig) => ({ ...(await orig<typeof import("firebase/firestore")>()), getDoc, doc: vi.fn(() => ({})) }));
 vi.mock("./firebase", () => ({ firestore: vi.fn() }));
 vi.mock("./config", () => ({ webConfig: () => ({ incidentCollection: "incidents" }) }));
 
 import { Timestamp } from "firebase/firestore";
-import { countInWindow, nextStatus, toRow } from "./incidents";
+import { countInWindow, getIncident, nextStatus, toRow } from "./incidents";
 
 const HOUR = 3600_000;
 const now = Date.parse("2026-09-24T12:00:00.000Z");
@@ -112,5 +114,24 @@ describe("nextStatus — the transitions operators may make", () => {
     ["recurred", "reopen", null],
   ] as const)("%s + %s -> %s", (from, action, to) => {
     expect(nextStatus(from, action)).toBe(to);
+  });
+});
+
+describe("getIncident", () => {
+  const snap = (data: Record<string, unknown> | null) => ({ exists: () => data !== null, id: "abc", data: () => data });
+  const stored = { functionName: "fn", environment: "demo", status: "new", occurrenceCount: 1 };
+
+  it("returns the incident for its own environment", async () => {
+    getDoc.mockResolvedValue(snap(stored));
+    expect(await getIncident("abc", "demo")).toMatchObject({ id: "abc", functionName: "fn" });
+  });
+
+  it("returns null for a missing incident, another environment's, and a retired one", async () => {
+    getDoc.mockResolvedValue(snap(null));
+    expect(await getIncident("abc", "demo")).toBeNull();
+    getDoc.mockResolvedValue(snap({ ...stored, environment: "prod" }));
+    expect(await getIncident("abc", "demo")).toBeNull();
+    getDoc.mockResolvedValue(snap({ ...stored, retired: true }));
+    expect(await getIncident("abc", "demo")).toBeNull();
   });
 });

@@ -82,6 +82,7 @@ await db.doc("starfish_runs/last_run").set({
 // Agent cycles and their run events (src/agent/cycle.ts), so the Runs page has something to show:
 // one that ended at triage (every later step "not reached"), one still running, one waiting for a
 // person with a pull request. Illustrative data for the emulator only: no job runs the loop yet.
+const SEED_PATCH = "0123456789abcdef".repeat(4);
 const cycles = [
   {
     id: "seed-0_r0", state: "declined", path: "decline", outcome: "declined by triage", ageMin: 50,
@@ -104,9 +105,9 @@ const cycles = [
       ["cycle", "started", "Attempt 1", 0, { attempt: 1 }],
       ["triage", "decision", "Act: a missing await on a Firestore write", 0.4, { rule: "model-act" }, { decision: "act", rule: "model-act" }],
       ["fix", "proposed", "Proposed a one-line fix and a test", 1.5, {}, { outcome: "proposed" }],
-      ["verify", "passed", "The configured command passed on the patched tree", 2.6, {}, { status: "passed" }],
-      ["review", "approved", "The reviewer found nothing it could hold against the patch", 3.4, {}, { verdict: "approved" }],
-      ["pr", "opened", "Opened a pull request", 3.9, {}, { opened: true, number: 42, url: "https://github.com/example/app/pull/42" }],
+      ["verify", "passed", "The configured command passed on the patched tree", 2.6, {}, { status: "passed", rule: "passed", patchSha256: SEED_PATCH }],
+      ["review", "approved", "The reviewer found nothing it could hold against the patch", 3.4, {}, { verdict: "approved", rule: "survived", patchSha256: SEED_PATCH }],
+      ["pr", "opened", "Opened a pull request", 3.9, {}, { opened: true, number: 42, url: "https://github.com/example/app/pull/42", patchSha256: SEED_PATCH }],
     ],
   },
 ];

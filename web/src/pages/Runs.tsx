@@ -8,7 +8,7 @@
  * that exists; it says so instead of looking like a quiet day.
  */
 import { useEffect, useMemo, useState } from "react";
-import { useSearchParams } from "react-router";
+import { Link, useSearchParams } from "react-router";
 import { Check, CircleDashed, ExternalLink, Loader2, Workflow } from "lucide-react";
 import PageMeta from "../components/PageMeta";
 import { Badge } from "../components/ui/Badge";
@@ -208,6 +208,12 @@ function RunDetail({ cycle, environment, now }: { cycle: CycleRow; environment: 
             {formatDateTime(cycle.createdAt)}, attempt {cycle.attempts}
           </dd>
         </dl>
+        <Link
+          to={`/incidents/${encodeURIComponent(cycle.incidentId)}`}
+          className="mr-4 inline-flex items-center gap-1 text-sm font-medium text-brand-700 hover:underline dark:text-brand-400"
+        >
+          Evidence for this incident
+        </Link>
         {prUrl && (
           <a
             href={prUrl}
