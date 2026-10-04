@@ -47,7 +47,7 @@ Where it currently holds, and where it doesn't:
 | Log source resource types | ⚠️ config, but attribution reads only `function_name` / `service_name`, so only Cloud Functions and Cloud Run work |
 | Framework-noise suppression list | ✅ config, callable GET-probe noise by default |
 | Incident store | ❌ assumes Firestore |
-| Verify-gate command | ❌ not built yet — must be config when it is |
+| Verify-gate command, timeout and excluded paths | ⚠️ environment only (`STARFISH_VERIFY_COMMAND`, `STARFISH_VERIFY_TIMEOUT_SECONDS`, `STARFISH_PATCH_EXCLUDED_PATHS`); `src/agent/verifyGate.ts` reads them, but no job calls it yet |
 
 The ❌ rows are tracked work, not accepted limitations.
 
@@ -197,8 +197,18 @@ fails closed, and redacts and bounds both what the model is shown and what it re
 tested with a stubbed model; **no job runs it**, the counter-check isn't fed to it by any run,
 and it is not on Google's Agent Development Kit yet.
 
-What does **not** exist yet is the rest of that half: fix drafting, the verify gate,
-adversarial review, the PR. That is the work, and it is gated on one question the
+The **verify gate** (`src/agent/verifyGate.ts`) is also built as a function and tested for real
+(real `git apply`, real child processes), and also run by no job. Given a checkout and a
+patch it applies the patch in a scratch copy without `.git` or `node_modules`, compares the
+trees to see what *actually* changed, and refuses a change to CI or secrets or any path the
+deployment excluded (the files that define the verify command and the tests), a symbolic link,
+a changed file mode, or too many files, all before running anything. Only then does it run the
+configured command with a scrubbed environment and a timeout, and reports bounded, redacted
+output tied to the SHA-256 of the exact patch. **It is not a sandbox:** the command runs as this
+process's user with the machine's network and filesystem, so it belongs on a disposable runner
+that holds no credentials, which is infrastructure that does not exist yet (#8).
+
+What does **not** exist yet is the rest of that half: fix drafting, adversarial review, the PR. That is the work, and it is gated on one question the
 [spike](docs/spike.md) exists to answer — does Gemini actually produce the patch a human
 wrote?
 
@@ -208,7 +218,7 @@ src/
   vertex.ts          Vertex AI client
   spike.ts           the fix-quality spike
   ingest/            logs -> classified, deduped incidents + counter-check
-  agent/             triage: act / notify / decline for one incident (a stage contract; not run by any job)
+  agent/             triage (act / notify / decline) and the verify gate: stage contracts, run by no job yet
 web/                 operator UI: sign-in, incidents, settings
 firestore.rules      what the UI may read and change (tested on the emulator)
 fixtures/incidents/   spike fixtures (synthetic; see docs/spike.md)

@@ -37,6 +37,20 @@ export interface StarfishConfig {
    * a valid settings document overrides the operational ones.
    */
   settingsCollection: string;
+  /**
+   * The command that proves a patch is acceptable, run in a scratch copy of the target repo with
+   * the patch applied (src/agent/verifyGate.ts). Exit 0 is the only thing that passes. Empty means
+   * no gate is configured, and then no patch is ever accepted: nothing would have proved it.
+   */
+  verifyCommand: string;
+  /** How long the verify command may run before it is killed and the patch is rejected. */
+  verifyTimeoutSeconds: number;
+  /**
+   * Paths a proposed patch may never touch (`.github/`, `.env*`, the files that define the verify
+   * command or the tests that judge it). A trailing `/` is a directory; `*` and `**` are globs; a
+   * pattern with no `/` matches that name at any depth. Matching ignores case.
+   */
+  patchExcludedPaths: string[];
   /** Firestore collection holding incidents. */
   incidentCollection: string;
   /**
@@ -84,6 +98,22 @@ export interface StarfishConfig {
   ignoredMessages: string[];
 }
 
+/** Never editable by a proposed patch, on top of whatever the deployment lists. Secrets and CI, mainly. */
+export const DEFAULT_PATCH_EXCLUDED_PATHS = [
+  ".git/",
+  ".github/",
+  ".claude/",
+  ".env",
+  ".env.*",
+  "*.pem",
+  "*.key",
+  "id_rsa*",
+  ".npmrc",
+  ".netrc",
+  "firebase-adminsdk*.json",
+  "service-account*.json",
+];
+
 /** Firebase gen1 functions log as cloud_function; gen2 and plain Cloud Run as cloud_run_revision. */
 export const DEFAULT_LOG_RESOURCE_TYPES = ["cloud_function", "cloud_run_revision"];
 
@@ -125,6 +155,16 @@ export function loadConfig(): StarfishConfig {
     incidentKeyCollection: process.env.STARFISH_INCIDENT_KEY_COLLECTION ?? "incident_keys",
     databaseId: process.env.STARFISH_DATABASE_ID || "starfish",
     servicePatterns: parseServicePatterns(process.env.STARFISH_SERVICE_PATTERNS),
+    verifyCommand: (process.env.STARFISH_VERIFY_COMMAND ?? "").trim(),
+    verifyTimeoutSeconds: positiveNumber(
+      process.env.STARFISH_VERIFY_TIMEOUT_SECONDS,
+      600,
+      "STARFISH_VERIFY_TIMEOUT_SECONDS"
+    ),
+    patchExcludedPaths: [
+      ...DEFAULT_PATCH_EXCLUDED_PATHS,
+      ...(parseList(process.env.STARFISH_PATCH_EXCLUDED_PATHS, ",") ?? []),
+    ],
     defaultLookbackHours: Number(process.env.STARFISH_LOOKBACK_HOURS ?? 24),
     ingestLagMinutes: positiveNumber(process.env.STARFISH_INGEST_LAG_MINUTES, 5, "STARFISH_INGEST_LAG_MINUTES"),
     ingestMaxWindowHours: positiveNumber(
