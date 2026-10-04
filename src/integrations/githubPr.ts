@@ -103,7 +103,7 @@ const MAX_OUTPUT_IN_BODY = 3_000;
 const MAX_ATTACKS_IN_BODY = 20;
 const MAX_FILES_IN_BODY = 50;
 
-const defaultRunGit: RunGit = (args, { cwd, env }) =>
+export const defaultRunGit: RunGit = (args, { cwd, env }) =>
   new Promise((resolve, reject) => {
     execFile("git", args, { cwd, env, timeout: GIT_TIMEOUT_MS, maxBuffer: 16 * 1024 * 1024 }, (err, stdout, stderr) => {
       if (err) reject(new Error(`git ${args[0]} failed: ${String(stderr || err.message).slice(0, 500)}`));
@@ -123,15 +123,20 @@ function apiUrlOk(url: string): boolean {
   }
 }
 
-/** The environment that gives git its credential: an extra header for an https remote, nothing for any other. */
-export function gitAuthEnv(remoteUrl: string, token: string, basics: { PATH?: string; HOME?: string }): NodeJS.ProcessEnv {
-  const base: NodeJS.ProcessEnv = {
+/** What a child git gets with no credential: PATH and HOME, and git told never to prompt or read other config. */
+export function gitBaseEnv(basics: { PATH?: string; HOME?: string }): NodeJS.ProcessEnv {
+  return {
     ...(basics.PATH !== undefined && { PATH: basics.PATH }),
     ...(basics.HOME !== undefined && { HOME: basics.HOME }),
     GIT_TERMINAL_PROMPT: "0",
     GIT_CONFIG_NOSYSTEM: "1",
     GIT_CONFIG_GLOBAL: "/dev/null",
   };
+}
+
+/** The environment that gives git its credential: an extra header for an https remote, nothing for any other. */
+export function gitAuthEnv(remoteUrl: string, token: string, basics: { PATH?: string; HOME?: string }): NodeJS.ProcessEnv {
+  const base = gitBaseEnv(basics);
   if (!remoteUrl.startsWith("https://")) return base;
   const basic = Buffer.from(`x-access-token:${token}`).toString("base64");
   return { ...base, GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "http.extraheader", GIT_CONFIG_VALUE_0: `Authorization: Basic ${basic}` };

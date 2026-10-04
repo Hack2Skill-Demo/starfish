@@ -47,6 +47,16 @@ export interface StarfishConfig {
   /** How long the verify command may run before it is killed and the patch is rejected. */
   verifyTimeoutSeconds: number;
   /**
+   * Where the verify command runs (#74). `none` (the default): nowhere, and the agent entrypoint refuses to
+   * start, because running the target repository's own tests is running candidate code and how that is
+   * isolated is undecided. `in-process`: on this machine, as this process's identity: NOT a sandbox, so only
+   * for a machine that holds no credentials the code must not reach. A real isolation (a disposable runner)
+   * would be a further value here.
+   */
+  verifyIsolation: "none" | "in-process";
+  /** The most cycles one agent pass starts. */
+  maxCyclesPerPass: number;
+  /**
    * Paths a proposed patch may never touch (`.github/`, `.env*`, the files that define the verify
    * command or the tests that judge it). A trailing `/` is a directory; `*` and `**` are globs; a
    * pattern with no `/` matches that name at any depth. Matching ignores case.
@@ -231,6 +241,8 @@ export function loadConfig(): StarfishConfig {
       600,
       "STARFISH_VERIFY_TIMEOUT_SECONDS"
     ),
+    verifyIsolation: parseVerifyIsolation(process.env.STARFISH_VERIFY_ISOLATION),
+    maxCyclesPerPass: positiveNumber(process.env.STARFISH_MAX_CYCLES_PER_PASS, 3, "STARFISH_MAX_CYCLES_PER_PASS"),
     patchExcludedPaths: [
       ...DEFAULT_PATCH_EXCLUDED_PATHS,
       ...(parseList(process.env.STARFISH_PATCH_EXCLUDED_PATHS, ",") ?? []),
@@ -300,6 +312,14 @@ function positiveNumber(raw: string | undefined, fallback: number, name: string)
   const n = Number(raw);
   if (!Number.isFinite(n) || n <= 0) throw new Error(`${name} must be a number above zero, got "${raw}"`);
   return n;
+}
+
+/** `none` when unset; anything but the two known values is a mistake worth refusing at startup. */
+function parseVerifyIsolation(raw: string | undefined): "none" | "in-process" {
+  const v = (raw ?? "").trim().toLowerCase();
+  if (v === "" || v === "none") return "none";
+  if (v === "in-process") return "in-process";
+  throw new Error(`STARFISH_VERIFY_ISOLATION must be none or in-process, got "${raw}"`);
 }
 
 /** true/false/1/0/yes/no, or the default when unset. Anything else is a mistake worth refusing at startup. */
