@@ -42,6 +42,7 @@ pnpm audit:contrast   # WCAG AA audit of the rendered UI (needs `pnpm dev:emulat
 pnpm spike            # the Gemini fix-quality spike (needs .env + Vertex access)
 bash .claude/hooks/git-branch-guard.test.sh        # hook suites
 bash .claude/hooks/pre-push-review-guard.test.sh
+bash .claude/hooks/lib/segments.test.sh
 bash .claude/hooks/config-boundary-guard.test.sh
 ```
 
@@ -97,7 +98,12 @@ and changes to what the pitch claims.
 - Never `--no-verify`; never force-push `main` (`git-branch-guard.sh` blocks both). If a
   hook is wrong, fix the hook.
 - `git push` is blocked until a fresh `starfish-code-review` is recorded:
-  `touch "$(git rev-parse --git-path starfish-review-ok)"` — a new commit re-arms it.
+  `touch "$(git rev-parse --git-path starfish-review-ok)"` — a new commit re-arms it. Do the
+  touch in its own step: the hook runs before the command and inspects every `git` on the
+  line (`cd x && git push`, `FOO=1 git push`, a push after a heredoc commit), so a
+  `touch … && git push` on one line is blocked. It does not look inside strings
+  (`bash -c "git push"`), follow `cd`, or catch scripts that run git: a guard against
+  recurring mistakes, not a sandbox.
 - `Closes #NNNN` in both the commit body and the PR body for every issue resolved.
 
 ## Architecture

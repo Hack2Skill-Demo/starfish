@@ -169,6 +169,50 @@ run_case allow feature/x "git -C . status -sb"
 run_case allow feature/x "git checkout -b feature/new origin/main"
 run_case allow feature/x "git branch -f feature/x origin/main"                 # -f on branch is not a push
 
+# ── Compound and prefixed commands (issue #45): every git command on the line is inspected ──
+run_case deny  feature/x "cd /repo && git push --force origin main"
+run_case deny  feature/x "echo hi; git push -f origin main"
+run_case deny  feature/x "FOO=1 git push --force origin main"
+run_case deny  feature/x "A=1 B=2 git push -f origin main"
+run_case deny  feature/x "(git push -f origin main)"
+run_case deny  feature/x "command git push -f origin main"
+run_case deny  feature/x "env GIT_X=1 git push -f origin main"
+run_case deny  feature/x "sudo -u deploy git push -f origin main"
+run_case deny  feature/x "time git push -f origin main"
+run_case deny  feature/x "if true; then git push -f origin main; fi"
+run_case deny  feature/x "for b in a b; do git push -f origin main; done"
+run_case deny  feature/x "git status | cat && git push -f origin main"
+run_case deny  feature/x 'echo $(git push -f origin main)'
+run_case deny  feature/x 'echo `git push -f origin main`'
+run_case deny  feature/x "git add -A && git commit --no-verify -m x"
+run_case deny  feature/x "cd x && git -C . commit -nm wip"
+run_case deny  feature/x "cd x && git -c core.hooksPath=/dev/null commit"
+run_case deny  feature/x "git fetch; git checkout -b hotfix/1.0.3 develop"
+run_case deny  main      "cd x && git push -f"                                  # bare force push, current branch main
+run_case deny  feature/x $'git commit -q -F - <<\'EOF\'\nmessage\nEOF\ngit push --force origin main'   # after a heredoc
+run_case deny  feature/x $'git status\ngit push -f origin main'                  # on its own line
+run_case deny  feature/x $'git commit -m x \\\n && git push -f origin main'      # after a line continuation
+
+# Text that merely CONTAINS a git command is not a git command.
+run_case allow feature/x "echo 'git push -f origin main'"
+run_case allow feature/x 'echo "a; git push -f origin main"'
+run_case allow feature/x 'grep -r "git push -f origin main" docs'
+run_case allow feature/x 'git commit -m "docs: explain git push --force origin main"'
+run_case allow feature/x '# git push -f origin main'
+run_case allow feature/x $'ls # a; git push -f origin main'
+run_case allow feature/x $'cat <<EOF\ngit push -f origin main\nEOF'              # heredoc body
+run_case allow feature/x $'git commit -q -F - <<\'EOF\'\nuse git push --force origin main with care\ngit push -f origin main\nEOF\ngit status'
+run_case allow feature/x 'cat <<<"git push -f origin main"'                       # here-string
+
+# Ordinary compound commands stay allowed.
+run_case allow feature/x "cd /repo && git push origin feature/x"
+run_case allow feature/x "git add -A && git commit -m 'fix: x' && git push -u origin feature/x"
+run_case allow feature/x "git status && git push --force-with-lease origin feature/x"
+run_case allow feature/x "cd web && pnpm test && git status"
+run_case allow feature/x "git log --oneline | head -5"
+run_case allow feature/x "git diff | git apply --check"
+run_case allow feature/x $'git add -A && git commit -q -F - <<\'EOF\'\nfix: don\'t "split" a; b\nEOF\ngit push --force-with-lease -u origin feature/x'
+
 echo ""
 echo "git-branch-guard tests: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
