@@ -41,6 +41,7 @@ pnpm -C web dev       # the operator UI on :5177
 pnpm audit:contrast   # WCAG AA audit of the rendered UI (needs `pnpm dev:emulated` + a Chromium)
 pnpm spike            # the Gemini fix-quality spike (needs .env + Vertex access)
 pnpm ingest           # one ingest run: next window(s) of the watched project's logs → the store
+PROJECT_ID=<p> scripts/deploy-gcp.sh   # Cloud Run job + Scheduler + Secret Manager; DRY_RUN=1 prints the plan (docs/deploy.md)
 pnpm scrub            # dry-run: how many stored incidents still hold a credential/email (--apply to rewrite)
 bash .claude/hooks/git-branch-guard.test.sh        # hook suites
 bash .claude/hooks/pre-push-review-guard.test.sh
@@ -145,6 +146,8 @@ src/
                    to the patch hash the gate tested. Not run by any job yet
   agent/verifyGate.ts  stage 3: apply a patch in a scratch copy, judge the tree that results, run the
                    configured command with a scrubbed env. Not a sandbox; not run by any job yet
+  (repo root)      Dockerfile = the engine image the Cloud Run job runs; scripts/deploy-gcp.sh deploys it
+                   (job, Scheduler, Secret Manager, IAM, Firestore rules). Written and tested by a dry run; not yet run against a real project
   runtimeSettings.ts  the settings document an admin edits: validated, applied over the
                    env defaults, last-good fallback, a frozen snapshot per run
 ```

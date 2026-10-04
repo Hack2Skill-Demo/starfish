@@ -37,7 +37,7 @@ Where it currently holds, and where it doesn't:
 |---|---|
 | Service attribution | ✅ config patterns — no hardcoded service list |
 | Project, environment, collection, database, lookback | ✅ config (engine `src/config.ts`, UI `web/src/lib/config.ts`); these are the defaults, and the engine's need a redeploy to change |
-| Watched project, environment label, log resource types, service patterns, noise list | ⚠️ an admin edits them on the Settings page; the engine validates the saved document and applies it over the defaults, falling back to the last good one (`src/runtimeSettings.ts`). `firestore.rules` let only admins write it, each save in one batch with an immutable audit entry (before and after) and a separate operator copy; the engine's last-good copy and any secret-shaped key are closed to clients. The editor and the engine run the same validator (`src/settingsSchema.ts`). Rules check each list's shape and size but not each entry (they have no loops); the engine checks entries on read. Tested on the emulator, and the editor's own save is the one the rules suite runs. `pnpm ingest` reads it on each run (`src/ingest/run.ts`), but **nothing schedules that yet** (#6), so today a saved document is read only when someone runs it; secrets (Secret Manager and its endpoint). Single-target: one watched project per deployment |
+| Watched project, environment label, log resource types, service patterns, noise list | ⚠️ an admin edits them on the Settings page; the engine validates the saved document and applies it over the defaults, falling back to the last good one (`src/runtimeSettings.ts`). `firestore.rules` let only admins write it, each save in one batch with an immutable audit entry (before and after) and a separate operator copy; the engine's last-good copy and any secret-shaped key are closed to clients. The editor and the engine run the same validator (`src/settingsSchema.ts`). Rules check each list's shape and size but not each entry (they have no loops); the engine checks entries on read. Tested on the emulator, and the editor's own save is the one the rules suite runs. `pnpm ingest` reads it on each run (`src/ingest/run.ts`), and `scripts/deploy-gcp.sh` defines the scheduled job that runs it, but that script has **not been run against a real project yet** (#6), so until it has, a saved document is read only when someone runs `pnpm ingest`; secrets (Secret Manager and its endpoint). Single-target: one watched project per deployment |
 | Vertex project, model and region | ⚠️ environment only (`STARFISH_VERTEX_PROJECT_ID`, defaulting to `GOOGLE_CLOUD_PROJECT`, so Gemini can run in a different project from the store): `vertex.ts` reads them itself, so a settings document can't change them yet |
 | Firebase project the UI connects to | ✅ read at startup from Hosting's `/__/firebase/init.json`, so one build serves any project (`VITE_FIREBASE_*` is the local-dev fallback). Untested against a real Hosting site until the deploy path (#6) exists |
 | UI environment label | ✅ follows the runtime settings once signed in (the build-time `VITE_STARFISH_ENV` is the fallback when none is set or the read fails) |
@@ -48,6 +48,7 @@ Where it currently holds, and where it doesn't:
 | Ingest lag, longest window, run-record collection | ⚠️ environment only (`STARFISH_INGEST_LAG_MINUTES`, `STARFISH_INGEST_MAX_WINDOW_HOURS`, `STARFISH_RUN_COLLECTION`); the rules name `starfish_runs` too |
 | Log source resource types | ⚠️ config, but attribution reads only `function_name` / `service_name`, so only Cloud Functions and Cloud Run work |
 | Framework-noise suppression list | ✅ config, callable GET-probe noise by default |
+| Deployment: project, region, schedule, the watched and Gemini projects, the environment label | ✅ environment variables of `scripts/deploy-gcp.sh`; no file is edited. Written, **not yet run against a real project** (#6) |
 | Incident store | ❌ assumes Firestore |
 | Verify-gate command, timeout and excluded paths | ⚠️ environment only (`STARFISH_VERIFY_COMMAND`, `STARFISH_VERIFY_TIMEOUT_SECONDS`, `STARFISH_PATCH_EXCLUDED_PATHS`); `src/agent/verifyGate.ts` reads them, but no job calls it yet |
 
@@ -116,7 +117,7 @@ descriptive settings page. The mockups below show where it is going and how the 
 - **Pre-recorded phone call:** to the on-call person when Slack goes unanswered.
 - **Settings:** connections, the engine's rules and on-call.
 
-The Incidents page opens with a line saying whether the engine is running (from the engine's last-run record: failed, stopped past a configurable threshold, read capped, or never recorded), so a quiet list can't pass for good news; nothing writes that record in production until `pnpm ingest` is scheduled (#6).
+The Incidents page opens with a line saying whether the engine is running (from the engine's last-run record: failed, stopped past a configurable threshold, read capped, or never recorded), so a quiet list can't pass for good news; nothing writes that record in production until the ingest job is deployed and scheduled: `scripts/deploy-gcp.sh` does both but has not been run against a real project yet (#6).
 
 The public demo needs no sign-in: a visitor is signed in anonymously and sees the incidents and a view-only Settings page, with no triage buttons (#12). That needs Anonymous sign-in enabled in the Firebase project and only `demo`-labelled data; App Check, the seeded evidence history and the uptime check are not built. A private deployment leaves Anonymous sign-in disabled and still requires an operator account.
 
@@ -128,8 +129,20 @@ through them, open [`docs/design/html/index.html`](docs/design/html/index.html) 
 
 ## Google Cloud stack
 
-Vertex AI (Gemini) · Cloud Run / Firebase Functions · Firestore · Cloud Scheduler ·
-Cloud Logging · Cloud Monitoring · Secret Manager
+What each service does here, and how far it has got. "Written" means the code or script exists and
+is tested; "deployed" would mean it has run in a real project, and **nothing has yet** (#6).
+
+| Service | Used for | Status |
+|---|---|---|
+| Vertex AI (Gemini) | triage, fix drafting, adversarial review | built as stages with a stubbed model; the spike runs real Gemini on fixtures |
+| Cloud Logging | the errors Starfish watches | built (ingest) |
+| Firestore (its own `starfish` database) | incidents, settings, cycles, run records | built; rules and store tested on the emulator |
+| Firebase Auth | operator sign-in, guest view | built |
+| Cloud Run (a job) | runs one ingest per tick, as its own least-privilege service account | `Dockerfile` and deploy script written; not deployed |
+| Cloud Scheduler | starts that job on a cron (`SCHEDULE`, hourly by default) | in the deploy script; not deployed |
+| Secret Manager | the GitHub token the pull-request step will need | secret, access grant and mount are in the deploy script; **nothing in the engine reads it yet**, because the step that opens pull requests is not built |
+| Cloud Build, Artifact Registry | build the image (`gcloud run jobs deploy --source`) | in the deploy script; not deployed |
+| Cloud Monitoring | a second signal beside logs (see the blind spot above) | planned |
 
 ## Status
 
@@ -157,7 +170,7 @@ apparent over-engineering is scar tissue from real incidents, and the tests in
   retry replays the same window, and two runs that overlap are given the same one (claimed in a transaction); the incident key remembers the windows it applied, so a window
   replayed after a half-failed run counts once, even under concurrency (`run.emulator.test.ts`,
   `store.emulator.test.ts`). A read that hits the 5,000-entry cap is flagged on the run record,
-  not called complete. `pnpm ingest` runs this once; nothing schedules it yet (#6). The checkpoint
+  not called complete. `pnpm ingest` runs this once; the Cloud Run job and Scheduler that would run it on a schedule are written (`scripts/deploy-gcp.sh`) but not yet deployed anywhere (#6). The checkpoint
   is per (watched project, environment) and is not carried over when settings change either
 - an admin can retire an incident (`src/ingest/retire.ts`): it is closed for good with its history
   kept, its incident key is removed, and the same error firing again opens a **new** incident
@@ -170,8 +183,8 @@ apparent over-engineering is scar tissue from real incidents, and the tests in
 - ingest can be run on demand by an admin (`src/ingest/trigger.ts`): the **same** `runIngest` as a scheduled
   run (same windows, checkpoint and last-run record, and two together converge), behind an admin check
   made from the operator record and an audit entry written before the run. **Not built:** the endpoint
-  or Settings action that calls it, and the short schedule for recording the demo, which lives in Cloud
-  Scheduler (#6); a setting nothing reads would be a control that does nothing
+  or Settings action that calls it, and the short schedule for recording the demo, which is the `SCHEDULE` of
+  the deploy script (#6), not yet deployed; a setting nothing reads would be a control that does nothing
 - a fingerprint ignores what varies per occurrence (ids, paths, timestamps, counts) but not
   what makes a bug distinct (status codes, quoted property names), and treats a function's
   first- and second-generation spellings as one
@@ -300,6 +313,10 @@ pnpm -C web dev         # operator UI on :5177 (copy web/.env.example to web/.en
 pnpm dev:emulated       # the UI against seeded local emulators, no GCP project needed
 pnpm spike              # fix-quality spike (needs Vertex AI access)
 ```
+
+To deploy the ingest job and its schedule to a project (needs `gcloud`; `DRY_RUN=1` prints every
+command and changes nothing): `PROJECT_ID=<project> scripts/deploy-gcp.sh`. What it creates, the
+identities and what to check after: [`docs/deploy.md`](docs/deploy.md).
 
 Requires Node 22+ and a GCP project with the Vertex AI API enabled. Starfish keeps its
 incident store in its own Firestore database, `starfish`, so its rules and indexes never

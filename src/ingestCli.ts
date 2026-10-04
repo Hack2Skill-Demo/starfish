@@ -1,7 +1,8 @@
 /**
- * `pnpm ingest`: one scheduled ingest run (see src/ingest/run.ts). This is the entrypoint a Cloud
- * Run job would execute on a schedule (#6); nothing deploys it yet. Exits 1 when the run failed,
- * so a scheduler or a shell sees the failure.
+ * `pnpm ingest`: one scheduled ingest run (see src/ingest/run.ts). This is the entrypoint the
+ * Cloud Run job runs (the Dockerfile's command; scripts/deploy-gcp.sh deploys and schedules it, but
+ * has not yet been run against a real project, #6). Exits 1 when the run failed, so Cloud Run, a
+ * scheduler or a shell sees the failure.
  *
  * It reads the watched project's Cloud Logging and writes Starfish's store, so it needs
  * credentials for both (or the emulator, FIRESTORE_EMULATOR_HOST, for the store).
