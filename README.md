@@ -110,7 +110,7 @@ Each rung is a prerequisite for the next. Rung 4 is not a switch we get to flip 
 ## Where the UI is heading
 
 **Mostly designed, not built.** The operator UI today has sign-in, an **Overview** landing page, the
-incidents table, an editable settings page and a **Runs** page. The mockups below show where it is going and how the
+incidents table, an editable settings page, a **Runs** page and an incident evidence page. The mockups below show where it is going and how the
 demo runs.
 
 - **Live runs:** a first version is built: the **Runs** page lists the agent's cycles and draws
