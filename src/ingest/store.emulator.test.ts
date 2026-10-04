@@ -220,3 +220,67 @@ describe("upsertIncident on the emulator", () => {
     expect((await keys())[0]?.get("incidentId")).toBe(fresh.id);
   });
 });
+
+describe("upsertIncident replays on the emulator", () => {
+  const inWindow = (windowId: string, atMs: number, count = 1): IncidentInput => ({ ...occurrence(atMs, count), windowId });
+  const other = (windowId: string): IncidentInput => ({
+    ...inWindow(windowId, base, 2),
+    functionName: "orderSync",
+    errorMessage: "order sync timed out",
+  });
+
+  it("applying the same window twice counts it once", async () => {
+    expect(await upsert(inWindow("w1", base, 5))).toBe("new");
+    expect(await upsert(inWindow("w1", base, 5))).toBe("duplicate");
+
+    const [doc] = await incidents();
+    expect(doc?.get("occurrenceCount")).toBe(5);
+    expect(bucketTotal(doc?.get("occurrencesByHour") as Record<string, number>)).toBe(5);
+  });
+
+  it("a different window still counts", async () => {
+    await upsert(inWindow("w1", base, 5));
+    expect(await upsert(inWindow("w2", base + HOUR, 3))).toBe("updated");
+    expect((await incidents())[0]?.get("occurrenceCount")).toBe(8);
+  });
+
+  it("a replay of a later window is recognised too, not only the one that opened the incident", async () => {
+    await upsert(inWindow("w1", base, 5));
+    await upsert(inWindow("w2", base + HOUR, 3));
+    expect(await upsert(inWindow("w2", base + HOUR, 3))).toBe("duplicate");
+
+    expect((await incidents())[0]?.get("occurrenceCount")).toBe(8);
+    expect((await keys())[0]?.get("appliedWindows")).toEqual(["w1", "w2"]);
+  });
+
+  it("concurrent retries of one window count it exactly once", async () => {
+    const outcomes = await Promise.all(Array.from({ length: 8 }, () => upsert(inWindow("w1", base, 3))));
+
+    expect(tally(outcomes)).toEqual({ new: 1, duplicate: 7 });
+    const [doc] = await incidents();
+    expect(doc?.get("occurrenceCount")).toBe(3);
+    expect((await keys())[0]?.get("appliedWindows")).toEqual(["w1"]);
+  });
+
+  it("a run that failed part-way and is retried over the same window counts every incident once", async () => {
+    // First attempt: only the first incident committed before the run died.
+    await upsert(inWindow("w1", base, 5));
+    // The retry replays the whole window.
+    const retry = await Promise.all([upsert(inWindow("w1", base, 5)), upsert(other("w1"))]);
+
+    expect(tally(retry)).toEqual({ duplicate: 1, new: 1 });
+    const counts = Object.fromEntries((await incidents()).map((d) => [d.get("functionName"), d.get("occurrenceCount")]));
+    expect(counts).toEqual({ mailDrainer: 5, orderSync: 2 });
+  });
+
+  it("a replay does not reopen an incident an operator resolved after the first application", async () => {
+    await upsert(inWindow("w1", base, 5));
+    const [doc] = await incidents();
+    await doc!.ref.update({ status: "resolved", resolvedAt: Timestamp.fromMillis(Date.now() - 1000) });
+
+    // Same window, replayed after the resolve: its occurrences are not a regression.
+    expect(await upsert(inWindow("w1", Date.now(), 5))).toBe("duplicate");
+    expect((await incidents())[0]?.get("status")).toBe("resolved");
+  });
+});
+

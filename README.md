@@ -146,6 +146,10 @@ apparent over-engineering is scar tissue from real incidents, and the tests in
   concurrent ingest runs converge on one incident, lose no hourly count, and an operator
   resolving an incident mid-run either lands after the occurrence or turns it into exactly
   one recurrence (`store.emulator.test.ts`, on the emulator)
+- an upsert can carry the ingest window it came from; the incident key remembers the windows
+  it applied, so a window replayed after a partly failed run counts once, even under
+  concurrency (`store.emulator.test.ts`). **Not wired yet:** the aggregator doesn't assign
+  windows, so nothing passes one today (#6)
 - a fingerprint ignores what varies per occurrence (ids, paths, timestamps, counts) but not
   what makes a bug distinct (status codes, quoted property names), and treats a function's
   first- and second-generation spellings as one
