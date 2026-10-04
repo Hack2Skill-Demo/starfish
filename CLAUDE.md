@@ -40,6 +40,7 @@ pnpm test:emulator    # firestore.rules + store concurrency against the emulator
 pnpm -C web dev       # the operator UI on :5177
 pnpm audit:contrast   # WCAG AA audit of the rendered UI (needs `pnpm dev:emulated` + a Chromium)
 pnpm spike            # the Gemini fix-quality spike (needs .env + Vertex access)
+pnpm scrub            # dry-run: how many stored incidents still hold a credential/email (--apply to rewrite)
 bash .claude/hooks/git-branch-guard.test.sh        # hook suites
 bash .claude/hooks/pre-push-review-guard.test.sh
 bash .claude/hooks/lib/segments.test.sh
