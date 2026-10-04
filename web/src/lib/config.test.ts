@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { FIREBASE_INIT_PATH, resolveFirebaseConfig } from "./config";
+import { FIREBASE_INIT_PATH, bootstrapWebConfig, resolveFirebaseConfig, webConfig } from "./config";
 
 const full = {
   VITE_FIREBASE_API_KEY: "k",
@@ -68,5 +68,34 @@ describe("resolveFirebaseConfig", () => {
     await expect(resolveFirebaseConfig({}, respond({ apiKey: "hk", projectId: "" }))).rejects.toThrow(
       "missing authDomain, projectId, appId"
     );
+  });
+});
+
+describe("bootstrapWebConfig", () => {
+  // Module state is shared across tests in this file, so the failure case runs
+  // first and the successful one last.
+  it("retries after a failure instead of caching it", async () => {
+    await expect(bootstrapWebConfig({}, respond({}, { status: 404 }))).rejects.toThrow("returned 404");
+    expect(() => webConfig()).toThrow("before bootstrapWebConfig()");
+    await expect(bootstrapWebConfig({}, respond(served))).resolves.toMatchObject({
+      firebase: { projectId: "hosted" },
+    });
+  });
+
+  it("serves the cached config without resolving again", async () => {
+    const fetchImpl = vi.fn() as unknown as typeof fetch;
+    const config = await bootstrapWebConfig({}, fetchImpl);
+    expect(webConfig()).toBe(config);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("shares one resolution between concurrent calls", async () => {
+    // A fresh module, so nothing is cached and the two calls really overlap.
+    vi.resetModules();
+    const fresh = await import("./config");
+    const fetchImpl = respond(served);
+    const [a, b] = await Promise.all([fresh.bootstrapWebConfig({}, fetchImpl), fresh.bootstrapWebConfig({}, fetchImpl)]);
+    expect(a).toBe(b);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 });

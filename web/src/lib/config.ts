@@ -105,28 +105,38 @@ export interface WebConfig {
 }
 
 let cached: WebConfig | undefined;
+let inflight: Promise<WebConfig> | undefined;
 
 /**
  * Resolve the config once, before anything renders. `webConfig()` stays
  * synchronous for every caller; it just can't be called before this settles.
- * Safe to call again: after success it is a no-op.
+ * Concurrent calls share one resolution (React StrictMode runs an effect
+ * twice in development); after a failure the next call tries again.
  */
-export async function bootstrapWebConfig(
+export function bootstrapWebConfig(
   env: Record<string, string | undefined> = import.meta.env,
   fetchImpl: typeof fetch = fetch
 ): Promise<WebConfig> {
-  if (cached) return cached;
-  const firebase = await resolveFirebaseConfig(env, fetchImpl);
-  cached = {
-    firebase,
-    databaseId: env.VITE_STARFISH_DATABASE_ID || "starfish",
-    incidentCollection: env.VITE_STARFISH_INCIDENT_COLLECTION || "incidents",
-    usersCollection: env.VITE_STARFISH_USERS_COLLECTION || "starfish_users",
-    environment: env.VITE_STARFISH_ENV || "dev",
-    functionsRegion: env.VITE_FUNCTIONS_REGION || "us-central1",
-    useEmulators: env.VITE_USE_EMULATORS === "1",
-  };
-  return cached;
+  if (cached) return Promise.resolve(cached);
+  inflight ??= resolveFirebaseConfig(env, fetchImpl).then(
+    (firebase) => {
+      cached = {
+        firebase,
+        databaseId: env.VITE_STARFISH_DATABASE_ID || "starfish",
+        incidentCollection: env.VITE_STARFISH_INCIDENT_COLLECTION || "incidents",
+        usersCollection: env.VITE_STARFISH_USERS_COLLECTION || "starfish_users",
+        environment: env.VITE_STARFISH_ENV || "dev",
+        functionsRegion: env.VITE_FUNCTIONS_REGION || "us-central1",
+        useEmulators: env.VITE_USE_EMULATORS === "1",
+      };
+      return cached;
+    },
+    (err: unknown) => {
+      inflight = undefined;
+      throw err;
+    }
+  );
+  return inflight;
 }
 
 export function webConfig(): WebConfig {
