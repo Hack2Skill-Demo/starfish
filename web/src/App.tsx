@@ -1,6 +1,7 @@
 /**
  * Routes. Public: sign-in and access-denied. Everything else sits behind
- * RequireRole inside the Starfish layout.
+ * RequireRole inside the Starfish layout. A guest (an anonymous, read-only session on the
+ * public demo) may see the layout, Incidents and a view-only Settings.
  */
 import { lazy, Suspense } from "react";
 import { Navigate, Route, Routes } from "react-router";
@@ -23,7 +24,7 @@ export default function App() {
         <Route path="/access-denied" element={<AccessDenied />} />
         <Route
           element={
-            <RequireRole>
+            <RequireRole allowGuest>
               <StarfishLayout />
             </RequireRole>
           }
@@ -33,7 +34,7 @@ export default function App() {
           <Route
             path="settings"
             element={
-              <RequireRole allowedRoles={["admin"]}>
+              <RequireRole allowedRoles={["admin"]} allowGuest>
                 <Settings />
               </RequireRole>
             }

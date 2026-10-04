@@ -10,6 +10,7 @@
 import { Bot, GitBranch, MessageSquare, SlidersHorizontal, type LucideIcon } from "lucide-react";
 import PageMeta from "../components/PageMeta";
 import { Badge } from "../components/ui/Badge";
+import { useAuth } from "../auth/authCore";
 import { webConfig } from "../lib/config";
 import { useEnvironment } from "../lib/useSettings";
 import { SettingsEditor } from "./SettingsEditor";
@@ -64,6 +65,7 @@ const STATE_BADGE: Record<ConnectionState, { tone: "success" | "neutral"; label:
 export default function Settings() {
   const cfg = webConfig();
   const { environment } = useEnvironment();
+  const { guest } = useAuth();
   return (
     <>
       <PageMeta title="Settings | Starfish" description="Connections and configuration" />
@@ -94,7 +96,17 @@ export default function Settings() {
             </li>
           ))}
         </ul>
-        <SettingsEditor />
+        {guest ? (
+          <p
+            role="note"
+            className="rounded-lg border border-gray-200 bg-white px-4 py-3 text-sm text-gray-700 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300"
+          >
+            The runtime settings are editable by the team only, and nothing here can be changed from the public demo.
+            Secrets never appear on this page.
+          </p>
+        ) : (
+          <SettingsEditor />
+        )}
       </div>
     </>
   );

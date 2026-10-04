@@ -25,6 +25,8 @@ function renderEditor() {
     role: "admin",
     loading: false,
     signOut: async () => {},
+    guest: false,
+    enterAsGuest: async () => false,
   };
   return render(
     <Ctx.Provider value={ctx}>

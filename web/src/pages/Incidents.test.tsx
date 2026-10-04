@@ -42,13 +42,15 @@ const rows: IncidentRow[] = [
   { ...base, id: "2", functionName: "orders-updateOrder", service: "orders", status: "ignored" },
 ];
 
-function renderPage(roles: StarfishAuthCtx["roles"] = ["operator"]) {
+function renderPage(roles: StarfishAuthCtx["roles"] = ["operator"], guest = false) {
   const ctx: StarfishAuthCtx = {
-    user: { uid: "u1" } as StarfishAuthCtx["user"],
+    user: { uid: "u1", isAnonymous: guest } as StarfishAuthCtx["user"],
     roles,
     role: roles[0] ?? null,
     loading: false,
     signOut: async () => {},
+    guest,
+    enterAsGuest: async () => false,
   };
   return render(
     <Ctx.Provider value={ctx}>
@@ -74,6 +76,16 @@ describe("Incidents page", () => {
     renderPage();
     await screen.findByText("mailDrainer");
     expect(mocks.listIncidents).toHaveBeenCalledWith(24, "staging-eu");
+  });
+
+  it("shows a guest the incidents but offers no triage action at all (#12)", async () => {
+    renderPage([], true);
+    const row = (await screen.findByText("mailDrainer")).closest("tr")!;
+    expect(within(row).getByText("New")).toBeInTheDocument();
+    // Row actions are labelled "<Action> <function>"; the status filter pills ("Resolved") are not them.
+    expect(screen.queryAllByRole("button", { name: /^(Acknowledge|Resolve|Ignore|Reopen) \S/ })).toHaveLength(0);
+    // And no Actions column to hold them.
+    expect(screen.queryByRole("columnheader", { name: /actions/i })).toBeNull();
   });
 
   it("says so when the settings couldn't be read, instead of showing a possibly wrong list as a quiet day (#43)", async () => {

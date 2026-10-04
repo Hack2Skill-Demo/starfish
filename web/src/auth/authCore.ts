@@ -12,6 +12,12 @@ import type { User } from "firebase/auth";
 /** Starfish operator roles. Source of truth: `<usersCollection>/{uid}.roles`. */
 export type StarfishRole = "admin" | "operator";
 
+/**
+ * What a viewer can be for navigation: a Starfish role, or `guest` (an anonymous session on
+ * the public demo: read-only, no operator record). `guest` is never stored on a record.
+ */
+export type ViewerRole = StarfishRole | "guest";
+
 /** All roles, in descending order of privilege. */
 export const STARFISH_ROLES: readonly StarfishRole[] = ["admin", "operator"];
 
@@ -37,6 +43,17 @@ export type StarfishAuthCtx = {
    */
   loading: boolean;
   signOut: () => Promise<void>;
+  /**
+   * True for an anonymous session: the public demo's read-only guest (issue #12). A guest
+   * holds no role and passes only the routes that allow guests.
+   */
+  guest: boolean;
+  /**
+   * Try to start a guest session for a signed-out visitor. Resolves true if one started,
+   * false if it can't (Anonymous sign-in is off for this project, a network failure, or the
+   * visitor just signed out on purpose). Safe to call repeatedly: it makes one attempt.
+   */
+  enterAsGuest: () => Promise<boolean>;
 };
 
 export const Ctx = createContext<StarfishAuthCtx | null>(null);

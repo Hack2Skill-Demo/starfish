@@ -76,10 +76,10 @@ pnpm dev:emulated                # one terminal: seeded emulators + the UI on :5
 CHROMIUM_PATH=/path/to/chromium pnpm audit:contrast   # another: audits the rendered screens
 ```
 
-`pnpm audit:contrast` signs in as the seeded admin and no-role users and, in light and dark,
+`pnpm audit:contrast` signs in as the seeded admin and no-role users, opens a fresh browser as a guest, and, in light and dark,
 measures every text element (against its real, composited background), every placeholder and
-every icon on the sign-in, incidents (listed, rows expanded, empty), settings, 404 and
-access-denied screens. It exits 1 on any failure. It needs a browser and the emulators, so
+every icon on the sign-in, incidents (listed, rows expanded, empty), settings, 404,
+access-denied and guest (incidents, settings) screens: 18 in all. It exits 1 on any failure. It needs a browser and the emulators, so
 CI does not run it; `contrast.test.ts` is the always-on part.
 
 It does not cover hover or focus states, or screens it cannot reach with the seeded data (an
