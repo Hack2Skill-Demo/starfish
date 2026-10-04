@@ -1,0 +1,105 @@
+name: Deploy engine
+
+# Runs scripts/deploy-gcp.sh from Actions, so a teammate with no local gcloud setup can roll out
+# the engine (#75). One-time Google Cloud and GitHub setup: docs/deploy.md ("Deploy from GitHub Actions").
+#
+# Decisions, on purpose:
+#   - workflow_dispatch ONLY. A merge to main cannot change what is running by itself, and every
+#     run spends a Cloud Build. Whether to deploy on merge is a trust choice for a person, not a default.
+#   - The job runs in the `deploy` environment. The Workload Identity provider only accepts tokens
+#     minted for that environment (docs/deploy.md), so the environment's protection rules (required
+#     reviewers, deployment branches limited to main) are the gate, not a convention.
+#     Do not rename it without changing the provider's attribute condition.
+#   - No service-account key and no GitHub secret: the job swaps its OIDC token for short-lived
+#     credentials. The workflow's GITHUB_TOKEN is never handed to the script, which reads
+#     STARFISH_GITHUB_TOKEN (the engine's own token, set once from a terminal) and so leaves
+#     the existing Secret Manager version and mount alone.
+#   - Everything deployment-specific is a repository variable; this file names none.
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Print the plan and change nothing (still signs in, so it proves the Workload Identity setup)
+        type: boolean
+        default: false
+      run_after_deploy:
+        description: Execute the job once after deploying and wait for it
+        type: boolean
+        default: false
+      skip_firestore_rules:
+        description: Do not deploy firestore.rules and indexes (firebase-tools through Workload Identity is untested)
+        type: boolean
+        default: false
+
+# One deploy at a time, and never cancel one halfway: a half-applied deploy is worse than a queued one.
+concurrency:
+  group: deploy-engine
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: deploy
+    # `id-token: write` is what lets this job ask GitHub for the OIDC token Google exchanges. It is
+    # granted to this job only, never to the workflow.
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Fail early and in plain words, instead of an auth error about an empty string.
+      - name: Check the repository variables
+        env:
+          GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          GCP_DEPLOY_SERVICE_ACCOUNT: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
+          STARFISH_GCP_PROJECT_ID: ${{ vars.STARFISH_GCP_PROJECT_ID }}
+        run: |
+          missing=0
+          for name in GCP_WORKLOAD_IDENTITY_PROVIDER GCP_DEPLOY_SERVICE_ACCOUNT STARFISH_GCP_PROJECT_ID; do
+            if [ -z "${!name}" ]; then
+              echo "::error::Repository variable $name is not set (docs/deploy.md, 'Deploy from GitHub Actions')"
+              missing=1
+            fi
+          done
+          exit "$missing"
+
+      # The script runs `pnpm dlx firebase-tools`, so it needs pnpm and Node but no install of this repo.
+      - name: Enable pnpm
+        run: corepack enable pnpm
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24.16.0'
+
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
+
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+
+      # Values reach the script through the environment, never by interpolation into the shell text.
+      # An unset variable is an empty string, which the script treats as "use my default".
+      - name: Deploy
+        env:
+          PROJECT_ID: ${{ vars.STARFISH_GCP_PROJECT_ID }}
+          REGION: ${{ vars.STARFISH_REGION }}
+          WATCHED_PROJECT_ID: ${{ vars.STARFISH_WATCHED_PROJECT_ID }}
+          VERTEX_PROJECT_ID: ${{ vars.STARFISH_VERTEX_PROJECT_ID }}
+          STARFISH_ENV: ${{ vars.STARFISH_ENV }}
+          STARFISH_DATABASE_ID: ${{ vars.STARFISH_DATABASE_ID }}
+          FIRESTORE_LOCATION: ${{ vars.STARFISH_FIRESTORE_LOCATION }}
+          SCHEDULE: ${{ vars.STARFISH_SCHEDULE }}
+          SCHEDULE_TIME_ZONE: ${{ vars.STARFISH_SCHEDULE_TIME_ZONE }}
+          EXTRA_ENV_VARS: ${{ vars.STARFISH_EXTRA_ENV_VARS }}
+          DRY_RUN: ${{ inputs.dry_run && '1' || '0' }}
+          RUN_AFTER_DEPLOY: ${{ inputs.run_after_deploy && '1' || '0' }}
+          SKIP_FIRESTORE_RULES: ${{ inputs.skip_firestore_rules && '1' || '0' }}
+        run: scripts/deploy-gcp.sh
