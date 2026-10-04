@@ -55,9 +55,9 @@ not mounted.
 
 `loadGithubToken()` (`src/config.ts`) reads that variable, and the pull-request opener
 (`src/integrations/githubPr.ts`) is its only user. The opener is tested against a local git remote
-and a fake GitHub API, **not against real GitHub**, and no job runs the agent loop, so the secret is
-still plumbing until one does. The deploy script does not set `STARFISH_GITHUB_REPO`; without it the
-opener cannot be built.
+and a fake GitHub API, **not against real GitHub**, and the only job that calls it (the agent job, never deployed) cannot reach it while it runs no verify
+command, so the secret is still plumbing. The ingest job does not set `STARFISH_GITHUB_REPO`; the agent job does
+(`AGENT_REPO`), and without it the opener cannot be built.
 
 Starfish pushes only to branches named `starfish/<id>` and the engine checks that, but a GitHub App's
 permission cannot be limited to a branch prefix. If "Starfish can write only its own branches" is to be
@@ -156,7 +156,7 @@ deployment branch rule above.
 |---|---|
 | enable APIs | `roles/serviceusage.serviceUsageAdmin` (on the Gemini and watched projects too, when they differ) |
 | create the engine and scheduler service accounts | `roles/iam.serviceAccountAdmin` |
-| run a job, and a scheduler call, *as* those accounts | `roles/iam.serviceAccountUser`, on `starfish-engine` and `starfish-scheduler` only, not project-wide |
+| run a job, and a scheduler call, *as* those accounts | `roles/iam.serviceAccountUser`, on `starfish-engine`, `starfish-scheduler` and (with the agent job) `starfish-agent` only, not project-wide |
 | bind the engine's three roles | `roles/resourcemanager.projectIamAdmin`, on `PROJECT_ID`, the watched project and the Gemini project (see the warning below) |
 | create the `starfish` database, deploy rules and indexes | `roles/datastore.owner`, `roles/firebaserules.admin` |
 | create the secret, grant the engine access, add a version | `roles/secretmanager.admin` |
@@ -190,6 +190,8 @@ defaults when empty.
 | `STARFISH_DATABASE_ID`, `STARFISH_FIRESTORE_LOCATION` | `STARFISH_DATABASE_ID`, `FIRESTORE_LOCATION` | |
 | `STARFISH_SCHEDULE`, `STARFISH_SCHEDULE_TIME_ZONE` | `SCHEDULE`, `SCHEDULE_TIME_ZONE` | default hourly, UTC |
 | `STARFISH_EXTRA_ENV_VARS` | `EXTRA_ENV_VARS` | `A=1@B=2` |
+| `STARFISH_DEPLOY_AGENT`, `STARFISH_AGENT_REPO` | `DEPLOY_AGENT`, `AGENT_REPO` | set `1` and `owner/name` to deploy the agent job too ([below](#the-agent-job-74)); default off |
+| `STARFISH_AGENT_BASE_BRANCH`, `STARFISH_AGENT_SCHEDULE`, `STARFISH_AGENT_EXTRA_ENV_VARS` | `AGENT_BASE_BRANCH`, `AGENT_SCHEDULE`, `AGENT_EXTRA_ENV_VARS` | default `main`, `30 * * * *` |
 
 `BUDGET_USD` and `BILLING_ACCOUNT` are not wired: a budget lives on the billing account, which the deployer
 has no role on. Create the budget once from a terminal (`docs/setup.md`).
@@ -203,6 +205,51 @@ shell tracing, passes no secret, and the auth step writes a credentials *file* t
 than holding a key. A real run is the check that no value leaks, and it has not happened (#75's done-when).
 A `dry_run` still signs in, so it is the cheapest proof that the pool, provider and bindings work before the
 deployer has any project role.
+
+## The agent job (#74)
+
+With `DEPLOY_AGENT=1` and `AGENT_REPO=owner/name` the script also deploys a **second Cloud Run job**,
+`starfish-agent`, with its own Scheduler job (`starfish-agent-tick`, hourly at :30) and its own service
+account `starfish-agent`. It runs `src/agentCli.ts` from the same image: pick the open incidents that have no
+settled cycle (`src/agent/pass.ts`), check out the repository's head once (a shallow clone with `.git` removed,
+`src/agent/checkout.ts`), and run triage, fix, verify and review for each (`src/agent/loop.ts`), at most
+`STARFISH_AGENT_MAX_CYCLES` (3) a run. The cycle and its run events are written to the store, so the Runs and
+incident pages show them. Everything that can move is a variable of the script; the job's own settings
+(`STARFISH_*`) go in `AGENT_EXTRA_ENV_VARS`.
+
+> **Status: written and tested against a real store, a real git remote and a scripted model; never deployed.**
+> The deploy plan is pinned by a dry run, like the ingest's. Nothing here has run on Cloud Run, against real
+> GitHub, or against Gemini from this job.
+
+**What the deployed job does and does not do:**
+
+- **It never runs the target repository's code.** The verify gate runs that repository's own tests and is not a
+  sandbox; this job holds the store, Logging and Gemini credentials. So the script refuses
+  `STARFISH_VERIFY_COMMAND` (and `STARFISH_AGENT_ALLOW_LOCAL_VERIFY`) for it, **and** the job itself refuses to
+  start when a verify command is set without that allowance (`src/agent/job.ts`; tested). With no command the
+  gate rejects every patch, so a cycle that reaches a patch ends **waiting for a person** with the reason
+  `verify-no-verify-command`: the fixer's draft is a run event, never a pull request. **The headline demo (an
+  incident becoming a verified, reviewed pull request) cannot happen on a deployed Starfish until the verify step
+  has somewhere safe to run.** That runner is the open design question on #74 and is not built.
+- **It is a dry run** (`STARFISH_DRY_RUN=true` is set by the script). A person can turn it off in the Settings
+  page or in `AGENT_EXTRA_ENV_VARS`. Even then nothing opens while no patch can pass the gate, so the pull-request
+  opener is wired (it reads the mounted `STARFISH_GITHUB_TOKEN`) but unreachable in practice.
+- **It takes the counter-check itself.** The ingest stores none, and triage defers an incident with no
+  counter-check rather than read it as zero. The agent reads Cloud Logging of the watched project for it (and for
+  a few recent samples), which is why its account holds `roles/logging.viewer` there.
+- **A model draft may still be wasted spend:** each incident costs triage plus one fix call before the cycle is
+  handed to a person. `STARFISH_MODEL_CALL_BUDGET` and `STARFISH_AGENT_MAX_CYCLES` bound it.
+
+**Its identity** (`starfish-agent`, not the ingest's `starfish-engine`): `roles/datastore.user` conditioned to the
+`starfish` database, `roles/aiplatform.user` on the Gemini project, `roles/logging.viewer` on the watched project,
+and `secretAccessor` on the one secret. The Scheduler account gains `run.invoker` on this job only. **Not done:**
+the ingest's account still holds the secret grant and mount from #73, though the ingest never reads the token, and
+nothing yet proves the job's identity cannot do more than that list on a real project. #74's "reads nothing the
+ingest's can" is therefore **not met**.
+
+```bash
+DRY_RUN=1 DEPLOY_AGENT=1 AGENT_REPO=owner/name PROJECT_ID=my-project scripts/deploy-gcp.sh
+```
 
 ## What is most likely to go wrong the first time
 
@@ -221,8 +268,8 @@ None of this has run against a real project. The likely first failures, and what
 - **An alert when ingestion stops.** The UI shows it; nothing pages anyone (an item on #6).
 - **An authenticated "run now" endpoint.** `src/ingest/trigger.ts` is the function; nothing serves
   it. For recording a demo, a short `SCHEDULE` or `gcloud run jobs execute` does the job.
-- **The agent loop as a job.** Triage, fix, verify and review exist as stages and are run by
-  nothing; the loop needs a repo checkout and the pull-request opener first.
+- **A runner for the verify step.** The agent job runs triage, fix and review and ends waiting for a person; it
+  cannot prove a patch, because nothing safe to run the target's tests in exists yet ([the agent job](#the-agent-job-74)).
 - **Cost.** Cloud Run jobs, Scheduler (three free jobs) and Secret Manager (a few free versions) sit
   inside the free tiers at one tick an hour. Cloud Build and Artifact Registry storage, and a 5-minute
   tick running all month, are not free; Gemini calls are billed to the Gemini project. Each Actions deploy runs one Cloud Build.

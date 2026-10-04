@@ -137,21 +137,27 @@ src/
     run            one scheduled run: resolve runtime settings, replay the pending window or plan
                    the next, advance the checkpoint only after it all commits, write last_run
   agent/triage.ts  stage 1 of the agent loop (#8): act/notify/decline for one incident; deterministic
-                   gates before the model, local validation after it; not run by any job yet
+                   gates before the model, local validation after it; run by the agent job (never deployed)
   agent/fixer.ts   stage 2: minimal patch or honest decline from a stubbed-testable model call;
-                   fails closed, redacts both ways. Not run by any job yet
+                   fails closed, redacts both ways. Run by the agent job (never deployed)
   agent/cycle.ts   cycle per (incident, recurrence), transactional lease with fencing, append-only run events
-                   (redacted) and the cycle's run record (summary.<stage>, path); infrastructure errors throw, logical refusals are returned. Not run by any job yet
+                   (redacted) and the cycle's run record (summary.<stage>, path); infrastructure errors throw, logical refusals are returned
   agent/loop.ts    one cycle: lease -> triage -> fix -> verify -> review -> PR (interface); rechecks status +
-                   kill switch, one shared revision, call budget, dry run by default. Not run by any job
-  agent/pass.ts    one pass over the store: candidate selection, stack trace → repo files, bounded driver. Not
-                   the job: no entrypoint, checkout or isolation of the verify step yet (#74)
+                   kill switch, one shared revision, call budget, dry run by default. No gate configured → straight to a person
+  agent/pass.ts    one pass over the store: candidate selection, stack trace → repo files, bounded driver
+  agent/checkout.ts  the target repo at one pinned revision: shallow clone, `.git` removed, token only in git's env
+  agent/subject.ts stored incident → LoopSubject: takes the counter-check + samples now (the ingest stores none),
+                   reads only plain files with no link on the way
+  agent/job.ts     one run of the agent job (`pnpm agent`, src/agentCli.ts): REFUSES to start with a verify command
+                   unless STARFISH_AGENT_ALLOW_LOCAL_VERIFY (the job holds credentials; the gate is not a sandbox).
+                   Deployed by `DEPLOY_AGENT=1` as a 2nd Cloud Run job, own service account, dry run. Never deployed;
+                   no safe runner for the verify step exists (#74), so it can open no PR
   agent/automationSwitch.ts  the kill switch: reads the runtime settings fresh each time the loop asks; fails closed.
-                   Not run by any job yet
+                   Used by the agent job (never deployed)
   agent/reviewer.ts  stage 4: attacks the verified patch; verdict computed from outcomes in code, bound
-                   to the patch hash the gate tested. Not run by any job yet
+                   to the patch hash the gate tested. Run by the agent job (never deployed)
   agent/verifyGate.ts  stage 3: apply a patch in a scratch copy, judge the tree that results, run the
-                   configured command with a scrubbed env. Not a sandbox; not run by any job yet
+                   configured command with a scrubbed env. Not a sandbox; the deployed agent job never runs it
   operators.ts     grant a person an operator record (the first admin; `pnpm grant-operator`); the closed collection can't be written from the UI
   status.ts        judges the engine's last_run record (`pnpm status`): the same verdicts as the UI's engine line
   (repo root)      Dockerfile = the engine image the Cloud Run job runs; scripts/deploy-gcp.sh deploys it
@@ -160,7 +166,7 @@ src/
                    Parser and guard only: nothing creates an index; tested on URLs built from the documented proto
   integrations/githubPr.ts  the pull-request opener (#17): idempotent by cycle id, pushes only
                    starfish/<id>, never merges, token only in git's environment. Never run against real
-                   GitHub; not run by any job yet
+                   GitHub; its only caller is the agent job, which cannot reach it without a verify command
   runtimeSettings.ts  the settings document an admin edits: validated, applied over the
                    env defaults, last-good fallback, a frozen snapshot per run
 ```

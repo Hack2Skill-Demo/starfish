@@ -146,3 +146,96 @@ describe("scripts/deploy-gcp.sh", () => {
     expect(deploy({ ...dry, RUN_AFTER_DEPLOY: "1" }).out).toContain("gcloud run jobs execute starfish-ingest");
   });
 });
+
+describe("scripts/deploy-gcp.sh: the agent job (#74)", () => {
+  const agent = { ...dry, DEPLOY_AGENT: "1", AGENT_REPO: "acme/shop" };
+  const agentSa = "serviceAccount:starfish-agent@star-proj.iam.gserviceaccount.com";
+  const engineSa = "serviceAccount:starfish-engine@star-proj.iam.gserviceaccount.com";
+
+  it("is off unless asked: the default plan has no agent in it", () => {
+    const r = deploy(dry);
+    expect(r.out).not.toContain("starfish-agent");
+    expect(r.out).not.toContain("agentCli");
+  });
+
+  it("needs a repository, and only an owner/name", () => {
+    const none = deploy({ ...dry, DEPLOY_AGENT: "1" });
+    expect(none.status).not.toBe(0);
+    expect(none.out).toContain("AGENT_REPO");
+    for (const bad of ["shop", "a/b/c", "/shop", "acme/", "acme/../x", "acme/sh op", "acme/shop;rm"]) {
+      const r = deploy({ ...dry, DEPLOY_AGENT: "1", AGENT_REPO: bad });
+      expect(r.status, bad).not.toBe(0);
+      expect(r.out).toContain("owner/name");
+    }
+    expect(deploy(agent).status).toBe(0);
+  });
+
+  it("deploys a second job and its own schedule, with the command overridden and the dry run on", () => {
+    const r = deploy(agent);
+    expect(r.status).toBe(0);
+    expect(r.gcloudCalled).toBe(false);
+    expect(r.out).toContain("gcloud iam service-accounts create starfish-agent");
+    expect(r.out).toContain("gcloud run jobs deploy starfish-agent --source .");
+    expect(r.out).toContain("--command=node --args=--import,tsx,src/agentCli.ts");
+    expect(r.out).toContain("--service-account=starfish-agent@star-proj.iam.gserviceaccount.com");
+    expect(r.out).toContain("STARFISH_GITHUB_REPO=acme/shop");
+    expect(r.out).toContain("STARFISH_DRY_RUN=true");
+    expect(r.out).toContain("gcloud scheduler jobs create http starfish-agent-tick");
+    expect(r.out).toContain("--schedule=30 * * * *");
+    // Neither job may ever ingest the other, nor itself.
+    expect(r.out).toContain("STARFISH_EXCLUDED_SERVICES=starfish,starfish-ingest,starfish-agent");
+  });
+
+  it("gives the agent its own account, with the roles the loop needs, and the engine's account none of them", () => {
+    const r = deploy({ ...agent, WATCHED_PROJECT_ID: "app-proj", VERTEX_PROJECT_ID: "ai-proj" });
+    const grants = (member) => r.out.split("\n").filter((l) => l.includes(`--member=${member}`)).map((l) => l.match(/--role=(\S+)/)?.[1]);
+    expect(grants(agentSa).sort()).toEqual(["roles/aiplatform.user", "roles/datastore.user", "roles/logging.viewer", "roles/secretmanager.secretAccessor"]);
+    expect(r.out).toContain(`add-iam-policy-binding app-proj --member=${agentSa} --role=roles/logging.viewer`);
+    expect(r.out).toContain(`add-iam-policy-binding ai-proj --member=${agentSa} --role=roles/aiplatform.user`);
+    const store = r.out.split("\n").find((l) => l.includes(agentSa) && l.includes("roles/datastore.user")) ?? "";
+    expect(store).toContain('resource.name == "projects/star-proj/databases/starfish"');
+    expect(store).not.toContain("--condition=None");
+    // Its account is not the engine's, and holds nothing broad.
+    expect(agentSa).not.toBe(engineSa);
+    expect(r.out).not.toMatch(/roles\/(owner|editor|admin)/i);
+    // The only thing the scheduler's account gains is starting the agent job.
+    expect(grants("serviceAccount:starfish-scheduler@star-proj.iam.gserviceaccount.com")).toEqual(["roles/run.invoker", "roles/run.invoker"]);
+  });
+
+  it("refuses a verify command for the agent job: it holds credentials and the gate is not a sandbox", () => {
+    for (const extra of [
+      { AGENT_EXTRA_ENV_VARS: "STARFISH_VERIFY_COMMAND=pnpm test" },
+      { AGENT_EXTRA_ENV_VARS: "STARFISH_LOOKBACK_HOURS=2@STARFISH_VERIFY_COMMAND=pnpm test" },
+      { AGENT_EXTRA_ENV_VARS: "STARFISH_AGENT_ALLOW_LOCAL_VERIFY=true" },
+      { EXTRA_ENV_VARS: "STARFISH_VERIFY_COMMAND=pnpm test" },
+    ]) {
+      const r = deploy({ ...agent, ...extra });
+      expect(r.status, JSON.stringify(extra)).not.toBe(0);
+      expect(r.out).toContain("STARFISH_VERIFY_COMMAND");
+      expect(r.out).not.toContain("gcloud run jobs deploy");
+    }
+    // A similarly named setting is not it.
+    expect(deploy({ ...agent, AGENT_EXTRA_ENV_VARS: "MY_STARFISH_VERIFY_COMMAND_NOTE=1" }).status).toBe(0);
+  });
+
+  it("lets a person turn the dry run off, on purpose, and says so once", () => {
+    const r = deploy({ ...agent, AGENT_EXTRA_ENV_VARS: "STARFISH_DRY_RUN=false" });
+    expect(r.out).toContain("STARFISH_DRY_RUN=false");
+    expect(r.out.match(/STARFISH_DRY_RUN=/g)).toHaveLength(1);
+  });
+
+  it("mounts the token only once the secret has a value, and never prints it", () => {
+    const without = deploy(agent);
+    expect(without.out.match(/--update-secrets/g)).toBeNull();
+    const withToken = deploy({ ...agent, STARFISH_GITHUB_TOKEN: "ghp_THIS_MUST_NOT_APPEAR" });
+    expect(withToken.out.match(/--update-secrets=STARFISH_GITHUB_TOKEN=starfish-github-token:latest/g)).toHaveLength(2);
+    expect(withToken.out).not.toContain("ghp_THIS_MUST_NOT_APPEAR");
+  });
+
+  it("takes its own schedule, branch and extra settings", () => {
+    const r = deploy({ ...agent, AGENT_SCHEDULE: "*/10 * * * *", AGENT_BASE_BRANCH: "develop", AGENT_EXTRA_ENV_VARS: "STARFISH_AGENT_MAX_CYCLES=1" });
+    expect(r.out).toContain("--schedule=*/10 * * * *");
+    expect(r.out).toContain("STARFISH_GITHUB_BASE_BRANCH=develop");
+    expect(r.out).toContain("STARFISH_AGENT_MAX_CYCLES=1");
+  });
+});

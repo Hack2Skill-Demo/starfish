@@ -74,14 +74,15 @@ Be honest with yourself about this list before the demo:
 
 - **No incidents unless something errors.** An engine that finds nothing on a quiet project is working. The
   demo needs a source of real errors: the demo app with its faults (#5), which is not built.
-- **The loop does not run.** Triage, fix, verify and review exist as tested stages, and nothing deploys them
-  (#74). So today's deployed Starfish *finds and shows* incidents; it does not yet *fix* any.
+- **The loop cannot prove a fix.** `DEPLOY_AGENT=1` deploys the agent job (triage, fix, review as a dry run), written and
+  never deployed (#74). It runs no verify command, because nothing safe to run the target's tests in exists yet, so
+  every patch ends waiting for a person. Starfish *finds and shows* incidents and drafts; it does not yet *fix* any.
 - **No Slack, no pull request, no phone call** (#17, #37). The mounted GitHub token is read by nothing yet.
 - **No alert when ingestion stops**, only the UI's "engine stopped" line (#6).
 - **No App Check, no seeded evidence history** (#12). The public page shows what really happened and no more.
 
 Everything here is in the issues; the order that gets to the headline demo fastest is #5 (something to break),
-#74 (the loop as a job), #8's PR opener, then #11.
+#74's verify runner (the loop as a job is written), #8's PR opener, then #11.
 
 ## If a step fails
 

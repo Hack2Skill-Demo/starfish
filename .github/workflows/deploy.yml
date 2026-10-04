@@ -99,6 +99,11 @@ jobs:
           SCHEDULE: ${{ vars.STARFISH_SCHEDULE }}
           SCHEDULE_TIME_ZONE: ${{ vars.STARFISH_SCHEDULE_TIME_ZONE }}
           EXTRA_ENV_VARS: ${{ vars.STARFISH_EXTRA_ENV_VARS }}
+          DEPLOY_AGENT: ${{ vars.STARFISH_DEPLOY_AGENT }}
+          AGENT_REPO: ${{ vars.STARFISH_AGENT_REPO }}
+          AGENT_BASE_BRANCH: ${{ vars.STARFISH_AGENT_BASE_BRANCH }}
+          AGENT_SCHEDULE: ${{ vars.STARFISH_AGENT_SCHEDULE }}
+          AGENT_EXTRA_ENV_VARS: ${{ vars.STARFISH_AGENT_EXTRA_ENV_VARS }}
           DRY_RUN: ${{ inputs.dry_run && '1' || '0' }}
           RUN_AFTER_DEPLOY: ${{ inputs.run_after_deploy && '1' || '0' }}
           SKIP_FIRESTORE_RULES: ${{ inputs.skip_firestore_rules && '1' || '0' }}

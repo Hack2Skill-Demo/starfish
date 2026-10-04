@@ -3,10 +3,10 @@
  * the stack trace names, and a bounded driver that runs a cycle for each. Everything here is plain
  * functions with the store and the cycle injected, so it is tested without any job around it.
  *
- * What this file is NOT: the job. There is no entrypoint, no checkout of the target repository, no Cloud Run
- * job and no schedule. Above all, the isolation of the verify step is undecided: the verify gate runs the
- * target repository's own tests, which is candidate code, and `verifyGate.ts` is not a sandbox. Until that
- * is decided, nothing may run `runCycle` unattended with real credentials around it.
+ * What this file is NOT: the job. `job.ts` and `src/agentCli.ts` are the job (never deployed). The isolation of
+ * the verify step is still undecided: the verify gate runs the target repository's own tests, which is
+ * candidate code, and `verifyGate.ts` is not a sandbox. So the job refuses a verify command unless it is
+ * explicitly allowed, and the deployed one never is.
  */
 import type { DocumentSnapshot, Firestore } from "firebase-admin/firestore";
 import type { StarfishConfig } from "../config.js";

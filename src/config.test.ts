@@ -180,6 +180,30 @@ describe("loadConfig: the loop's switches", () => {
   });
 });
 
+describe("loadConfig: the agent job", () => {
+  beforeEach(() => {
+    vi.stubEnv("STARFISH_AGENT_MAX_CYCLES", "");
+    vi.stubEnv("STARFISH_AGENT_ALLOW_LOCAL_VERIFY", "");
+    vi.stubEnv("GOOGLE_CLOUD_PROJECT", "home-project");
+  });
+  afterEach(() => vi.unstubAllEnvs());
+
+  it("starts three cycles a run and never lets the job run candidate code in its own process", () => {
+    expect(loadConfig()).toMatchObject({ agentMaxCycles: 3, agentAllowLocalVerify: false });
+  });
+
+  it("reads both, and refuses values that would stall the job or be guessed at", () => {
+    vi.stubEnv("STARFISH_AGENT_MAX_CYCLES", "5");
+    vi.stubEnv("STARFISH_AGENT_ALLOW_LOCAL_VERIFY", "true");
+    expect(loadConfig()).toMatchObject({ agentMaxCycles: 5, agentAllowLocalVerify: true });
+    vi.stubEnv("STARFISH_AGENT_MAX_CYCLES", "0");
+    expect(() => loadConfig()).toThrow("STARFISH_AGENT_MAX_CYCLES");
+    vi.stubEnv("STARFISH_AGENT_MAX_CYCLES", "5");
+    vi.stubEnv("STARFISH_AGENT_ALLOW_LOCAL_VERIFY", "sure");
+    expect(() => loadConfig()).toThrow("STARFISH_AGENT_ALLOW_LOCAL_VERIFY");
+  });
+});
+
 describe("loadConfig: the pull-request target", () => {
   const KEYS = [
     "STARFISH_GITHUB_REPO",

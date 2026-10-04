@@ -20,7 +20,7 @@
  * Infrastructure failures throw, deliberately: a worker that cannot reach the store must not go
  * on to act on a cycle it cannot prove it holds.
  *
- * Not wired into any job yet.
+ * Run by the agent job (job.ts, never deployed).
  */
 import { Timestamp } from "firebase-admin/firestore";
 import type { DocumentReference, Firestore } from "firebase-admin/firestore";

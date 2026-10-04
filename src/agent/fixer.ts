@@ -20,7 +20,7 @@
  * One round of feedback from a failed verify run may be passed in; how many rounds are allowed is the
  * orchestration's decision, not this function's.
  *
- * Not wired into any job, and not on the Agent Development Kit yet: a stage contract with a stubbed
+ * Run by the agent job (job.ts, never deployed), and not on the Agent Development Kit yet: a stage contract with a stubbed
  * model in its tests.
  */
 import { askJson } from "../vertex.js";

@@ -77,6 +77,15 @@ export interface StarfishConfig {
    * off from Settings, and it is read fresh, not once per run (src/agent/automationSwitch.ts).
    */
   automationEnabled: boolean;
+  /** The most cycles one run of the agent job starts (src/agent/job.ts): a bound on its time and its model spend. */
+  agentMaxCycles: number;
+  /**
+   * Lets the agent job run a verify command in its own process (`pnpm agent` on a laptop). Off by default,
+   * and the deployed job never sets it: the verify gate runs the target repository's own tests, it is not a
+   * sandbox, and a job holding Firestore, Logging and Vertex credentials must not run that code. With a verify
+   * command set and this off, the job refuses to start.
+   */
+  agentAllowLocalVerify: boolean;
   /** The most model calls one cycle may make (triage, each fix attempt, each review): a spend cap. */
   modelCallBudget: number;
   /**
@@ -247,6 +256,8 @@ export function loadConfig(): StarfishConfig {
     reviewRequired: parseBoolean(process.env.STARFISH_REVIEW_REQUIRED, true, "STARFISH_REVIEW_REQUIRED"),
     automationEnabled: parseBoolean(process.env.STARFISH_AUTOMATION_ENABLED, true, "STARFISH_AUTOMATION_ENABLED"),
     modelCallBudget: positiveNumber(process.env.STARFISH_MODEL_CALL_BUDGET, 6, "STARFISH_MODEL_CALL_BUDGET"),
+    agentMaxCycles: positiveNumber(process.env.STARFISH_AGENT_MAX_CYCLES, 3, "STARFISH_AGENT_MAX_CYCLES"),
+    agentAllowLocalVerify: parseBoolean(process.env.STARFISH_AGENT_ALLOW_LOCAL_VERIFY, false, "STARFISH_AGENT_ALLOW_LOCAL_VERIFY"),
     githubRepo: (process.env.STARFISH_GITHUB_REPO ?? "").trim(),
     githubBaseBranch: (process.env.STARFISH_GITHUB_BASE_BRANCH ?? "").trim() || "main",
     githubApiUrl: (process.env.STARFISH_GITHUB_API_URL ?? "").trim() || "https://api.github.com",

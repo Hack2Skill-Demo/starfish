@@ -32,6 +32,8 @@ export function testConfig(over: Partial<StarfishConfig> = {}): StarfishConfig {
     reviewRequired: true,
     automationEnabled: true,
     modelCallBudget: 6,
+    agentMaxCycles: 3,
+    agentAllowLocalVerify: false,
     githubRepo: "",
     githubBaseBranch: "main",
     githubApiUrl: "https://api.github.com",

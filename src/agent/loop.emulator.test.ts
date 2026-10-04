@@ -366,6 +366,16 @@ describe("runCycle: the fix, the gate and the review", () => {
     expect(r).toEqual({ kind: "finished", state: "waiting-human", outcome: "verify-excluded-path" });
   });
 
+  it("does not ask for a second draft when no verify command is configured: nothing the model writes could change that", async () => {
+    cfgOver = { verifyCommand: "" };
+    const opened: PullRequestRequest[] = [];
+    const model = scripted({ triage: [act], fix: [fixOf(GOOD_PATCH)] });
+    const r = await runCycle(deps(model, {}, opened), key);
+    expect(r).toEqual({ kind: "finished", state: "waiting-human", outcome: "verify-no-verify-command" });
+    expect(model.count("fix")).toBe(1);
+    expect(opened).toHaveLength(0);
+  });
+
   it("sends a patch the reviewer breaks back once, and accepts the corrected one", async () => {
     const model = scripted({ triage: [act], fix: [fixOf(GOOD_PATCH)], review: [broken, held] });
     const r = await runCycle(deps(model), key);

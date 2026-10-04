@@ -29,7 +29,7 @@
  * child git gets only PATH and HOME besides that.
  *
  * Not built here: filing an issue for the incident, Slack, reconciling a later merge or CI result, and
- * the link back to the UI. Not run by any job yet.
+ * the link back to the UI. Its only caller is the agent job (job.ts, never deployed).
  */
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -91,8 +91,8 @@ export interface GithubPrDeps {
   tmpDir?: string;
 }
 
-const REPO_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}\/[A-Za-z0-9._-]{1,100}$/;
-const BRANCH_RE = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$/;
+export const REPO_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}\/[A-Za-z0-9._-]{1,100}$/;
+export const BRANCH_RE = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$/;
 const CYCLE_RE = /^[A-Za-z0-9_-]{1,128}$/;
 const SHA_RE = /^[0-9a-f]{7,40}$/;
 const SHA256_RE = /^[0-9a-f]{64}$/;
@@ -103,7 +103,7 @@ const MAX_OUTPUT_IN_BODY = 3_000;
 const MAX_ATTACKS_IN_BODY = 20;
 const MAX_FILES_IN_BODY = 50;
 
-const defaultRunGit: RunGit = (args, { cwd, env }) =>
+export const defaultRunGit: RunGit = (args, { cwd, env }) =>
   new Promise((resolve, reject) => {
     execFile("git", args, { cwd, env, timeout: GIT_TIMEOUT_MS, maxBuffer: 16 * 1024 * 1024 }, (err, stdout, stderr) => {
       if (err) reject(new Error(`git ${args[0]} failed: ${String(stderr || err.message).slice(0, 500)}`));

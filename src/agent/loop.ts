@@ -25,7 +25,7 @@
  * needs must not carry on. The lease then expires and the cycle is resumed.
  *
  * Events hold rule names, counts and hashes, never the patch, a log line or model text beyond the
- * short redacted reasons the stages already produce. Not run by any job yet, and not on the Agent
+ * short redacted reasons the stages already produce. Run by the agent job (job.ts, never deployed), and not on the Agent
  * Development Kit: the stage ordering here is plain code, which an ADK workflow can wrap.
  */
 import type { Firestore } from "firebase-admin/firestore";
@@ -212,6 +212,8 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
         },
       });
       if (verified.status !== "passed") {
+        // No gate is configured: a second draft cannot change that, so it would only spend model calls.
+        if (verified.rule === "no-verify-command") return await finish("waiting-human", `verify-${verified.rule}`, "human");
         if (revisions < MAX_REVISIONS) {
           revisions += 1;
           feedback = { previousPatchSha256: verified.patchSha256, verifyOutput: verified.output || verified.reason };

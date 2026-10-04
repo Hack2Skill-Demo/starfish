@@ -25,6 +25,14 @@
 #   BUDGET_USD           if set (with BILLING_ACCOUNT), create a budget that EMAILS billing admins at 50% and
 #                        90% of this monthly amount for PROJECT_ID. An alert, not a cap: nothing stops spending
 #   BILLING_ACCOUNT      the billing account id (0123AB-456CDE-789FGH), needed with BUDGET_USD
+#   DEPLOY_AGENT=1       also deploy the AGENT job (#74): a second Cloud Run job and Scheduler job that run
+#                        triage -> fix -> verify -> review for open incidents, as a dry run, under their own service
+#                        account. Needs AGENT_REPO. Off by default. It never runs candidate code: the verify gate is
+#                        not a sandbox and this job holds credentials, so STARFISH_VERIFY_COMMAND is refused for it
+#   AGENT_REPO           owner/name of the repository the agent works on (STARFISH_GITHUB_REPO), needed with DEPLOY_AGENT
+#   AGENT_BASE_BRANCH    the branch it checks out. Default: the engine's own default (main)
+#   AGENT_SCHEDULE       cron for the agent tick. Default "30 * * * *" (hourly, after the ingest tick)
+#   AGENT_EXTRA_ENV_VARS more settings for the agent job, "@"-separated like EXTRA_ENV_VARS
 #   SKIP_FIRESTORE_RULES=1   do not deploy firestore.rules and firestore.indexes.json
 #   RUN_AFTER_DEPLOY=1       execute the job once and wait for it
 #   DRY_RUN=1                print the commands instead of running them
@@ -44,6 +52,11 @@ FIRESTORE_LOCATION="${FIRESTORE_LOCATION:-$REGION}"
 SCHEDULE="${SCHEDULE:-0 * * * *}"
 SCHEDULE_TIME_ZONE="${SCHEDULE_TIME_ZONE:-Etc/UTC}"
 EXTRA_ENV_VARS="${EXTRA_ENV_VARS:-}"
+DEPLOY_AGENT="${DEPLOY_AGENT:-0}"
+AGENT_REPO="${AGENT_REPO:-}"
+AGENT_BASE_BRANCH="${AGENT_BASE_BRANCH:-}"
+AGENT_SCHEDULE="${AGENT_SCHEDULE:-30 * * * *}"
+AGENT_EXTRA_ENV_VARS="${AGENT_EXTRA_ENV_VARS:-}"
 BUDGET_USD="${BUDGET_USD:-}"
 BILLING_ACCOUNT="${BILLING_ACCOUNT:-}"
 SKIP_FIRESTORE_RULES="${SKIP_FIRESTORE_RULES:-0}"
@@ -55,12 +68,32 @@ ENGINE_SA_NAME="${ENGINE_SA_NAME:-starfish-engine}"
 SCHEDULER_SA_NAME="${SCHEDULER_SA_NAME:-starfish-scheduler}"
 SCHEDULER_JOB_NAME="${SCHEDULER_JOB_NAME:-$JOB_NAME-tick}"
 GITHUB_SECRET="${GITHUB_SECRET:-starfish-github-token}"
+AGENT_JOB_NAME="${AGENT_JOB_NAME:-starfish-agent}"
+AGENT_SA_NAME="${AGENT_SA_NAME:-starfish-agent}"
+AGENT_SCHEDULER_JOB_NAME="${AGENT_SCHEDULER_JOB_NAME:-$AGENT_JOB_NAME-tick}"
 
 die() { echo "deploy-gcp: $*" >&2; exit 1; }
 
 [ -n "$PROJECT_ID" ] || die "PROJECT_ID is required"
 [ "$STARFISH_DATABASE_ID" != "(default)" ] ||
   die "STARFISH_DATABASE_ID=(default) is refused: deploying firestore.rules to the default database would replace the watched app's own rules"
+if [ "$DEPLOY_AGENT" = "1" ]; then
+  [ -n "$AGENT_REPO" ] || die "DEPLOY_AGENT=1 needs AGENT_REPO (owner/name): the agent has no repository to work on without it"
+  case "$AGENT_REPO" in
+    */*/*|*[!A-Za-z0-9._/-]*|/*|*/|*..*) die "AGENT_REPO must be owner/name: $AGENT_REPO" ;;
+    */*) ;;
+    *) die "AGENT_REPO must be owner/name: $AGENT_REPO" ;;
+  esac
+  # The agent job holds the store, Logging and Gemini credentials. The verify gate runs the target repository's own
+  # tests and is not a sandbox, so a deployed job must not run it: the job also refuses to start with a command (#74).
+  case "@$AGENT_EXTRA_ENV_VARS" in
+    *@STARFISH_VERIFY_COMMAND=*|*@STARFISH_AGENT_ALLOW_LOCAL_VERIFY=*)
+      die "AGENT_EXTRA_ENV_VARS may not set STARFISH_VERIFY_COMMAND or STARFISH_AGENT_ALLOW_LOCAL_VERIFY: the deployed agent job must not run the target repository's code in a process that holds credentials (a separate runner for the verify step is not built)" ;;
+  esac
+  case "@$EXTRA_ENV_VARS" in
+    *@STARFISH_VERIFY_COMMAND=*) die "EXTRA_ENV_VARS sets STARFISH_VERIFY_COMMAND, which the agent job would not accept: leave it out" ;;
+  esac
+fi
 if [ -n "$BUDGET_USD" ]; then
   [ -n "$BILLING_ACCOUNT" ] || die "BUDGET_USD needs BILLING_ACCOUNT (gcloud billing accounts list)"
   case "$BUDGET_USD" in
@@ -73,6 +106,7 @@ fi
 
 ENGINE_SA="$ENGINE_SA_NAME@$PROJECT_ID.iam.gserviceaccount.com"
 SCHEDULER_SA="$SCHEDULER_SA_NAME@$PROJECT_ID.iam.gserviceaccount.com"
+AGENT_SA="$AGENT_SA_NAME@$PROJECT_ID.iam.gserviceaccount.com"
 
 step() { printf '\n== %s\n' "$*"; }
 
@@ -235,6 +269,67 @@ else
   run gcloud scheduler jobs create http "$SCHEDULER_JOB_NAME" "${SCHEDULER_ARGS[@]}"
 fi
 
+if [ "$DEPLOY_AGENT" = "1" ]; then
+  step "Agent job '$AGENT_JOB_NAME' (#74): dry run, never runs the target's code; $AGENT_SA is its own identity"
+  if ! exists gcloud iam service-accounts describe "$AGENT_SA" --project="$PROJECT_ID"; then
+    run gcloud iam service-accounts create "$AGENT_SA_NAME" --project="$PROJECT_ID" \
+      --display-name="Starfish agent (triage, fix, review)"
+  fi
+  # What the loop itself needs and nothing the ingest's account has beyond it: the store (its own database
+  # only), Gemini, the counter-check's read of the watched project's logs, and the one secret.
+  bind "$WATCHED_PROJECT_ID" "$AGENT_SA" roles/logging.viewer
+  bind "$PROJECT_ID" "$AGENT_SA" roles/datastore.user \
+    "resource.name == \"$DB_RESOURCE\" || resource.name.startsWith(\"$DB_RESOURCE/\")"
+  bind "$VERTEX_PROJECT_ID" "$AGENT_SA" roles/aiplatform.user
+  retry gcloud secrets add-iam-policy-binding "$GITHUB_SECRET" --project="$PROJECT_ID" \
+    --member="serviceAccount:$AGENT_SA" --role=roles/secretmanager.secretAccessor --quiet --format=none
+
+  AGENT_ENV="GOOGLE_CLOUD_PROJECT=$PROJECT_ID@STARFISH_WATCHED_PROJECT_ID=$WATCHED_PROJECT_ID@STARFISH_VERTEX_PROJECT_ID=$VERTEX_PROJECT_ID"
+  AGENT_ENV="$AGENT_ENV@GOOGLE_CLOUD_LOCATION=$REGION@STARFISH_ENV=$STARFISH_ENV@STARFISH_DATABASE_ID=$STARFISH_DATABASE_ID"
+  AGENT_ENV="$AGENT_ENV@STARFISH_GITHUB_REPO=$AGENT_REPO"
+  [ -z "$AGENT_BASE_BRANCH" ] || AGENT_ENV="$AGENT_ENV@STARFISH_GITHUB_BASE_BRANCH=$AGENT_BASE_BRANCH"
+  # Nothing leaves Starfish until a person turns the dry run off on purpose (an admin on the Settings page, or here).
+  case "@$AGENT_EXTRA_ENV_VARS" in
+    *@STARFISH_DRY_RUN=*) ;;
+    *) AGENT_ENV="$AGENT_ENV@STARFISH_DRY_RUN=true" ;;
+  esac
+  case "@$EXTRA_ENV_VARS@$AGENT_EXTRA_ENV_VARS" in
+    *@STARFISH_EXCLUDED_SERVICES=*) ;;
+    *) AGENT_ENV="$AGENT_ENV@STARFISH_EXCLUDED_SERVICES=starfish,$JOB_NAME,$AGENT_JOB_NAME" ;;
+  esac
+  [ -z "$EXTRA_ENV_VARS" ] || AGENT_ENV="$AGENT_ENV@$EXTRA_ENV_VARS"
+  [ -z "$AGENT_EXTRA_ENV_VARS" ] || AGENT_ENV="$AGENT_ENV@$AGENT_EXTRA_ENV_VARS"
+  # The same image and the same Dockerfile as the ingest, with the command overridden. A clone and a few model
+  # calls: a longer timeout and more memory than the ingest, and no retry (the lease resumes a cycle).
+  AGENT_DEPLOY_ARGS=(
+    gcloud run jobs deploy "$AGENT_JOB_NAME" --source . --region="$REGION" --project="$PROJECT_ID" --quiet
+    --service-account="$AGENT_SA"
+    --command=node --args=--import,tsx,src/agentCli.ts
+    --max-retries=0 --task-timeout=1800s --cpu=1 --memory=1Gi
+    --update-env-vars="^@^$AGENT_ENV"
+  )
+  if [ "$SECRET_VERSION" = "1" ]; then
+    AGENT_DEPLOY_ARGS+=(--update-secrets="STARFISH_GITHUB_TOKEN=$GITHUB_SECRET:latest")
+  fi
+  run "${AGENT_DEPLOY_ARGS[@]}"
+  retry gcloud run jobs add-iam-policy-binding "$AGENT_JOB_NAME" --region="$REGION" --project="$PROJECT_ID" \
+    --member="serviceAccount:$SCHEDULER_SA" --role=roles/run.invoker --quiet --format=none
+
+  step "Cloud Scheduler '$AGENT_SCHEDULER_JOB_NAME': $AGENT_SCHEDULE ($SCHEDULE_TIME_ZONE)"
+  AGENT_RUN_URI="https://run.googleapis.com/v2/projects/$PROJECT_ID/locations/$REGION/jobs/$AGENT_JOB_NAME:run"
+  AGENT_SCHEDULER_ARGS=(
+    --project="$PROJECT_ID" --location="$REGION"
+    --schedule="$AGENT_SCHEDULE" --time-zone="$SCHEDULE_TIME_ZONE"
+    --uri="$AGENT_RUN_URI" --http-method=POST
+    --oauth-service-account-email="$SCHEDULER_SA"
+  )
+  if exists gcloud scheduler jobs describe "$AGENT_SCHEDULER_JOB_NAME" --project="$PROJECT_ID" --location="$REGION"; then
+    run gcloud scheduler jobs update http "$AGENT_SCHEDULER_JOB_NAME" "${AGENT_SCHEDULER_ARGS[@]}"
+  else
+    run gcloud scheduler jobs create http "$AGENT_SCHEDULER_JOB_NAME" "${AGENT_SCHEDULER_ARGS[@]}"
+  fi
+fi
+
 if [ "$RUN_AFTER_DEPLOY" = "1" ]; then
   step "First run"
   run gcloud run jobs execute "$JOB_NAME" --region="$REGION" --project="$PROJECT_ID" --wait
@@ -247,4 +342,5 @@ else
   echo "Job $JOB_NAME and scheduler $SCHEDULER_JOB_NAME are in place in $PROJECT_ID ($REGION)."
   echo "Run it now:  gcloud run jobs execute $JOB_NAME --region=$REGION --project=$PROJECT_ID --wait"
   echo "Read it:     gcloud run jobs executions list --job=$JOB_NAME --region=$REGION --project=$PROJECT_ID"
+  [ "$DEPLOY_AGENT" != "1" ] || echo "Agent job $AGENT_JOB_NAME and scheduler $AGENT_SCHEDULER_JOB_NAME are in place (a dry run; it runs no verify command)."
 fi

@@ -19,7 +19,7 @@
  * What the model is shown and what it returns are redacted and bounded (a review is shown to people,
  * guests included). How a block is handled (one revision, then a human) is the orchestration's call.
  *
- * Not wired into any job, and not on the Agent Development Kit yet: a stage contract with a stubbed
+ * Run by the agent job (job.ts, never deployed), and not on the Agent Development Kit yet: a stage contract with a stubbed
  * model in its tests.
  */
 import { createHash } from "node:crypto";

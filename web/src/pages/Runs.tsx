@@ -4,7 +4,7 @@
  * here is inferred. A step with no event is "not reached", a cycle with no worker on it is not "in
  * progress", and nothing is drawn for a stage the loop has no code for (merge, deploy, recovery).
  *
- * Today nothing runs the agent loop as a job (#8), so on a real deployment this page is empty until
+ * Today the agent job (#74) is written but has never been deployed, so on a real deployment this page is empty until
  * that exists; it says so instead of looking like a quiet day.
  */
 import { useEffect, useMemo, useState } from "react";
