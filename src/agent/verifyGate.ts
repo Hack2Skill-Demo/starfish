@@ -71,6 +71,8 @@ export interface VerifyResult {
 }
 
 export interface VerifyRequest {
+  /** The cycle this patch belongs to. Only the CI-backed verifier needs it (it names the branch). */
+  cycleId?: string;
   /** A checkout of the target repo at the pinned revision. Never modified. */
   sourceDir: string;
   /** A unified diff against that checkout. */

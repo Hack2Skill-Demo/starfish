@@ -124,7 +124,7 @@ describe("createLoader", () => {
 });
 
 describe("agentPreflight", () => {
-  const ok = { verifyIsolation: "in-process" as const, verifyCommand: "pnpm test", githubRepo: "a/b", dryRun: true, environment: "demo", verifyJobName: "", verifyBucket: "" };
+  const ok = { verifyIsolation: "in-process" as const, verifyCommand: "pnpm test", githubRepo: "a/b", dryRun: true, environment: "demo", verifyJobName: "", verifyBucket: "", verifyChecks: [] as string[] };
   it("lets a fully configured dry run start", () => expect(agentPreflight(ok, undefined)).toEqual([]));
   it("refuses with no isolation chosen, no command, no repo", () => {
     const p = agentPreflight({ ...ok, verifyIsolation: "none", verifyCommand: " ", githubRepo: "" }, undefined);
@@ -136,6 +136,12 @@ describe("agentPreflight", () => {
     expect(agentPreflight(remote, undefined)).toHaveLength(2);
     expect(agentPreflight({ ...remote, verifyJobName: "starfish-verify" }, undefined)[0]).toMatch(/STARFISH_VERIFY_BUCKET/);
     expect(agentPreflight({ ...remote, verifyJobName: "starfish-verify", verifyBucket: "b" }, undefined)).toEqual([]);
+  });
+  it("lets the github-actions isolation start only with the checks that judge named and a token, and needs no command of its own", () => {
+    const ci = { ...ok, verifyIsolation: "github-actions" as const, verifyCommand: "" };
+    expect(agentPreflight(ci, "t")).toEqual(["STARFISH_VERIFY_ISOLATION is github-actions but STARFISH_VERIFY_CHECKS is empty: name the check runs of the target's CI that must pass."]);
+    expect(agentPreflight({ ...ci, verifyChecks: ["verify"] }, undefined)[0]).toMatch(/pushes a branch.*even in a dry run/);
+    expect(agentPreflight({ ...ci, verifyChecks: ["verify"] }, "t")).toEqual([]);
   });
   it("wants a token only when it is going to open pull requests", () => {
     expect(agentPreflight({ ...ok, dryRun: false }, undefined)).toHaveLength(1);

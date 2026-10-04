@@ -53,9 +53,17 @@ export interface StarfishConfig {
    * for a machine that holds no credentials the code must not reach. A real isolation (a disposable runner)
    * would be a further value here. `cloud-run-job`: the command runs in a SEPARATE Cloud Run job whose service
    * account holds no roles (src/agent/verifyRemote.ts, src/agent/verifyRunner.ts); the agent never runs it
-   * itself. Needs `verifyJobName` and `verifyBucket`.
+   * itself. Needs `verifyJobName` and `verifyBucket`. `github-actions`: the patch is pushed to `starfish/<cycle>` and
+   * the TARGET repository's own CI, on GitHub's disposable runners, is the judge; the agent never runs the target's
+   * code and holds no runner. The target's workflow must run on pushes to `starfish/**`, and must hold no secrets.
    */
-  verifyIsolation: "none" | "in-process" | "cloud-run-job";
+  verifyIsolation: "none" | "in-process" | "cloud-run-job" | "github-actions";
+  /**
+   * With `github-actions` isolation, the names of the check runs on the pushed commit that must all pass
+   * (src/agent/verifyCi.ts). Required there and ignored otherwise: naming the judge is not optional, because a
+   * repository usually has other checks that say nothing about the patch.
+   */
+  verifyChecks: string[];
   /** The Cloud Run job that runs the verify command when `verifyIsolation` is `cloud-run-job`. */
   verifyJobName: string;
   /** The bucket the source bundle and the result pass through (one day lifecycle); the verifier job has no access to it except per-run signed URLs. */
@@ -250,6 +258,7 @@ export function loadConfig(): StarfishConfig {
       "STARFISH_VERIFY_TIMEOUT_SECONDS"
     ),
     verifyIsolation: parseVerifyIsolation(process.env.STARFISH_VERIFY_ISOLATION),
+    verifyChecks: parseVerifyChecks(process.env.STARFISH_VERIFY_CHECKS),
     verifyJobName: (process.env.STARFISH_VERIFY_JOB ?? "").trim(),
     verifyBucket: (process.env.STARFISH_VERIFY_BUCKET ?? "").trim(),
     verifyJobRegion: (process.env.STARFISH_VERIFY_JOB_REGION ?? "").trim() || process.env.GOOGLE_CLOUD_LOCATION || "us-central1",
@@ -336,11 +345,18 @@ function positiveNumber(raw: string | undefined, fallback: number, name: string)
 }
 
 /** `none` when unset; anything but the two known values is a mistake worth refusing at startup. */
-function parseVerifyIsolation(raw: string | undefined): "none" | "in-process" | "cloud-run-job" {
+function parseVerifyIsolation(raw: string | undefined): "none" | "in-process" | "cloud-run-job" | "github-actions" {
   const v = (raw ?? "").trim().toLowerCase();
   if (v === "" || v === "none") return "none";
-  if (v === "in-process" || v === "cloud-run-job") return v;
-  throw new Error(`STARFISH_VERIFY_ISOLATION must be none, in-process or cloud-run-job, got "${raw}"`);
+  if (v === "in-process" || v === "cloud-run-job" || v === "github-actions") return v;
+  throw new Error(`STARFISH_VERIFY_ISOLATION must be none, in-process, cloud-run-job or github-actions, got "${raw}"`);
+}
+
+/** `"verify, lint"` -> `["verify", "lint"]`: the check runs that must pass. At most 20, each at most 200 characters. */
+function parseVerifyChecks(raw: string | undefined): string[] {
+  const names = (parseList(raw, ",") ?? []).filter((n) => n.length <= 200);
+  if (names.length > 20) throw new Error("STARFISH_VERIFY_CHECKS names more than 20 checks");
+  return names;
 }
 
 /** true/false/1/0/yes/no, or the default when unset. Anything else is a mistake worth refusing at startup. */

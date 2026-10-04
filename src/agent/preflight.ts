@@ -6,7 +6,7 @@ import type { StarfishConfig } from "../config.js";
 
 export type PreflightConfig = Pick<
   StarfishConfig,
-  "verifyIsolation" | "verifyCommand" | "githubRepo" | "dryRun" | "environment" | "verifyJobName" | "verifyBucket"
+  "verifyIsolation" | "verifyCommand" | "githubRepo" | "dryRun" | "environment" | "verifyJobName" | "verifyBucket" | "verifyChecks"
 >;
 
 export function agentPreflight(cfg: PreflightConfig, token: string | undefined): string[] {
@@ -21,7 +21,12 @@ export function agentPreflight(cfg: PreflightConfig, token: string | undefined):
     if (cfg.verifyJobName === "") problems.push("STARFISH_VERIFY_ISOLATION is cloud-run-job but STARFISH_VERIFY_JOB is empty: there is no job to run the verify command in.");
     if (cfg.verifyBucket === "") problems.push("STARFISH_VERIFY_ISOLATION is cloud-run-job but STARFISH_VERIFY_BUCKET is empty: the source and the result have nowhere to pass through.");
   }
-  if (cfg.verifyCommand.trim() === "") {
+  if (cfg.verifyIsolation === "github-actions") {
+    if (cfg.verifyChecks.length === 0) problems.push("STARFISH_VERIFY_ISOLATION is github-actions but STARFISH_VERIFY_CHECKS is empty: name the check runs of the target's CI that must pass.");
+    if (token === undefined || token === "") problems.push("STARFISH_VERIFY_ISOLATION is github-actions, which pushes a branch for CI to judge even in a dry run, but STARFISH_GITHUB_TOKEN is not set.");
+  }
+  // With github-actions the target's CI is the judge and there is no command of our own to run.
+  if (cfg.verifyIsolation !== "github-actions" && cfg.verifyCommand.trim() === "") {
     problems.push("STARFISH_VERIFY_COMMAND is empty: with nothing to prove a patch, none would ever be accepted.");
   }
   if (cfg.githubRepo.trim() === "") {

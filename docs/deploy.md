@@ -190,7 +190,8 @@ defaults when empty.
 | `STARFISH_DATABASE_ID`, `STARFISH_FIRESTORE_LOCATION` | `STARFISH_DATABASE_ID`, `FIRESTORE_LOCATION` | |
 | `STARFISH_SCHEDULE`, `STARFISH_SCHEDULE_TIME_ZONE` | `SCHEDULE`, `SCHEDULE_TIME_ZONE` | default hourly, UTC |
 | `STARFISH_EXTRA_ENV_VARS` | `EXTRA_ENV_VARS` | `A=1@B=2` |
-| `STARFISH_DEPLOY_AGENT`, `STARFISH_AGENT_REPO`, `STARFISH_VERIFY_COMMAND` | `DEPLOY_AGENT`, `AGENT_REPO`, `VERIFY_COMMAND` | set `1`, `owner/name` and the command to deploy the agent and its verify job too ([below](#the-agent-and-its-isolated-verify-job-74)); default off |
+| `STARFISH_DEPLOY_AGENT`, `STARFISH_AGENT_REPO` | `DEPLOY_AGENT`, `AGENT_REPO` | set `1` and `owner/name` to deploy the agent too ([below](#the-agent-and-where-its-tests-run-74)); default off |
+| `STARFISH_VERIFY_ISOLATION`, `STARFISH_VERIFY_CHECKS`, `STARFISH_VERIFY_COMMAND` | `VERIFY_ISOLATION`, `VERIFY_CHECKS`, `VERIFY_COMMAND` | `github-actions` (default) with the check names that must pass, or `cloud-run-job` with a command |
 | `STARFISH_VERIFY_TIMEOUT_SECONDS`, `STARFISH_VERIFY_BUCKET`, `STARFISH_AGENT_BASE_BRANCH`, `STARFISH_AGENT_SCHEDULE`, `STARFISH_AGENT_EXTRA_ENV_VARS` | `VERIFY_TIMEOUT_SECONDS`, `VERIFY_BUCKET`, `AGENT_BASE_BRANCH`, `AGENT_SCHEDULE`, `AGENT_EXTRA_ENV_VARS` | default 600, `<project>-starfish-verify`, `main`, `30 * * * *` |
 
 `BUDGET_USD` and `BILLING_ACCOUNT` are not wired: a budget lives on the billing account, which the deployer
@@ -229,14 +230,79 @@ web app named `starfish` when the project has none). Keep both off the engine's 
 `STARFISH_WEB_HOSTING_SITE` (default `<project>-starfish`, its own site so the watched app's keeps the default).
 Anonymous sign-in is **not** turned on by the workflow: it is project-wide (see `setup.md`). Input: `dry_run`.
 
-## The agent and its isolated verify job (#74)
+## The agent and where its tests run (#74)
 
-`DEPLOY_AGENT=1 AGENT_REPO=owner/name VERIFY_COMMAND='…'` makes the script deploy three more things, none of which
-the ingest has:
+`DEPLOY_AGENT=1 AGENT_REPO=owner/name` makes the script also deploy **the agent**: a Cloud Run job `starfish-agent` and a
+Scheduler job `starfish-agent-tick` (hourly at :30), under its own service account `starfish-agent` (the store's
+`starfish` database only, Gemini, `logging.viewer` on the watched project for the counter-check, the one secret). It
+runs `pnpm agent` (`src/agentCli.ts`): pick open incidents with no settled cycle, check the repository out, run triage,
+fix, verify and review as a **dry run**.
+
+The agent holds those credentials, so it **never runs the target repository's code**: the verify step is isolated, and
+`VERIFY_ISOLATION` says where. There are two, and the first is the default and the one decided for the demo.
+
+### `github-actions`: the target's own CI is the judge
+
+> **Status: written and tested against real git, a fake GitHub API and a fake CI; never run against real GitHub or a
+> real workflow.**
+
+1. The agent runs the deterministic half of the verify gate itself, without executing anything of the patch: it must
+   apply, touch no excluded path (`.github/` is one, so **a patch cannot rewrite the workflow that judges it**), add no
+   link and change no file mode. A refusal stops here and nothing is pushed.
+2. It pushes the patch as one commit on `starfish/<cycle>` on top of the revision it was written against.
+3. It waits for the **named check runs on that exact commit** (`VERIFY_CHECKS`) and requires all of them to succeed.
+   Checks belong to a commit, and the commit is the patch applied to its base, so the evidence is for this patch and no
+   other. A check that failed or was cancelled is a result (the fixer sees what the checks said, once); one still
+   running at the deadline is a timeout; one that never appears, or is only queued, is the infrastructure's and throws, so
+   the cycle resumes.
+4. A branch whose patch did not pass is deleted, so the next draft in the cycle can use the name. One that passed stays,
+   and the pull request is later opened from it.
+
+**What you must do in the target repository, once**, because the target's CI is the judge *and* the sandbox:
+
+```yaml
+# .github/workflows/starfish-verify.yml in the TARGET repository
+name: starfish-verify
+on:
+  push:
+    branches: ['starfish/**']
+permissions:
+  contents: read
+jobs:
+  verify:                         # the check run's name: VERIFY_CHECKS=verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@<a full commit SHA>
+        with:
+          persist-credentials: false
+      - run: pnpm install --frozen-lockfile && pnpm run verify   # whatever proves a patch in this repository
+```
+
+- **Reference no secret in that workflow**, and **make sure no other workflow runs on a push to `starfish/**`** (check
+  their `branches` filters, or add `branches-ignore: ['starfish/**']`): a workflow triggered by that push runs the
+  patch's code with whatever secrets it uses. This is the whole trust boundary, and it is a convention in someone else's
+  repository, not something Starfish can enforce.
+- **A branch is pushed even in a dry run.** The dry run opens no pull request; it does not stop the push that CI needs, and
+  it spends the target's Actions minutes. `STARFISH_GITHUB_TOKEN` must therefore be set (`preflight` refuses without it) and
+  may write branches. Protect the base branch (a ruleset), as above.
+- **The fixer's second draft gets thin feedback**: check names, conclusions, their summaries and a few annotations, not the
+  test log. Make the workflow emit annotations (`::error file=...::message`) for failures if you want better revisions.
+- Only **check runs** are read (what GitHub Actions creates); a CI that reports commit statuses instead is not seen. The
+  token needs read access to checks as well as write access to contents.
+- **Not exercised:** a real push triggering a real workflow, the check-run names GitHub actually reports for a job or a
+  matrix, and rate limits when polling.
+
+Deploy: `DRY_RUN=1 DEPLOY_AGENT=1 AGENT_REPO=owner/name VERIFY_CHECKS=verify PROJECT_ID=my-project scripts/deploy-gcp.sh`.
+Nothing else is created: no bucket, no verify job, no extra account.
+
+### `cloud-run-job`: a separate job with no roles (the heavier option)
+
+Set `VERIFY_ISOLATION=cloud-run-job` and `VERIFY_COMMAND='…'` for targets whose CI cannot be trusted with this. The script
+then also deploys the verify job and a bucket:
 
 | Resource | What it is |
 |---|---|
-| Cloud Run job `starfish-agent` + Scheduler job `starfish-agent-tick` (hourly at :30), service account `starfish-agent` | `pnpm agent` (`src/agentCli.ts`): pick open incidents with no settled cycle, check the repository out, run triage, fix, verify, review as a **dry run** |
 | Cloud Run job `starfish-verify`, service account `starfish-verifier` which **holds no roles** | the **only** place the target repository's tests run (`src/verifyRunnerCli.ts`) |
 | Bucket `<project>-starfish-verify` (private, objects deleted after a day) | where the agent and the verify job pass the source and the result |
 
@@ -288,7 +354,7 @@ deployer needs more roles for this (a bucket, a service account that must not be
 accounts); see the table above.
 
 ```bash
-DRY_RUN=1 DEPLOY_AGENT=1 AGENT_REPO=owner/name VERIFY_COMMAND='pnpm install --frozen-lockfile && pnpm run verify' \
+DRY_RUN=1 DEPLOY_AGENT=1 AGENT_REPO=owner/name VERIFY_ISOLATION=cloud-run-job VERIFY_COMMAND='pnpm install --frozen-lockfile && pnpm run verify' \
   PROJECT_ID=my-project scripts/deploy-gcp.sh
 ```
 
@@ -310,9 +376,9 @@ None of this has run against a real project. The likely first failures, and what
 - **An alert when ingestion stops.** The UI shows it; nothing pages anyone (an item on #6).
 - **An authenticated "run now" endpoint.** `src/ingest/trigger.ts` is the function; nothing serves
   it. For recording a demo, a short `SCHEDULE` or `gcloud run jobs execute` does the job.
-- **The agent has never run on a real project.** The agent job and its isolated verify job are written and deploy
-  with `DEPLOY_AGENT=1` ([above](#the-agent-and-its-isolated-verify-job-74)); `in-process` verification is not a
-  sandbox and is for a machine with nothing to protect.
+- **The agent has never run on a real project.** The agent job deploys with `DEPLOY_AGENT=1`, verified by the target's
+  CI or by a separate credential-less job ([above](#the-agent-and-where-its-tests-run-74)); `in-process` verification is
+  not a sandbox and is for a machine with nothing to protect.
 - **Cost.** Cloud Run jobs, Scheduler (three free jobs) and Secret Manager (a few free versions) sit
   inside the free tiers at one tick an hour. Cloud Build and Artifact Registry storage, and a 5-minute
   tick running all month, are not free; Gemini calls are billed to the Gemini project. Each Actions deploy runs one Cloud Build.

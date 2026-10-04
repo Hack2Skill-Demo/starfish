@@ -3,7 +3,8 @@
  * assemble each one's source, and run the loop. Dry run by default (nothing is opened), and it refuses to start
  * at all until the verify step's isolation is set on purpose (src/agent/preflight.ts).
  *
- * Where the verify command runs is STARFISH_VERIFY_ISOLATION. `in-process` runs the target's tests in this process
+ * Where the verify step runs is STARFISH_VERIFY_ISOLATION. `github-actions` pushes the patch to a starfish/<cycle> branch
+ * and lets the target's own CI judge it (src/agent/verifyCi.ts). `in-process` runs the target's tests in this process
  * as this identity: not a sandbox, so only where that is acceptable. `cloud-run-job` hands the source and the patch
  * to a separate job whose service account holds no roles and waits for its result, so this process, which holds
  * the credentials, never runs the target's code (src/agent/verifyRemote.ts). `scripts/deploy-gcp.sh` deploys this
@@ -29,7 +30,8 @@ import { runAgentPass, selectCandidates } from "./agent/pass.js";
 import { agentPreflight } from "./agent/preflight.js";
 import { createCloudRunJobStarter, createGcsStore } from "./agent/cloudRunJob.js";
 import { createRemoteVerifier } from "./agent/verifyRemote.js";
-import { createPullRequestOpener } from "./integrations/githubPr.js";
+import { createCiVerifier } from "./agent/verifyCi.js";
+import { createGithubClient } from "./integrations/githubPr.js";
 import { INCIDENT_STATUSES, type IncidentStatus } from "./types.js";
 
 const base = loadConfig();
@@ -56,15 +58,28 @@ if (cfg.verifyIsolation === "in-process") {
   console.warn("agent: verify runs IN THIS PROCESS (STARFISH_VERIFY_ISOLATION=in-process): not a sandbox.");
 }
 
-// `cloud-run-job`: the verify command runs in a separate job whose service account holds no roles, and this
-// process never runs it. Otherwise the loop's own `verifyPatch` runs it in-process (`in-process`, not a sandbox).
-const remoteVerify =
-  cfg.verifyIsolation === "cloud-run-job"
-    ? createRemoteVerifier(cfg, {
-        store: createGcsStore(app, cfg.verifyBucket),
-        startJob: createCloudRunJobStarter({ projectId: cfg.projectId, region: cfg.verifyJobRegion, jobName: cfg.verifyJobName }),
-      })
+// One GitHub client for the pull request and, with `github-actions`, for the branch CI judges. Built only when one of
+// them needs it, so a dry run with another isolation never constructs it.
+const github =
+  token && (cfg.verifyIsolation === "github-actions" || !cfg.dryRun)
+    ? createGithubClient(cfg, { token, env: loadChildProcessBasics() })
     : undefined;
+
+// `github-actions`: the patch is pushed to a starfish/<cycle> branch and the TARGET's own CI is the judge.
+// `cloud-run-job`: the command runs in a separate job whose service account holds no roles. In both this process
+// never runs the target's code. Otherwise the loop's own `verifyPatch` runs it in-process (`in-process`, not a sandbox).
+const remoteVerify =
+  cfg.verifyIsolation === "github-actions" && github
+    ? createCiVerifier(cfg, { client: github })
+    : cfg.verifyIsolation === "cloud-run-job"
+      ? createRemoteVerifier(cfg, {
+          store: createGcsStore(app, cfg.verifyBucket),
+          startJob: createCloudRunJobStarter({ projectId: cfg.projectId, region: cfg.verifyJobRegion, jobName: cfg.verifyJobName }),
+        })
+      : undefined;
+if (cfg.verifyIsolation === "github-actions") {
+  console.warn(`agent: verify is the target's CI (checks: ${cfg.verifyChecks.join(", ")}): a branch starfish/<cycle> is pushed to ${cfg.githubRepo} even in a dry run.`);
+}
 
 const loader = createLoader({
   db,
@@ -89,7 +104,7 @@ const deps = {
   automationEnabled: makeAutomationSwitch(settings, db),
   ...(remoteVerify && { verify: remoteVerify }),
   // Absent in a dry run: the loop then ends a verified, reviewed patch as "waiting for a person" and opens nothing.
-  ...(!cfg.dryRun && token && { openPullRequest: createPullRequestOpener(cfg, { token, env: loadChildProcessBasics() }) }),
+  ...(!cfg.dryRun && github && { openPullRequest: github.openPullRequest }),
 };
 
 let failed: boolean;

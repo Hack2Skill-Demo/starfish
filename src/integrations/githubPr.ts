@@ -20,6 +20,12 @@
  * bug here cannot write elsewhere has to be branch protection or a ruleset on the repository. This
  * file is a convention backed by that, not a substitute for it.
  *
+ * The same client also serves the CI-backed verify step (#74, `STARFISH_VERIFY_ISOLATION=github-actions`): it pushes
+ * the patch to that same branch BEFORE any pull request, so the target's own CI can judge it on a disposable runner,
+ * lists the check runs on the pushed commit, and deletes the branch again when the patch did not pass. A pull request
+ * opened later reuses the branch (it is exactly this change, so it is reconciled, not repeated). The branch is the only
+ * thing written, and only under `starfish/`; that is still a push to the target repository, in a dry run too.
+ *
  * The patch must be the one that was verified: its SHA-256 is recomputed and compared. Everything
  * written into the pull request text is redacted and bounded; the patch itself is a diff of the
  * repository's own files and goes only to a pull request in it.
@@ -214,6 +220,46 @@ export function pullRequestText(req: PullRequestRequest): { title: string; body:
 
 /** Build the opener the agent loop is given. Throws at once for a configuration that could act on the wrong target. */
 export function createPullRequestOpener(cfg: GithubPrConfig, deps: GithubPrDeps): (req: PullRequestRequest) => Promise<PullRequestResult> {
+  return createGithubClient(cfg, deps).openPullRequest;
+}
+
+/** What the CI-backed verify step needs of a patch: enough to build the commit, nothing about review. */
+export type PatchBranchRequest = Pick<PullRequestRequest, "cycleId" | "baseRevision" | "patch" | "patchSha256" | "rootCause">;
+
+/** One check run on a commit, reduced to what a verdict needs. Text is redacted and bounded. */
+export interface CheckRun {
+  id: number;
+  name: string;
+  status: string;
+  conclusion: string | null;
+  url: string;
+  /** The run's own one-line title and summary, when it has any. */
+  title: string;
+  summary: string;
+}
+
+export interface CheckAnnotation {
+  path: string;
+  line: number;
+  level: string;
+  message: string;
+}
+
+export interface GithubClient {
+  openPullRequest: (req: PullRequestRequest) => Promise<PullRequestResult>;
+  /**
+   * Push the patch as one commit on `starfish/<cycleId>` on top of the base revision and return that commit. A branch
+   * this cycle left that is exactly this change is reused; one that differs is DELETED and rebuilt (the verify step
+   * revises a patch within a cycle); a branch that already has a pull request is never touched.
+   */
+  pushPatchBranch: (req: PatchBranchRequest) => Promise<{ branch: string; commit: string }>;
+  /** Delete the cycle's branch. Already gone is fine. Refuses anything outside `starfish/`. */
+  deleteBranch: (cycleId: string) => Promise<void>;
+  listCheckRuns: (commit: string) => Promise<CheckRun[]>;
+  annotations: (checkRunId: number) => Promise<CheckAnnotation[]>;
+}
+
+export function createGithubClient(cfg: GithubPrConfig, deps: GithubPrDeps): GithubClient {
   if (!REPO_RE.test(cfg.githubRepo)) throw new GithubError("invalid-request", "githubRepo must be owner/name");
   if (!BRANCH_RE.test(cfg.githubBaseBranch) || cfg.githubBaseBranch.startsWith(BRANCH_PREFIX) || cfg.githubBaseBranch.includes("..")) {
     throw new GithubError("invalid-request", "githubBaseBranch is not a usable base branch");
@@ -231,7 +277,7 @@ export function createPullRequestOpener(cfg: GithubPrConfig, deps: GithubPrDeps)
   /** Anything about to leave this file: the token and its encodings removed, then the usual redaction. */
   const scrub = (text: string) => redactPii(text.split(deps.token).join("[token]").split(basic).join("[token]"));
 
-  async function call(method: "GET" | "POST", path: string, body?: unknown): Promise<{ status: number; json: unknown; headers: Headers }> {
+  async function call(method: "GET" | "POST" | "DELETE", path: string, body?: unknown): Promise<{ status: number; json: unknown; headers: Headers }> {
     let res: Response;
     try {
       res = await doFetch(`${api}${path}`, {
@@ -293,7 +339,14 @@ export function createPullRequestOpener(cfg: GithubPrConfig, deps: GithubPrDeps)
     if (j.archived === true) throw new GithubError("wrong-repository", "The configured repository is archived; nothing was done.");
   }
 
-  async function buildAndPush(req: PullRequestRequest, branch: string): Promise<void> {
+  async function removeBranch(branch: string): Promise<void> {
+    pushRefspec(branch); // refuses anything but starfish/<id>
+    const r = await call("DELETE", `/repos/${cfg.githubRepo}/git/refs/heads/${branch}`);
+    if (r.status === 204 || r.status === 404 || r.status === 422) return;
+    throw failure(r.status, r.headers, r.json);
+  }
+
+  async function buildAndPush(req: PatchBranchRequest, branch: string, replace = false): Promise<string> {
     const dir = await mkdtemp(join(deps.tmpDir ?? tmpdir(), "starfish-pr-"));
     const env = {
       ...gitAuthEnv(remote, deps.token, deps.env),
@@ -347,24 +400,85 @@ export function createPullRequestOpener(cfg: GithubPrConfig, deps: GithubPrDeps)
         await git(["fetch", "--quiet", "--depth=2", "origin", `refs/heads/${branch}`]);
         const remoteTree = (await git(["rev-parse", "FETCH_HEAD^{tree}"])).trim();
         const remoteParent = (await git(["rev-parse", "FETCH_HEAD^"]).catch(() => "")).trim();
-        if (remoteTree === tree && remoteParent === baseCommit) return;
-        throw new GithubError("branch-conflict", `The branch ${branch} already exists with different content; nothing was changed.`);
+        if (remoteTree === tree && remoteParent === baseCommit) return (await git(["rev-parse", "FETCH_HEAD"])).trim();
+        if (!replace) throw new GithubError("branch-conflict", `The branch ${branch} already exists with different content; nothing was changed.`);
+        await removeBranch(branch);
       }
 
       await git(["commit", "--quiet", "--no-gpg-sign", "-m", `Starfish: ${oneLine(req.rootCause, 70) || "proposed fix"}\n\nRun: ${code(req.cycleId, 128)}\nPatch SHA-256: ${req.patchSha256}`]);
       await git(["push", "--quiet", "origin", pushRefspec(branch)]);
+      return (await git(["rev-parse", "HEAD"])).trim();
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
   }
 
-  return async function openPullRequest(req) {
+  /** The branch for the cycle, after the checks every write needs. */
+  function checked(req: PatchBranchRequest): string {
     const branch = branchFor(req.cycleId);
     if (branch === null) throw new GithubError("invalid-request", "The cycle id is not a plain id, so it cannot name a branch.");
     if (!SHA_RE.test(req.baseRevision)) throw new GithubError("invalid-request", "The base revision is not a commit id.");
     if (!SHA256_RE.test(req.patchSha256) || sha256(req.patch) !== req.patchSha256) {
       throw new GithubError("patch-hash-mismatch", "The patch is not the one that was verified and reviewed; nothing was opened.");
     }
+    return branch;
+  }
+
+  const MAX_CHECKS = 100;
+  const MAX_ANNOTATIONS = 20;
+  const bounded = (v: unknown, max: number) => scrub(typeof v === "string" ? v.slice(0, max) : "");
+
+  async function pushPatchBranch(req: PatchBranchRequest): Promise<{ branch: string; commit: string }> {
+    const branch = checked(req);
+    await checkTarget();
+    if (await findExisting(branch)) throw new GithubError("branch-conflict", `A pull request already exists for ${branch}; its branch is not rebuilt.`);
+    return { branch, commit: await buildAndPush(req, branch, true) };
+  }
+
+  async function deleteBranch(cycleId: string): Promise<void> {
+    const branch = branchFor(cycleId);
+    if (branch === null) throw new GithubError("invalid-request", "The cycle id is not a plain id, so it cannot name a branch.");
+    await removeBranch(branch);
+  }
+
+  async function listCheckRuns(commit: string): Promise<CheckRun[]> {
+    if (!/^[0-9a-f]{40}$/.test(commit)) throw new GithubError("invalid-request", "A check run is looked up by a full commit id.");
+    const r = await call("GET", `/repos/${cfg.githubRepo}/commits/${commit}/check-runs?per_page=${MAX_CHECKS}`);
+    if (r.status !== 200) throw failure(r.status, r.headers, r.json);
+    const runs = (r.json as { check_runs?: unknown } | null)?.check_runs;
+    if (!Array.isArray(runs)) throw new GithubError("unexpected-response", "GitHub's list of check runs was not a list");
+    const out: CheckRun[] = [];
+    for (const item of runs.slice(0, MAX_CHECKS)) {
+      const c = item as { id?: unknown; name?: unknown; status?: unknown; conclusion?: unknown; html_url?: unknown; output?: { title?: unknown; summary?: unknown } | null };
+      if (typeof c.id !== "number" || typeof c.name !== "string" || typeof c.status !== "string") continue;
+      out.push({
+        id: c.id,
+        name: bounded(c.name, 200),
+        status: c.status,
+        conclusion: typeof c.conclusion === "string" ? c.conclusion : null,
+        url: typeof c.html_url === "string" ? c.html_url.slice(0, 300) : "",
+        title: bounded(c.output?.title, 200),
+        summary: bounded(c.output?.summary, 400),
+      });
+    }
+    return out;
+  }
+
+  async function annotations(checkRunId: number): Promise<CheckAnnotation[]> {
+    if (!Number.isInteger(checkRunId) || checkRunId < 1) throw new GithubError("invalid-request", "A check run id is a positive integer.");
+    const r = await call("GET", `/repos/${cfg.githubRepo}/check-runs/${checkRunId}/annotations?per_page=${MAX_ANNOTATIONS}`);
+    if (r.status !== 200) throw failure(r.status, r.headers, r.json);
+    if (!Array.isArray(r.json)) return [];
+    return r.json.slice(0, MAX_ANNOTATIONS).map((a: { path?: unknown; start_line?: unknown; annotation_level?: unknown; message?: unknown }) => ({
+      path: bounded(a.path, 200),
+      line: typeof a.start_line === "number" ? a.start_line : 0,
+      level: bounded(a.annotation_level, 20),
+      message: bounded(a.message, 400),
+    }));
+  }
+
+  async function openPullRequest(req: PullRequestRequest): Promise<PullRequestResult> {
+    const branch = checked(req);
 
     await checkTarget();
     const existing = await findExisting(branch);
@@ -385,5 +499,7 @@ export function createPullRequestOpener(cfg: GithubPrConfig, deps: GithubPrDeps)
       if (raced) return raced;
     }
     throw failure(created.status, created.headers, created.json);
-  };
+  }
+
+  return { openPullRequest, pushPatchBranch, deleteBranch, listCheckRuns, annotations };
 }

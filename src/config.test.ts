@@ -284,6 +284,25 @@ describe("loadConfig: the isolated verify job", () => {
   });
 });
 
+describe("loadConfig: the CI-backed verify step", () => {
+  beforeEach(() => {
+    for (const k of ["STARFISH_VERIFY_ISOLATION", "STARFISH_VERIFY_CHECKS"]) vi.stubEnv(k, "");
+    vi.stubEnv("GOOGLE_CLOUD_PROJECT", "home-project");
+  });
+  afterEach(() => vi.unstubAllEnvs());
+
+  it("names no judge by default, and reads github-actions with the checks that must pass", () => {
+    expect(loadConfig().verifyChecks).toEqual([]);
+    vi.stubEnv("STARFISH_VERIFY_ISOLATION", " GitHub-Actions ");
+    vi.stubEnv("STARFISH_VERIFY_CHECKS", " verify , lint ,, ");
+    expect(loadConfig()).toMatchObject({ verifyIsolation: "github-actions", verifyChecks: ["verify", "lint"] });
+  });
+  it("refuses a list of checks that is absurd rather than quietly dropping part of it", () => {
+    vi.stubEnv("STARFISH_VERIFY_CHECKS", Array.from({ length: 21 }, (_, i) => `c${i}`).join(","));
+    expect(() => loadConfig()).toThrow("STARFISH_VERIFY_CHECKS");
+  });
+});
+
 describe("loadVerifyRunnerRequest", () => {
   afterEach(() => vi.unstubAllEnvs());
   it("is the one place the runner's request is read from the environment, and empty is absent", () => {

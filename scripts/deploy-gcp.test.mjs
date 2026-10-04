@@ -147,8 +147,8 @@ describe("scripts/deploy-gcp.sh", () => {
   });
 });
 
-describe("scripts/deploy-gcp.sh: the agent and its isolated verify job (#74)", () => {
-  const agent = { ...dry, DEPLOY_AGENT: "1", AGENT_REPO: "acme/shop", VERIFY_COMMAND: "pnpm install --frozen-lockfile && pnpm run verify" };
+describe("scripts/deploy-gcp.sh: the agent and its isolated verify job (#74), VERIFY_ISOLATION=cloud-run-job", () => {
+  const agent = { ...dry, DEPLOY_AGENT: "1", AGENT_REPO: "acme/shop", VERIFY_ISOLATION: "cloud-run-job", VERIFY_COMMAND: "pnpm install --frozen-lockfile && pnpm run verify" };
   const sa = (name) => `serviceAccount:${name}@star-proj.iam.gserviceaccount.com`;
   const line = (out, text) => out.split("\n").find((l) => l.includes(text)) ?? "";
   const grants = (out, member) => out.split("\n").filter((l) => l.includes(`--member=${member}`)).map((l) => l.match(/--role=(\S+)/)?.[1]).sort();
@@ -159,8 +159,8 @@ describe("scripts/deploy-gcp.sh: the agent and its isolated verify job (#74)", (
   });
 
   it("needs a repository and a verify command, and refuses what could not work", () => {
-    expect(deploy({ ...dry, DEPLOY_AGENT: "1", VERIFY_COMMAND: "x" }).out).toContain("AGENT_REPO");
-    expect(deploy({ ...dry, DEPLOY_AGENT: "1", AGENT_REPO: "acme/shop" }).out).toContain("VERIFY_COMMAND");
+    expect(deploy({ ...dry, DEPLOY_AGENT: "1", VERIFY_ISOLATION: "cloud-run-job", VERIFY_COMMAND: "x" }).out).toContain("AGENT_REPO");
+    expect(deploy({ ...dry, DEPLOY_AGENT: "1", AGENT_REPO: "acme/shop", VERIFY_ISOLATION: "cloud-run-job" }).out).toContain("VERIFY_COMMAND");
     for (const bad of ["shop", "a/b/c", "/shop", "acme/", "acme/../x", "acme/sh op", "acme/shop;rm"]) {
       expect(deploy({ ...agent, AGENT_REPO: bad }).status, bad).not.toBe(0);
     }
@@ -266,5 +266,70 @@ describe("scripts/deploy-gcp.sh: the agent and its isolated verify job (#74)", (
     expect(line(r.out, "gcloud run jobs deploy starfish-agent")).toContain("--update-secrets=STARFISH_GITHUB_TOKEN=starfish-github-token:latest");
     expect(line(r.out, "gcloud run jobs deploy starfish-verify")).not.toContain("--update-secrets");
     expect(r.out).not.toContain("ghp_THIS_MUST_NOT_APPEAR");
+  });
+});
+
+describe("scripts/deploy-gcp.sh: the agent verified by the target's CI (#74), VERIFY_ISOLATION=github-actions (the default)", () => {
+  const agent = { ...dry, DEPLOY_AGENT: "1", AGENT_REPO: "acme/shop", VERIFY_CHECKS: "verify" };
+  const sa = (name) => `serviceAccount:${name}@star-proj.iam.gserviceaccount.com`;
+  const line = (out, text) => out.split("\n").find((l) => l.includes(text)) ?? "";
+  const grants = (out, member) => out.split("\n").filter((l) => l.includes(`--member=${member}`)).map((l) => l.match(/--role=(\S+)/)?.[1]).sort();
+
+  it("is the default isolation, and needs the checks that judge, named", () => {
+    const none = deploy({ ...dry, DEPLOY_AGENT: "1", AGENT_REPO: "acme/shop" });
+    expect(none.status).not.toBe(0);
+    expect(none.out).toContain("VERIFY_CHECKS");
+    expect(deploy({ ...agent, VERIFY_CHECKS: "a@b" }).out).toContain("'@'");
+    expect(deploy({ ...agent, VERIFY_ISOLATION: "in-process" }).out).toContain("github-actions or cloud-run-job");
+    expect(deploy(agent).status).toBe(0);
+  });
+
+  it("deploys no bucket, no verify job and no verifier account: nothing of the target runs in this project", () => {
+    const r = deploy(agent);
+    for (const word of ["starfish-verifier", "starfish-verify ", "verifyRunnerCli", "storage buckets", "serviceAccountTokenCreator", "starfish-verify-"]) expect(r.out).not.toContain(word);
+    expect(r.out).toContain("gcloud run jobs deploy starfish-agent --source .");
+  });
+
+  it("gives the agent only what the loop needs, and nothing for storage, signing or starting another job", () => {
+    const r = deploy(agent);
+    expect(grants(r.out, sa("starfish-agent"))).toEqual(["roles/aiplatform.user", "roles/datastore.user", "roles/logging.viewer", "roles/secretmanager.secretAccessor"]);
+    expect(line(r.out, "roles/datastore.user")).toContain('resource.name == "projects/star-proj/databases/starfish"');
+    expect(r.out).not.toMatch(/roles\/(owner|editor|admin)/i);
+  });
+
+  it("points the agent at the CI judge, dry run on, with room to wait for CI", () => {
+    const job = line(deploy(agent).out, "gcloud run jobs deploy starfish-agent");
+    expect(job).toContain("STARFISH_VERIFY_ISOLATION=github-actions");
+    expect(job).toContain("STARFISH_VERIFY_CHECKS=verify");
+    expect(job).toContain("STARFISH_GITHUB_REPO=acme/shop");
+    expect(job).toContain("STARFISH_DRY_RUN=true");
+    expect(job).toContain("STARFISH_EXCLUDED_SERVICES=starfish,starfish-ingest,starfish-agent");
+    expect(job).not.toMatch(/STARFISH_VERIFY_(COMMAND|JOB|BUCKET)/);
+    expect(job).toContain(`--task-timeout=${3 * (600 + 600) + 600}s`);
+  });
+
+  it("takes check names with spaces and slashes, and several of them", () => {
+    const job = line(deploy({ ...agent, VERIFY_CHECKS: "ci / test (20), lint" }).out, "gcloud run jobs deploy starfish-agent");
+    expect(job).toContain("STARFISH_VERIFY_CHECKS=ci / test (20), lint");
+  });
+
+  it("refuses a setting that would move the verify step", () => {
+    for (const key of ["STARFISH_VERIFY_ISOLATION=in-process", "STARFISH_VERIFY_CHECKS=x", "STARFISH_VERIFY_COMMAND=x"]) {
+      const r = deploy({ ...agent, AGENT_EXTRA_ENV_VARS: key });
+      expect(r.status, key).not.toBe(0);
+      expect(r.out).toContain("STARFISH_VERIFY_*");
+    }
+  });
+
+  it("mounts the token on the agent, which needs it to push the branch CI judges, and never prints it", () => {
+    const r = deploy({ ...agent, STARFISH_GITHUB_TOKEN: "ghp_THIS_MUST_NOT_APPEAR" });
+    expect(line(r.out, "gcloud run jobs deploy starfish-agent")).toContain("--update-secrets=STARFISH_GITHUB_TOKEN=starfish-github-token:latest");
+    expect(r.out).not.toContain("ghp_THIS_MUST_NOT_APPEAR");
+  });
+
+  it("starts the agent on its own schedule, and the scheduler may start only the two Starfish jobs", () => {
+    const r = deploy({ ...agent, AGENT_SCHEDULE: "*/10 * * * *" });
+    expect(r.out).toContain("--schedule=*/10 * * * *");
+    expect(grants(r.out, sa("starfish-scheduler"))).toEqual(["roles/run.invoker", "roles/run.invoker"]);
   });
 });
