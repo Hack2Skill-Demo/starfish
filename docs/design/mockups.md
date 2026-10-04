@@ -14,8 +14,13 @@ The mockups follow the decisions already tracked in the issues:
 - **The demo app shares Starfish's GCP project** (#32).
 - **The screens are tracked as issues:** Live runs (#33), Overview (#38), incident detail (#39), phone escalation (#37), and Settings as part of runtime configuration (#7).
 
-Screenshots are rendered at 1× from the design canvas. The canvas itself is a private Claude
-artifact; ask the team for access.
+Every screen is also saved as a static HTML page in [`html/`](html/), 29 pages including each
+Live runs case and each incident-story step. Open [`html/index.html`](html/index.html) in a browser
+after cloning; the links between screens work. GitHub shows HTML files as source, not as pages. The pages
+need nothing but a browser: no build and no runtime. Their only external request is Google Fonts, and
+without it they fall back to system fonts.
+
+The screenshots below are rendered at 1× from the same designs.
 
 ## The demo flow
 

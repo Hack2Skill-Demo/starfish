@@ -1,0 +1,637 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Starfish · Live run</title>
+<!-- Static export of the Starfish design canvas. Designed, not built: every value on this page is illustrative. -->
+<link rel="preconnect" href="https://fonts.googleapis.com"><link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#f4f4f5}
+a{color:#0f73d4}a:hover{color:#135dab}
+button{font-family:inherit}
+code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:0.9em;background:#f4f4f5;border-radius:4px;padding:1px 5px;color:#3f3f46}
+@keyframes sfpulse{0%{box-shadow:0 0 0 0 rgba(242,92,47,.55)}100%{box-shadow:0 0 0 12px rgba(242,92,47,0)}}
+.sf-pulse{animation:sfpulse 1.2s ease-out infinite}
+@media (prefers-reduced-motion: reduce){.sf-pulse{animation:none}}
+</style>
+</head>
+<body>
+<div style="display: flex; flex-wrap: wrap; min-height: 100vh; background: rgb(244, 244, 245); font-family: &quot;Plus Jakarta Sans&quot;, ui-sans-serif, system-ui, sans-serif; color: rgb(24, 24, 27); -webkit-font-smoothing: antialiased;">
+
+  <aside style="display: flex; flex: 1 1 320px; max-width: 320px; background: rgb(24, 24, 27);">
+    <div style="width: 64px; flex-shrink: 0; display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 16px 0px; border-right: 1px solid rgba(255, 255, 255, 0.05);">
+      <a href="Overview.html" aria-label="Starfish home" style="margin-bottom: 16px; display: flex;">
+        <svg width="32" height="32" viewBox="0 0 100 100" aria-hidden="true"><circle cx="50" cy="50" r="48" fill="#f25c2f"></circle><path d="M50 18 58.8 38.4 80.4 40.1 64 54.4 69 75.6 50 64.2 31 75.6 36 54.4 19.6 40.1 41.2 38.4Z" fill="#fff4ef"></path></svg>
+      </a>
+      <a href="LiveRun.html" aria-label="Live runs" title="Live runs" style="width: 44px; height: 44px; display: flex; align-items: center; justify-content: center; border-radius: 8px; background: rgb(39, 39, 42); color: rgb(255, 255, 255); box-shadow: rgba(255, 255, 255, 0.15) 0px 0px 0px 1px inset;">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4.9 19.1C1 15.2 1 8.8 4.9 4.9"></path><path d="M7.8 16.2c-2.3-2.3-2.3-6.1 0-8.5"></path><circle cx="12" cy="12" r="2"></circle><path d="M16.2 7.8c2.3 2.3 2.3 6.1 0 8.5"></path><path d="M19.1 4.9C23 8.8 23 15.1 19.1 19"></path></svg>
+      </a>
+      <a href="Main.html" aria-label="Incidents" title="Incidents" style="width: 44px; height: 44px; display: flex; align-items: center; justify-content: center; border-radius: 8px; color: rgb(161, 161, 170);">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 12h-2.48a2 2 0 0 0-1.93 1.46l-2.35 8.36a.25.25 0 0 1-.48 0L9.24 2.18a.25.25 0 0 0-.48 0l-2.35 8.36A2 2 0 0 1 4.49 12H2"></path></svg>
+      </a>
+      <a href="SettingsProposed.html" aria-label="Settings" title="Settings" style="width: 44px; height: 44px; display: flex; align-items: center; justify-content: center; border-radius: 8px; color: rgb(161, 161, 170);">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"></circle><path d="M12 1v4M12 19v4M4.2 4.2l2.8 2.8M17 17l2.8 2.8M1 12h4M19 12h4M4.2 19.8 7 17M17 7l2.8-2.8"></path></svg>
+      </a>
+      <div style="flex: 1 1 0%;"></div>
+    </div>
+    <div style="flex: 1 1 0%; min-width: 0px; display: flex; flex-direction: column;">
+      <div style="height: 64px; display: flex; align-items: center; gap: 8px; padding: 0px 16px;">
+        <span style="font-family: &quot;Bricolage Grotesque&quot;, &quot;Plus Jakarta Sans&quot;, sans-serif; font-size: 20px; font-weight: 700; letter-spacing: -0.02em; color: rgb(255, 255, 255);">Starfish</span>
+        <span style="background: rgba(255, 255, 255, 0.1); border-radius: 6px; padding: 3px 6px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10px; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; color: rgb(212, 212, 216);">demo</span>
+      </div>
+      <nav style="display: flex; flex-direction: column; gap: 4px; padding: 8px 12px;">
+        <a href="Overview.html" style="display: block; border-radius: 8px; padding: 8px 12px; font-size: 14px; color: rgb(161, 161, 170); text-decoration: none;">Overview</a>
+        <a href="LiveRun.html" style="display: block; border-radius: 8px; padding: 8px 12px; font-size: 14px; background: rgb(182, 53, 18); color: rgb(255, 255, 255); text-decoration: none;">Live runs</a>
+        <a href="Main.html" style="display: block; border-radius: 8px; padding: 8px 12px; font-size: 14px; color: rgb(161, 161, 170); text-decoration: none;">Incidents</a>
+        <a href="SettingsProposed.html" style="display: block; border-radius: 8px; padding: 8px 12px; font-size: 14px; color: rgb(161, 161, 170); text-decoration: none;">Settings</a>
+      </nav>
+
+      
+      <div style="flex: 1 1 0%; padding: 16px 12px; display: flex; flex-direction: column; gap: 8px; border-top: 1px solid rgb(39, 39, 42); margin-top: 8px;">
+        <p style="margin: 0px 4px 4px; font-size: 11px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: rgb(161, 161, 170);">Runs today</p>
+        
+          <a href="LiveRun.html" style="text-align: left; border: 1px solid rgb(39, 39, 42); border-radius: 10px; background: transparent; padding: 12px; display: flex; flex-direction: column; gap: 6px; color: rgb(255, 255, 255);; text-decoration: none">
+            <span style="display: flex; align-items: center; gap: 8px;">
+              <span class="" style="width: 10px; height: 10px; flex-shrink: 0; border-radius: 999px; background: rgb(58, 203, 139);"></span>
+              <span style="font-size: 14px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"><span class="sc-interp">orders-listRecentOrders</span></span>
+            </span>
+            <span style="font-size: 12px; color: rgb(212, 212, 216);"><span class="sc-interp">Missing composite index</span></span>
+            <span style="font-size: 12px; font-weight: 600; color: rgb(114, 226, 174);"><span class="sc-interp">Healed · PR awaiting merge</span></span>
+          </a>
+        
+          <a href="LiveRun-code.html" style="text-align: left; border: 1px solid rgb(39, 39, 42); border-radius: 10px; background: transparent; padding: 12px; display: flex; flex-direction: column; gap: 6px; color: rgb(255, 255, 255);; text-decoration: none">
+            <span style="display: flex; align-items: center; gap: 8px;">
+              <span class="sf-pulse" style="width: 10px; height: 10px; flex-shrink: 0; border-radius: 999px; background: rgb(242, 92, 47);"></span>
+              <span style="font-size: 14px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"><span class="sc-interp">orders-createOrder</span></span>
+            </span>
+            <span style="font-size: 12px; color: rgb(212, 212, 216);"><span class="sc-interp">Firestore undefined field</span></span>
+            <span style="font-size: 12px; font-weight: 600; color: rgb(255, 162, 127);"><span class="sc-interp">In progress · CI guards</span></span>
+          </a>
+        
+          <a href="LiveRun-notify.html" style="text-align: left; border: 1px solid rgb(82, 82, 91); border-radius: 10px; background: rgb(39, 39, 42); padding: 12px; display: flex; flex-direction: column; gap: 6px; color: rgb(255, 255, 255);; text-decoration: none" aria-current="page">
+            <span style="display: flex; align-items: center; gap: 8px;">
+              <span class="sf-pulse" style="width: 10px; height: 10px; flex-shrink: 0; border-radius: 999px; background: rgb(255, 179, 32);"></span>
+              <span style="font-size: 14px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"><span class="sc-interp">invoices-renderPdf</span></span>
+            </span>
+            <span style="font-size: 12px; color: rgb(212, 212, 216);"><span class="sc-interp">Config: API not enabled</span></span>
+            <span style="font-size: 12px; font-weight: 600; color: rgb(255, 201, 74);"><span class="sc-interp">Waiting for a human</span></span>
+          </a>
+        
+          <a href="LiveRun-decline.html" style="text-align: left; border: 1px solid rgb(39, 39, 42); border-radius: 10px; background: transparent; padding: 12px; display: flex; flex-direction: column; gap: 6px; color: rgb(255, 255, 255);; text-decoration: none">
+            <span style="display: flex; align-items: center; gap: 8px;">
+              <span class="" style="width: 10px; height: 10px; flex-shrink: 0; border-radius: 999px; background: rgb(161, 161, 170);"></span>
+              <span style="font-size: 14px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"><span class="sc-interp">reports-nightlyExport</span></span>
+            </span>
+            <span style="font-size: 12px; color: rgb(212, 212, 216);"><span class="sc-interp">One-off transient</span></span>
+            <span style="font-size: 12px; font-weight: 600; color: rgb(212, 212, 216);"><span class="sc-interp">Declined</span></span>
+          </a>
+        
+      </div>
+      <div style="border-top: 1px solid rgb(39, 39, 42); padding: 16px;">
+        <p style="margin: 0px; display: flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 600; color: rgb(255, 255, 255);"><span style="width: 8px; height: 8px; border-radius: 999px; background: rgb(58, 203, 139);"></span>Public demo</p>
+        <p style="margin: 2px 0px 0px; font-size: 12px; color: rgb(161, 161, 170);">View only · no sign-in needed</p>
+        <a href="SignIn.html" style="display: inline-block; margin-top: 8px; padding: 6px 0px; font-size: 12px; color: rgb(161, 161, 170);">Team sign in</a>
+      </div>
+    </div>
+  </aside>
+
+  <div style="flex: 999 1 560px; min-width: 0px; display: flex; flex-direction: column;">
+    <header style="height: 64px; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 0px 24px; background: rgb(255, 255, 255); border-bottom: 1px solid rgb(228, 228, 231);">
+      <span style="display: flex; align-items: center; gap: 10px; font-size: 14px; font-weight: 500; color: rgb(63, 63, 70);">
+        <span class="sf-pulse" style="width: 10px; height: 10px; border-radius: 999px; background: rgb(225, 29, 46);"></span>
+        Live · updated 2 s ago
+        <span style="color: rgb(161, 161, 170);">·</span>
+        <span style="color: rgb(82, 82, 91);">Engine last ran 1 min ago, next run in 4 min</span>
+      </span>
+      <span style="border-radius: 999px; padding: 3px 10px; font-size: 12px; font-weight: 600; background: rgb(255, 250, 235); color: rgb(146, 57, 12); border: 1px solid rgb(255, 223, 136);">Design mockup · not built yet</span>
+    </header>
+
+    <main style="flex: 1 1 0%; padding: 24px; display: flex; flex-direction: column; gap: 20px;">
+      
+      <div style="border-radius: 14px; background: rgb(24, 24, 27); color: rgb(255, 255, 255); padding: 22px 24px; display: flex; flex-direction: column; gap: 14px;">
+        <div style="display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 16px;">
+          <div style="min-width: 0px;">
+            <p style="margin: 0px; font-size: 13px; color: rgb(161, 161, 170);"><span class="sc-interp">Planted incident · demo app · fingerprint 3d8a61f0</span></p>
+            <h1 style="margin: 4px 0px 0px; font-family: &quot;Bricolage Grotesque&quot;, sans-serif; font-size: 28px; font-weight: 700; line-height: 1.15;"><span class="sc-interp">A patch can’t fix this. Starfish phoned the on-call engineer.</span></h1>
+          </div>
+          <div style="display: flex; flex-direction: column; align-items: flex-end; gap: 6px;">
+            <span style="border-radius: 999px; padding: 4px 12px; font-size: 13px; font-weight: 700; background: rgb(255, 229, 217); color: rgb(144, 45, 21);"><span class="sc-interp">Notify with the console step · no patch</span></span>
+            <span style="font-size: 12px; color: rgb(161, 161, 170);"><span class="sc-interp">Rule: config / infrastructure. Not code.</span></span>
+            <a href="GitHubWrites.html" style="min-height: 32px; display: inline-flex; align-items: center; font-size: 13px; font-weight: 600; color: rgb(255, 162, 127); text-decoration: none;"><span class="sc-interp">What Starfish wrote on GitHub ›</span></a>
+          </div>
+        </div>
+        <div style="display: flex; align-items: center; gap: 14px;">
+          <div style="flex: 1 1 0%; height: 8px; border-radius: 999px; background: rgb(63, 63, 70); overflow: hidden;">
+            <div style="height: 8px; width: 75%; background: rgb(242, 92, 47); border-radius: 999px;"></div>
+          </div>
+          <span style="font-size: 13px; color: rgb(212, 212, 216); white-space: nowrap;"><span class="sc-interp">6 of 8 steps</span></span>
+        </div>
+      </div>
+
+      
+      <section style="border: 1px solid rgb(228, 228, 231); border-radius: 14px; background: rgb(255, 255, 255); padding: 20px 20px 4px;">
+        <div style="display: flex; flex-wrap: wrap; gap: 0px 16px; padding-bottom: 12px; border-bottom: 1px solid rgb(228, 228, 231); margin-bottom: 16px;">
+          <div style="width: 44px; flex-shrink: 0;"></div>
+          <div style="flex: 999 1 420px; min-width: 0px; font-size: 12px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: rgb(113, 113, 122);">What Starfish is doing</div>
+          <div style="flex: 1 1 280px; position: relative; height: 16px; font-size: 11px; color: rgb(113, 113, 122);">
+            <span style="position: absolute; left: 0px;">0</span>
+            <span style="position: absolute; left: 25%;"><span class="sc-interp">5</span></span>
+            <span style="position: absolute; left: 50%;"><span class="sc-interp">10</span></span>
+            <span style="position: absolute; left: 75%;"><span class="sc-interp">15</span></span>
+            <span style="position: absolute; right: 0px;"><span class="sc-interp">20</span> min</span>
+          </div>
+        </div>
+
+        <ol style="margin: 0px; padding: 0px; list-style: none; display: flex; flex-direction: column;">
+          
+            <li style="display: flex; flex-wrap: wrap; gap: 0px 16px; opacity: 1;">
+              <div style="width: 44px; flex-shrink: 0; display: flex; flex-direction: column; align-items: center;">
+                <span class="" style="width: 44px; height: 44px; border-radius: 12px; background: rgb(63, 63, 70); color: rgb(255, 255, 255); display: flex; align-items: center; justify-content: center;">
+                  <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4.9 19.1C1 15.2 1 8.8 4.9 4.9"></path><path d="M7.8 16.2c-2.3-2.3-2.3-6.1 0-8.5"></path><circle cx="12" cy="12" r="2"></circle><path d="M16.2 7.8c2.3 2.3 2.3 6.1 0 8.5"></path><path d="M19.1 4.9C23 8.8 23 15.1 19.1 19"></path></svg>
+                  
+                  
+                  
+                  
+                  
+                  
+                  
+                  
+                  
+                  
+                  
+                  
+                  
+                </span>
+                
+                  <span style="flex: 1 1 0%; width: 2px; min-height: 16px; background: rgb(228, 228, 231); margin: 6px 0px;"></span>
+                
+              </div>
+
+              <div style="flex: 999 1 420px; min-width: 0px; padding: 4px 0px 24px;">
+                <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px;">
+                  <h2 style="margin: 0px; font-size: 17px; font-weight: 700;"><span class="sc-interp">Listening to errors</span></h2>
+                  <span style="border-radius: 999px; padding: 1px 8px; font-size: 11px; font-weight: 600; background: rgb(211, 248, 227); color: rgb(9, 113, 77);"><span class="sc-interp">Done</span></span>
+                  <span style="margin-left: auto; font-size: 12px; color: rgb(113, 113, 122); font-variant-numeric: tabular-nums;"><span class="sc-interp">10:21:40 · 15 s</span></span>
+                </div>
+
+                
+
+                
+                  <div style="display: flex; flex-direction: column; gap: 8px; margin-top: 10px;">
+                    
+                      <pre style="margin: 0px; border-radius: 8px; background: rgb(24, 24, 27); padding: 10px 12px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; line-height: 1.6; color: rgb(228, 228, 231); white-space: pre-wrap; word-break: break-word;"><span class="sc-interp">ERROR invoices-renderPdf
+7 PERMISSION_DENIED: Cloud Storage JSON API has not been used in project [demo-project] before or it is disabled.</span></pre>
+                    
+
+                    
+
+                    
+
+                    
+
+                    
+
+                    
+                      <div style="display: flex; flex-wrap: wrap; gap: 6px;">
+                        
+                          <span style="border-radius: 6px; padding: 4px 9px; font-size: 12px; font-weight: 600; background: rgb(244, 244, 245); color: rgb(63, 63, 70);"><span class="sc-interp">New fingerprint 3d8a61f0</span></span>
+                        
+                          <span style="border-radius: 6px; padding: 4px 9px; font-size: 12px; font-weight: 600; background: rgb(244, 244, 245); color: rgb(63, 63, 70);"><span class="sc-interp">31 in 20 min</span></span>
+                        
+                          <span style="border-radius: 6px; padding: 4px 9px; font-size: 12px; font-weight: 600; background: rgb(237, 252, 244); color: rgb(9, 113, 77);"><span class="sc-interp">Counter-check 31 = 31</span></span>
+                        
+                      </div>
+                    
+                  </div>
+                
+              </div>
+
+              <div style="flex: 1 1 280px; position: relative; height: 44px; background-image: repeating-linear-gradient(to right, rgb(244, 244, 245) 0px, rgb(244, 244, 245) 1px, transparent 1px, transparent 25%);">
+                <div title="Waiting" style="position: absolute; top: 14px; height: 16px; border-radius: 4px 0px 0px 4px; left: 0%; width: 0%; background: repeating-linear-gradient(135deg, rgb(212, 212, 216) 0px, rgb(212, 212, 216) 4px, rgb(244, 244, 245) 4px, rgb(244, 244, 245) 8px);"></div>
+                <div style="position: absolute; top: 14px; height: 16px; border-radius: 4px; left: 0%; width: 1.25%; background: rgb(63, 63, 70); opacity: 1;"></div>
+              </div>
+            </li>
+          
+            <li style="display: flex; flex-wrap: wrap; gap: 0px 16px; opacity: 1;">
+              <div style="width: 44px; flex-shrink: 0; display: flex; flex-direction: column; align-items: center;">
+                <span class="" style="width: 44px; height: 44px; border-radius: 12px; background: rgb(24, 24, 27); color: rgb(255, 255, 255); display: flex; align-items: center; justify-content: center;">
+                  
+                  <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 22v-4a4.8 4.8 0 0 0-1-3.5c3 0 6-2 6-5.5.08-1.25-.27-2.48-1-3.5.28-1.15.28-2.35 0-3.5 0 0-1 0-3 1.5-2.64-.5-5.36-.5-8 0C6 2 5 2 5 2c-.3 1.15-.3 2.35 0 3.5A5.403 5.403 0 0 0 4 9c0 3.5 3 5.5 6 5.5-.39.49-.68 1.05-.85 1.65-.17.6-.22 1.23-.15 1.85v4"></path><path d="M9 18c-4.51 2-5-2-7-2"></path></svg>
+                  
+                  
+                  
+                  
+                  
+                  
+                  
+                  
+                  
+                  
+                  
+                  
+                </span>
+                
+                  <span style="flex: 1 1 0%; width: 2px; min-height: 16px; background: rgb(228, 228, 231); margin: 6px 0px;"></span>
+                
+              </div>
+
+              <div style="flex: 999 1 420px; min-width: 0px; padding: 4px 0px 24px;">
+                <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px;">
+                  <h2 style="margin: 0px; font-size: 17px; font-weight: 700;"><span class="sc-interp">Issue logged on GitHub</span></h2>
+                  <span style="border-radius: 999px; padding: 1px 8px; font-size: 11px; font-weight: 600; background: rgb(211, 248, 227); color: rgb(9, 113, 77);"><span class="sc-interp">Done</span></span>
+                  <span style="margin-left: auto; font-size: 12px; color: rgb(113, 113, 122); font-variant-numeric: tabular-nums;"><span class="sc-interp">10:21:55 · 3 s</span></span>
+                </div>
+
+                
+
+                
+                  <div style="display: flex; flex-direction: column; gap: 8px; margin-top: 10px;">
+                    
+
+                    
+
+                    
+                      <a href="GitHubWrites.html" style="display: flex; gap: 12px; align-items: flex-start; border: 1px solid rgb(228, 228, 231); border-radius: 10px; padding: 12px 14px; text-decoration: none; color: inherit; background: rgb(255, 255, 255);">
+                        <span style="width: 28px; height: 28px; flex-shrink: 0; border-radius: 8px; background: rgb(24, 24, 27); color: rgb(255, 255, 255); display: flex; align-items: center; justify-content: center; font-size: 13px; font-weight: 700;"><span class="sc-interp">#</span></span>
+                        <span style="min-width: 0px; display: flex; flex-direction: column; gap: 4px;">
+                          <span style="font-size: 12px; color: rgb(113, 113, 122);"><span class="sc-interp">[your-org]/[demo-app] · Issue [#132] · opened by starfish[bot]</span></span>
+                          <span style="font-size: 15px; font-weight: 600; color: rgb(24, 24, 27);"><span class="sc-interp">invoices-renderPdf: Cloud Storage API is disabled</span></span>
+                          <span style="font-size: 13px; line-height: 1.5; color: rgb(63, 63, 70);"><span class="sc-interp">Labels: starfish, incident, config</span></span>
+                        </span>
+                      </a>
+                    
+
+                    
+
+                    
+
+                    
+                  </div>
+                
+              </div>
+
+              <div style="flex: 1 1 280px; position: relative; height: 44px; background-image: repeating-linear-gradient(to right, rgb(244, 244, 245) 0px, rgb(244, 244, 245) 1px, transparent 1px, transparent 25%);">
+                <div title="Waiting" style="position: absolute; top: 14px; height: 16px; border-radius: 4px 0px 0px 4px; left: 0%; width: 0%; background: repeating-linear-gradient(135deg, rgb(212, 212, 216) 0px, rgb(212, 212, 216) 4px, rgb(244, 244, 245) 4px, rgb(244, 244, 245) 8px);"></div>
+                <div style="position: absolute; top: 14px; height: 16px; border-radius: 4px; left: 1.25%; width: 0.8%; background: rgb(24, 24, 27); opacity: 1;"></div>
+              </div>
+            </li>
+          
+            <li style="display: flex; flex-wrap: wrap; gap: 0px 16px; opacity: 1;">
+              <div style="width: 44px; flex-shrink: 0; display: flex; flex-direction: column; align-items: center;">
+                <span class="" style="width: 44px; height: 44px; border-radius: 12px; background: rgb(255, 244, 239); color: rgb(255, 255, 255); display: flex; align-items: center; justify-content: center;">
+                  
+                  
+                  
+                  <svg width="28" height="28" viewBox="0 0 100 100" aria-hidden="true"><circle cx="50" cy="50" r="48" fill="#f25c2f"></circle><path d="M50 18 58.8 38.4 80.4 40.1 64 54.4 69 75.6 50 64.2 31 75.6 36 54.4 19.6 40.1 41.2 38.4Z" fill="#fff4ef"></path></svg>
+                  
+                  
+                  
+                  
+                  
+                  
+                  
+                  
+                  
+                  
+                </span>
+                
+                  <span style="flex: 1 1 0%; width: 2px; min-height: 16px; background: rgb(228, 228, 231); margin: 6px 0px;"></span>
+                
+              </div>
+
+              <div style="flex: 999 1 420px; min-width: 0px; padding: 4px 0px 24px;">
+                <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px;">
+                  <h2 style="margin: 0px; font-size: 17px; font-weight: 700;"><span class="sc-interp">Engine decides what to do</span></h2>
+                  <span style="border-radius: 999px; padding: 1px 8px; font-size: 11px; font-weight: 600; background: rgb(211, 248, 227); color: rgb(9, 113, 77);"><span class="sc-interp">Done</span></span>
+                  <span style="margin-left: auto; font-size: 12px; color: rgb(113, 113, 122); font-variant-numeric: tabular-nums;"><span class="sc-interp">10:21:58 · 9 s</span></span>
+                </div>
+
+                
+                  <p style="margin: 6px 0px 0px; font-size: 14px; line-height: 1.55; color: rgb(63, 63, 70);"><span class="sc-interp">Class: config / infrastructure. The fix is a console setting, not code, so drafting a patch would be wrong.</span></p>
+                
+
+                
+                  <div style="display: flex; flex-direction: column; gap: 8px; margin-top: 10px;">
+                    
+
+                    
+
+                    
+
+                    
+                      <div style="display: flex; flex-wrap: wrap; gap: 6px;">
+                        
+                          <span style="border-radius: 8px; padding: 6px 11px; font-size: 13px; font-weight: 500; background: rgb(255, 255, 255); color: rgb(113, 113, 122); border: 1px dashed rgb(212, 212, 216); text-decoration: line-through;"><span class="sc-interp">Decline</span></span>
+                        
+                          <span style="border-radius: 8px; padding: 6px 11px; font-size: 13px; font-weight: 600; background: rgb(182, 53, 18); color: rgb(255, 255, 255); border: 1px dashed rgb(182, 53, 18); text-decoration: none;"><span class="sc-interp">Notify with the console step</span></span>
+                        
+                          <span style="border-radius: 8px; padding: 6px 11px; font-size: 13px; font-weight: 500; background: rgb(255, 255, 255); color: rgb(156, 21, 36); border: 1px dashed rgb(255, 198, 202); text-decoration: line-through;"><span class="sc-interp">Draft PR: a patch can’t fix it</span></span>
+                        
+                          <span style="border-radius: 8px; padding: 6px 11px; font-size: 13px; font-weight: 500; background: rgb(255, 255, 255); color: rgb(156, 21, 36); border: 1px dashed rgb(255, 198, 202); text-decoration: line-through;"><span class="sc-interp">Fix: not code</span></span>
+                        
+                      </div>
+                    
+
+                    
+
+                    
+                  </div>
+                
+              </div>
+
+              <div style="flex: 1 1 280px; position: relative; height: 44px; background-image: repeating-linear-gradient(to right, rgb(244, 244, 245) 0px, rgb(244, 244, 245) 1px, transparent 1px, transparent 25%);">
+                <div title="Waiting" style="position: absolute; top: 14px; height: 16px; border-radius: 4px 0px 0px 4px; left: 0%; width: 0%; background: repeating-linear-gradient(135deg, rgb(212, 212, 216) 0px, rgb(212, 212, 216) 4px, rgb(244, 244, 245) 4px, rgb(244, 244, 245) 8px);"></div>
+                <div style="position: absolute; top: 14px; height: 16px; border-radius: 4px; left: 1.5%; width: 0.8%; background: rgb(242, 92, 47); opacity: 1;"></div>
+              </div>
+            </li>
+          
+            <li style="display: flex; flex-wrap: wrap; gap: 0px 16px; opacity: 1;">
+              <div style="width: 44px; flex-shrink: 0; display: flex; flex-direction: column; align-items: center;">
+                <span class="" style="width: 44px; height: 44px; border-radius: 12px; background: rgb(107, 33, 168); color: rgb(255, 255, 255); display: flex; align-items: center; justify-content: center;">
+                  
+                  
+                  <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="4" x2="20" y1="9" y2="9"></line><line x1="4" x2="20" y1="15" y2="15"></line><line x1="10" x2="8" y1="3" y2="21"></line><line x1="16" x2="14" y1="3" y2="21"></line></svg>
+                  
+                  
+                  
+                  
+                  
+                  
+                  
+                  
+                  
+                  
+                  
+                </span>
+                
+                  <span style="flex: 1 1 0%; width: 2px; min-height: 16px; background: rgb(228, 228, 231); margin: 6px 0px;"></span>
+                
+              </div>
+
+              <div style="flex: 999 1 420px; min-width: 0px; padding: 4px 0px 24px;">
+                <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px;">
+                  <h2 style="margin: 0px; font-size: 17px; font-weight: 700;"><span class="sc-interp">Escalated in Slack</span></h2>
+                  <span style="border-radius: 999px; padding: 1px 8px; font-size: 11px; font-weight: 600; background: rgb(211, 248, 227); color: rgb(9, 113, 77);"><span class="sc-interp">Done</span></span>
+                  <span style="margin-left: auto; font-size: 12px; color: rgb(113, 113, 122); font-variant-numeric: tabular-nums;"><span class="sc-interp">10:22:07 · 1 s</span></span>
+                </div>
+
+                
+
+                
+                  <div style="display: flex; flex-direction: column; gap: 8px; margin-top: 10px;">
+                    
+
+                    
+
+                    
+                      <a href="SlackMessages.html" style="display: flex; gap: 12px; align-items: flex-start; border: 1px solid rgb(228, 228, 231); border-radius: 10px; padding: 12px 14px; text-decoration: none; color: inherit; background: rgb(250, 245, 255);">
+                        <span style="width: 28px; height: 28px; flex-shrink: 0; border-radius: 8px; background: rgb(107, 33, 168); color: rgb(255, 255, 255); display: flex; align-items: center; justify-content: center; font-size: 13px; font-weight: 700;"><span class="sc-interp">#</span></span>
+                        <span style="min-width: 0px; display: flex; flex-direction: column; gap: 4px;">
+                          <span style="font-size: 12px; color: rgb(113, 113, 122);"><span class="sc-interp">Slack · #on-call</span></span>
+                          <span style="font-size: 15px; font-weight: 600; color: rgb(24, 24, 27);"><span class="sc-interp">Needs a human: enable the Cloud Storage API</span></span>
+                          <span style="font-size: 13px; line-height: 1.5; color: rgb(63, 63, 70);"><span class="sc-interp">invoices-renderPdf fails 31 times in 20 min. One step: APIs &amp; Services → enable “Cloud Storage JSON API” for [demo-project].</span></span>
+                        </span>
+                      </a>
+                    
+
+                    
+
+                    
+
+                    
+                  </div>
+                
+              </div>
+
+              <div style="flex: 1 1 280px; position: relative; height: 44px; background-image: repeating-linear-gradient(to right, rgb(244, 244, 245) 0px, rgb(244, 244, 245) 1px, transparent 1px, transparent 25%);">
+                <div title="Waiting" style="position: absolute; top: 14px; height: 16px; border-radius: 4px 0px 0px 4px; left: 0%; width: 0%; background: repeating-linear-gradient(135deg, rgb(212, 212, 216) 0px, rgb(212, 212, 216) 4px, rgb(244, 244, 245) 4px, rgb(244, 244, 245) 8px);"></div>
+                <div style="position: absolute; top: 14px; height: 16px; border-radius: 4px; left: 2.25%; width: 0.8%; background: rgb(107, 33, 168); opacity: 1;"></div>
+              </div>
+            </li>
+          
+            <li style="display: flex; flex-wrap: wrap; gap: 0px 16px; opacity: 1;">
+              <div style="width: 44px; flex-shrink: 0; display: flex; flex-direction: column; align-items: center;">
+                <span class="" style="width: 44px; height: 44px; border-radius: 12px; background: rgb(180, 83, 9); color: rgb(255, 255, 255); display: flex; align-items: center; justify-content: center;">
+                  
+                  
+                  
+                  
+                  
+                  
+                  
+                  
+                  
+                  
+                  
+                  <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg>
+                  
+                  
+                </span>
+                
+                  <span style="flex: 1 1 0%; width: 2px; min-height: 16px; background: rgb(228, 228, 231); margin: 6px 0px;"></span>
+                
+              </div>
+
+              <div style="flex: 999 1 420px; min-width: 0px; padding: 4px 0px 24px;">
+                <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px;">
+                  <h2 style="margin: 0px; font-size: 17px; font-weight: 700;"><span class="sc-interp">Nobody acknowledged in Slack</span></h2>
+                  <span style="border-radius: 999px; padding: 1px 8px; font-size: 11px; font-weight: 600; background: rgb(211, 248, 227); color: rgb(9, 113, 77);"><span class="sc-interp">Done</span></span>
+                  <span style="margin-left: auto; font-size: 12px; color: rgb(113, 113, 122); font-variant-numeric: tabular-nums;"><span class="sc-interp">10 min, no reply</span></span>
+                </div>
+
+                
+                  <p style="margin: 6px 0px 0px; font-size: 14px; line-height: 1.55; color: rgb(63, 63, 70);"><span class="sc-interp">The on-call rule: urgent, needs a human, and no acknowledgement within 10 minutes. Time to phone.</span></p>
+                
+
+                
+                  <div style="display: flex; flex-direction: column; gap: 8px; margin-top: 10px;">
+                    
+
+                    
+
+                    
+
+                    
+
+                    
+
+                    
+                  </div>
+                
+              </div>
+
+              <div style="flex: 1 1 280px; position: relative; height: 44px; background-image: repeating-linear-gradient(to right, rgb(244, 244, 245) 0px, rgb(244, 244, 245) 1px, transparent 1px, transparent 25%);">
+                <div title="Waiting" style="position: absolute; top: 14px; height: 16px; border-radius: 4px 0px 0px 4px; left: 0%; width: 0%; background: repeating-linear-gradient(135deg, rgb(212, 212, 216) 0px, rgb(212, 212, 216) 4px, rgb(244, 244, 245) 4px, rgb(244, 244, 245) 8px);"></div>
+                <div style="position: absolute; top: 14px; height: 16px; border-radius: 4px; left: 2.35%; width: 50%; background: rgb(180, 83, 9); opacity: 1;"></div>
+              </div>
+            </li>
+          
+            <li style="display: flex; flex-wrap: wrap; gap: 0px 16px; opacity: 1;">
+              <div style="width: 44px; flex-shrink: 0; display: flex; flex-direction: column; align-items: center;">
+                <span class="" style="width: 44px; height: 44px; border-radius: 12px; background: rgb(10, 142, 93); color: rgb(255, 255, 255); display: flex; align-items: center; justify-content: center;">
+                  
+                  
+                  
+                  
+                  
+                  
+                  
+                  
+                  
+                  
+                  
+                  
+                  <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"></path></svg>
+                  
+                </span>
+                
+                  <span style="flex: 1 1 0%; width: 2px; min-height: 16px; background: rgb(228, 228, 231); margin: 6px 0px;"></span>
+                
+              </div>
+
+              <div style="flex: 999 1 420px; min-width: 0px; padding: 4px 0px 24px;">
+                <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px;">
+                  <h2 style="margin: 0px; font-size: 17px; font-weight: 700;"><span class="sc-interp">Phoned the on-call engineer</span></h2>
+                  <span style="border-radius: 999px; padding: 1px 8px; font-size: 11px; font-weight: 600; background: rgb(211, 248, 227); color: rgb(9, 113, 77);"><span class="sc-interp">Done</span></span>
+                  <span style="margin-left: auto; font-size: 12px; color: rgb(113, 113, 122); font-variant-numeric: tabular-nums;"><span class="sc-interp">10:32:08 · 45 s</span></span>
+                </div>
+
+                
+
+                
+                  <div style="display: flex; flex-direction: column; gap: 8px; margin-top: 10px;">
+                    
+
+                    
+
+                    
+                      <a href="CallLive.html" style="display: flex; gap: 12px; align-items: flex-start; border: 1px solid rgb(228, 228, 231); border-radius: 10px; padding: 12px 14px; text-decoration: none; color: inherit; background: rgb(237, 252, 244);">
+                        <span style="width: 28px; height: 28px; flex-shrink: 0; border-radius: 8px; background: rgb(10, 142, 93); color: rgb(255, 255, 255); display: flex; align-items: center; justify-content: center; font-size: 13px; font-weight: 700;"><span class="sc-interp">☎</span></span>
+                        <span style="min-width: 0px; display: flex; flex-direction: column; gap: 4px;">
+                          <span style="font-size: 12px; color: rgb(113, 113, 122);"><span class="sc-interp">Phone · [Primary on-call] · +1 ••• ••• ••42</span></span>
+                          <span style="font-size: 15px; font-weight: 600; color: rgb(24, 24, 27);"><span class="sc-interp">Answered · pressed 2, then 1</span></span>
+                          <span style="font-size: 13px; line-height: 1.5; color: rgb(63, 63, 70);"><span class="sc-interp">Played the recorded message (no incident details on the call). Link to the Slack thread sent by text. Incident acknowledged by [Primary on-call].</span></span>
+                        </span>
+                      </a>
+                    
+
+                    
+
+                    
+
+                    
+                  </div>
+                
+              </div>
+
+              <div style="flex: 1 1 280px; position: relative; height: 44px; background-image: repeating-linear-gradient(to right, rgb(244, 244, 245) 0px, rgb(244, 244, 245) 1px, transparent 1px, transparent 25%);">
+                <div title="Waiting" style="position: absolute; top: 14px; height: 16px; border-radius: 4px 0px 0px 4px; left: 0%; width: 0%; background: repeating-linear-gradient(135deg, rgb(212, 212, 216) 0px, rgb(212, 212, 216) 4px, rgb(244, 244, 245) 4px, rgb(244, 244, 245) 8px);"></div>
+                <div style="position: absolute; top: 14px; height: 16px; border-radius: 4px; left: 52.35%; width: 3.75%; background: rgb(10, 142, 93); opacity: 1;"></div>
+              </div>
+            </li>
+          
+            <li style="display: flex; flex-wrap: wrap; gap: 0px 16px; opacity: 1;">
+              <div style="width: 44px; flex-shrink: 0; display: flex; flex-direction: column; align-items: center;">
+                <span class="sf-pulse" style="width: 44px; height: 44px; border-radius: 12px; background: rgb(255, 244, 239); color: rgb(182, 53, 18); display: flex; align-items: center; justify-content: center;">
+                  
+                  
+                  
+                  
+                  
+                  
+                  
+                  
+                  
+                  
+                  
+                  <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg>
+                  
+                  
+                </span>
+                
+                  <span style="flex: 1 1 0%; width: 2px; min-height: 16px; background: rgb(228, 228, 231); margin: 6px 0px;"></span>
+                
+              </div>
+
+              <div style="flex: 999 1 420px; min-width: 0px; padding: 4px 0px 24px;">
+                <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px;">
+                  <h2 style="margin: 0px; font-size: 17px; font-weight: 700;"><span class="sc-interp">Waiting for the API to be enabled</span></h2>
+                  <span style="border-radius: 999px; padding: 1px 8px; font-size: 11px; font-weight: 600; background: rgb(255, 240, 198); color: rgb(146, 57, 12);"><span class="sc-interp">Waiting for a human</span></span>
+                  <span style="margin-left: auto; font-size: 12px; color: rgb(113, 113, 122); font-variant-numeric: tabular-nums;"><span class="sc-interp">waiting 3 m 05 s</span></span>
+                </div>
+
+                
+                  <p style="margin: 6px 0px 0px; font-size: 14px; line-height: 1.55; color: rgb(63, 63, 70);"><span class="sc-interp">Acknowledged by phone. Starfish keeps counting and escalates again if it gets materially worse.</span></p>
+                
+
+                
+                  <div style="display: flex; flex-direction: column; gap: 8px; margin-top: 10px;">
+                    
+
+                    
+
+                    
+
+                    
+
+                    
+
+                    
+                  </div>
+                
+              </div>
+
+              <div style="flex: 1 1 280px; position: relative; height: 44px; background-image: repeating-linear-gradient(to right, rgb(244, 244, 245) 0px, rgb(244, 244, 245) 1px, transparent 1px, transparent 25%);">
+                <div title="Waiting" style="position: absolute; top: 14px; height: 16px; border-radius: 4px 0px 0px 4px; left: 0%; width: 0%; background: repeating-linear-gradient(135deg, rgb(212, 212, 216) 0px, rgb(212, 212, 216) 4px, rgb(244, 244, 245) 4px, rgb(244, 244, 245) 8px);"></div>
+                <div style="position: absolute; top: 14px; height: 16px; border-radius: 4px; left: 56.1%; width: 15.4%; background: rgb(255, 179, 32); opacity: 0.55;"></div>
+              </div>
+            </li>
+          
+            <li style="display: flex; flex-wrap: wrap; gap: 0px 16px; opacity: 0.5;">
+              <div style="width: 44px; flex-shrink: 0; display: flex; flex-direction: column; align-items: center;">
+                <span class="" style="width: 44px; height: 44px; border-radius: 12px; background: rgb(244, 244, 245); color: rgb(113, 113, 122); display: flex; align-items: center; justify-content: center;">
+                  
+                  
+                  
+                  
+                  
+                  
+                  
+                  
+                  
+                  
+                  
+                  
+                  
+                  <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"></circle><path d="m9 12 2 2 4-4"></path></svg>
+                </span>
+                
+              </div>
+
+              <div style="flex: 999 1 420px; min-width: 0px; padding: 4px 0px 24px;">
+                <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px;">
+                  <h2 style="margin: 0px; font-size: 17px; font-weight: 700;"><span class="sc-interp">Confirm the errors stop</span></h2>
+                  <span style="border-radius: 999px; padding: 1px 8px; font-size: 11px; font-weight: 600; background: rgb(244, 244, 245); color: rgb(82, 82, 91);"><span class="sc-interp">Queued</span></span>
+                  <span style="margin-left: auto; font-size: 12px; color: rgb(113, 113, 122); font-variant-numeric: tabular-nums;"><span class="sc-interp">queued</span></span>
+                </div>
+
+                
+                  <p style="margin: 6px 0px 0px; font-size: 14px; line-height: 1.55; color: rgb(63, 63, 70);"><span class="sc-interp">After the change, Starfish watches the fingerprint and closes issue [#132] when it stays quiet.</span></p>
+                
+
+                
+              </div>
+
+              <div style="flex: 1 1 280px; position: relative; height: 44px; background-image: repeating-linear-gradient(to right, rgb(244, 244, 245) 0px, rgb(244, 244, 245) 1px, transparent 1px, transparent 25%);">
+                <div title="Waiting" style="position: absolute; top: 14px; height: 16px; border-radius: 4px 0px 0px 4px; left: 0%; width: 0%; background: repeating-linear-gradient(135deg, rgb(212, 212, 216) 0px, rgb(212, 212, 216) 4px, rgb(244, 244, 245) 4px, rgb(244, 244, 245) 8px);"></div>
+                <div style="position: absolute; top: 14px; height: 16px; border-radius: 4px; left: 0%; width: 0%; background: rgb(10, 142, 93); opacity: 0.55;"></div>
+              </div>
+            </li>
+          
+        </ol>
+      </section>
+    </main>
+  </div></div>
+</body>
+</html>

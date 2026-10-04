@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Starfish · Incidents on a phone</title>
+<!-- Static export of the Starfish design canvas. Designed, not built: every value on this page is illustrative. -->
+<link rel="preconnect" href="https://fonts.googleapis.com"><link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+a{color:#0f73d4}
+button{font-family:inherit}
+</style>
+</head>
+<body>
+<div style="width: 390px; height: 844px; overflow: hidden; display: flex; flex-direction: column; background: rgb(244, 244, 245); font-family: &quot;Plus Jakarta Sans&quot;, ui-sans-serif, system-ui, sans-serif; color: rgb(24, 24, 27); -webkit-font-smoothing: antialiased;">
+  <header style="height: 64px; flex-shrink: 0; display: flex; align-items: center; justify-content: space-between; padding: 0px 16px; background: rgb(255, 255, 255); border-bottom: 1px solid rgb(228, 228, 231);">
+    <a href="PhoneMenu.html" aria-label="Open menu" style="width: 44px; height: 44px; margin-left: -10px; display: flex; align-items: center; justify-content: center; color: rgb(82, 82, 91);">
+      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="4" x2="20" y1="12" y2="12"></line><line x1="4" x2="20" y1="6" y2="6"></line><line x1="4" x2="20" y1="18" y2="18"></line></svg>
+    </a>
+    <span style="font-size: 14px; font-weight: 500; color: rgb(63, 63, 70);">Incidents</span>
+    <button type="button" aria-label="Theme: light. Change theme" style="width: 36px; height: 36px; display: flex; align-items: center; justify-content: center; border: 1px solid rgb(228, 228, 231); border-radius: 8px; background: rgb(255, 255, 255); color: rgb(113, 113, 122);">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"></path></svg>
+    </button>
+  </header>
+
+  <main style="flex: 1 1 0%; overflow: hidden; padding: 16px; display: flex; flex-direction: column; gap: 20px;">
+    <div style="display: flex; flex-direction: column; gap: 12px;">
+      <div>
+        <h1 style="margin: 0px; font-size: 24px; font-weight: 700; color: rgb(24, 24, 27);">Incidents</h1>
+        <p style="margin: 4px 0px 0px; font-size: 14px; color: rgb(113, 113, 122);">Production errors from the last 24h, grouped by fingerprint</p>
+      </div>
+      <div style="display: flex; gap: 8px;">
+        <select aria-label="Time window" style="height: 44px; flex: 1 1 0%; border: 1px solid rgb(228, 228, 231); border-radius: 8px; background: rgb(255, 255, 255); padding: 0px 12px; font-family: inherit; font-size: 14px; color: rgb(63, 63, 70);">
+          <option>Last 24 hours</option>
+        </select>
+        <button type="button" style="height: 44px; display: flex; align-items: center; gap: 8px; border: 0px; border-radius: 8px; background: rgb(182, 53, 18); padding: 0px 16px; font-size: 14px; font-weight: 500; color: rgb(255, 255, 255);">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"></path><path d="M21 3v5h-5"></path><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"></path><path d="M8 16H3v5"></path></svg>
+          Refresh
+        </button>
+      </div>
+    </div>
+
+    <div style="display: flex; flex-wrap: wrap; gap: 8px;">
+      <button type="button" style="border: 0px; border-radius: 999px; padding: 6px 12px; font-size: 14px; font-weight: 500; background: rgb(182, 53, 18); color: rgb(255, 255, 255);">All</button>
+      <button type="button" style="border: 0px; border-radius: 999px; padding: 6px 12px; font-size: 14px; font-weight: 500; background: rgb(228, 228, 231); color: rgb(63, 63, 70);">New (1)</button>
+      <button type="button" style="border: 0px; border-radius: 999px; padding: 6px 12px; font-size: 14px; font-weight: 500; background: rgb(228, 228, 231); color: rgb(63, 63, 70);">Acknowledged (1)</button>
+      <button type="button" style="border: 0px; border-radius: 999px; padding: 6px 12px; font-size: 14px; font-weight: 500; background: rgb(228, 228, 231); color: rgb(63, 63, 70);">Logged (1)</button>
+      <button type="button" style="border: 0px; border-radius: 999px; padding: 6px 12px; font-size: 14px; font-weight: 500; background: rgb(228, 228, 231); color: rgb(63, 63, 70);">Resolved (1)</button>
+      <button type="button" style="border: 0px; border-radius: 999px; padding: 6px 12px; font-size: 14px; font-weight: 500; background: rgb(228, 228, 231); color: rgb(63, 63, 70);">Recurred (1)</button>
+      <button type="button" style="border: 0px; border-radius: 999px; padding: 6px 12px; font-size: 14px; font-weight: 500; background: rgb(228, 228, 231); color: rgb(63, 63, 70);">Ignored (1)</button>
+      <div style="width: 100%; display: flex; gap: 8px;">
+        <select aria-label="Filter by service" style="height: 44px; flex: 0 0 auto; border: 1px solid rgb(228, 228, 231); border-radius: 8px; background: rgb(255, 255, 255); padding: 0px 10px; font-family: inherit; font-size: 14px; color: rgb(63, 63, 70);">
+          <option>All services</option>
+        </select>
+        <div style="position: relative; flex: 1 1 0%; display: flex; align-items: center; min-width: 0px;">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#71717a" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="position: absolute; left: 12px;"><circle cx="11" cy="11" r="8"></circle><path d="m21 21-4.3-4.3"></path></svg>
+          <input type="text" aria-label="Filter by function name" placeholder="Filter by function…" style="height: 44px; width: 100%; box-sizing: border-box; border: 1px solid rgb(228, 228, 231); border-radius: 8px; background: rgb(255, 255, 255); padding: 0px 12px 0px 36px; font-family: inherit; font-size: 14px;">
+        </div>
+      </div>
+    </div>
+
+    
+    <div style="border: 1px solid rgb(228, 228, 231); border-radius: 8px; background: rgb(255, 255, 255); overflow: hidden; flex-shrink: 0;">
+      <div style="overflow-x: auto;">
+        <div style="width: 640px;">
+          <div style="display: grid; grid-template-columns: 200px 300px 140px; background: rgb(250, 250, 250); border-bottom: 1px solid rgb(228, 228, 231);">
+            <div style="padding: 10px 16px; font-size: 12px; font-weight: 500; letter-spacing: 0.05em; text-transform: uppercase; color: rgb(113, 113, 122);">Function</div>
+            <div style="padding: 10px 16px; font-size: 12px; font-weight: 500; letter-spacing: 0.05em; text-transform: uppercase; color: rgb(113, 113, 122);">Error</div>
+            <div style="padding: 10px 16px; font-size: 12px; font-weight: 500; letter-spacing: 0.05em; text-transform: uppercase; color: rgb(113, 113, 122); white-space: nowrap;">Count (24h)</div>
+          </div>
+          <div style="display: grid; grid-template-columns: 200px 300px 140px; border-bottom: 1px solid rgb(228, 228, 231);">
+            <div style="padding: 12px 16px;">
+              <p style="margin: 0px; font-size: 14px; font-weight: 500;">orders-createOrder</p>
+              <p style="margin: 2px 0px 0px; font-size: 12px; color: rgb(113, 113, 122);">orders</p>
+            </div>
+            <div style="padding: 12px 16px; min-width: 0px;">
+              <span style="background: rgb(244, 244, 245); border-radius: 4px; padding: 2px 6px; font-size: 12px; font-weight: 500; color: rgb(82, 82, 91);">DatabaseError</span>
+              <p style="margin: 4px 0px 0px; font-size: 14px; color: rgb(82, 82, 91); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">Cannot use "undefined" as a Firestore value</p>
+            </div>
+            <div style="padding: 12px 16px; font-size: 14px; color: rgb(63, 63, 70);">42</div>
+          </div>
+          <div style="display: grid; grid-template-columns: 200px 300px 140px; border-bottom: 1px solid rgb(228, 228, 231);">
+            <div style="padding: 12px 16px;">
+              <p style="margin: 0px; font-size: 14px; font-weight: 500; word-break: break-word;">billing-createCheckoutSession</p>
+              <p style="margin: 2px 0px 0px; font-size: 12px; color: rgb(113, 113, 122);">billing</p>
+            </div>
+            <div style="padding: 12px 16px; min-width: 0px;">
+              <span style="background: rgb(244, 244, 245); border-radius: 4px; padding: 2px 6px; font-size: 12px; font-weight: 500; color: rgb(82, 82, 91);">TimeoutError</span>
+              <p style="margin: 4px 0px 0px; font-size: 14px; color: rgb(82, 82, 91); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">Deadline exceeded after 60s waiting for the payment provider</p>
+            </div>
+            <div style="padding: 12px 16px; font-size: 14px; color: rgb(63, 63, 70);">17</div>
+          </div>
+          <div style="display: grid; grid-template-columns: 200px 300px 140px;">
+            <div style="padding: 12px 16px;">
+              <p style="margin: 0px; font-size: 14px; font-weight: 500; word-break: break-word;">notifications-sendReceiptEmail</p>
+              <p style="margin: 2px 0px 0px; font-size: 12px; color: rgb(113, 113, 122);">notifications</p>
+            </div>
+            <div style="padding: 12px 16px; min-width: 0px;">
+              <span style="background: rgb(244, 244, 245); border-radius: 4px; padding: 2px 6px; font-size: 12px; font-weight: 500; color: rgb(82, 82, 91);">QuotaError</span>
+              <p style="margin: 4px 0px 0px; font-size: 14px; color: rgb(82, 82, 91); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">Rate limit exceeded for the outbound mail provider</p>
+            </div>
+            <div style="padding: 12px 16px; font-size: 14px; color: rgb(63, 63, 70);">133</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </main></div>
+</body>
+</html>

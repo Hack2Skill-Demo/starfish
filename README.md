@@ -117,7 +117,9 @@ The public demo is designed to need no sign-in, with visitors as view-only guest
 
 ![Live runs: a missing-index fault, from first error to an evidence PR waiting for a human](docs/design/screens/live-runs-index.png)
 
-Every screen, and what each one is for: [`docs/design/mockups.md`](docs/design/mockups.md).
+Every screen, and what each one is for: [`docs/design/mockups.md`](docs/design/mockups.md). To click
+through them, open [`docs/design/html/index.html`](docs/design/html/index.html) in a browser after cloning
+(GitHub shows HTML files as source, not as pages).
 
 ## Google Cloud stack
 
@@ -186,7 +188,7 @@ web/                 operator UI: sign-in, incidents, settings
 firestore.rules      what the UI may read and change (tested on the emulator)
 fixtures/incidents/   spike fixtures (synthetic; see docs/spike.md)
 docs/
-  design/            the auto-merge policy, UI mockups (mockups.md, screens/)
+  design/            the auto-merge policy, UI mockups (mockups.md, screens/, html/)
   research/          self-healing systems: the literature, and where Starfish sits
   spike.md           what the spike measures and how to read it
 ```

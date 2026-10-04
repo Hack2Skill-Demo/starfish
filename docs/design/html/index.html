@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Starfish UI mockups</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+:root{--ink:#18181b;--muted:#52525b;--line:#e4e4e7;--bg:#f4f4f5;--card:#ffffff;--brand:#b63512}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:"Plus Jakarta Sans",ui-sans-serif,system-ui,sans-serif;-webkit-font-smoothing:antialiased}
+main{max-width:1180px;margin:0 auto;padding:40px 16px 64px;display:flex;flex-direction:column;gap:36px}
+h1{margin:0;font-family:"Bricolage Grotesque",sans-serif;font-size:36px;letter-spacing:-0.02em}
+h2{margin:0 0 12px;font-size:13px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+p{margin:0;line-height:1.6;color:var(--muted)}
+.note{border:1px solid #ffdf88;background:#fffaeb;color:#92390c;border-radius:10px;padding:14px 16px;font-size:14px}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px}
+a.card{display:flex;flex-direction:column;gap:4px;min-height:44px;border:1px solid var(--line);background:var(--card);border-radius:12px;padding:14px 16px;color:inherit;text-decoration:none}
+a.card:hover{border-color:var(--brand)}
+a.card strong{font-size:15px}
+a.card span{font-size:13px;color:var(--muted);line-height:1.5}
+.tag{align-self:flex-start;border-radius:999px;padding:1px 8px;font-size:11px;font-weight:700;background:#f4f4f5;color:#3f3f46}
+.tag.built{background:#d3f8e3;color:#09714d}
+.start{font-size:15px}
+.start a{color:var(--brand);font-weight:600}
+</style>
+</head>
+<body>
+<main>
+  <header style="display:flex;flex-direction:column;gap:10px">
+    <h1>Starfish UI mockups</h1>
+    <p>Static HTML pages exported from the Starfish design canvas. Open any page in a browser; the links between screens work.</p>
+    <p class="note"><strong>Designed, not built.</strong> Only the incidents table, sign-in, access denied, 404 and the descriptive settings page exist in the app today. Everything else is a design, and every value on every page is illustrative. Decisions behind the designs: <code>docs/design/mockups.md</code>.</p>
+    <p class="start">Start here: <a href="Overview.html">Overview</a> → <a href="LiveRun.html">Live runs</a> → <a href="Story.html">Incident story</a></p>
+  </header>
+
+  <section>
+    <h2>The demo flow</h2>
+    <div class="grid">
+      <a class="card" href="Overview.html"><strong>Overview</strong><span>What needs a human, what was handled, engine health.</span></a>
+      <a class="card" href="Pitch.html"><strong>How it works</strong><span>The pipeline, built vs designed, and the trust ladder (16:9 slide).</span></a>
+      <a class="card" href="Main.html"><span class="tag built">Built screen · demo data</span><strong>Incidents</strong><span>The incidents table, with the planned menu.</span></a>
+    </div>
+  </section>
+
+  <section>
+    <h2>Live runs: one per MVP case</h2>
+    <div class="grid">
+      <a class="card" href="LiveRun.html"><strong>Missing index</strong><span>Starfish creates the index; the evidence PR waits for a human.</span></a>
+      <a class="card" href="LiveRun-code.html"><strong>Code fix</strong><span>Gemini's patch, verify gate, CI guards, merge on green, CI deploys.</span></a>
+      <a class="card" href="LiveRun-notify.html"><strong>Notify-only and phone call</strong><span>A patch can't fix it: Slack, then a recorded call.</span></a>
+      <a class="card" href="LiveRun-decline.html"><strong>Decline</strong><span>A one-off transient, with the reason recorded.</span></a>
+    </div>
+  </section>
+
+  <section>
+    <h2>Incident story: seven steps</h2>
+    <div class="grid">
+      <a class="card" href="Story.html"><strong>1 · Detected</strong><span>The error and occurrences per hour.</span></a>
+      <a class="card" href="Story-counter.html"><strong>2 · Counter-check</strong><span>Store count vs raw-log recount.</span></a>
+      <a class="card" href="Story-triage.html"><strong>3 · Triage</strong><span>Gemini's verdict and reasoning.</span></a>
+      <a class="card" href="Story-fix.html"><strong>4 · Fix draft</strong><span>The minimal patch and its test.</span></a>
+      <a class="card" href="Story-verify.html"><strong>5 · Verify gate</strong><span>Deterministic checks, not a model.</span></a>
+      <a class="card" href="Story-review.html"><strong>6 · Review</strong><span>Gemini tries to break its own fix.</span></a>
+      <a class="card" href="Story-pr.html"><strong>7 · Pull request</strong><span>Merged on green; CI deploys it.</span></a>
+    </div>
+  </section>
+
+  <section>
+    <h2>What Starfish posts elsewhere, and phone escalation</h2>
+    <div class="grid">
+      <a class="card" href="SlackMessages.html"><strong>Slack messages</strong><span>#ops-alerts, #on-call, #ops-log.</span></a>
+      <a class="card" href="GitHubWrites.html"><strong>GitHub issue and PR</strong><span>The bodies Starfish writes.</span></a>
+      <a class="card" href="CallLive.html"><strong>Phone call record</strong><span>Recorded message, keypad presses, outcome.</span></a>
+      <a class="card" href="PhoneCall.html"><strong>Incoming call</strong><span>What the on-call person sees (phone).</span></a>
+    </div>
+  </section>
+
+  <section>
+    <h2>Settings</h2>
+    <div class="grid">
+      <a class="card" href="SettingsProposed.html"><strong>Connections</strong><span>Watched project, Gemini, GitHub App, Slack.</span></a>
+      <a class="card" href="Engine.html"><strong>Engine</strong><span>Pipeline switches, rules table, gates, fast-revert.</span></a>
+      <a class="card" href="OnCall.html"><strong>On-call and calls</strong><span>Who gets called, when, and the recorded message.</span></a>
+      <a class="card" href="Settings.html"><span class="tag built">Built today</span><strong>Settings (today)</strong><span>The descriptive page that exists now.</span></a>
+    </div>
+  </section>
+
+  <section>
+    <h2>Sign-in, states and phone width</h2>
+    <div class="grid">
+      <a class="card" href="SignIn.html"><span class="tag built">Built</span><strong>Team sign-in</strong><span>Not part of the public demo.</span></a>
+      <a class="card" href="SignIn-error.html"><span class="tag built">Built</span><strong>Sign-in error</strong><span>Invalid email or password.</span></a>
+      <a class="card" href="AccessDenied.html"><span class="tag built">Built</span><strong>Access denied</strong><span>Signed in without a Starfish role.</span></a>
+      <a class="card" href="NotFound.html"><span class="tag built">Built</span><strong>404</strong><span>Page not found.</span></a>
+      <a class="card" href="States.html"><strong>Incidents table states</strong><span>Loading, failed, empty, capped, status pills.</span></a>
+      <a class="card" href="Phone.html"><strong>Phone: incidents</strong><span>The table at 390 px.</span></a>
+      <a class="card" href="PhoneMenu.html"><strong>Phone: menu open</strong><span>The sidebar as a drawer.</span></a>
+    </div>
+  </section>
+</main>
+</body>
+</html>
