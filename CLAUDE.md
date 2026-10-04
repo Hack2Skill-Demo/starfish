@@ -200,7 +200,8 @@ React 19, Vite, Tailwind 4, react-router, TanStack Query; Starfish's own theme i
 - **Runtime settings:** one admin save is one batch of three documents (settings, audit entry,
   operator copy) that `firestore.rules` ties together. The UI imports `src/settingsSchema.ts`,
   so it and the engine can't disagree on what is valid. Change that schema and the rules'
-  key list together.
+  key list together. Verify command, timeout and excluded paths are deliberately not editable
+  here (an editable command is code execution on the engine host).
 - **Run:** `pnpm -C web dev` (port 5177).
 
 ## Sessions

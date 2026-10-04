@@ -45,6 +45,7 @@ function snapshot(config: StarfishConfig): StarfishConfig {
     ...config,
     logResourceTypes: Object.freeze([...config.logResourceTypes]) as string[],
     ignoredMessages: Object.freeze([...config.ignoredMessages]) as string[],
+    excludedServices: Object.freeze([...config.excludedServices]) as string[],
     servicePatterns: Object.freeze({ ...config.servicePatterns }),
   });
 }
@@ -58,6 +59,9 @@ export function applySettings(base: StarfishConfig, settings: RuntimeSettings): 
     ...(settings.logResourceTypes !== undefined && { logResourceTypes: settings.logResourceTypes }),
     ...(settings.servicePatterns !== undefined && { servicePatterns: settings.servicePatterns }),
     ...(settings.ignoredMessages !== undefined && { ignoredMessages: settings.ignoredMessages }),
+    ...(settings.dryRun !== undefined && { dryRun: settings.dryRun }),
+    ...(settings.reviewRequired !== undefined && { reviewRequired: settings.reviewRequired }),
+    ...(settings.modelCallBudget !== undefined && { modelCallBudget: settings.modelCallBudget }),
   });
 }
 

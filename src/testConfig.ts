@@ -16,6 +16,7 @@ export function testConfig(over: Partial<StarfishConfig> = {}): StarfishConfig {
     incidentCollection: "incidents",
     incidentKeyCollection: "incident_keys",
     runCollection: "starfish_runs",
+    excludedServices: [],
     cycleCollection: "starfish_cycles",
     usersCollection: "starfish_users",
     auditCollection: "starfish_audit",

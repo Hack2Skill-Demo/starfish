@@ -6,7 +6,10 @@ const withField = (patch: Partial<FormState>): FormState => ({ ...defaults, ...p
 
 describe("formFromStored", () => {
   it("puts every field on its default when nothing is stored", () => {
-    for (const field of Object.values(defaults)) expect(field).toEqual({ override: false, text: "" });
+    for (const field of Object.values(defaults)) expect(field.override).toBe(false);
+    // A switch that gets overridden starts On, the safe side.
+    expect(defaults.dryRun.text).toBe("true");
+    expect(defaults.reviewRequired.text).toBe("true");
   });
 
   it("overrides exactly the fields the document holds, and formats lists and patterns for editing", () => {
@@ -24,6 +27,40 @@ describe("formFromStored", () => {
     // An empty list is an override ("suppress nothing"), not the default.
     expect(form.ignoredMessages).toEqual({ override: true, text: "" });
     expect(form.watchedProjectId.override).toBe(false);
+  });
+});
+
+describe("pipeline switches", () => {
+  it("shows a stored switch and budget as an override", () => {
+    const form = formFromStored({ version: 1, dryRun: false, reviewRequired: true, modelCallBudget: 12 });
+    expect(form.dryRun).toEqual({ override: true, text: "false" });
+    expect(form.reviewRequired).toEqual({ override: true, text: "true" });
+    expect(form.modelCallBudget).toEqual({ override: true, text: "12" });
+  });
+
+  it("sends real booleans and a real number, only for the overridden fields", () => {
+    expect(
+      settingsFromForm(
+        withField({
+          dryRun: { override: true, text: "false" },
+          reviewRequired: { override: false, text: "false" },
+          modelCallBudget: { override: true, text: " 8 " },
+        })
+      )
+    ).toEqual({ ok: true, settings: { dryRun: false, modelCallBudget: 8 } });
+  });
+
+  it("refuses an empty, fractional or out-of-range budget instead of guessing", () => {
+    for (const text of ["", "  ", "0", "51", "2.5", "abc"]) {
+      const result = settingsFromForm(withField({ modelCallBudget: { override: true, text } }));
+      expect(result.ok).toBe(false);
+      expect(!result.ok && result.problems.map((p) => p.split(":")[0])).toEqual(["modelCallBudget"]);
+    }
+  });
+
+  it("round-trips a stored pipeline document", () => {
+    const stored = { dryRun: false, reviewRequired: false, modelCallBudget: 3 };
+    expect(settingsFromForm(formFromStored({ version: 1, ...stored }))).toEqual({ ok: true, settings: stored });
   });
 });
 

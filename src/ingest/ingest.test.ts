@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { canonicalFunctionName, computeErrorFingerprint, normalizeErrorMessage } from "./fingerprint.js";
 import { detectErrorType, detectService, extractErrorCode } from "./classify.js";
-import { buildLogFilter, parseLogEntry, type RawLogEntry } from "./parseLogEntry.js";
+import { buildLogFilter, isExcludedService, parseLogEntry, type RawLogEntry } from "./parseLogEntry.js";
 import { DEFAULT_IGNORED_MESSAGES, DEFAULT_LOG_RESOURCE_TYPES } from "../config.js";
 import { mergeOccurrenceBuckets, hourBucketKey, MS_PER_HOUR } from "./buckets.js";
 import { redactCredentials, redactPii, sanitize, truncate } from "./redact.js";
@@ -268,3 +268,52 @@ describe("redaction", () => {
     expect(out).toContain("truncated");
   });
 });
+
+describe("self-exclusion (#32)", () => {
+  const entryFrom = (labels: Record<string, string>): RawLogEntry => ({
+    metadata: { timestamp: "2026-09-21T00:00:00.000Z", resource: { labels } },
+    data: "boom",
+  });
+
+  it("drops an entry from an excluded service, whichever label names it", () => {
+    expect(parseLogEntry(entryFrom({ service_name: "starfish" }), [], ["starfish"])).toBeNull();
+    expect(parseLogEntry(entryFrom({ function_name: "starfish" }), [], ["starfish"])).toBeNull();
+    // A gen2 function carries both labels; either one naming it is enough.
+    expect(parseLogEntry(entryFrom({ function_name: "orders", service_name: "starfish" }), [], ["starfish"])).toBeNull();
+    expect(parseLogEntry(entryFrom({ function_name: "starfish", service_name: "orders" }), [], ["starfish"])).toBeNull();
+  });
+
+  it("compares on the canonical spelling: case and underscores do not slip past", () => {
+    expect(parseLogEntry(entryFrom({ function_name: "Starfish_Ingest" }), [], ["starfish-ingest"])).toBeNull();
+    expect(parseLogEntry(entryFrom({ service_name: "starfish-ingest" }), [], ["Starfish_Ingest"])).toBeNull();
+  });
+
+  it("keeps everything else, and keeps everything when nothing is excluded", () => {
+    expect(parseLogEntry(entryFrom({ service_name: "orders" }), [], ["starfish"])).not.toBeNull();
+    expect(parseLogEntry(entryFrom({ service_name: "starfish-web" }), [], ["starfish"])).not.toBeNull();
+    expect(parseLogEntry(entryFrom({ service_name: "starfish" }), [], [])).not.toBeNull();
+    expect(parseLogEntry(entryFrom({ service_name: "starfish" }))).not.toBeNull();
+  });
+
+  it("isExcludedService is exact, not a substring", () => {
+    expect(isExcludedService("starfish-web", ["starfish"])).toBe(false);
+    expect(isExcludedService(undefined, ["starfish"])).toBe(false);
+    expect(isExcludedService("starfish", [])).toBe(false);
+  });
+
+  it("excludes at query time too, on both labels and both spellings", () => {
+    const f = buildLogFilter({ logResourceTypes: ["cloud_run_revision"], ignoredMessages: [], excludedServices: ["Starfish_Ingest"] }, new Date(0));
+    for (const spelling of ["Starfish_Ingest", "starfish-ingest"]) {
+      expect(f).toContain(`NOT resource.labels.function_name="${spelling}"`);
+      expect(f).toContain(`NOT resource.labels.service_name="${spelling}"`);
+    }
+  });
+
+  it("adds no exclusion clause when none is configured, and keeps a hostile name inside its literal", () => {
+    expect(buildLogFilter({ logResourceTypes: ["x"], ignoredMessages: [] }, new Date(0))).not.toContain("NOT resource.labels");
+    const f = buildLogFilter({ logResourceTypes: ["x"], ignoredMessages: [], excludedServices: ['a" OR severity>=DEBUG OR "b'] }, new Date(0));
+    expect(f).not.toContain("severity>=DEBUG");
+    expect(f).toContain('NOT resource.labels.function_name="aORseverityDEBUGORb"');
+  });
+});
+
