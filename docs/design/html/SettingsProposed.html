@@ -1,0 +1,334 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Starfish · Settings (proposed)</title>
+<!-- Static export of the Starfish design canvas. Designed, not built: every value on this page is illustrative. -->
+<link rel="preconnect" href="https://fonts.googleapis.com"><link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#f4f4f5}
+a{color:#0f73d4}a:hover{color:#135dab}
+button,input,select{font-family:inherit}
+input::placeholder{color:#71717a}
+code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;background:#f4f4f5;border-radius:4px;padding:1px 5px;color:#3f3f46}
+</style>
+</head>
+<body>
+<div style="display: flex; flex-wrap: wrap; min-height: 100vh; background: rgb(244, 244, 245); font-family: &quot;Plus Jakarta Sans&quot;, ui-sans-serif, system-ui, sans-serif; color: rgb(24, 24, 27); -webkit-font-smoothing: antialiased;">
+
+  <aside style="display: flex; flex: 1 1 320px; max-width: 320px; background: rgb(24, 24, 27);">
+    <div style="width: 64px; flex-shrink: 0; display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 16px 0px; border-right: 1px solid rgba(255, 255, 255, 0.05);">
+      <a href="Overview.html" aria-label="Starfish home" style="margin-bottom: 16px; display: flex;"><svg width="32" height="32" viewBox="0 0 100 100" aria-hidden="true"><circle cx="50" cy="50" r="48" fill="#f25c2f"></circle><path d="M50 18 58.8 38.4 80.4 40.1 64 54.4 69 75.6 50 64.2 31 75.6 36 54.4 19.6 40.1 41.2 38.4Z" fill="#fff4ef"></path></svg></a>
+      <a href="Overview.html" aria-label="Overview" title="Overview" style="width: 44px; height: 44px; display: flex; align-items: center; justify-content: center; border-radius: 8px; color: rgb(161, 161, 170);">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="7" height="9" x="3" y="3" rx="1"></rect><rect width="7" height="5" x="14" y="3" rx="1"></rect><rect width="7" height="9" x="14" y="12" rx="1"></rect><rect width="7" height="5" x="3" y="16" rx="1"></rect></svg>
+      </a>
+      <a href="LiveRun.html" aria-label="Live runs" title="Live runs" style="width: 44px; height: 44px; display: flex; align-items: center; justify-content: center; border-radius: 8px; color: rgb(161, 161, 170);">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4.9 19.1C1 15.2 1 8.8 4.9 4.9"></path><path d="M7.8 16.2c-2.3-2.3-2.3-6.1 0-8.5"></path><circle cx="12" cy="12" r="2"></circle><path d="M16.2 7.8c2.3 2.3 2.3 6.1 0 8.5"></path><path d="M19.1 4.9C23 8.8 23 15.1 19.1 19"></path></svg>
+      </a>
+      <a href="Main.html" aria-label="Incidents" title="Incidents" style="width: 44px; height: 44px; display: flex; align-items: center; justify-content: center; border-radius: 8px; color: rgb(161, 161, 170);">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 12h-2.48a2 2 0 0 0-1.93 1.46l-2.35 8.36a.25.25 0 0 1-.48 0L9.24 2.18a.25.25 0 0 0-.48 0l-2.35 8.36A2 2 0 0 1 4.49 12H2"></path></svg>
+      </a>
+      <a href="SettingsProposed.html" aria-label="Settings" title="Settings" style="width: 44px; height: 44px; display: flex; align-items: center; justify-content: center; border-radius: 8px; background: rgb(39, 39, 42); color: rgb(255, 255, 255); box-shadow: rgba(255, 255, 255, 0.15) 0px 0px 0px 1px inset;">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"></path><circle cx="12" cy="12" r="3"></circle></svg>
+      </a>
+      <div style="flex: 1 1 0%;"></div>
+    </div>
+    <div style="flex: 1 1 0%; min-width: 0px; display: flex; flex-direction: column;">
+      <div style="height: 64px; display: flex; align-items: center; gap: 8px; padding: 0px 16px;">
+        <span style="font-family: &quot;Bricolage Grotesque&quot;, &quot;Plus Jakarta Sans&quot;, sans-serif; font-size: 20px; font-weight: 700; letter-spacing: -0.02em; color: rgb(255, 255, 255);">Starfish</span>
+        <span style="background: rgba(255, 255, 255, 0.1); border-radius: 6px; padding: 3px 6px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10px; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; color: rgb(212, 212, 216);">demo</span>
+      </div>
+      <nav style="flex: 1 1 0%; display: flex; flex-direction: column; gap: 4px; padding: 8px 12px;">
+        <a href="Overview.html" style="display: block; border-radius: 8px; padding: 8px 12px; font-size: 14px; color: rgb(161, 161, 170); text-decoration: none;">Overview</a>
+        <a href="LiveRun.html" style="display: block; border-radius: 8px; padding: 8px 12px; font-size: 14px; color: rgb(161, 161, 170); text-decoration: none;">Live runs</a>
+        <a href="Main.html" style="display: block; border-radius: 8px; padding: 8px 12px; font-size: 14px; color: rgb(161, 161, 170); text-decoration: none;">Incidents</a>
+        <a href="SettingsProposed.html" style="display: block; border-radius: 8px; padding: 8px 12px; font-size: 14px; background: rgb(182, 53, 18); color: rgb(255, 255, 255); text-decoration: none;">Settings</a>
+        <div style="margin: 6px 0px 0px 12px; display: flex; flex-direction: column; gap: 2px; border-left: 1px solid rgb(63, 63, 70); padding-left: 8px;">
+          <a href="SettingsProposed.html" style="padding: 6px 8px; font-size: 13px; color: rgb(255, 255, 255); font-weight: 600; text-decoration: none;">Connections</a>
+          <a href="Engine.html" style="padding: 6px 8px; font-size: 13px; color: rgb(161, 161, 170); text-decoration: none;">Engine</a>
+          <a href="OnCall.html" style="padding: 6px 8px; font-size: 13px; color: rgb(161, 161, 170); text-decoration: none;">On-call &amp; calls</a>
+        </div>
+      </nav>
+      <div style="border-top: 1px solid rgb(39, 39, 42); padding: 16px;">
+        <p style="margin: 0px; display: flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 600; color: rgb(255, 255, 255);"><span style="width: 8px; height: 8px; border-radius: 999px; background: rgb(58, 203, 139);"></span>Public demo</p>
+        <p style="margin: 2px 0px 0px; font-size: 12px; color: rgb(161, 161, 170);">View only · no sign-in needed</p>
+        <a href="SignIn.html" style="display: inline-block; margin-top: 8px; padding: 6px 0px; font-size: 12px; color: rgb(161, 161, 170);">Team sign in</a>
+      </div>
+    </div>
+  </aside>
+
+  <div style="flex: 999 1 560px; min-width: 0px; display: flex; flex-direction: column;">
+    <header style="height: 64px; display: flex; align-items: center; justify-content: space-between; padding: 0px 24px; background: rgb(255, 255, 255); border-bottom: 1px solid rgb(228, 228, 231);">
+      <span style="font-size: 14px; font-weight: 500; color: rgb(63, 63, 70);">Settings</span>
+      <button type="button" aria-label="Theme: light. Change theme" title="Theme: light" style="width: 36px; height: 36px; display: flex; align-items: center; justify-content: center; border: 1px solid rgb(228, 228, 231); border-radius: 8px; background: rgb(255, 255, 255); color: rgb(113, 113, 122);">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"></path></svg>
+      </button>
+    </header>
+
+    <main style="flex: 1 1 0%; padding: 24px; display: flex; flex-direction: column; gap: 24px; max-width: 1040px; width: 100%; box-sizing: border-box;">
+      <div>
+        <h1 style="margin: 0px; font-size: 24px; font-weight: 700; color: rgb(24, 24, 27);">Settings</h1>
+        <p style="margin: 4px 0px 0px; font-size: 14px; color: rgb(113, 113, 122);">What Starfish watches, which model it thinks with, and where its work lands</p>
+      </div>
+
+      <div style="display: flex; align-items: flex-start; gap: 12px; border: 1px solid rgb(187, 234, 255); border-radius: 8px; background: rgb(238, 250, 255); padding: 14px 16px; font-size: 14px; line-height: 1.55; color: rgb(19, 93, 171);">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="flex-shrink: 0; margin-top: 3px;"><rect width="18" height="11" x="3" y="11" rx="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>
+        <span><strong>View only.</strong> You're looking at the public demo, so nothing on this page can be changed. Secrets are never shown here; the team edits settings after signing in.</span>
+      </div>
+
+      <div style="display: flex; align-items: flex-start; gap: 12px; border: 1px solid rgb(255, 223, 136); border-radius: 8px; background: rgb(255, 250, 235); padding: 14px 16px; font-size: 14px; line-height: 1.55; color: rgb(146, 57, 12);">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="flex-shrink: 0; margin-top: 3px;"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"></path><path d="M12 9v4"></path><path d="M12 17h.01"></path></svg>
+        <span><strong>Proposed design.</strong> Today every value here is an environment variable on the engine (<code>src/config.ts</code>), and GitHub and Slack are not built. The variable names are shown so each field maps to the config it would replace.</span>
+      </div>
+
+      
+      <section id="watched" style="border: 1px solid rgb(228, 228, 231); border-radius: 10px; background: rgb(255, 255, 255);">
+        <div style="display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; padding: 18px 20px; border-bottom: 1px solid rgb(228, 228, 231);">
+          <div style="display: flex; align-items: center; gap: 12px;">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#52525b" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 12h-2.48a2 2 0 0 0-1.93 1.46l-2.35 8.36a.25.25 0 0 1-.48 0L9.24 2.18a.25.25 0 0 0-.48 0l-2.35 8.36A2 2 0 0 1 4.49 12H2"></path></svg>
+            <div>
+              <h2 style="margin: 0px; font-size: 16px; font-weight: 600;">Watched project</h2>
+              <p style="margin: 2px 0px 0px; font-size: 13px; color: rgb(113, 113, 122);">Where Starfish reads error logs from</p>
+            </div>
+          </div>
+          <span style="border-radius: 999px; padding: 2px 10px; font-size: 12px; font-weight: 500; background: rgb(237, 252, 244); color: rgb(9, 113, 77);">Reading logs</span>
+        </div>
+        <div style="padding: 20px; display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 20px;">
+          <div>
+            <label for="gcp-project" style="display: block; font-size: 14px; font-weight: 500; color: rgb(63, 63, 70);">GCP project</label>
+            <input disabled="" id="gcp-project" type="text" value="[your-firebase-project]" style="margin-top: 6px; height: 44px; width: 100%; box-sizing: border-box; border: 1px solid rgb(228, 228, 231); border-radius: 8px; padding: 0px 12px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 14px; color: rgb(24, 24, 27);">
+            <p style="margin: 6px 0px 0px; font-size: 12px; color: rgb(113, 113, 122);"><code>GOOGLE_CLOUD_PROJECT</code> · the engine's service account needs <code>roles/logging.viewer</code> here</p>
+          </div>
+          <div>
+            <label for="env-label" style="display: block; font-size: 14px; font-weight: 500; color: rgb(63, 63, 70);">Environment label</label>
+            <input disabled="" id="env-label" type="text" value="prod" style="margin-top: 6px; height: 44px; width: 100%; box-sizing: border-box; border: 1px solid rgb(228, 228, 231); border-radius: 8px; padding: 0px 12px; font-size: 14px; color: rgb(24, 24, 27);">
+            <p style="margin: 6px 0px 0px; font-size: 12px; color: rgb(113, 113, 122);"><code>STARFISH_ENV</code> · stamped on every incident so dev and prod never mix</p>
+          </div>
+        </div>
+        <div style="padding: 0px 20px 20px; display: flex; flex-direction: column; gap: 20px;">
+          <fieldset style="margin: 0px; padding: 0px; border: 0px;">
+            <legend style="padding: 0px; font-size: 14px; font-weight: 500; color: rgb(63, 63, 70);">Log sources</legend>
+            <div style="margin-top: 8px; display: flex; flex-wrap: wrap; gap: 10px;">
+              <label style="display: flex; align-items: center; gap: 10px; min-height: 44px; border: 1px solid rgb(228, 228, 231); border-radius: 8px; padding: 0px 14px; font-size: 14px;">
+                <input disabled="" type="checkbox" checked="" style="width: 16px; height: 16px; accent-color: rgb(182, 53, 18);">
+                <span><code>cloud_function</code> <span style="color: rgb(113, 113, 122);">Firebase gen1 functions</span></span>
+              </label>
+              <label style="display: flex; align-items: center; gap: 10px; min-height: 44px; border: 1px solid rgb(228, 228, 231); border-radius: 8px; padding: 0px 14px; font-size: 14px;">
+                <input disabled="" type="checkbox" checked="" style="width: 16px; height: 16px; accent-color: rgb(182, 53, 18);">
+                <span><code>cloud_run_revision</code> <span style="color: rgb(113, 113, 122);">gen2 functions and Cloud Run</span></span>
+              </label>
+            </div>
+            <p style="margin: 8px 0px 0px; font-size: 13px; line-height: 1.55; color: rgb(82, 82, 91);">Every function and Cloud Run service in this project that logs at ERROR severity is in scope. There is no per-function allowlist. <code>STARFISH_LOG_RESOURCE_TYPES</code></p>
+          </fieldset>
+
+          <div>
+            <h3 style="margin: 0px; font-size: 14px; font-weight: 500; color: rgb(63, 63, 70);">Service attribution</h3>
+            <p style="margin: 2px 0px 0px; font-size: 13px; color: rgb(113, 113, 122);">A function name containing the pattern is filed under that service. Anything unmatched is <strong style="color: rgb(63, 63, 70);">platform</strong>. <code>STARFISH_SERVICE_PATTERNS</code></p>
+            <div style="margin-top: 10px; border: 1px solid rgb(228, 228, 231); border-radius: 8px; overflow: hidden;">
+              <div style="display: grid; grid-template-columns: 1fr 1fr 56px; background: rgb(250, 250, 250); border-bottom: 1px solid rgb(228, 228, 231); font-size: 12px; font-weight: 500; letter-spacing: 0.05em; text-transform: uppercase; color: rgb(113, 113, 122);">
+                <div style="padding: 10px 14px;">Name contains</div>
+                <div style="padding: 10px 14px;">Service</div>
+                <div></div>
+              </div>
+              <div style="display: grid; grid-template-columns: 1fr 1fr 56px; align-items: center; border-bottom: 1px solid rgb(228, 228, 231); font-size: 14px;">
+                <div style="padding: 10px 14px;"><code>orders</code></div>
+                <div style="padding: 10px 14px;">orders</div>
+                <button disabled="" type="button" aria-label="Remove orders pattern" style="width: 44px; height: 44px; border: 0px; background: none; color: rgb(113, 113, 122); display: flex; align-items: center; justify-content: center;"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18"></path><path d="m6 6 12 12"></path></svg></button>
+              </div>
+              <div style="display: grid; grid-template-columns: 1fr 1fr 56px; align-items: center; border-bottom: 1px solid rgb(228, 228, 231); font-size: 14px;">
+                <div style="padding: 10px 14px;"><code>billing</code></div>
+                <div style="padding: 10px 14px;">billing</div>
+                <button disabled="" type="button" aria-label="Remove billing pattern" style="width: 44px; height: 44px; border: 0px; background: none; color: rgb(113, 113, 122); display: flex; align-items: center; justify-content: center;"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18"></path><path d="m6 6 12 12"></path></svg></button>
+              </div>
+              <div style="display: grid; grid-template-columns: 1fr 1fr 56px; align-items: center; font-size: 14px;">
+                <div style="padding: 10px 14px;"><code>sendreceipt</code></div>
+                <div style="padding: 10px 14px;">notifications</div>
+                <button disabled="" type="button" aria-label="Remove sendreceipt pattern" style="width: 44px; height: 44px; border: 0px; background: none; color: rgb(113, 113, 122); display: flex; align-items: center; justify-content: center;"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18"></path><path d="m6 6 12 12"></path></svg></button>
+              </div>
+            </div>
+            <button disabled="" type="button" style="margin-top: 10px; min-height: 40px; border: 1px solid rgb(212, 212, 216); border-radius: 8px; background: rgb(255, 255, 255); padding: 0px 14px; font-size: 14px; font-weight: 500; color: rgb(63, 63, 70);">Add pattern</button>
+          </div>
+
+          <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 20px;">
+            <div>
+              <label for="ignored" style="display: block; font-size: 14px; font-weight: 500; color: rgb(63, 63, 70);">Ignored messages</label>
+              <textarea disabled="" id="ignored" rows="3" style="margin-top: 6px; width: 100%; box-sizing: border-box; border: 1px solid rgb(228, 228, 231); border-radius: 8px; padding: 10px 12px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; line-height: 1.5; color: rgb(24, 24, 27); resize: vertical;">Invalid request, unable to process
+Request has invalid method</textarea>
+              <p style="margin: 6px 0px 0px; font-size: 12px; color: rgb(113, 113, 122);">Framework noise logged at ERROR, one per line. <code>STARFISH_IGNORED_MESSAGES</code></p>
+            </div>
+            <div>
+              <label for="lookback" style="display: block; font-size: 14px; font-weight: 500; color: rgb(63, 63, 70);">First-run lookback</label>
+              <select disabled="" id="lookback" style="margin-top: 6px; height: 44px; width: 100%; border: 1px solid rgb(228, 228, 231); border-radius: 8px; background: rgb(255, 255, 255); padding: 0px 12px; font-size: 14px; color: rgb(24, 24, 27);">
+                <option>24 hours</option>
+                <option>3 days</option>
+                <option>7 days</option>
+              </select>
+              <p style="margin: 6px 0px 0px; font-size: 12px; color: rgb(113, 113, 122);">Used once, before a checkpoint exists. <code>STARFISH_LOOKBACK_HOURS</code></p>
+            </div>
+          </div>
+
+          <p style="margin: 0px; display: flex; gap: 10px; align-items: flex-start; border-radius: 8px; background: rgb(244, 244, 245); padding: 12px 14px; font-size: 13px; line-height: 1.55; color: rgb(63, 63, 70);">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="flex-shrink: 0; margin-top: 2px;"><circle cx="12" cy="12" r="10"></circle><line x1="12" x2="12" y1="16" y2="12"></line><line x1="12" x2="12.01" y1="8" y2="8"></line></svg>
+            <span>Logs only. A gen2 function can fail without writing an ERROR log, so a quiet day means no <em>logged</em> errors. A Cloud Monitoring source is planned.</span>
+          </p>
+        </div>
+      </section>
+
+      
+      <section id="gemini" style="border: 1px solid rgb(228, 228, 231); border-radius: 10px; background: rgb(255, 255, 255);">
+        <div style="display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; padding: 18px 20px; border-bottom: 1px solid rgb(228, 228, 231);">
+          <div style="display: flex; align-items: center; gap: 12px;">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#52525b" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 8V4H8"></path><rect width="16" height="12" x="4" y="8" rx="2"></rect><path d="M2 14h2"></path><path d="M20 14h2"></path><path d="M15 13v2"></path><path d="M9 13v2"></path></svg>
+            <div>
+              <h2 style="margin: 0px; font-size: 16px; font-weight: 600;">Gemini (Vertex AI)</h2>
+              <p style="margin: 2px 0px 0px; font-size: 13px; color: rgb(113, 113, 122);">The model behind triage, fix drafting and review</p>
+            </div>
+          </div>
+          <button disabled="" type="button" style="min-height: 40px; border: 1px solid rgb(212, 212, 216); border-radius: 8px; background: rgb(255, 255, 255); padding: 0px 14px; font-size: 14px; font-weight: 500; color: rgb(63, 63, 70);">Test connection</button>
+        </div>
+        <div style="padding: 20px; display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 20px;">
+          <div>
+            <label for="vx-project" style="display: block; font-size: 14px; font-weight: 500; color: rgb(63, 63, 70);">Vertex AI project</label>
+            <input disabled="" id="vx-project" type="text" value="[your-firebase-project]" style="margin-top: 6px; height: 44px; width: 100%; box-sizing: border-box; border: 1px solid rgb(228, 228, 231); border-radius: 8px; padding: 0px 12px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 14px; color: rgb(24, 24, 27);">
+            <p style="margin: 6px 0px 0px; font-size: 12px; color: rgb(113, 113, 122);">Today always the watched project</p>
+          </div>
+          <div>
+            <label for="vx-region" style="display: block; font-size: 14px; font-weight: 500; color: rgb(63, 63, 70);">Region</label>
+            <select disabled="" id="vx-region" style="margin-top: 6px; height: 44px; width: 100%; border: 1px solid rgb(228, 228, 231); border-radius: 8px; background: rgb(255, 255, 255); padding: 0px 12px; font-size: 14px; color: rgb(24, 24, 27);">
+              <option>us-central1</option>
+              <option>europe-west4</option>
+              <option>asia-southeast1</option>
+            </select>
+            <p style="margin: 6px 0px 0px; font-size: 12px; color: rgb(113, 113, 122);"><code>GOOGLE_CLOUD_LOCATION</code></p>
+          </div>
+          <div>
+            <label for="vx-model" style="display: block; font-size: 14px; font-weight: 500; color: rgb(63, 63, 70);">Model</label>
+            <input disabled="" id="vx-model" type="text" value="gemini-3.1-pro-preview" style="margin-top: 6px; height: 44px; width: 100%; box-sizing: border-box; border: 1px solid rgb(228, 228, 231); border-radius: 8px; padding: 0px 12px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 14px; color: rgb(24, 24, 27);">
+            <p style="margin: 6px 0px 0px; font-size: 12px; color: rgb(113, 113, 122);"><code>STARFISH_MODEL</code></p>
+          </div>
+        </div>
+        <div style="padding: 0px 20px 20px; display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px;">
+          <div style="border: 1px solid rgb(228, 228, 231); border-radius: 8px; padding: 14px 16px;">
+            <h3 style="margin: 0px; font-size: 14px; font-weight: 600; color: rgb(24, 24, 27);">Authentication: no API key</h3>
+            <p style="margin: 6px 0px 0px; font-size: 13px; line-height: 1.55; color: rgb(82, 82, 91);">Vertex AI is called as the engine's service account, so there is no Gemini key to paste or leak. Grant it <code>roles/aiplatform.user</code>.</p>
+            <p style="margin: 10px 0px 0px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; color: rgb(63, 63, 70); word-break: break-all;">[starfish-engine]@[your-firebase-project].iam.gserviceaccount.com</p>
+          </div>
+          <div>
+            <label for="budget" style="display: block; font-size: 14px; font-weight: 500; color: rgb(63, 63, 70);">Monthly token budget</label>
+            <div style="margin-top: 6px; display: flex; align-items: center; gap: 8px;">
+              <input disabled="" id="budget" type="text" placeholder="[YOUR CAP]" style="height: 44px; flex: 1 1 0%; min-width: 0px; box-sizing: border-box; border: 1px solid rgb(228, 228, 231); border-radius: 8px; padding: 0px 12px; font-size: 14px; color: rgb(24, 24, 27);">
+              <span style="font-size: 14px; color: rgb(82, 82, 91);">tokens</span>
+            </div>
+            <p style="margin: 6px 0px 0px; font-size: 12px; line-height: 1.5; color: rgb(113, 113, 122);">New idea, not in the design docs: pause fix drafting when the cap is hit, keep ingesting. No usage is tracked today.</p>
+          </div>
+        </div>
+      </section>
+
+      
+      <section id="github" style="border: 1px solid rgb(228, 228, 231); border-radius: 10px; background: rgb(255, 255, 255);">
+        <div style="display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; padding: 18px 20px; border-bottom: 1px solid rgb(228, 228, 231);">
+          <div style="display: flex; align-items: center; gap: 12px;">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#52525b" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="6" x2="6" y1="3" y2="15"></line><circle cx="18" cy="6" r="3"></circle><circle cx="6" cy="18" r="3"></circle><path d="M18 9a9 9 0 0 1-9 9"></path></svg>
+            <div>
+              <h2 style="margin: 0px; font-size: 16px; font-weight: 600;">GitHub</h2>
+              <p style="margin: 2px 0px 0px; font-size: 13px; color: rgb(113, 113, 122);">Where issues are filed and fix pull requests open</p>
+            </div>
+          </div>
+          
+            <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 10px;">
+              <span style="border-radius: 999px; padding: 2px 10px; font-size: 12px; font-weight: 500; background: rgb(237, 252, 244); color: rgb(9, 113, 77);">App installed on [your-org]</span>
+              <a href="https://github.com/settings/installations" style="font-size: 14px; font-weight: 500; padding: 10px 4px;">Manage on GitHub</a>
+            </div>
+          
+        </div>
+
+        
+
+        
+          <div style="padding: 20px; display: flex; flex-direction: column; gap: 20px;">
+            <div>
+              <h3 style="margin: 0px; font-size: 14px; font-weight: 500; color: rgb(63, 63, 70);">Repositories</h3>
+              <p style="margin: 2px 0px 0px; font-size: 13px; color: rgb(113, 113, 122);">The repo that owns the indexes or rules is not always the one that owns the failing code.</p>
+              <div style="margin-top: 10px; border: 1px solid rgb(228, 228, 231); border-radius: 8px; overflow-x: auto;">
+                <div style="min-width: 680px;">
+                  <div style="display: grid; grid-template-columns: 1.4fr 1.4fr 0.8fr 1.2fr; background: rgb(250, 250, 250); border-bottom: 1px solid rgb(228, 228, 231); font-size: 12px; font-weight: 500; letter-spacing: 0.05em; text-transform: uppercase; color: rgb(113, 113, 122);">
+                    <div style="padding: 10px 14px;">Repository</div>
+                    <div style="padding: 10px 14px;">Used for</div>
+                    <div style="padding: 10px 14px;">Base branch</div>
+                    <div style="padding: 10px 14px;">Labels</div>
+                  </div>
+                  <div style="display: grid; grid-template-columns: 1.4fr 1.4fr 0.8fr 1.2fr; align-items: center; border-bottom: 1px solid rgb(228, 228, 231); font-size: 14px;">
+                    <div style="padding: 12px 14px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px;">[your-org]/[app-repo]</div>
+                    <div style="padding: 12px 14px; display: flex; flex-wrap: wrap; gap: 6px;">
+                      <span style="border-radius: 999px; padding: 2px 10px; font-size: 12px; font-weight: 500; background: rgb(255, 244, 239); color: rgb(182, 53, 18);">Issues</span>
+                      <span style="border-radius: 999px; padding: 2px 10px; font-size: 12px; font-weight: 500; background: rgb(255, 244, 239); color: rgb(182, 53, 18);">Fix PRs</span>
+                    </div>
+                    <div style="padding: 12px 14px;"><code>main</code></div>
+                    <div style="padding: 12px 14px; color: rgb(82, 82, 91);">starfish, incident</div>
+                  </div>
+                  <div style="display: grid; grid-template-columns: 1.4fr 1.4fr 0.8fr 1.2fr; align-items: center; font-size: 14px;">
+                    <div style="padding: 12px 14px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px;">[your-org]/[infra-repo]</div>
+                    <div style="padding: 12px 14px; display: flex; flex-wrap: wrap; gap: 6px;">
+                      <span style="border-radius: 999px; padding: 2px 10px; font-size: 12px; font-weight: 500; background: rgb(255, 244, 239); color: rgb(182, 53, 18);">Indexes &amp; rules</span>
+                    </div>
+                    <div style="padding: 12px 14px;"><code>main</code></div>
+                    <div style="padding: 12px 14px; color: rgb(82, 82, 91);">starfish</div>
+                  </div>
+                </div>
+              </div>
+              <button disabled="" type="button" style="margin-top: 10px; min-height: 40px; border: 1px solid rgb(212, 212, 216); border-radius: 8px; background: rgb(255, 255, 255); padding: 0px 14px; font-size: 14px; font-weight: 500; color: rgb(63, 63, 70);">Add repository</button>
+            </div>
+
+            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px;">
+              <div style="border: 1px solid rgb(228, 228, 231); border-radius: 8px; padding: 14px 16px;">
+                <h3 style="margin: 0px; font-size: 14px; font-weight: 600; color: rgb(24, 24, 27);">What the App may do</h3>
+                <ul style="margin: 8px 0px 0px; padding-left: 18px; font-size: 13px; line-height: 1.7; color: rgb(82, 82, 91);">
+                  <li>Issues: read and write</li>
+                  <li>Pull requests: read and write</li>
+                  <li>Contents: write to <code>starfish/*</code> branches only</li>
+                  <li style="color: rgb(24, 24, 27); font-weight: 500;">Merge: never. A human merges.</li>
+                </ul>
+              </div>
+              <div style="border: 1px solid rgb(228, 228, 231); border-radius: 8px; padding: 14px 16px;">
+                <h3 style="margin: 0px; font-size: 14px; font-weight: 600; color: rgb(24, 24, 27);">Where the credential lives</h3>
+                <p style="margin: 6px 0px 0px; font-size: 13px; line-height: 1.55; color: rgb(82, 82, 91);">The App's private key sits in Secret Manager and only the engine reads it. It never passes through this page or Firestore.</p>
+                <p style="margin: 10px 0px 0px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; color: rgb(63, 63, 70);">projects/[your-firebase-project]/secrets/[starfish-github-app-key]</p>
+              </div>
+            </div>
+          </div>
+        
+      </section>
+
+      
+      <section id="slack" style="border: 1px solid rgb(228, 228, 231); border-radius: 10px; background: rgb(255, 255, 255);">
+        <div style="display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; padding: 18px 20px; border-bottom: 1px solid rgb(228, 228, 231);">
+          <div style="display: flex; align-items: center; gap: 12px;">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#52525b" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg>
+            <div>
+              <h2 style="margin: 0px; font-size: 16px; font-weight: 600;">Slack</h2>
+              <p style="margin: 2px 0px 0px; font-size: 13px; color: rgb(113, 113, 122);">Who hears about what</p>
+            </div>
+          </div>
+          <a href="https://slack.com/apps" style="min-height: 40px; display: inline-flex; align-items: center; border-radius: 8px; background: rgb(24, 24, 27); padding: 0px 14px; font-size: 14px; font-weight: 500; color: rgb(255, 255, 255); text-decoration: none;">Add to Slack</a>
+        </div>
+        <div style="padding: 20px; display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 20px;">
+          <div>
+            <label for="ch-notify" style="display: block; font-size: 14px; font-weight: 500; color: rgb(63, 63, 70);">New incidents</label>
+            <input disabled="" id="ch-notify" type="text" placeholder="#[ops-alerts]" style="margin-top: 6px; height: 44px; width: 100%; box-sizing: border-box; border: 1px solid rgb(228, 228, 231); border-radius: 8px; padding: 0px 12px; font-size: 14px; color: rgb(24, 24, 27);">
+          </div>
+          <div>
+            <label for="ch-escalate" style="display: block; font-size: 14px; font-weight: 500; color: rgb(63, 63, 70);">Needs a human</label>
+            <input disabled="" id="ch-escalate" type="text" placeholder="#[on-call]" style="margin-top: 6px; height: 44px; width: 100%; box-sizing: border-box; border: 1px solid rgb(228, 228, 231); border-radius: 8px; padding: 0px 12px; font-size: 14px; color: rgb(24, 24, 27);">
+          </div>
+          <div>
+            <label for="ch-healed" style="display: block; font-size: 14px; font-weight: 500; color: rgb(63, 63, 70);">Healed</label>
+            <input disabled="" id="ch-healed" type="text" placeholder="#[ops-log]" style="margin-top: 6px; height: 44px; width: 100%; box-sizing: border-box; border: 1px solid rgb(228, 228, 231); border-radius: 8px; padding: 0px 12px; font-size: 14px; color: rgb(24, 24, 27);">
+          </div>
+        </div>
+      </section>
+
+    </main>
+  </div></div>
+</body>
+</html>

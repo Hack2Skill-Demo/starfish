@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Starfish · What it writes on GitHub</title>
+<!-- Static export of the Starfish design canvas. Designed, not built: every value on this page is illustrative. -->
+<link rel="preconnect" href="https://fonts.googleapis.com"><link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#f4f4f5}
+a{color:#0f73d4}
+code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:0.9em;background:#f4f4f5;border-radius:4px;padding:1px 5px;color:#3f3f46}
+h3{margin:18px 0 6px;font-size:15px;font-weight:700}
+</style>
+</head>
+<body>
+<div style="min-height: 100vh; box-sizing: border-box; padding: 40px 24px; background: rgb(244, 244, 245); font-family: &quot;Plus Jakarta Sans&quot;, ui-sans-serif, system-ui, sans-serif; color: rgb(24, 24, 27); -webkit-font-smoothing: antialiased;">
+  <div style="max-width: 1180px; margin: 0px auto; display: flex; flex-direction: column; gap: 28px;">
+    <a href="LiveRun.html" style="align-self: flex-start; min-height: 44px; display: inline-flex; align-items: center; gap: 6px; font-size: 14px; font-weight: 600; color: rgb(182, 53, 18); text-decoration: none;">‹ Back to Live runs</a>
+    <div style="display: flex; flex-wrap: wrap; justify-content: space-between; align-items: flex-end; gap: 12px;">
+      <div>
+        <h1 style="margin: 0px; font-family: &quot;Bricolage Grotesque&quot;, sans-serif; font-size: 32px; font-weight: 700; letter-spacing: -0.02em;">What Starfish writes on GitHub</h1>
+        <p style="margin: 6px 0px 0px; font-size: 15px; color: rgb(82, 82, 91);">The issue and evidence pull request for the planted index incident. Drawn in a neutral frame; in the demo they appear on your real GitHub.</p>
+      </div>
+      <span style="border-radius: 999px; padding: 3px 10px; font-size: 12px; font-weight: 600; background: rgb(255, 250, 235); color: rgb(146, 57, 12); border: 1px solid rgb(255, 223, 136);">Design mockup · not built yet</span>
+    </div>
+
+    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(520px, 1fr)); gap: 20px; align-items: start;">
+
+      
+      <article style="border: 1px solid rgb(228, 228, 231); border-radius: 14px; background: rgb(255, 255, 255); overflow: hidden;">
+        <header style="padding: 18px 20px; border-bottom: 1px solid rgb(228, 228, 231); display: flex; flex-direction: column; gap: 8px;">
+          <p style="margin: 0px; font-size: 12px; color: rgb(113, 113, 122);">[your-org]/[demo-app] · Issue [#130]</p>
+          <h2 style="margin: 0px; font-size: 20px; font-weight: 700;">orders-listRecentOrders: query requires a composite index</h2>
+          <div style="display: flex; flex-wrap: wrap; gap: 6px; align-items: center; font-size: 12px;">
+            <span style="border-radius: 999px; padding: 2px 10px; font-weight: 600; background: rgb(211, 248, 227); color: rgb(9, 113, 77);">Open</span>
+            <span style="border-radius: 999px; padding: 2px 8px; font-weight: 600; background: rgb(255, 244, 239); color: rgb(182, 53, 18);">starfish</span>
+            <span style="border-radius: 999px; padding: 2px 8px; font-weight: 600; background: rgb(255, 224, 226); color: rgb(189, 20, 36);">incident</span>
+            <span style="border-radius: 999px; padding: 2px 8px; font-weight: 600; background: rgb(244, 244, 245); color: rgb(63, 63, 70);">missing-index</span>
+            <span style="color: rgb(113, 113, 122);">opened by starfish[bot]</span>
+          </div>
+        </header>
+        <div style="padding: 4px 20px 20px; font-size: 14px; line-height: 1.6; color: rgb(39, 39, 42);">
+          <h3>What's failing</h3>
+          <p style="margin: 0px;"><code>orders-listRecentOrders</code> in <strong>demo</strong> fails with <code>FAILED_PRECONDITION: The query requires an index</code>. 11 failures in 6 minutes, from zero before.</p>
+          <h3>Evidence</h3>
+          <ul style="margin: 0px; padding-left: 20px;">
+            <li>Fingerprint <code>7c21e0b94f3a1d62</code>, first seen 10:02:14</li>
+            <li>Counter-check: an independent raw-log recount found 11 (agrees)</li>
+            <li>Needed index (from Google's own error): <code>orders</code> · <code>customerId ASC, createdAt DESC</code></li>
+          </ul>
+          <h3>What Starfish will do</h3>
+          <p style="margin: 0px;">This is a <strong>missing composite index</strong>. Under the rules for this project it heals itself: create this one index with the Admin API, open a PR adding it to <code>firestore.indexes.json</code>, merge on green, and re-run the failing query.</p>
+          <p style="margin: 14px 0px 0px; font-size: 12px; color: rgb(113, 113, 122);">Logs: [Cloud Logging link] · Live run: [Starfish link] · Text from logs is redacted before it is posted.</p>
+        </div>
+      </article>
+
+      
+      <article style="border: 1px solid rgb(228, 228, 231); border-radius: 14px; background: rgb(255, 255, 255); overflow: hidden;">
+        <header style="padding: 18px 20px; border-bottom: 1px solid rgb(228, 228, 231); display: flex; flex-direction: column; gap: 8px;">
+          <p style="margin: 0px; font-size: 12px; color: rgb(113, 113, 122);">[your-org]/[demo-app] · PR [#131] · <code>starfish/index-orders-7c21e0</code> → <code>main</code></p>
+          <h2 style="margin: 0px; font-size: 20px; font-weight: 700;">chore(indexes): add orders (customerId, createdAt desc)</h2>
+          <div style="display: flex; flex-wrap: wrap; gap: 6px; align-items: center; font-size: 12px;">
+            <span style="border-radius: 999px; padding: 2px 10px; font-weight: 600; background: rgb(211, 248, 227); color: rgb(9, 113, 77);">Open · waiting for a human to merge</span>
+            <span style="color: rgb(113, 113, 122);">firestore.indexes.json +12 −0</span>
+          </div>
+        </header>
+        <div style="padding: 4px 20px 20px; font-size: 14px; line-height: 1.6; color: rgb(39, 39, 42);">
+          <h3>Summary</h3>
+          <p style="margin: 0px;">Adds the index that <code>orders-listRecentOrders</code> needed. Starfish already created it in the database (READY at 10:05:53); this PR writes the same entry into the index file so the repo and the database never drift.</p>
+          <h3>Why Starfish created the index without asking</h3>
+          <ul style="margin: 0px; padding-left: 20px;">
+            <li><strong>Low blast radius:</strong> additive only. An index can't grant access or remove data.</li>
+            <li><strong>Certainty:</strong> the spec is parsed from Google's create-index URL. No model wrote it.</li>
+            <li>Target on the allowlist (the app's database, not Starfish's) · not in the repo or live indexes · no array fields</li>
+          </ul>
+          <h3>Why this PR still needs you</h3>
+          <p style="margin: 0px;">The app is already healed. This PR only keeps the repo in step, and for now a human merges it.</p>
+          <h3>Diff</h3>
+          <pre style="margin: 0px; border-radius: 8px; background: rgb(237, 252, 244); padding: 10px 12px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; line-height: 1.6; color: rgb(11, 90, 63); white-space: pre-wrap;">+ {
++   "collectionGroup": "orders",
++   "queryScope": "COLLECTION",
++   "fields": [
++     { "fieldPath": "customerId", "order": "ASCENDING" },
++     { "fieldPath": "createdAt", "order": "DESCENDING" }
++   ]
++ },</pre>
+          <p style="margin: 14px 0px 0px;">Closes [#130]</p>
+        </div>
+      </article>
+    </div>
+  </div></div>
+</body>
+</html>

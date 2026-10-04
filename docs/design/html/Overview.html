@@ -1,0 +1,239 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Starfish · Overview</title>
+<!-- Static export of the Starfish design canvas. Designed, not built: every value on this page is illustrative. -->
+<link rel="preconnect" href="https://fonts.googleapis.com"><link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#f4f4f5}
+a{color:#0f73d4}a:hover{color:#135dab}
+</style>
+</head>
+<body>
+<div style="display: flex; flex-wrap: wrap; min-height: 100vh; background: rgb(244, 244, 245); font-family: &quot;Plus Jakarta Sans&quot;, ui-sans-serif, system-ui, sans-serif; color: rgb(24, 24, 27); -webkit-font-smoothing: antialiased;">
+
+  <aside style="display: flex; flex: 1 1 320px; max-width: 320px; background: rgb(24, 24, 27);">
+    <div style="width: 64px; flex-shrink: 0; display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 16px 0px; border-right: 1px solid rgba(255, 255, 255, 0.05);">
+      <a href="Overview.html" aria-label="Starfish home" style="margin-bottom: 16px; display: flex;"><svg width="32" height="32" viewBox="0 0 100 100" aria-hidden="true"><circle cx="50" cy="50" r="48" fill="#f25c2f"></circle><path d="M50 18 58.8 38.4 80.4 40.1 64 54.4 69 75.6 50 64.2 31 75.6 36 54.4 19.6 40.1 41.2 38.4Z" fill="#fff4ef"></path></svg></a>
+      <a href="Overview.html" aria-label="Overview" title="Overview" style="width: 44px; height: 44px; display: flex; align-items: center; justify-content: center; border-radius: 8px; background: rgb(39, 39, 42); color: rgb(255, 255, 255); box-shadow: rgba(255, 255, 255, 0.15) 0px 0px 0px 1px inset;">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="7" height="9" x="3" y="3" rx="1"></rect><rect width="7" height="5" x="14" y="3" rx="1"></rect><rect width="7" height="9" x="14" y="12" rx="1"></rect><rect width="7" height="5" x="3" y="16" rx="1"></rect></svg>
+      </a>
+      <a href="LiveRun.html" aria-label="Live runs" title="Live runs" style="width: 44px; height: 44px; display: flex; align-items: center; justify-content: center; border-radius: 8px; color: rgb(161, 161, 170);">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4.9 19.1C1 15.2 1 8.8 4.9 4.9"></path><path d="M7.8 16.2c-2.3-2.3-2.3-6.1 0-8.5"></path><circle cx="12" cy="12" r="2"></circle><path d="M16.2 7.8c2.3 2.3 2.3 6.1 0 8.5"></path><path d="M19.1 4.9C23 8.8 23 15.1 19.1 19"></path></svg>
+      </a>
+      <a href="Main.html" aria-label="Incidents" title="Incidents" style="width: 44px; height: 44px; display: flex; align-items: center; justify-content: center; border-radius: 8px; color: rgb(161, 161, 170);">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 12h-2.48a2 2 0 0 0-1.93 1.46l-2.35 8.36a.25.25 0 0 1-.48 0L9.24 2.18a.25.25 0 0 0-.48 0l-2.35 8.36A2 2 0 0 1 4.49 12H2"></path></svg>
+      </a>
+      <a href="SettingsProposed.html" aria-label="Settings" title="Settings" style="width: 44px; height: 44px; display: flex; align-items: center; justify-content: center; border-radius: 8px; color: rgb(161, 161, 170);">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"></path><circle cx="12" cy="12" r="3"></circle></svg>
+      </a>
+      <div style="flex: 1 1 0%;"></div>
+    </div>
+    <div style="flex: 1 1 0%; min-width: 0px; display: flex; flex-direction: column;">
+      <div style="height: 64px; display: flex; align-items: center; gap: 8px; padding: 0px 16px;">
+        <span style="font-family: &quot;Bricolage Grotesque&quot;, &quot;Plus Jakarta Sans&quot;, sans-serif; font-size: 20px; font-weight: 700; letter-spacing: -0.02em; color: rgb(255, 255, 255);">Starfish</span>
+        <span style="background: rgba(255, 255, 255, 0.1); border-radius: 6px; padding: 3px 6px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10px; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; color: rgb(212, 212, 216);">demo</span>
+      </div>
+      <nav style="flex: 1 1 0%; display: flex; flex-direction: column; gap: 4px; padding: 8px 12px;">
+        <a href="Overview.html" style="display: block; border-radius: 8px; padding: 8px 12px; font-size: 14px; background: rgb(182, 53, 18); color: rgb(255, 255, 255); text-decoration: none;">Overview</a>
+        <a href="LiveRun.html" style="display: block; border-radius: 8px; padding: 8px 12px; font-size: 14px; color: rgb(161, 161, 170); text-decoration: none;">Live runs</a>
+        <a href="Main.html" style="display: block; border-radius: 8px; padding: 8px 12px; font-size: 14px; color: rgb(161, 161, 170); text-decoration: none;">Incidents</a>
+        <a href="SettingsProposed.html" style="display: block; border-radius: 8px; padding: 8px 12px; font-size: 14px; color: rgb(161, 161, 170); text-decoration: none;">Settings</a>
+      </nav>
+      <div style="border-top: 1px solid rgb(39, 39, 42); padding: 16px;">
+        <p style="margin: 0px; display: flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 600; color: rgb(255, 255, 255);"><span style="width: 8px; height: 8px; border-radius: 999px; background: rgb(58, 203, 139);"></span>Public demo</p>
+        <p style="margin: 2px 0px 0px; font-size: 12px; color: rgb(161, 161, 170);">View only · no sign-in needed</p>
+        <a href="SignIn.html" style="display: inline-block; margin-top: 8px; padding: 6px 0px; font-size: 12px; color: rgb(161, 161, 170);">Team sign in</a>
+      </div>
+    </div>
+  </aside>
+
+  <div style="flex: 999 1 560px; min-width: 0px; display: flex; flex-direction: column;">
+    <header style="height: 64px; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 0px 24px; background: rgb(255, 255, 255); border-bottom: 1px solid rgb(228, 228, 231);">
+      <span style="font-size: 14px; font-weight: 500; color: rgb(63, 63, 70);">Overview</span>
+      <span style="border-radius: 999px; padding: 3px 10px; font-size: 12px; font-weight: 600; background: rgb(255, 250, 235); color: rgb(146, 57, 12); border: 1px solid rgb(255, 223, 136);">Design mockup · not built</span>
+    </header>
+
+    <main style="flex: 1 1 0%; padding: 24px; display: flex; flex-direction: column; gap: 24px;">
+      <div>
+        <h1 style="margin: 0px; font-size: 24px; font-weight: 700;">One pull request needs you. Everything else is handled.</h1>
+        <p style="margin: 4px 0px 0px; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 14px; color: rgb(113, 113, 122);"><span>Demo app, last 24 hours</span><span aria-hidden="true">·</span><span style="display: inline-flex; align-items: center; gap: 6px; color: rgb(9, 113, 77); font-weight: 600;"><span style="width: 8px; height: 8px; border-radius: 999px; background: rgb(10, 142, 93);"></span>Engine healthy: last run 1 min ago</span></p>
+      </div>
+
+      
+      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px;">
+        <a href="GitHubWrites.html" style="text-decoration: none; color: inherit; border-radius: 12px; background: rgb(182, 53, 18); padding: 20px; display: flex; flex-direction: column; gap: 6px;">
+          <span style="font-size: 13px; font-weight: 500; color: rgb(255, 229, 217);">PRs waiting for you</span>
+          <span style="font-family: &quot;Bricolage Grotesque&quot;, sans-serif; font-size: 48px; font-weight: 700; line-height: 1; color: rgb(255, 255, 255);">1</span>
+          <span style="font-size: 13px; color: rgb(255, 229, 217);">Index evidence PR [#131] · app already healed</span>
+        </a>
+        <a href="LiveRun.html" style="text-decoration: none; color: inherit; border-radius: 12px; background: rgb(255, 255, 255); border: 1px solid rgb(228, 228, 231); padding: 20px; display: flex; flex-direction: column; gap: 6px;">
+          <span style="font-size: 13px; font-weight: 500; color: rgb(82, 82, 91);">Healed on its own</span>
+          <span style="font-family: &quot;Bricolage Grotesque&quot;, sans-serif; font-size: 48px; font-weight: 700; line-height: 1; color: rgb(9, 113, 77);">1</span>
+          <span style="font-size: 13px; color: rgb(113, 113, 122);">missing index · 3 min 41 s to fix</span>
+        </a>
+        <a href="LiveRun.html" style="text-decoration: none; color: inherit; border-radius: 12px; background: rgb(255, 255, 255); border: 1px solid rgb(228, 228, 231); padding: 20px; display: flex; flex-direction: column; gap: 6px;">
+          <span style="font-size: 13px; font-weight: 500; color: rgb(82, 82, 91);">Runs in progress</span>
+          <span style="font-family: &quot;Bricolage Grotesque&quot;, sans-serif; font-size: 48px; font-weight: 700; line-height: 1;">2</span>
+          <span style="font-size: 13px; color: rgb(113, 113, 122);">a code fix in CI · one waiting on a human</span>
+        </a>
+        <a href="Main.html" style="text-decoration: none; color: inherit; border-radius: 12px; background: rgb(255, 255, 255); border: 1px solid rgb(228, 228, 231); padding: 20px; display: flex; flex-direction: column; gap: 6px;">
+          <span style="font-size: 13px; font-weight: 500; color: rgb(82, 82, 91);">Regressions</span>
+          <span style="font-family: &quot;Bricolage Grotesque&quot;, sans-serif; font-size: 48px; font-weight: 700; line-height: 1;">1</span>
+          <span style="display: inline-flex; align-items: center; gap: 4px; font-size: 13px; font-weight: 500; color: rgb(194, 65, 12);">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"></path><path d="M3 3v5h5"></path></svg>
+            a resolved fix that didn't hold
+          </span>
+        </a>
+      </div>
+
+      
+      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); gap: 16px;">
+        <figure style="margin: 0px; border-radius: 12px; background: rgb(255, 255, 255); border: 1px solid rgb(228, 228, 231); padding: 20px; display: flex; flex-direction: column; gap: 12px;">
+          <figcaption style="display: flex; justify-content: space-between; align-items: baseline; gap: 8px;">
+            <span style="font-size: 15px; font-weight: 600;">Errors per hour</span>
+            <span style="font-size: 13px; color: rgb(113, 113, 122);">demo app · 24h</span>
+          </figcaption>
+          <div style="position: relative; height: 200px; margin-top: 12px; border-bottom: 1px solid rgb(161, 161, 170); display: flex; align-items: flex-end; gap: 2px; padding-right: 28px;">
+            <div aria-hidden="true" style="position: absolute; left: 0px; right: 28px; top: 0px; border-top: 1px dashed rgb(228, 228, 231);"></div>
+            <div aria-hidden="true" style="position: absolute; left: 0px; right: 28px; top: 100px; border-top: 1px dashed rgb(228, 228, 231);"></div>
+            <span aria-hidden="true" style="position: absolute; right: 0px; top: -8px; font-size: 11px; color: rgb(113, 113, 122);">40</span>
+            <span aria-hidden="true" style="position: absolute; right: 0px; top: 92px; font-size: 11px; color: rgb(113, 113, 122);">20</span>
+            
+              <div title="24h ago: 2 errors" style="flex: 1 1 0%; height: 10px; min-height: 2px; background: rgb(242, 92, 47); border-radius: 4px 4px 0px 0px;"></div>
+            
+              <div title="23h ago: 1 errors" style="flex: 1 1 0%; height: 5px; min-height: 2px; background: rgb(242, 92, 47); border-radius: 4px 4px 0px 0px;"></div>
+            
+              <div title="22h ago: 0 errors" style="flex: 1 1 0%; height: 0px; min-height: 2px; background: rgb(242, 92, 47); border-radius: 4px 4px 0px 0px;"></div>
+            
+              <div title="21h ago: 3 errors" style="flex: 1 1 0%; height: 15px; min-height: 2px; background: rgb(242, 92, 47); border-radius: 4px 4px 0px 0px;"></div>
+            
+              <div title="20h ago: 1 errors" style="flex: 1 1 0%; height: 5px; min-height: 2px; background: rgb(242, 92, 47); border-radius: 4px 4px 0px 0px;"></div>
+            
+              <div title="19h ago: 0 errors" style="flex: 1 1 0%; height: 0px; min-height: 2px; background: rgb(242, 92, 47); border-radius: 4px 4px 0px 0px;"></div>
+            
+              <div title="18h ago: 0 errors" style="flex: 1 1 0%; height: 0px; min-height: 2px; background: rgb(242, 92, 47); border-radius: 4px 4px 0px 0px;"></div>
+            
+              <div title="17h ago: 2 errors" style="flex: 1 1 0%; height: 10px; min-height: 2px; background: rgb(242, 92, 47); border-radius: 4px 4px 0px 0px;"></div>
+            
+              <div title="16h ago: 5 errors" style="flex: 1 1 0%; height: 25px; min-height: 2px; background: rgb(242, 92, 47); border-radius: 4px 4px 0px 0px;"></div>
+            
+              <div title="15h ago: 4 errors" style="flex: 1 1 0%; height: 20px; min-height: 2px; background: rgb(242, 92, 47); border-radius: 4px 4px 0px 0px;"></div>
+            
+              <div title="14h ago: 3 errors" style="flex: 1 1 0%; height: 15px; min-height: 2px; background: rgb(242, 92, 47); border-radius: 4px 4px 0px 0px;"></div>
+            
+              <div title="13h ago: 2 errors" style="flex: 1 1 0%; height: 10px; min-height: 2px; background: rgb(242, 92, 47); border-radius: 4px 4px 0px 0px;"></div>
+            
+              <div title="12h ago: 6 errors" style="flex: 1 1 0%; height: 30px; min-height: 2px; background: rgb(242, 92, 47); border-radius: 4px 4px 0px 0px;"></div>
+            
+              <div title="11h ago: 4 errors" style="flex: 1 1 0%; height: 20px; min-height: 2px; background: rgb(242, 92, 47); border-radius: 4px 4px 0px 0px;"></div>
+            
+              <div title="10h ago: 3 errors" style="flex: 1 1 0%; height: 15px; min-height: 2px; background: rgb(242, 92, 47); border-radius: 4px 4px 0px 0px;"></div>
+            
+              <div title="9h ago: 5 errors" style="flex: 1 1 0%; height: 25px; min-height: 2px; background: rgb(242, 92, 47); border-radius: 4px 4px 0px 0px;"></div>
+            
+              <div title="8h ago: 9 errors" style="flex: 1 1 0%; height: 45px; min-height: 2px; background: rgb(242, 92, 47); border-radius: 4px 4px 0px 0px;"></div>
+            
+              <div title="7h ago: 7 errors" style="flex: 1 1 0%; height: 35px; min-height: 2px; background: rgb(242, 92, 47); border-radius: 4px 4px 0px 0px;"></div>
+            
+              <div title="6h ago: 4 errors" style="flex: 1 1 0%; height: 20px; min-height: 2px; background: rgb(242, 92, 47); border-radius: 4px 4px 0px 0px;"></div>
+            
+              <div title="5h ago: 3 errors" style="flex: 1 1 0%; height: 15px; min-height: 2px; background: rgb(242, 92, 47); border-radius: 4px 4px 0px 0px;"></div>
+            
+              <div title="4h ago: 6 errors" style="flex: 1 1 0%; height: 30px; min-height: 2px; background: rgb(242, 92, 47); border-radius: 4px 4px 0px 0px;"></div>
+            
+              <div title="3h ago: 5 errors" style="flex: 1 1 0%; height: 25px; min-height: 2px; background: rgb(242, 92, 47); border-radius: 4px 4px 0px 0px;"></div>
+            
+              <div title="2h ago: 24 errors" style="flex: 1 1 0%; height: 120px; min-height: 2px; background: rgb(242, 92, 47); border-radius: 4px 4px 0px 0px;"></div>
+            
+              <div title="1h ago: 31 errors" style="flex: 1 1 0%; height: 155px; min-height: 2px; background: rgb(242, 92, 47); border-radius: 4px 4px 0px 0px;"></div>
+            
+          </div>
+          <div style="display: flex; justify-content: space-between; padding-right: 28px; font-size: 12px; color: rgb(113, 113, 122);"><span>24 h ago</span><span>12 h ago</span><span>now</span></div>
+        </figure>
+
+        <div style="border-radius: 12px; background: rgb(255, 255, 255); border: 1px solid rgb(228, 228, 231); padding: 20px; display: flex; flex-direction: column; gap: 14px;">
+          <div style="display: flex; justify-content: space-between; align-items: baseline;">
+            <span style="font-size: 15px; font-weight: 600;">What Starfish did with today's 6 incidents</span>
+          </div>
+          <ol style="margin: 0px; padding: 0px; list-style: none; display: flex; flex-direction: column; gap: 6px;">
+            <li>
+              <a href="LiveRun.html" style="display: grid; grid-template-columns: 170px 1fr 32px; align-items: center; gap: 12px; font-size: 14px; color: inherit; text-decoration: none; min-height: 32px;">
+                <span style="color: rgb(63, 63, 70);">Healed on its own</span>
+                <span style="height: 22px; border-radius: 4px; background: rgb(10, 142, 93); width: 33%;"></span>
+                <strong style="text-align: right;">1</strong>
+              </a>
+            </li>
+            <li>
+              <a href="LiveRun.html" style="display: grid; grid-template-columns: 170px 1fr 32px; align-items: center; gap: 12px; font-size: 14px; color: inherit; text-decoration: none; min-height: 32px;">
+                <span style="color: rgb(63, 63, 70);">Fix drafted, in CI</span>
+                <span style="height: 22px; border-radius: 4px; background: rgb(15, 115, 212); width: 33%;"></span>
+                <strong style="text-align: right;">1</strong>
+              </a>
+            </li>
+            <li>
+              <a href="LiveRun.html" style="display: grid; grid-template-columns: 170px 1fr 32px; align-items: center; gap: 12px; font-size: 14px; color: inherit; text-decoration: none; min-height: 32px;">
+                <span style="color: rgb(63, 63, 70);">Escalated to a human</span>
+                <span style="height: 22px; border-radius: 4px; background: rgb(180, 83, 9); width: 33%;"></span>
+                <strong style="text-align: right;">1</strong>
+              </a>
+            </li>
+            <li>
+              <a href="LiveRun.html" style="display: grid; grid-template-columns: 170px 1fr 32px; align-items: center; gap: 12px; font-size: 14px; color: inherit; text-decoration: none; min-height: 32px;">
+                <span style="color: rgb(63, 63, 70);">Declined, reason recorded</span>
+                <span style="height: 22px; border-radius: 4px; background: rgb(113, 113, 122); width: 33%;"></span>
+                <strong style="text-align: right;">1</strong>
+              </a>
+            </li>
+            <li>
+              <a href="Main.html" style="display: grid; grid-template-columns: 170px 1fr 32px; align-items: center; gap: 12px; font-size: 14px; color: inherit; text-decoration: none; min-height: 32px;">
+                <span style="color: rgb(63, 63, 70);">Already tracked</span>
+                <span style="height: 22px; border-radius: 4px; background: rgb(212, 212, 216); width: 67%;"></span>
+                <strong style="text-align: right;">2</strong>
+              </a>
+            </li>
+          </ol>
+          <p style="margin: 0px; font-size: 13px; line-height: 1.55; color: rgb(82, 82, 91);">Each path is set by the engine's rules for that kind of incident. Nothing that touches security rules or money merges on its own.</p>
+        </div>
+      </div>
+
+      
+      <div style="border-radius: 12px; background: rgb(255, 255, 255); border: 1px solid rgb(228, 228, 231); padding: 20px;">
+        <h2 style="margin: 0px 0px 12px; font-size: 15px; font-weight: 600;">Latest activity</h2>
+        <ol style="margin: 0px; padding: 0px; list-style: none; display: flex; flex-direction: column;">
+          <li style="border-bottom: 1px solid rgb(244, 244, 245);">
+            <a href="LiveRun.html" style="display: flex; align-items: center; gap: 14px; padding: 10px 0px; font-size: 14px; color: inherit; text-decoration: none;">
+              <span style="width: 10px; height: 10px; border-radius: 999px; background: rgb(10, 142, 93); flex-shrink: 0;"></span>
+              <span style="flex: 1 1 0%;"><strong>Healed</strong> · orders-listRecentOrders: index READY, query passing, quiet for 30 min</span>
+              <span style="color: rgb(113, 113, 122); white-space: nowrap;">10:35</span>
+            </a>
+          </li>
+          <li style="border-bottom: 1px solid rgb(244, 244, 245);">
+            <a href="LiveRun.html" style="display: flex; align-items: center; gap: 14px; padding: 10px 0px; font-size: 14px; color: inherit; text-decoration: none;">
+              <span style="width: 10px; height: 10px; border-radius: 999px; background: rgb(180, 83, 9); flex-shrink: 0;"></span>
+              <span style="flex: 1 1 0%;"><strong>Escalated</strong> · invoices-renderPdf: enable the Cloud Storage API (posted to #on-call)</span>
+              <span style="color: rgb(113, 113, 122); white-space: nowrap;">10:22</span>
+            </a>
+          </li>
+          <li style="border-bottom: 1px solid rgb(244, 244, 245);">
+            <a href="LiveRun.html" style="display: flex; align-items: center; gap: 14px; padding: 10px 0px; font-size: 14px; color: inherit; text-decoration: none;">
+              <span style="width: 10px; height: 10px; border-radius: 999px; background: rgb(15, 115, 212); flex-shrink: 0;"></span>
+              <span style="flex: 1 1 0%;"><strong>CI guards running</strong> · orders-createOrder: PR [#129], merges on green</span>
+              <span style="color: rgb(113, 113, 122); white-space: nowrap;">09:51</span>
+            </a>
+          </li>
+          <li style="border-bottom: 0px;">
+            <a href="LiveRun.html" style="display: flex; align-items: center; gap: 14px; padding: 10px 0px; font-size: 14px; color: inherit; text-decoration: none;">
+              <span style="width: 10px; height: 10px; border-radius: 999px; background: rgb(113, 113, 122); flex-shrink: 0;"></span>
+              <span style="flex: 1 1 0%;"><strong>Declined</strong> · reports-nightlyExport: one-off timeout, reason recorded</span>
+              <span style="color: rgb(113, 113, 122); white-space: nowrap;">02:01</span>
+            </a>
+          </li>
+        </ol>
+      </div>
+    </main>
+  </div></div>
+</body>
+</html>
