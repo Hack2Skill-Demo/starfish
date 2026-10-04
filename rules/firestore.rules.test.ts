@@ -23,6 +23,7 @@ import {
   Timestamp,
 } from "firebase/firestore";
 import { validateSettings } from "../src/runtimeSettings.js";
+import { readRecentChanges, saveSettings, settingsCollections } from "../web/src/lib/settingsWrite";
 
 let env: RulesTestEnvironment;
 
@@ -446,6 +447,64 @@ describe("runtime settings", () => {
     it("nobody deletes the settings from a client", async () => {
       await assertFails(deleteDoc(doc(as("admin1"), CURRENT)));
       await assertFails(deleteDoc(doc(as("admin1"), PUBLIC)));
+    });
+  });
+
+  // The tests above write with a helper built to be broken one rule at a time. This
+  // block runs the Settings editor's OWN save (web/src/lib/settingsWrite.ts), so what
+  // the rules are proven to accept is what the UI actually sends.
+  describe("the Settings editor's own save", () => {
+    const cols = settingsCollections("starfish_settings");
+    const adminReads = async () => (await getDoc(doc(as("admin1"), CURRENT))).data() ?? null;
+
+    it("is accepted: first save, a second one, and a reset, each the next revision of what the admin read", async () => {
+      await assertSucceeds(saveSettings(as("admin1"), cols, "admin1", settings, await adminReads()));
+      await assertSucceeds(
+        saveSettings(as("admin1"), cols, "admin1", { ...settings, ignoredMessages: [] }, await adminReads())
+      );
+      await assertSucceeds(saveSettings(as("admin1"), cols, "admin1", {}, await adminReads()));
+      expect(await stored()).toMatchObject({ revision: 3 });
+      expect(await stored()).not.toHaveProperty("environment");
+    });
+
+    it("is accepted over a document made from the console, which has no revision", async () => {
+      await env.withSecurityRulesDisabled((ctx) =>
+        setDoc(doc(ctx.firestore(), CURRENT), { version: 1, environment: "console-made" })
+      );
+      await assertSucceeds(saveSettings(as("admin1"), cols, "admin1", settings, await adminReads()));
+      expect(await stored()).toMatchObject({ revision: 1, environment: "prod" });
+    });
+
+    it("writes a document the engine accepts, the operator copy operators read, and an audit entry the editor can list", async () => {
+      await assertSucceeds(
+        saveSettings(as("admin1"), cols, "admin1", { ...settings, servicePatterns: { billing: "payments" } }, null)
+      );
+      expect(validateSettings(await stored())).toMatchObject({ ok: true, settings: { environment: "prod" } });
+      const copy = await getDoc(doc(as("op1"), PUBLIC));
+      expect(copy.data()).toMatchObject({ environment: "prod", watchedProjectId: "watched-app-1", revision: 1 });
+      expect(copy.data()).not.toHaveProperty("servicePatterns");
+
+      await assertSucceeds(
+        saveSettings(as("admin1"), cols, "admin1", { environment: "staging" }, await adminReads())
+      );
+      const changes = await readRecentChanges(as("admin1"), cols);
+      expect(changes.map((c) => [c.revision, c.by, c.changed])).toEqual([
+        [2, "admin1", ["environment", "logResourceTypes", "servicePatterns", "watchedProjectId"]],
+        [1, "admin1", ["environment", "logResourceTypes", "servicePatterns", "watchedProjectId"]],
+      ]);
+    });
+
+    it("is refused for a stale tab, an operator and a user without a role", async () => {
+      const first = await adminReads(); // null: nothing saved yet
+      await assertSucceeds(saveSettings(as("admin1"), cols, "admin1", settings, first));
+      const tabOpenedBeforeThatSave = first;
+      await assertFails(saveSettings(as("admin1"), cols, "admin1", { environment: "x" }, tabOpenedBeforeThatSave));
+      await assertFails(saveSettings(as("op1"), cols, "op1", settings, await adminReads()));
+      await assertFails(saveSettings(as("nobody"), cols, "nobody", settings, null));
+    });
+
+    it("an admin can't put someone else's name on a save", async () => {
+      await assertFails(saveSettings(as("admin1"), cols, "op1", settings, null));
     });
   });
 });

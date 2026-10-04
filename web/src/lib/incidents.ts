@@ -124,8 +124,15 @@ export function toRow(id: string, d: Record<string, unknown>, windowHours: numbe
   };
 }
 
-export async function listIncidents(windowHours: number): Promise<{ rows: IncidentRow[]; capped: boolean }> {
-  const { incidentCollection, environment } = webConfig();
+/**
+ * `environment` is the label to filter by: the runtime settings' override when
+ * there is one, else the build-time label (see useEnvironment).
+ */
+export async function listIncidents(
+  windowHours: number,
+  environment: string
+): Promise<{ rows: IncidentRow[]; capped: boolean }> {
+  const { incidentCollection } = webConfig();
   const since = Timestamp.fromMillis(Date.now() - windowHours * MS_PER_HOUR);
   const snap = await getDocs(
     query(

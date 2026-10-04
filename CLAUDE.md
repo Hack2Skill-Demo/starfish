@@ -132,7 +132,8 @@ Conventions that carry real weight (the `starfish-dev` skill has the reasoning):
 ## UI (`web/`)
 
 The operator UI: sign-in, an auth provider with race guards, a two-level layout, the
-**Incidents** page, and a **Settings** page for the Gemini, GitHub and Slack connections.
+**Incidents** page, and a **Settings** page: the Gemini, GitHub and Slack connections, and an
+admin editor for the runtime settings (`src/runtimeSettings.ts` reads what it saves).
 React 19, Vite, Tailwind 4, react-router, TanStack Query; Starfish's own theme in
 `web/src/styles/theme.css` and components in `web/src/components/ui/`.
 
@@ -147,8 +148,13 @@ React 19, Vite, Tailwind 4, react-router, TanStack Query; Starfish's own theme i
   (`STARFISH_DATABASE_ID` / `VITE_STARFISH_DATABASE_ID`), which `firebase.json` targets for
   rules and indexes. Never deploy `firestore.rules` to the watched app's database: a rules
   file governs a whole database and would replace the app's own rules.
-- **Config:** `web/src/lib/config.ts` is the only reader of `import.meta.env`; values come
-  from `web/.env` (`web/.env.example`).
+- **Config:** `web/src/lib/config.ts` is the only reader of `import.meta.env`. The Firebase
+  project comes from Hosting's `/__/firebase/init.json` at startup (`VITE_FIREBASE_*` only for
+  local dev); the rest from `web/.env` (`web/.env.example`).
+- **Runtime settings:** one admin save is one batch of three documents (settings, audit entry,
+  operator copy) that `firestore.rules` ties together. The UI imports `src/settingsSchema.ts`,
+  so it and the engine can't disagree on what is valid. Change that schema and the rules'
+  key list together.
 - **Run:** `pnpm -C web dev` (port 5177).
 
 ## Sessions

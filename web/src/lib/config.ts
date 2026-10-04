@@ -96,6 +96,12 @@ export interface WebConfig {
   incidentCollection: string;
   /** Operator records: {uid} → { roles: StarfishRole[] }. */
   usersCollection: string;
+  /**
+   * Runtime settings: {settingsCollection}/current, with the operator copy in
+   * {settingsCollection}_public and the audit trail in {settingsCollection}_audit.
+   * Must match the engine's STARFISH_SETTINGS_COLLECTION and firestore.rules.
+   */
+  settingsCollection: string;
   /** Label for the environment the incidents come from. */
   environment: string;
   /** Region the watched Cloud Functions deploy to, for Cloud Logging links. */
@@ -125,6 +131,7 @@ export function bootstrapWebConfig(
         databaseId: env.VITE_STARFISH_DATABASE_ID || "starfish",
         incidentCollection: env.VITE_STARFISH_INCIDENT_COLLECTION || "incidents",
         usersCollection: env.VITE_STARFISH_USERS_COLLECTION || "starfish_users",
+    settingsCollection: env.VITE_STARFISH_SETTINGS_COLLECTION || "starfish_settings",
         environment: env.VITE_STARFISH_ENV || "dev",
         functionsRegion: env.VITE_FUNCTIONS_REGION || "us-central1",
         useEmulators: env.VITE_USE_EMULATORS === "1",

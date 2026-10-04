@@ -6,7 +6,12 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { Ctx, type StarfishAuthCtx } from "../auth/authCore";
 import type { IncidentRow } from "../lib/incidents";
 
-const mocks = vi.hoisted(() => ({ listIncidents: vi.fn(), applyAction: vi.fn() }));
+const mocks = vi.hoisted(() => ({
+  listIncidents: vi.fn(),
+  applyAction: vi.fn(),
+  env: { environment: "prod", ready: true },
+}));
+vi.mock("../lib/useSettings", () => ({ useEnvironment: () => mocks.env }));
 vi.mock("../lib/incidents", async (orig) => ({
   ...(await orig<typeof import("../lib/incidents")>()),
   listIncidents: mocks.listIncidents,
@@ -59,8 +64,23 @@ function renderPage(roles: StarfishAuthCtx["roles"] = ["operator"]) {
 describe("Incidents page", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.env = { environment: "prod", ready: true };
     mocks.listIncidents.mockResolvedValue({ rows, capped: false });
     mocks.applyAction.mockResolvedValue(undefined);
+  });
+
+  it("lists incidents under the environment label the settings resolved", async () => {
+    mocks.env = { environment: "staging-eu", ready: true };
+    renderPage();
+    await screen.findByText("mailDrainer");
+    expect(mocks.listIncidents).toHaveBeenCalledWith(24, "staging-eu");
+  });
+
+  it("queries nothing until the settings have settled, so the wrong label's incidents never flash", async () => {
+    mocks.env = { environment: "prod", ready: false };
+    renderPage();
+    expect(screen.queryByText("mailDrainer")).toBeNull();
+    expect(mocks.listIncidents).not.toHaveBeenCalled();
   });
 
   it("lists incidents with windowed counts, status, and a Logs link", async () => {

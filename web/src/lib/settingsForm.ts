@@ -1,0 +1,83 @@
+/**
+ * The Settings form's model, and its translation to and from a settings document.
+ *
+ * Every field is "use the engine's default" or an override. The browser can't
+ * see the engine's defaults (they are its environment variables), so the form
+ * never shows a default value, only whether one is being overridden. For the two
+ * list fields an override with nothing in it is meaningful ("suppress nothing"),
+ * which is why "default" and "empty" are separate states.
+ */
+import { SETTINGS_VERSION, validateSettings, type RuntimeSettings } from "../../../src/settingsSchema";
+import type { StoredSettings } from "./settingsWrite";
+
+export interface FieldState {
+  override: boolean;
+  text: string;
+}
+
+export const FIELD_NAMES = [
+  "watchedProjectId",
+  "environment",
+  "logResourceTypes",
+  "servicePatterns",
+  "ignoredMessages",
+] as const;
+export type FieldName = (typeof FIELD_NAMES)[number];
+export type FormState = Record<FieldName, FieldState>;
+
+const lines = (text: string): string[] =>
+  text
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => l !== "");
+
+/** The form for a stored document (null: nothing stored, every field on its default). */
+export function formFromStored(stored: StoredSettings | null): FormState {
+  const s = (stored ?? {}) as Record<string, unknown>;
+  const list = (v: unknown) => (Array.isArray(v) ? v.map(String).join("\n") : "");
+  const patterns = (v: unknown) =>
+    v && typeof v === "object"
+      ? Object.entries(v as Record<string, unknown>)
+          .map(([pattern, service]) => `${pattern}: ${String(service)}`)
+          .join("\n")
+      : "";
+  return {
+    watchedProjectId: { override: "watchedProjectId" in s, text: typeof s.watchedProjectId === "string" ? s.watchedProjectId : "" },
+    environment: { override: "environment" in s, text: typeof s.environment === "string" ? s.environment : "" },
+    logResourceTypes: { override: "logResourceTypes" in s, text: list(s.logResourceTypes) },
+    servicePatterns: { override: "servicePatterns" in s, text: patterns(s.servicePatterns) },
+    ignoredMessages: { override: "ignoredMessages" in s, text: list(s.ignoredMessages) },
+  };
+}
+
+export type FormResult = { ok: true; settings: RuntimeSettings } | { ok: false; problems: string[] };
+
+/**
+ * Turn the form into settings and check them with the same validator the engine
+ * runs on read. A problem names the field and the rule, never the value.
+ */
+export function settingsFromForm(form: FormState): FormResult {
+  const problems: string[] = [];
+  const raw: Record<string, unknown> = { version: SETTINGS_VERSION };
+
+  if (form.watchedProjectId.override) raw.watchedProjectId = form.watchedProjectId.text.trim();
+  if (form.environment.override) raw.environment = form.environment.text.trim();
+  if (form.logResourceTypes.override) raw.logResourceTypes = lines(form.logResourceTypes.text);
+  if (form.ignoredMessages.override) raw.ignoredMessages = lines(form.ignoredMessages.text);
+
+  if (form.servicePatterns.override) {
+    const patterns: Record<string, string> = {};
+    lines(form.servicePatterns.text).forEach((line, i) => {
+      const at = line.indexOf(":");
+      const pattern = at < 0 ? "" : line.slice(0, at).trim();
+      const service = at < 0 ? "" : line.slice(at + 1).trim();
+      if (pattern === "" || service === "") problems.push(`servicePatterns: line ${i + 1} must be "pattern: service"`);
+      else patterns[pattern] = service;
+    });
+    raw.servicePatterns = patterns;
+  }
+
+  const checked = validateSettings(raw);
+  if (!checked.ok) problems.push(...checked.problems);
+  return problems.length > 0 || !checked.ok ? { ok: false, problems } : { ok: true, settings: checked.settings };
+}

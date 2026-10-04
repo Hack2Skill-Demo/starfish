@@ -1,0 +1,133 @@
+/**
+ * The runtime settings schema: what an admin may override, and the check that a
+ * settings document is acceptable. Pure, with no Firestore or Node dependency, so
+ * the engine (which validates on read) and the operator UI (which validates
+ * before it saves) run the same code and can't disagree about what is valid.
+ */
+
+/** The settings an admin may override. Arrays and maps replace the default, never merge with it. */
+export interface RuntimeSettings {
+  watchedProjectId?: string;
+  environment?: string;
+  logResourceTypes?: string[];
+  servicePatterns?: Record<string, string>;
+  ignoredMessages?: string[];
+}
+
+/** The document's schema version. A document of another version is invalid to this engine. */
+export const SETTINGS_VERSION = 1;
+/** The admin-edited document, and the engine's copy of the last one that validated. */
+export const SETTINGS_DOC = "current";
+export const LAST_GOOD_DOC = "last_good";
+
+const SETTINGS_KEYS = [
+  "version",
+  "watchedProjectId",
+  "environment",
+  "logResourceTypes",
+  "servicePatterns",
+  "ignoredMessages",
+  // Written with the document by whoever edited it (the rules require them);
+  // carried, not used by the engine.
+  "revision",
+  "auditId",
+  "updatedAt",
+  "updatedBy",
+] as const;
+
+const MAX_LIST = 100;
+const PROJECT_ID = /^[a-z][a-z0-9-]{4,28}[a-z0-9]$/;
+const ENVIRONMENT = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+// Cloud Logging `resource.type` values: cloud_function, cloud_run_revision, ...
+const RESOURCE_TYPE = /^[a-z][a-z0-9_]{0,63}$/;
+// Control characters are rejected in every free-text value: the log filter is
+// built line by line, and its quoting does not escape a newline.
+// eslint-disable-next-line no-control-regex
+const CONTROL = /[\x00-\x1f\x7f]/;
+
+export type Validation = { ok: true; settings: RuntimeSettings } | { ok: false; problems: string[] };
+
+const isPlainObject = (v: unknown): v is Record<string, unknown> =>
+  typeof v === "object" && v !== null && !Array.isArray(v);
+
+/**
+ * Check a settings document read from Firestore. Problems name the field and the
+ * rule, never the value: a bad value may be a pasted credential, and these
+ * messages end up in logs and on the Settings page.
+ */
+export function validateSettings(raw: unknown): Validation {
+  if (!isPlainObject(raw)) return { ok: false, problems: ["settings: not an object"] };
+  const problems: string[] = [];
+  const settings: RuntimeSettings = {};
+
+  for (const key of Object.keys(raw)) {
+    if (!(SETTINGS_KEYS as readonly string[]).includes(key)) problems.push(`${key.slice(0, 40)}: unknown setting`);
+  }
+  if (raw.version !== SETTINGS_VERSION) problems.push(`version: must be ${SETTINGS_VERSION}`);
+
+  if (raw.watchedProjectId !== undefined) {
+    if (typeof raw.watchedProjectId === "string" && PROJECT_ID.test(raw.watchedProjectId)) {
+      settings.watchedProjectId = raw.watchedProjectId;
+    } else problems.push("watchedProjectId: not a GCP project id");
+  }
+
+  if (raw.environment !== undefined) {
+    if (typeof raw.environment === "string" && ENVIRONMENT.test(raw.environment)) {
+      settings.environment = raw.environment;
+    } else problems.push("environment: 1-64 letters, digits, '.', '_' or '-', starting with a letter or digit");
+  }
+
+  if (raw.logResourceTypes !== undefined) {
+    const list = raw.logResourceTypes;
+    if (!Array.isArray(list) || list.length < 1 || list.length > 20) {
+      problems.push("logResourceTypes: a list of 1-20 resource types");
+    } else if (!list.every((t) => typeof t === "string" && RESOURCE_TYPE.test(t))) {
+      problems.push("logResourceTypes: each entry must be a lowercase resource type such as cloud_function");
+    } else settings.logResourceTypes = [...(list as string[])];
+  }
+
+  if (raw.servicePatterns !== undefined) {
+    const map = raw.servicePatterns;
+    if (!isPlainObject(map) || Object.keys(map).length > MAX_LIST) {
+      problems.push(`servicePatterns: an object of at most ${MAX_LIST} pattern → service entries`);
+    } else {
+      const patterns: Record<string, string> = {};
+      let valid = true;
+      for (const [pattern, service] of Object.entries(map)) {
+        const key = pattern.trim().toLowerCase();
+        // `__proto__` can't be an own key of a plain object: assigning it would be silently dropped.
+        if (key === "" || key === "__proto__" || key.length > 100 || CONTROL.test(key)) valid = false;
+        else if (typeof service !== "string") valid = false;
+        else if (service.trim() === "" || service.length > 100 || CONTROL.test(service)) valid = false;
+        else patterns[key] = service.trim();
+      }
+      if (valid) settings.servicePatterns = patterns;
+      else problems.push("servicePatterns: patterns and services must be 1-100 characters, no control characters");
+    }
+  }
+
+  if (raw.ignoredMessages !== undefined) {
+    const list = raw.ignoredMessages;
+    if (!Array.isArray(list) || list.length > MAX_LIST) {
+      problems.push(`ignoredMessages: a list of at most ${MAX_LIST} message fragments`);
+    } else if (!list.every((m) => typeof m === "string" && m.length >= 1 && m.length <= 300 && !CONTROL.test(m))) {
+      problems.push("ignoredMessages: each entry must be 1-300 characters, no control characters");
+    } else settings.ignoredMessages = [...(list as string[])];
+  }
+
+  if (raw.revision !== undefined && !(Number.isInteger(raw.revision) && (raw.revision as number) >= 0)) {
+    problems.push("revision: a non-negative integer");
+  }
+  if (raw.auditId !== undefined && (typeof raw.auditId !== "string" || raw.auditId.length > 64)) {
+    problems.push("auditId: a string of at most 64 characters");
+  }
+  if (raw.updatedBy !== undefined && (typeof raw.updatedBy !== "string" || raw.updatedBy.length > 128)) {
+    problems.push("updatedBy: a string of at most 128 characters");
+  }
+  if (raw.updatedAt !== undefined && typeof (raw.updatedAt as { toMillis?: unknown } | null)?.toMillis !== "function") {
+    problems.push("updatedAt: not a timestamp");
+  }
+
+  return problems.length > 0 ? { ok: false, problems } : { ok: true, settings };
+}
+
