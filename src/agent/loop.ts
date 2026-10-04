@@ -40,6 +40,7 @@ import {
   renewLease,
   type CycleConfig,
   type CycleKey,
+  type CyclePath,
   type CycleState,
   type RunEvent,
 } from "./cycle.js";
@@ -108,8 +109,8 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
     const r = await recordEvent(db, cfg, id, owner, deps.now(), event);
     if (!r.ok) throw new LeaseLost();
   };
-  const finish = async (state: Exclude<CycleState, "running">, outcome: string): Promise<LoopResult> => {
-    const r = await finishCycle(db, cfg, id, owner, deps.now(), state, outcome);
+  const finish = async (state: Exclude<CycleState, "running">, outcome: string, path?: CyclePath): Promise<LoopResult> => {
+    const r = await finishCycle(db, cfg, id, owner, deps.now(), state, outcome, path);
     if (!r.ok) throw new LeaseLost();
     return { kind: "finished", state, outcome };
   };
@@ -135,20 +136,20 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
       const why = await stopReason();
       if (why === null) return null;
       await note({ stage: "cycle", type: "stopped", summary: `Stopped before acting: ${why}`, data: { rule: why } });
-      return finish("declined", why);
+      return finish("declined", why, "decline");
     };
 
     let modelCalls = 0;
     const overBudget = async (): Promise<LoopResult | null> => {
       if (modelCalls < cfg.modelCallBudget) return null;
       await note({ stage: "cycle", type: "budget", summary: "Model-call budget used up", data: { budget: cfg.modelCallBudget } });
-      return finish("failed", "budget-exceeded");
+      return finish("failed", "budget-exceeded", "failed");
     };
 
     const loaded = await deps.load(key.incidentId);
     if (!loaded) {
       await note({ stage: "cycle", type: "stopped", summary: "The incident could not be loaded", data: { rule: "incident-gone" } });
-      return await finish("failed", "incident-gone");
+      return await finish("failed", "incident-gone", "failed");
     }
 
     // ---- triage ---------------------------------------------------------------------------------
@@ -156,13 +157,19 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
     if (stop) return stop;
     modelCalls += 1;
     const triage = await triageIncident(loaded.subject, deps.ask);
-    await note({ stage: "triage", type: "decision", summary: triage.reason, data: { decision: triage.decision, rule: triage.rule } });
+    await note({
+      stage: "triage",
+      type: "decision",
+      summary: triage.reason,
+      data: { decision: triage.decision, rule: triage.rule },
+      record: { decision: triage.decision, rule: triage.rule, reason: triage.reason, suspectedCause: triage.suspectedCause ?? null },
+    });
     switch (triage.decision) {
       case "skip":
       case "decline":
-        return await finish("declined", triage.rule);
+        return await finish("declined", triage.rule, "decline");
       case "notify":
-        return await finish("waiting-human", `notify:${triage.rule}`);
+        return await finish("waiting-human", `notify:${triage.rule}`, "notify");
       case "defer":
       case "error":
         return await release(triage.rule);
@@ -178,9 +185,15 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
       if (stop) return stop;
       modelCalls += 1;
       const fix = await proposeFix({ subject: loaded.subject, files: loaded.files, ...(feedback && { feedback }) }, deps.ask);
-      await note({ stage: "fix", type: fix.outcome, summary: fix.rootCause, data: { rule: fix.rule, testAdded: fix.testAdded ?? null } });
+      await note({
+        stage: "fix",
+        type: fix.outcome,
+        summary: fix.rootCause,
+        data: { rule: fix.rule, testAdded: fix.testAdded ?? null },
+        record: { outcome: fix.outcome, rule: fix.rule, rootCause: fix.rootCause, testAdded: fix.testAdded ?? null, risk: fix.risk ?? null, revisions },
+      });
       if (fix.outcome === "error") return await release(fix.rule);
-      if (fix.outcome === "declined" || fix.patch === undefined) return await finish("waiting-human", fix.rule);
+      if (fix.outcome === "declined" || fix.patch === undefined) return await finish("waiting-human", fix.rule, "human");
 
       const verified = await verifyPatch({ sourceDir: loaded.sourceDir, patch: fix.patch, baseRevision: loaded.baseRevision, config: cfg });
       await note({
@@ -188,6 +201,15 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
         type: verified.status,
         summary: verified.reason,
         data: { rule: verified.rule, patchSha256: verified.patchSha256, files: verified.changedFiles.length, exitCode: verified.exitCode ?? null },
+        record: {
+          status: verified.status,
+          rule: verified.rule,
+          patchSha256: verified.patchSha256,
+          baseRevision: loaded.baseRevision,
+          files: verified.changedFiles.length,
+          exitCode: verified.exitCode ?? null,
+          durationMs: verified.durationMs,
+        },
       });
       if (verified.status !== "passed") {
         if (revisions < MAX_REVISIONS) {
@@ -195,7 +217,7 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
           feedback = { previousPatchSha256: verified.patchSha256, verifyOutput: verified.output || verified.reason };
           continue;
         }
-        return await finish("waiting-human", `verify-${verified.rule}`);
+        return await finish("waiting-human", `verify-${verified.rule}`, "human");
       }
 
       let review: { verdict: ReviewVerdict; attacks: Attack[] } | undefined;
@@ -212,6 +234,15 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
           type: reviewed.verdict ?? "error",
           summary: reviewed.reason ?? `${reviewed.attacks?.length ?? 0} attacks tried`,
           data: { rule: reviewed.rule, attacks: reviewed.attacks?.length ?? 0, broken: reviewed.attacks?.filter((a) => a.outcome === "broken").length ?? 0 },
+          record: {
+            verdict: reviewed.verdict ?? null,
+            rule: reviewed.rule,
+            attacks: reviewed.attacks?.length ?? 0,
+            held: reviewed.attacks?.filter((a) => a.outcome === "held").length ?? 0,
+            flagged: reviewed.attacks?.filter((a) => a.outcome === "flagged").length ?? 0,
+            broken: reviewed.attacks?.filter((a) => a.outcome === "broken").length ?? 0,
+            patchSha256: verified.patchSha256,
+          },
         });
         if (reviewed.verdict === undefined) return await release(reviewed.rule);
         if (reviewed.verdict === "block") {
@@ -221,15 +252,21 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
             feedback = { previousPatchSha256: verified.patchSha256, verifyOutput: `A reviewer broke this patch:\n${broken.join("\n")}` };
             continue;
           }
-          return await finish("waiting-human", "review-blocked");
+          return await finish("waiting-human", "review-blocked", "human");
         }
         review = { verdict: reviewed.verdict, attacks: reviewed.attacks ?? [] };
       }
 
       // ---- the pull request ----------------------------------------------------------------------
       if (cfg.dryRun || !deps.openPullRequest) {
-        await note({ stage: "pr", type: "dry-run", summary: "Patch verified; nothing opened (dry run)", data: { patchSha256: verified.patchSha256 } });
-        return await finish("waiting-human", "dry-run");
+        await note({
+          stage: "pr",
+          type: "dry-run",
+          summary: "Patch verified; nothing opened (dry run)",
+          data: { patchSha256: verified.patchSha256 },
+          record: { opened: false, reason: "dry-run", patchSha256: verified.patchSha256 },
+        });
+        return await finish("waiting-human", "dry-run", "draft");
       }
       stop = await halted();
       if (stop) return stop;
@@ -247,8 +284,14 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
         verify: { status: verified.status, rule: verified.rule, changedFiles: verified.changedFiles, output: verified.output },
         ...(review && { review }),
       });
-      await note({ stage: "pr", type: "opened", summary: "Pull request opened", data: { number: pr.number, patchSha256: verified.patchSha256 } });
-      return await finish("done", "pr-opened");
+      await note({
+        stage: "pr",
+        type: "opened",
+        summary: "Pull request opened",
+        data: { number: pr.number, patchSha256: verified.patchSha256 },
+        record: { opened: true, number: pr.number, url: pr.url, patchSha256: verified.patchSha256 },
+      });
+      return await finish("done", "pr-opened", "pr");
     }
   } catch (err) {
     if (err instanceof LeaseLost) return { kind: "lease-lost" };

@@ -222,6 +222,59 @@ describe("run events", () => {
   });
 });
 
+describe("the run record on the cycle", () => {
+  const rec = (stage: string, record: Record<string, string | number | boolean | null>) => ({ stage, type: "x", summary: "s", record });
+
+  it("keeps each stage's part under summary.<stage>, replacing that stage's earlier entry", async () => {
+    await acquireLease(db, cfg, key, "a", t0);
+    await recordEvent(db, cfg, "inc1_r0", "a", at(1), rec("triage", { decision: "act", rule: "model-act" }));
+    await recordEvent(db, cfg, "inc1_r0", "a", at(2), rec("verify", { status: "failed", files: 1 }));
+    await recordEvent(db, cfg, "inc1_r0", "a", at(3), rec("verify", { status: "passed", files: 1 }));
+    expect((await cycle()).summary).toEqual({ triage: { decision: "act", rule: "model-act" }, verify: { status: "passed", files: 1 } });
+  });
+
+  it("has no entry for a stage that did not run, rather than a faked one", async () => {
+    await acquireLease(db, cfg, key, "a", t0);
+    await recordEvent(db, cfg, "inc1_r0", "a", at(1), rec("triage", { decision: "decline" }));
+    expect(Object.keys((await cycle()).summary)).toEqual(["triage"]);
+  });
+
+  it("is written only by the lease holder, in the same transaction as the event", async () => {
+    await acquireLease(db, cfg, key, "a", t0);
+    await acquireLease(db, cfg, key, "b", at(400));
+    expect(await recordEvent(db, cfg, "inc1_r0", "a", at(401), rec("triage", { decision: "act" }))).toEqual({ ok: false, reason: "lease-lost" });
+    expect((await cycle()).summary).toBeUndefined();
+    expect(await events()).toHaveLength(0);
+  });
+
+  it("is redacted and bounded like the event, and drops sensitive keys", async () => {
+    await acquireLease(db, cfg, key, "a", t0);
+    await recordEvent(db, cfg, "inc1_r0", "a", at(1), rec("fix", { rootCause: `leak ${SEEDED_SECRETS.github} ` + "x".repeat(2000), apiToken: "drop-me" }));
+    const stored = (await cycle()).summary.fix;
+    expect(JSON.stringify(stored)).not.toContain(SEEDED_SECRETS.github);
+    expect(JSON.stringify(stored)).not.toContain("drop-me");
+    expect(stored.rootCause.length).toBeLessThanOrEqual(300);
+  });
+
+  it("is not stored for a stage name that is not a plain word", async () => {
+    await acquireLease(db, cfg, key, "a", t0);
+    await recordEvent(db, cfg, "inc1_r0", "a", at(1), rec("a.b/c", { x: 1 }));
+    expect((await cycle()).summary).toBeUndefined();
+  });
+
+  it("records which way the cycle went when it finishes, and for the two failures the lease can cause", async () => {
+    await acquireLease(db, cfg, key, "a", t0);
+    await finishCycle(db, cfg, "inc1_r0", "a", at(1), "done", "pr-opened", "pr");
+    expect(await cycle()).toMatchObject({ state: "done", path: "pr" });
+
+    cfg = { ...cfg, cycleDeadlineMinutes: 10 };
+    const k2 = { ...key, incidentId: "inc2" };
+    await acquireLease(db, cfg, k2, "a", t0);
+    await acquireLease(db, cfg, k2, "b", at(601));
+    expect(await cycle(k2)).toMatchObject({ state: "failed", outcome: "deadline-passed", path: "failed" });
+  });
+});
+
 describe("sanitizeEvent", () => {
   it("drops sensitive-looking keys, odd keys and nested values, and bounds everything", () => {
     const wide = Object.fromEntries(Array.from({ length: 50 }, (_, i) => [`k${i}`, i]));

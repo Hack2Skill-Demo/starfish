@@ -185,6 +185,55 @@ describe("runCycle: the whole way through", () => {
   });
 });
 
+describe("runCycle: the run record on the cycle", () => {
+  it("holds each stage that ran and the way it went, so a reader can tell the outcomes apart", async () => {
+    const model = scripted({ triage: [act], fix: [fixOf(GOOD_PATCH, { testAdded: true })], review: [held] });
+    await runCycle(deps(model), key);
+    const doc = await cycleDoc();
+    expect(doc).toMatchObject({ state: "done", outcome: "pr-opened", path: "pr" });
+    expect(Object.keys(doc.summary).sort()).toEqual(["fix", "pr", "review", "triage", "verify"]);
+    expect(doc.summary.triage).toMatchObject({ decision: "act", rule: "model-act", reason: expect.any(String) });
+    expect(doc.summary.fix).toMatchObject({ outcome: "proposed", testAdded: true, revisions: 0 });
+    expect(doc.summary.verify).toMatchObject({ status: "passed", rule: "command-passed", baseRevision: "rev1", files: 1, exitCode: 0 });
+    expect(doc.summary.review).toMatchObject({ verdict: "approve", attacks: 1, held: 1, broken: 0 });
+    expect(doc.summary.pr).toMatchObject({ opened: true, number: 7, url: "https://example.test/pull/7" });
+    expect(doc.summary.verify.patchSha256).toBe(doc.summary.pr.patchSha256);
+  });
+
+  it.each([
+    ["declined", { triage: [{ decision: "decline", reasoning: "noise", suspectedCause: null }] }, {}, { state: "declined", path: "decline" }, ["triage"]],
+    ["notified", { triage: [{ decision: "notify", reasoning: "api off", suspectedCause: null }] }, {}, { state: "waiting-human", path: "notify" }, ["triage"]],
+    ["handed to a person by the fixer", { triage: [act], fix: [fixOf("", { rootCause: "no context" })] }, {}, { state: "waiting-human", path: "human", outcome: "fixer-declined" }, ["fix", "triage"]],
+    ["a draft in dry run", { triage: [act], fix: [fixOf(GOOD_PATCH)], review: [held] }, { dryRun: true }, { state: "waiting-human", path: "draft", outcome: "dry-run" }, ["fix", "pr", "review", "triage", "verify"]],
+    ["blocked by review", { triage: [act], fix: [fixOf(GOOD_PATCH)], review: [broken] }, {}, { state: "waiting-human", path: "human", outcome: "review-blocked" }, ["fix", "review", "triage", "verify"]],
+    ["failed on budget", { triage: [act], fix: [fixOf(GOOD_PATCH)], review: [held] }, { modelCallBudget: 1 }, { state: "failed", path: "failed", outcome: "budget-exceeded" }, ["triage"]],
+  ])("is %s", async (_name, answers, over, expected, stages) => {
+    cfgOver = over as typeof cfgOver;
+    await runCycle(deps(scripted(answers as Parameters<typeof scripted>[0])), key);
+    const doc = await cycleDoc();
+    expect(doc).toMatchObject(expected);
+    // Only the stages that ran are in the record: nothing faked for the ones that did not.
+    expect(Object.keys(doc.summary).sort()).toEqual(stages);
+  });
+
+  it("shows the final verify result when the first patch was rejected and the second passed", async () => {
+    await runCycle(deps(scripted({ triage: [act], fix: [fixOf(BAD_PATCH), fixOf(GOOD_PATCH)], review: [held] })), key);
+    const doc = await cycleDoc();
+    expect(doc.summary.verify.status).toBe("passed");
+    expect(doc.summary.fix.revisions).toBe(1);
+  });
+
+  it("tells a timed-out cycle from a declined one", async () => {
+    cfgOver = { cycleDeadlineMinutes: 10 };
+    const d = deps(scripted({}), { load: async () => null });
+    // The cycle begins, then the clock passes its deadline before anyone picks it up again.
+    await acquireLease(db, d.config, key, "worker-b", clock);
+    clock = new Date(t0.getTime() + 601_000);
+    expect(await runCycle(d, key)).toEqual({ kind: "not-acquired", reason: "deadline-passed" });
+    expect(await cycleDoc()).toMatchObject({ state: "failed", outcome: "deadline-passed", path: "failed" });
+  });
+});
+
 describe("runCycle: what triage decides", () => {
   it("declines noise without asking the model for a fix", async () => {
     const noisy = { ...incident, logCounterCheck: { window: "24h", count: 0 } };
