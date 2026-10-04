@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Scenario lab</title>
+<!-- Designed, not built: every value on this page is illustrative. See docs/design/demo-app.md. -->
+<link rel="preconnect" href="https://fonts.googleapis.com"><link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+:root{--ink:#18181b;--muted:#52525b;--line:#e4e4e7;--bg:#fafafa;--card:#fff;--brand:#b63512;--ok-bg:#d3f8e3;--ok:#09714d;--bad-bg:#fee4e2;--bad:#b42318;--warn-bg:#fffaeb;--warn:#92390c}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:"Plus Jakarta Sans",ui-sans-serif,system-ui,sans-serif;-webkit-font-smoothing:antialiased}
+a{color:var(--brand)}
+main{max-width:1040px;margin:0 auto;padding:32px 16px 64px;display:flex;flex-direction:column;gap:24px}
+h1{margin:0;font-family:"Bricolage Grotesque",sans-serif;font-size:28px;letter-spacing:-.02em}
+h2{margin:0;font-size:13px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+p{margin:0;line-height:1.55;color:var(--muted);font-size:14px}
+code{font-size:12.5px}
+.note{border:1px solid #ffdf88;background:var(--warn-bg);color:var(--warn);border-radius:10px;padding:12px 14px;font-size:13px}
+.card{border:1px solid var(--line);background:var(--card);border-radius:12px;padding:18px;display:flex;flex-direction:column;gap:10px}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:12px}
+.pill{align-self:flex-start;display:inline-block;border-radius:999px;padding:2px 10px;font-size:12px;font-weight:700}
+.ok{background:var(--ok-bg);color:var(--ok)}.bad{background:var(--bad-bg);color:var(--bad)}.neutral{background:#f4f4f5;color:#3f3f46}
+button,.btn{min-height:44px;border:0;border-radius:8px;background:var(--brand);color:#fff;font:600 14px inherit;font-family:inherit;padding:0 16px;display:inline-flex;align-items:center;cursor:pointer}
+.btn{text-decoration:none}.btn.ghost{background:transparent;color:var(--ink);border:1px solid var(--line)}
+.row{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
+input{height:44px;border:1px solid var(--line);border-radius:8px;padding:0 12px;font:14px inherit;font-family:inherit;width:100%}
+.dot{width:10px;height:10px;border-radius:50%;display:inline-block}
+.dot.g{background:#12b76a}.dot.r{background:#d92d20}
+table{width:100%;border-collapse:collapse;font-size:14px}th,td{text-align:left;padding:10px 8px;border-top:1px solid var(--line);vertical-align:top}th{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;border-top:0}
+</style>
+</head>
+<body>
+<main>
+  <header class="row">
+    <div><h1>Scenario lab</h1><p>A page in the shop. It loads the scenario list from the private controller and sends back only a scenario id.</p></div>
+    <a class="btn ghost" href="Shop.html">Back to the shop</a>
+  </header>
+  <p class="note"><strong>Designed, not built.</strong> Illustrative values. Reset is not on this page: it is a private script the team runs (<code>pnpm reset &lt;ID&gt;</code>). See <code>docs/design/demo-app.md</code>.</p>
+
+  <section class="card" aria-labelledby="access">
+    <h2 id="access">Access code</h2>
+    <p>The whole demo app sits behind a code, entered once on its first screen. Codes are issued by the team, expire, can be revoked and are rate-limited.</p>
+    <div class="row" style="align-items:flex-end"><div style="flex:1;min-width:220px"><label for="code" style="display:block;font-size:14px;font-weight:500;margin-bottom:6px">Access code</label><input id="code" value="••••-••••-••••" aria-describedby="exp"></div><a class="btn" href="#core">Enter</a></div>
+    <p id="exp">Code accepted · expires in 47 hours.</p>
+  </section>
+
+  <section id="core" class="card" aria-labelledby="coreh">
+    <div class="row"><h2 id="coreh">The live-demo core</h2><span class="pill neutral">One cycle at a time</span></div>
+    <div class="grid">
+      <div class="card"><strong>Missing index</strong><p>Customers start opening "My recent orders".</p><a class="btn" href="LiveRun.html">Run</a></div>
+      <div class="card"><strong>Checkout without coupon</strong><p>Customers start checking out without a coupon.</p><a class="btn" href="LiveRun-code.html">Run</a></div>
+      <div class="card"><strong>API disabled</strong><p>The one API invoices use is disabled.</p><a class="btn" href="LiveRun-notify.html">Run</a></div>
+      <div class="card"><strong>Slow upstream</strong><p>A one-shot slow marker, then an export run.</p><a class="btn" href="LiveRun-decline.html">Run</a></div>
+    </div>
+  </section>
+
+  <section class="card" aria-labelledby="cycle">
+    <div class="row"><h2 id="cycle">Active cycle</h2><span class="pill ok">Active</span></div>
+    <div class="row"><div><strong>Missing index</strong> · <code>IDX-01</code> · cycle <code>c-7f3a</code></div><div>Elapsed 3 min 12 s · deadline in 26 min 48 s</div></div>
+    <p>Errors in the last minute: <strong style="color:var(--ink)">2</strong>. <a href="LiveRun.html">Open Starfish's Live runs</a></p>
+    <div class="row" style="justify-content:flex-start;gap:20px" aria-label="Health strip">
+      <span><span class="dot r" aria-hidden="true"></span> Recent orders: failing (0% ok, 5 min)</span>
+      <span><span class="dot g" aria-hidden="true"></span> Checkout: healthy</span>
+      <span><span class="dot g" aria-hidden="true"></span> Invoices: healthy</span>
+      <span><span class="dot g" aria-hidden="true"></span> Exports: healthy</span>
+    </div>
+    <p>The strip comes from the app's own synthetic calls, not from Starfish, so it is an independent witness that a heal is real.</p>
+  </section>
+
+  <section class="card" aria-labelledby="catalog">
+    <h2 id="catalog">Catalog · 84 scenarios</h2>
+    <table>
+      <thead><tr><th>Scenario</th><th>Expected outcome</th><th>Status</th><th>Last result</th><th></th></tr></thead>
+      <tbody>
+        <tr><td><code>IDX-01</code> Missing index</td><td>Index created, evidence PR waits for a human</td><td><span class="pill neutral">Designed</span></td><td><span class="pill neutral">Active</span></td><td></td></tr>
+        <tr><td><code>CODE-01</code> Checkout without coupon</td><td>Fix PR, merge on green, fast-revert armed</td><td><span class="pill neutral">Designed</span></td><td><span class="pill neutral">Waiting on a stage</span></td><td></td></tr>
+        <tr><td><code>ING-02</code> Duplicate burst</td><td>One incident, count equals the raw recount</td><td><span class="pill ok">Today</span></td><td><span class="pill ok">Pass</span></td><td><button type="button" class="btn ghost" disabled>Run (a cycle is active)</button></td></tr>
+        <tr><td><code>ESC-02</code> Unanswered page</td><td>Escalation call after the timeout</td><td><span class="pill neutral">Gap</span></td><td><span class="pill neutral">Not run</span></td><td><button type="button" class="btn ghost" disabled>Run (a cycle is active)</button></td></tr>
+      </tbody>
+    </table>
+  </section>
+</main>
+</body>
+</html>
