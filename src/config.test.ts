@@ -191,3 +191,29 @@ describe("loadConfig: admin actions", () => {
   });
 });
 
+describe("loadConfig: self-exclusion (#32)", () => {
+  beforeEach(() => {
+    vi.stubEnv("STARFISH_EXCLUDED_SERVICES", "");
+    vi.stubEnv("GOOGLE_CLOUD_PROJECT", "home-project");
+  });
+  afterEach(() => vi.unstubAllEnvs());
+
+  it("excludes Starfish's own service by default", () => {
+    // An empty stub is how these tests say "unset": the loader treats an empty value as unset for most settings.
+    vi.unstubAllEnvs();
+    vi.stubEnv("GOOGLE_CLOUD_PROJECT", "home-project");
+    delete process.env.STARFISH_EXCLUDED_SERVICES;
+    expect(loadConfig().excludedServices).toEqual(["starfish"]);
+  });
+
+  it("reads a comma-separated list, trimmed", () => {
+    vi.stubEnv("STARFISH_EXCLUDED_SERVICES", " starfish-ingest , Starfish_Agent ,");
+    expect(loadConfig().excludedServices).toEqual(["starfish-ingest", "Starfish_Agent"]);
+  });
+
+  it("set to empty excludes nothing, on purpose", () => {
+    vi.stubEnv("STARFISH_EXCLUDED_SERVICES", "");
+    expect(loadConfig().excludedServices).toEqual([]);
+  });
+});
+

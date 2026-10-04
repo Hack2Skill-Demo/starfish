@@ -85,6 +85,23 @@ describe("aggregateErrors", () => {
     expect(stored).not.toContain("p4ss");
   });
 
+  it("never turns Starfish's own errors into incidents (#32)", async () => {
+    entries.splice(
+      0,
+      entries.length,
+      { metadata: { timestamp: "2026-09-21T00:00:00.000Z", resource: { labels: { service_name: "starfish" } } }, data: "the engine itself failed" },
+      { metadata: { timestamp: "2026-09-21T00:00:00.000Z", resource: { labels: { function_name: "orders-create" } } }, data: "orders failed" }
+    );
+    logging.filters.length = 0;
+    const { db, created } = fakeDb();
+
+    const result = await aggregateErrors(db, { ...config, excludedServices: ["starfish"] }, window);
+
+    expect(created.map((c) => c.errorMessage)).toEqual(["orders failed"]);
+    expect(result.incidentsCreated).toBe(1);
+    expect(logging.filters[0]).toContain('NOT resource.labels.service_name="starfish"');
+  });
+
   it("settles every upsert before reporting a failed one", async () => {
     entries.splice(0, entries.length, entry("first failure"), entry("second failure"), entry("third failure"));
     const { db, created } = fakeDb("second failure");

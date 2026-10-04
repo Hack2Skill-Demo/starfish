@@ -82,7 +82,7 @@ export async function aggregateErrors(
   const grouped = new Map<string, { input: IncidentInput }>();
 
   for (const entry of entries) {
-    const parsed = parseLogEntry(entry as RawLogEntry, config.ignoredMessages);
+    const parsed = parseLogEntry(entry as RawLogEntry, config.ignoredMessages, config.excludedServices);
     if (!parsed) continue;
 
     // Group on the SANITIZED message — the one the store fingerprints and keeps.
