@@ -7,8 +7,8 @@ let client: GoogleGenAI | undefined;
 /** Created on first use, so importing this module never throws on missing config. */
 function getClient(): GoogleGenAI {
   if (!client) {
-    const { projectId, location } = loadConfig();
-    client = new GoogleGenAI({ vertexai: true, project: projectId, location });
+    const { vertexProjectId, location } = loadConfig();
+    client = new GoogleGenAI({ vertexai: true, project: vertexProjectId, location });
   }
   return client;
 }

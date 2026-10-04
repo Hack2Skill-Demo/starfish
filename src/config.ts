@@ -19,6 +19,12 @@ export interface StarfishConfig {
    * `environment` must change with it, or two projects' incidents share a label.
    */
   watchedProjectId: string;
+  /**
+   * GCP project Gemini runs in, and is billed to. Defaults to `projectId`; set it to run Gemini
+   * in a different project from the one Starfish's store lives in. It is the project that needs
+   * the Vertex AI API enabled and the caller's `roles/aiplatform.user`.
+   */
+  vertexProjectId: string;
   /** Vertex AI region. */
   location: string;
   /** Gemini model used for triage, fix drafting and adversarial review. */
@@ -97,6 +103,7 @@ export function loadConfig(): StarfishConfig {
   return {
     projectId,
     watchedProjectId: process.env.STARFISH_WATCHED_PROJECT_ID || projectId,
+    vertexProjectId: process.env.STARFISH_VERTEX_PROJECT_ID || projectId,
     location: process.env.GOOGLE_CLOUD_LOCATION ?? "us-central1",
     model: process.env.STARFISH_MODEL ?? "gemini-3.1-pro-preview",
     environment: process.env.STARFISH_ENV ?? "dev",

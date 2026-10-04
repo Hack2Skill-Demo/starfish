@@ -22,6 +22,7 @@ const { DEFAULT_IGNORED_MESSAGES, DEFAULT_LOG_RESOURCE_TYPES } = await import(".
 const config = {
   projectId: "p",
   watchedProjectId: "p",
+  vertexProjectId: "p",
   settingsCollection: "starfish_settings",
   location: "l",
   model: "m",
