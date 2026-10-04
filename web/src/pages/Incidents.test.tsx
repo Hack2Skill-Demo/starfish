@@ -9,7 +9,7 @@ import type { IncidentRow } from "../lib/incidents";
 const mocks = vi.hoisted(() => ({
   listIncidents: vi.fn(),
   applyAction: vi.fn(),
-  env: { environment: "prod", ready: true },
+  env: { environment: "prod", ready: true, settingsUnavailable: false },
 }));
 vi.mock("../lib/useSettings", () => ({ useEnvironment: () => mocks.env }));
 vi.mock("../lib/incidents", async (orig) => ({
@@ -64,20 +64,36 @@ function renderPage(roles: StarfishAuthCtx["roles"] = ["operator"]) {
 describe("Incidents page", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mocks.env = { environment: "prod", ready: true };
+    mocks.env = { environment: "prod", ready: true, settingsUnavailable: false };
     mocks.listIncidents.mockResolvedValue({ rows, capped: false });
     mocks.applyAction.mockResolvedValue(undefined);
   });
 
   it("lists incidents under the environment label the settings resolved", async () => {
-    mocks.env = { environment: "staging-eu", ready: true };
+    mocks.env = { environment: "staging-eu", ready: true, settingsUnavailable: false };
     renderPage();
     await screen.findByText("mailDrainer");
     expect(mocks.listIncidents).toHaveBeenCalledWith(24, "staging-eu");
   });
 
+  it("says so when the settings couldn't be read, instead of showing a possibly wrong list as a quiet day (#43)", async () => {
+    mocks.env = { environment: "build-label", ready: true, settingsUnavailable: true };
+    mocks.listIncidents.mockResolvedValue({ rows: [], capped: false });
+    renderPage();
+    const notice = await screen.findByRole("status");
+    expect(notice).toHaveTextContent("Couldn't read the runtime settings");
+    expect(notice).toHaveTextContent("build-label");
+    expect(await screen.findByText("No incidents")).toBeInTheDocument();
+  });
+
+  it("shows no such notice when the settings simply don't exist", async () => {
+    renderPage();
+    await screen.findByText("mailDrainer");
+    expect(screen.queryByRole("status")).toBeNull();
+  });
+
   it("queries nothing until the settings have settled, so the wrong label's incidents never flash", async () => {
-    mocks.env = { environment: "prod", ready: false };
+    mocks.env = { environment: "prod", ready: false, settingsUnavailable: false };
     renderPage();
     expect(screen.queryByText("mailDrainer")).toBeNull();
     expect(mocks.listIncidents).not.toHaveBeenCalled();
