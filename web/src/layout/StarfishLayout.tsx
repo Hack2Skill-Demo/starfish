@@ -10,7 +10,7 @@ import { Outlet, NavLink, Link, useLocation, useNavigate } from "react-router";
 import { Menu, X, LogOut, ChevronLeft, ChevronRight, Sun, Moon, Monitor } from "lucide-react";
 import { useAuth } from "../auth/authCore";
 import { useTheme } from "../theme/useTheme";
-import { webConfig } from "../lib/config";
+import { useEnvironment } from "../lib/useSettings";
 import { StarfishLogo } from "./StarfishLogo";
 import { menuItems, visibleMenuItems, activeMenuItem } from "./menuConfig";
 
@@ -27,6 +27,7 @@ function readCollapsed(): boolean {
 
 export function StarfishLayout() {
   const { user, roles, role, signOut } = useAuth();
+  const { environment } = useEnvironment();
   const { themePreference, toggleTheme } = useTheme();
   const location = useLocation();
   const navigate = useNavigate();
@@ -114,7 +115,7 @@ export function StarfishLayout() {
             <div className="flex min-w-0 items-center gap-2">
               <span className="font-display text-xl font-bold tracking-tight text-white">Starfish</span>
               <span className="rounded-md bg-white/10 px-1.5 py-0.5 font-mono text-[10px] font-semibold uppercase leading-none tracking-wide text-gray-300">
-                {webConfig().environment}
+                {environment}
               </span>
             </div>
             <button

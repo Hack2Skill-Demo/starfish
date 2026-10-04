@@ -11,6 +11,8 @@ import { Bot, GitBranch, MessageSquare, SlidersHorizontal, type LucideIcon } fro
 import PageMeta from "../components/PageMeta";
 import { Badge } from "../components/ui/Badge";
 import { webConfig } from "../lib/config";
+import { useEnvironment } from "../lib/useSettings";
+import { SettingsEditor } from "./SettingsEditor";
 
 type ConnectionState = "engine" | "planned";
 
@@ -61,6 +63,7 @@ const STATE_BADGE: Record<ConnectionState, { tone: "success" | "neutral"; label:
 
 export default function Settings() {
   const cfg = webConfig();
+  const { environment } = useEnvironment();
   return (
     <>
       <PageMeta title="Settings | Starfish" description="Connections and configuration" />
@@ -68,7 +71,7 @@ export default function Settings() {
         <div>
           <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Settings</h1>
           <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
-            Connections for project <span className="font-mono">{cfg.firebase.projectId}</span> ({cfg.environment})
+            Connections for project <span className="font-mono">{cfg.firebase.projectId}</span> ({environment})
           </p>
         </div>
         <ul className="grid gap-4 md:grid-cols-2">
@@ -91,6 +94,7 @@ export default function Settings() {
             </li>
           ))}
         </ul>
+        <SettingsEditor />
       </div>
     </>
   );

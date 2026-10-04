@@ -36,6 +36,7 @@ import { useAuth } from "../auth/authCore";
 import { asFilterValue } from "../lib/urlFilters";
 import { formatDateTime, formatRelativeTime } from "../lib/formatters";
 import { buildCloudLoggingUrl } from "../lib/cloudLoggingUrl";
+import { useEnvironment } from "../lib/useSettings";
 import {
   INCIDENT_STATUSES,
   SCAN_LIMIT,
@@ -120,10 +121,16 @@ export default function Incidents() {
   const [pendingId, setPendingId] = useState<string | null>(null);
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
 
-  const { data, isLoading, isError, refetch, isFetching } = useQuery({
-    queryKey: ["incidents", windowHours],
-    queryFn: () => listIncidents(windowHours),
+  // Incidents are filtered by the environment label, which a settings document can
+  // override; wait for that to settle so the list never flashes the wrong label's.
+  const { environment, ready } = useEnvironment();
+  const query = useQuery({
+    queryKey: ["incidents", environment, windowHours],
+    queryFn: () => listIncidents(windowHours, environment),
+    enabled: ready,
   });
+  const { data, isError, refetch, isFetching } = query;
+  const isLoading = query.isLoading || !ready;
   const mutation = useMutation({
     mutationFn: ({ row, action }: { row: IncidentRow; action: IncidentAction }) =>
       applyAction(row, action, user?.uid ?? "unknown"),
