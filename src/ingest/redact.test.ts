@@ -102,3 +102,59 @@ describe("isSensitiveKey", () => {
     for (const k of ["userId", "orderId", "path", "keyboard"]) expect(isSensitiveKey(k)).toBe(false);
   });
 });
+
+// #96: a long untrusted log field must not block the event loop. Before the fix, 100 KB of one
+// character took ~10 s here and `"a-".repeat(50_000)` ~12 s; linear time is a few ms. The budget is
+// far above that and far below the old cost, so a slow CI machine does not flake it.
+describe("redaction time", () => {
+  const BUDGET_MS = 1500;
+  const runs: Record<string, string> = {
+    "one word character": "y".repeat(100_000),
+    "dash-joined": "a-".repeat(50_000),
+    "dot-joined": "a.".repeat(50_000),
+    "no @ in a local-part-shaped run": "a_%+".repeat(25_000),
+    "keyword-free key-shaped run": "x.".repeat(50_000) + "=",
+    "repeated keyword": "token ".repeat(20_000),
+    "repeated scheme": "a.http://".repeat(10_000),
+  };
+  for (const [name, input] of Object.entries(runs)) {
+    it(`handles 100 KB of ${name} quickly`, () => {
+      const t = Date.now();
+      redactPii(input);
+      sanitize(input);
+      expect(Date.now() - t).toBeLessThan(BUDGET_MS);
+    });
+  }
+
+  it("still redacts what sits after a long run", () => {
+    const out = redactPii(`${"y".repeat(100_000)} password=hunter2 mail ops@example.com ${"a-".repeat(50_000)}`);
+    expect(out).not.toContain("hunter2");
+    expect(out).not.toContain("ops@example.com");
+  });
+});
+
+describe("redaction shapes the linear-time rewrite must keep", () => {
+  it("redacts a second address glued to the first by a character only the local part allows", () => {
+    const out = redactPii("a@b.com_c@d.com");
+    expect(out).not.toContain("c@d.com");
+    expect(out).toBe("[redacted-email][redacted-email]");
+  });
+
+  it("leaves a lone @domain alone and keeps the text around an address", () => {
+    expect(redactPii("see @example.com now")).toBe("see @example.com now");
+    expect(redactPii("mail ops.team+x@example.co.uk, thanks")).toBe("mail [redacted-email], thanks");
+  });
+
+  it("redacts userinfo whatever dots and dashes precede the scheme", () => {
+    for (const prefix of ["", "x.", "-", "a-b.", "\"'."]) {
+      const out = redactPii(`${prefix}postgres://admin:s3cretPw@db.internal/app`);
+      expect(out).not.toContain("s3cretPw");
+    }
+  });
+
+  it("redacts a credential key whatever precedes it in the name, keeping the name", () => {
+    expect(redactPii("x-api-token: abc123")).toBe("x-api-token: [redacted-secret]");
+    expect(redactPii("db.password=hunter2")).toBe("db.password=[redacted-secret]");
+    expect(redactPii('{"client_secret":"abc"}')).toBe('{"client_secret":[redacted-secret]}');
+  });
+});

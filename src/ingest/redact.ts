@@ -15,7 +15,13 @@
  * `truncate` exists alongside: bounding how much raw production text leaves the
  * system is the guard that doesn't depend on a regex being clever.
  */
-const EMAIL_RE = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g;
+// Time, not matching, shapes several patterns in this file: a regex with an unbounded run in front
+// of its anchor (`[\w.-]*token`, `[a-z0-9]+@`) rescans the rest of a long run from every character
+// it could start at, which is quadratic (100 KB of one character took ~10 s and blocked the event
+// loop, #96). Each such pattern below is anchored on its distinctive part instead.
+/** The domain half of an address; `redactEmails` walks left from it over the local part. */
+const EMAIL_DOMAIN_RE = /@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g;
+const EMAIL_LOCAL_CHAR_RE = /[A-Za-z0-9._%+-]/;
 
 /** Hard cap on text handed to the model, independent of what redaction catches. */
 export const MAX_TEXT_LEN = 4000;
@@ -40,8 +46,12 @@ const URL_CREDENTIAL_PARAM_RE =
 const PRIVATE_KEY_RE =
   /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)/g;
 
-/** `scheme://user:password@host` — the credential in a connection string or URL. */
-const URL_USERINFO_RE = /(\b[a-z][a-z0-9+.-]*:\/\/)[^\s/:@]+:[^\s/@]+@/gi;
+/**
+ * `scheme://user:password@host` — the credential in a connection string or URL. The scheme is
+ * bounded (RFC 3986 imposes no limit, but none in use is near 32): unbounded, it was rescanned from
+ * every boundary in a long `a.a.a.…` run.
+ */
+const URL_USERINFO_RE = /(\b[a-z][a-z0-9+.-]{0,31}:\/\/)[^\s/:@]+:[^\s/@]+@/gi;
 
 /**
  * Other formats whose shape alone identifies them. Prefixes distinctive enough on
@@ -83,10 +93,12 @@ export function isSensitiveKey(key: string): boolean {
  * `password: hunter2`, `api_key=abc`, `"token":"abc"` — name and separator kept,
  * value dropped. Narrower than `SENSITIVE_KEY_RE` on purpose: this runs over free
  * text, where a bare `auth` substring would mangle "Unauthorized: invalid grant"
- * (and move its fingerprint). The name must be followed directly by `:` or `=`.
+ * (and move its fingerprint). The name must be followed directly by `:` or `=`. Whatever precedes
+ * the keyword in the name (`x-api-token`, `db.password`) stays in the text untouched, so the match
+ * need not, and must not (#96), scan backwards over it.
  */
 const KEY_VALUE_RE =
-  /(["']?[\w.-]*(?:token|secret|passw(?:or)?d|api[-_]?key|authorization|cookie|credentials?|private[-_]?key|access[-_]?key|signature)["']?\s*[:=]\s*)(?!\[redacted-)(?:"[^"]*"|'[^']*'|[^\s,;&"'}\])]+)/gi;
+  /(["']?(?:token|secret|passw(?:or)?d|api[-_]?key|authorization|cookie|credentials?|private[-_]?key|access[-_]?key|signature)["']?\s*[:=]\s*)(?!\[redacted-)(?:"[^"]*"|'[^']*'|[^\s,;&"'}\])]+)/gi;
 
 /**
  * Redact credential-shaped VALUES: bearer tokens, JWTs, Google API keys, other
@@ -118,9 +130,25 @@ export function redactCredentials(text: string): string {
  * re-applies it to whatever a caller hands it.
  */
 export function redactPii(text: string): string {
-  return redactCredentials(text)
-    .replace(KEY_VALUE_RE, `$1${SECRET_MARKER}`)
-    .replace(EMAIL_RE, "[redacted-email]");
+  const out = redactCredentials(text).replace(KEY_VALUE_RE, `$1${SECRET_MARKER}`);
+  return redactEmails(out);
+}
+
+/**
+ * `local@domain.tld` -> `[redacted-email]`. Finds each `@domain.tld` and extends left over the local
+ * part, never past the end of the previous match, so the work is linear in the text (see above).
+ */
+function redactEmails(text: string): string {
+  let out = "";
+  let last = 0;
+  for (const m of text.matchAll(EMAIL_DOMAIN_RE)) {
+    let start = m.index;
+    while (start > last && EMAIL_LOCAL_CHAR_RE.test(text[start - 1]!)) start--;
+    if (start === m.index) continue; // no local part: not an address
+    out += text.slice(last, start) + "[redacted-email]";
+    last = m.index + m[0].length;
+  }
+  return out + text.slice(last);
 }
 
 export function truncate(text: string, max = MAX_TEXT_LEN): string {
