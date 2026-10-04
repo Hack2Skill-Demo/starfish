@@ -4,7 +4,9 @@
 #
 #   1. hotfix/* branches MUST be created from origin/main (not develop / anything else).
 #   2. No direct `git merge` while ON a hotfix/* branch (hotfixes integrate via PR, not merge).
-#   3. No `--no-verify` on commit/push (it bypasses the .githooks safeguards).
+#   3. No `--no-verify` on commit/push (it bypasses the .githooks safeguards), and no
+#      `-c core.hooksPath=...` override or `git config core.hooksPath <elsewhere>`
+#      (they switch the same safeguards off).
 #   4. No force-push to the shared protected branches (develop / main).
 #
 # Emits a PreToolUse deny (permissionDecision) when it catches either. Otherwise allows.
@@ -16,6 +18,15 @@
 # negatives (`git checkout -q -b ...` shifted the positional parse past the
 # guard). We now split the first simple command into tokens, classify
 # flag vs positional tokens, and inspect positions among the positionals.
+#
+# Global options come first. `git [-C <dir>] [-c <k=v>] [--git-dir <p>] ... <subcommand>`:
+# the options that TAKE an argument must have it skipped, or `git -C . push -f` reads
+# `.` as the subcommand and the push is never inspected at all. Short flags may also be
+# combined (`-uf`, `-nm`, `-qb`), so each letter is classified, not just whole tokens.
+#
+# Known limit, by design: only the FIRST simple command is inspected, and only when it
+# starts with `git`. `cd x && git push -f origin main` and `FOO=1 git push -f ...` are
+# out of scope here (tracked in #45); this file does not claim to stop them.
 #
 # Testable: set GIT_BRANCH_GUARD_CURRENT_BRANCH to override the current-branch
 # lookup (used by git-branch-guard.test.sh).
@@ -73,6 +84,40 @@ for i in "${!toks[@]}"; do
   toks[$i]="${toks[$i]//[\"\'\`]/}"
 done
 
+# Global options (before the subcommand). -C and -c are remembered: -C changes which
+# repo the command runs in (so the current branch must be looked up there), and -c is
+# where `core.hooksPath` overrides hide.
+c_dirs=()        # -C <dir>, applied in order, each relative to the previous
+cfg_overrides=() # -c <name>=<value> and --config-env=<name>=<ENV>
+i=1
+n=${#toks[@]}
+while [ "$i" -lt "$n" ]; do
+  t="${toks[$i]}"
+  case "$t" in
+    -C) c_dirs+=("${toks[$((i + 1))]:-}"); i=$((i + 2)) ;;
+    -c) cfg_overrides+=("${toks[$((i + 1))]:-}"); i=$((i + 2)) ;;
+    --config-env=*) cfg_overrides+=("${t#--config-env=}"); i=$((i + 1)) ;;
+    --config-env) cfg_overrides+=("${toks[$((i + 1))]:-}"); i=$((i + 2)) ;;
+    --git-dir|--work-tree|--namespace|--exec-path|--super-prefix) i=$((i + 2)) ;;
+    -*) i=$((i + 1)) ;;   # --no-pager, -p, --bare, --git-dir=<p>, ... take no separate argument
+    *) break ;;
+  esac
+done
+subcmd="${toks[$i]:-}"
+args=()
+[ "$i" -lt "$n" ] && args=("${toks[@]:$((i + 1))}")
+
+# Run git in the repo the command targets (honouring -C), for the branch lookups below.
+# (Kept to bash 3.2 features: macOS ships it. No ${var,,}, no `local` arrays.)
+c_args=()
+for d in ${c_dirs[@]+"${c_dirs[@]}"}; do c_args+=(-C "$d"); done
+repo_git() { git ${c_args[@]+"${c_args[@]}"} "$@"; }
+lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
+current_branch() {
+  printf '%s' "${GIT_BRANCH_GUARD_CURRENT_BRANCH:-$(repo_git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")}"
+}
+
+# Classify the subcommand's own arguments. Positionals are tokens not starting with "-".
 positionals=()
 create_flag=0
 has_other_flags=0
@@ -80,22 +125,37 @@ no_verify=0   # --no-verify seen (commit/push bypass)
 dash_n=0      # -n seen (means --no-verify for commit, --dry-run for push)
 force=0       # --force / -f / --force-with-lease seen
 all_or_mirror=0  # --all / --mirror seen (push targets many refs at once)
-for t in "${toks[@]:1}"; do
+past_dashdash=0
+for t in ${args[@]+"${args[@]}"}; do
+  if [ "$past_dashdash" = 1 ]; then positionals+=("$t"); continue; fi
   case "$t" in
-    -b|-B|-c|-C) create_flag=1 ;;
+    --) past_dashdash=1 ;;
     --no-verify) no_verify=1; has_other_flags=1 ;;
-    -n) dash_n=1; has_other_flags=1 ;;
-    -f|--force|--force-with-lease|--force-with-lease=*) force=1; has_other_flags=1 ;;
+    --force|--force-with-lease|--force-with-lease=*) force=1; has_other_flags=1 ;;
     --all|--mirror) all_or_mirror=1; has_other_flags=1 ;;
-    -*) has_other_flags=1 ;;
+    --*) has_other_flags=1 ;;
+    -?*)
+      # Short flags, possibly combined (-uf, -nm, -qb). Classify each letter. A letter
+      # that takes a value (-m msg, -F file, -S key, -o opt) ends the run: whatever
+      # follows it in this token is that value, not more flags.
+      has_other_flags=1
+      letters="${t#-}"
+      for ((k = 0; k < ${#letters}; k++)); do
+        case "${letters:k:1}" in
+          b|B|c|C) create_flag=1 ;;
+          n) dash_n=1 ;;
+          f) force=1 ;;
+          m|F|S|o) break ;;
+        esac
+      done
+      ;;
     +*) force=1; positionals+=("$t") ;;   # +refspec (e.g. +develop) is a force-push
     *) positionals+=("$t") ;;
   esac
 done
 
-subcmd="${positionals[0]:-}"
-arg1="${positionals[1]:-}"
-arg2="${positionals[2]:-}"
+arg1="${positionals[0]:-}"
+arg2="${positionals[1]:-}"
 
 # --- Rule 1: creating a hotfix/* branch must base on a prod-aligned ref ---
 # Creation shapes:
@@ -122,7 +182,7 @@ fi
 # --- Rule 2: no direct merge while ON a hotfix/* branch ---
 # Exact subcommand match: `merge` yes; `merge-base`, `merge-tree`, etc. no.
 if [ "$subcmd" = "merge" ]; then
-  cur="${GIT_BRANCH_GUARD_CURRENT_BRANCH:-$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")}"
+  cur="$(current_branch)"
   case "$cur" in
     hotfix/*) deny "BLOCKED: no direct 'git merge' from a hotfix branch ($cur). Hotfixes integrate via PR (base = the hotfix branch), not a local merge. (recurring-mistake guard)" ;;
   esac
@@ -135,27 +195,52 @@ if { [ "$subcmd" = "commit" ] || [ "$subcmd" = "push" ]; } && [ "$no_verify" = 1
   deny "BLOCKED: '--no-verify' skips the .githooks safeguards (secret scan, conventional-commit format, lint + typecheck). Run the command without it. If a hook is genuinely wrong, fix or raise the hook — don't bypass it. (safeguard)"
 fi
 
+# `-c core.hooksPath=...` (or --config-env) points git at a different hooks directory
+# for this one command, which switches the .githooks safeguards off without --no-verify.
+# Config keys are case-insensitive, so match accordingly.
+for override in ${cfg_overrides[@]+"${cfg_overrides[@]}"}; do
+  if [[ "$(lower "$override")" == core.hookspath=* ]]; then
+    deny "BLOCKED: '-c core.hooksPath=...' points git at a different hooks directory, which skips the .githooks safeguards (secret scan, conventional-commit format, lint + typecheck) just like --no-verify. Run the command without it. (safeguard)"
+  fi
+done
+
+# `git config core.hooksPath <elsewhere>` does the same persistently. Reading it, and
+# setting it to the repo's own .githooks (what `pnpm install` does), stay allowed.
+if [ "$subcmd" = "config" ]; then
+  seen_key=0
+  for p in ${positionals[@]+"${positionals[@]}"}; do
+    if [ "$seen_key" = 1 ]; then
+      [ "$p" = ".githooks" ] || deny "BLOCKED: 'git config core.hooksPath $p' points git away from .githooks, which switches off the commit/push safeguards for every later command. Leave it at .githooks (set by 'pnpm install'). (safeguard)"
+      break
+    fi
+    [[ "$(lower "$p")" == "core.hookspath" ]] && seen_key=1
+  done
+fi
+
 # --- Rule 4: no force-push to the shared protected branches (develop / main) ---
 # Force-push to your own feature/* or claude/* branch is fine; rewriting shared
 # history on develop/main is what we block. positionals[0] == "push".
 if [ "$subcmd" = "push" ] && [ "$force" = 1 ]; then
   protected=0
-  cur="${GIT_BRANCH_GUARD_CURRENT_BRANCH:-$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")}"
+  cur="$(current_branch)"
   # --all / --mirror force-push every ref, which includes develop/main.
   [ "$all_or_mirror" = 1 ] && protected=1
-  # Explicit refspec naming a protected destination, e.g. `main`, `HEAD:develop`.
-  # A bare `HEAD` resolves to the current branch, so check that too.
-  for p in "${positionals[@]:1}"; do
+  # Explicit refspec naming a protected destination, e.g. `main`, `HEAD:develop`,
+  # `HEAD:refs/heads/main`. A bare `HEAD` resolves to the current branch, so check
+  # that too.
+  for p in ${positionals[@]+"${positionals[@]}"}; do
     dest="${p##*:}"          # take the destination side of a src:dst refspec
     dest="${dest#+}"         # strip a leading + (force-push refspec marker)
+    dest="${dest#refs/heads/}"  # refs/heads/main is main
     case "$dest" in
       develop|main|origin/develop|origin/main) protected=1 ;;
+      *\**) protected=1 ;;    # a glob refspec (+refs/heads/*:refs/heads/*) covers develop/main
       HEAD) case "$cur" in develop|main) protected=1 ;; esac ;;
     esac
   done
   # No explicit branch (just `git push` or `git push <remote>`): target is the
-  # current branch via its upstream. positionals are then push[+remote] (<=2).
-  if [ "$protected" = 0 ] && [ "${#positionals[@]}" -le 2 ]; then
+  # current branch via its upstream. positionals are then [remote] (<=1).
+  if [ "$protected" = 0 ] && [ "${#positionals[@]}" -le 1 ]; then
     case "$cur" in develop|main) protected=1 ;; esac
   fi
   if [ "$protected" = 1 ]; then

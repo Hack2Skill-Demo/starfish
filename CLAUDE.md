@@ -40,6 +40,7 @@ pnpm test:emulator    # firestore.rules + store concurrency against the emulator
 pnpm -C web dev       # the operator UI on :5177
 pnpm spike            # the Gemini fix-quality spike (needs .env + Vertex access)
 bash .claude/hooks/git-branch-guard.test.sh        # hook suites
+bash .claude/hooks/pre-push-review-guard.test.sh
 bash .claude/hooks/config-boundary-guard.test.sh
 ```
 

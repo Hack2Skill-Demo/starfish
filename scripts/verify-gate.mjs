@@ -48,8 +48,30 @@ export function findRepoRoot(startDir) {
   }
 }
 
-/** On Windows `pnpm` is a .cmd batch file spawnSync cannot exec by bare name. */
-const PNPM = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
+/**
+ * How to run `pnpm <args>` without a shell where we can avoid one.
+ *
+ * On Windows `pnpm` is a `.cmd` batch file. Node >= 20.12 (the CVE-2024-27980 fix)
+ * refuses to spawn a .cmd/.bat without `shell: true` and throws EINVAL, so the bare
+ * `spawnSync("pnpm.cmd", ...)` this used to do fails outright there.
+ *
+ * Preferred: when the gate is started by pnpm (`pnpm run verify`), pnpm exports the
+ * path of its own entry script as `npm_execpath`. Running that with the current Node
+ * needs no .cmd and no shell, on every platform. Only a JavaScript entry qualifies; a
+ * standalone pnpm binary is spawned as itself.
+ *
+ * Fallback, when started directly (`node scripts/verify-gate.mjs`): the bare name,
+ * through a shell on Windows only. Safe there because every argument is a fixed value
+ * from STEPS, never user input.
+ */
+export function pnpmInvocation(env = process.env, platform = process.platform, nodePath = process.execPath) {
+  const entry = env.npm_execpath;
+  if (entry && /pnpm/i.test(path.basename(entry)) && /\.(c|m)?js$/i.test(entry)) {
+    return { command: nodePath, prefix: [entry], shell: false };
+  }
+  if (platform === "win32") return { command: "pnpm.cmd", prefix: [], shell: true };
+  return { command: "pnpm", prefix: [], shell: false };
+}
 
 /**
  * Patterns that appear in EVERY runner's failure output regardless of step.
@@ -342,10 +364,12 @@ function main() {
     let status;
     let spawnError = null;
     try {
-      const res = spawnSync(PNPM, ["run", step.script], {
+      const pnpm = pnpmInvocation();
+      const res = spawnSync(pnpm.command, [...pnpm.prefix, "run", step.script], {
         cwd: repoRoot,
         stdio: ["ignore", fd, fd],
         env: process.env,
+        shell: pnpm.shell,
       });
       if (res.error) {
         spawnError = res.error.message;

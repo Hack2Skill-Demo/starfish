@@ -71,14 +71,19 @@ done
 # and the push is never gated. The `=`-joined forms (--git-dir=path) are single
 # tokens starting with "-", so they fall through to the flag case.
 positionals=()
+c_dirs=()   # -C <dir> values, in order: each is relative to the one before it
 skip_next=false
+take_c=false
 for t in "${toks[@]:1}"; do
   if $skip_next; then
     skip_next=false
+    $take_c && c_dirs+=("$t")
+    take_c=false
     continue
   fi
   case "$t" in
-    -C|-c|--git-dir|--work-tree|--namespace|--exec-path)
+    -C) skip_next=true; take_c=true ;;   # consumes the next token, and it is a directory
+    -c|--git-dir|--work-tree|--namespace|--exec-path)
       skip_next=true ;;          # this flag consumes the next token as its value
     -*) ;;            # other flags are irrelevant to "is this a push?"
     *) positionals+=("$t") ;;
@@ -89,16 +94,32 @@ subcmd="${positionals[0]:-}"
 # Only gate pushes; everything else is allowed.
 [ "$subcmd" = "push" ] || allow
 
-marker="$(git rev-parse --git-path starfish-review-ok 2>/dev/null || echo .git/starfish-review-ok)"
+# The push runs in the repo `-C` points at, so the review marker and the latest commit
+# must come from THAT repo, not the directory the shell happens to be in. Otherwise
+# `git -C other/repo push` is judged by the wrong repo's marker: allowed on a stale
+# review, or blocked on a fresh one. Run the lookups there, and make the marker path
+# absolute, since `--git-path` is relative to the repo it ran in.
+in_repo() {
+  (
+    for d in ${c_dirs[@]+"${c_dirs[@]}"}; do cd "$d" || exit 1; done
+    "$@"
+  )
+}
+marker_rel="$(in_repo git rev-parse --git-path starfish-review-ok 2>/dev/null || true)"
+case "$marker_rel" in
+  "") marker="" ;;                 # not a repo, or -C names nothing: no marker, so the push is blocked
+  /*) marker="$marker_rel" ;;
+  *)  marker="$(in_repo pwd)/$marker_rel" ;;
+esac
 review_msg="BLOCKED: run the /starfish-code-review skill on the local diff and resolve all Critical/High findings BEFORE pushing (no GitHub needed). When the review is done, record it with: touch \"\$(git rev-parse --git-path starfish-review-ok)\"  — then re-run the push. (A new commit after the review re-arms this gate, so review the final diff.) (starfish pre-push review gate)"
 
 # No marker → never reviewed (or marker cleared) → block.
-[ -f "$marker" ] || deny "$review_msg"
+[ -n "$marker" ] && [ -f "$marker" ] || deny "$review_msg"
 
 # Compare marker mtime against the latest commit time. macOS (stat -f) and
 # Linux (stat -c) differ; try both.
 marker_mtime="$(stat -c %Y "$marker" 2>/dev/null || stat -f %m "$marker" 2>/dev/null || echo 0)"
-last_commit="$(git log -1 --format=%ct 2>/dev/null || echo 0)"
+last_commit="$(in_repo git log -1 --format=%ct 2>/dev/null || echo 0)"
 
 if [ "$marker_mtime" -lt "$last_commit" ]; then
   deny "BLOCKED: the recorded code review is older than your latest commit, so the current diff is unreviewed. Re-run /starfish-code-review on the local diff, resolve Critical/High findings, then: touch \"\$(git rev-parse --git-path starfish-review-ok)\"  — and push again. (starfish pre-push review gate)"

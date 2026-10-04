@@ -120,6 +120,55 @@ run_case allow feature/x "git push origin HEAD --force"                        #
 run_case deny  feature/x "git push --force --all"                              # --all force overwrites every ref
 run_case deny  feature/x "git push --mirror --force origin"                    # --mirror force overwrites refs
 
+# ── Bypass spellings (issue #3): the same rules, written differently ─────────
+# The five reported ones.
+run_case deny  feature/x "git push --force origin HEAD:refs/heads/main"        # refs/heads/ prefix on the destination
+run_case deny  feature/x "git push -uf origin main"                            # combined short flags: -u -f
+run_case deny  feature/x "git -C . push -f origin main"                        # -C <dir> hid the subcommand
+run_case deny  feature/x 'git commit -nm "wip"'                                # combined -n -m
+run_case deny  feature/x "git -c core.hooksPath=/dev/null commit"              # hooks directory swapped for this command
+
+# Neighbours of those, from the same root causes.
+run_case deny  feature/x "git push -fu origin refs/heads/develop"              # flag order, develop
+run_case deny  feature/x "git push --force origin +HEAD:refs/heads/main"       # + and refs/heads/ together
+run_case deny  feature/x "git push -f origin 'HEAD:refs/heads/main'"           # quoted refspec
+run_case deny  feature/x "git push --force origin +refs/heads/*:refs/heads/*"  # a glob refspec covers main
+run_case deny  feature/x "git commit -anm 'x'"                                 # -a -n -m
+run_case deny  feature/x "git -c user.name=a commit --no-verify -m x"          # -c <k=v> hid the subcommand
+run_case deny  feature/x "git -C /tmp/other commit --no-verify -m x"           # -C hid --no-verify
+run_case deny  feature/x "git -C . -c core.hooksPath=/dev/null commit"         # both globals
+run_case deny  feature/x "git -c core.hooksPath=/dev/null push origin feature/x"  # on push too
+run_case deny  feature/x "git -c CORE.HOOKSPATH=/dev/null commit -m x"         # config keys are case-insensitive
+run_case deny  feature/x "git --config-env=core.hooksPath=EVIL commit -m x"    # --config-env form
+run_case deny  feature/x "git checkout -qb hotfix/1.0.3 develop"               # combined -q -b: hotfix base rule
+run_case deny  feature/x "git switch -qc hotfix/1.0.3 develop"                 # combined -q -c
+
+# Persistent version of the hooks bypass.
+run_case deny  feature/x "git config core.hooksPath /dev/null"
+run_case deny  feature/x "git config --local core.hooksPath /tmp/x"
+run_case allow feature/x "git config core.hooksPath .githooks"                 # what `pnpm install` sets
+run_case allow feature/x "git config core.hooksPath"                           # reading it
+run_case allow feature/x "git config --get core.hooksPath"
+run_case allow feature/x "git config user.name x"
+
+# -C must look at the TARGET repo's branch, and a harmless command stays harmless.
+run_case allow feature/x "git -C . push origin feature/x"
+run_case allow feature/x "git -C . commit -m x"
+run_case allow feature/x "git -c user.name=a commit -m x"
+run_case allow feature/x "git --no-pager log -1"
+run_case allow feature/x "git push -u origin feature/x"
+run_case allow feature/x "git push -uf origin feature/x"                       # force to own branch
+run_case allow feature/x "git push -f origin HEAD:refs/heads/feature/x"        # own branch, full ref
+run_case allow feature/x "git commit -am 'fix: tidy'"                          # -a -m: no -n hiding in there
+run_case allow feature/x "git commit -vm 'x'"
+run_case allow main      "git -C . push origin main"                           # plain push to main is fine
+run_case deny  main      "git -C . push -f"                                    # current branch main, via -C
+
+# Not a push or commit: never blocked, however it spells its flags.
+run_case allow feature/x "git -C . status -sb"
+run_case allow feature/x "git checkout -b feature/new origin/main"
+run_case allow feature/x "git branch -f feature/x origin/main"                 # -f on branch is not a push
+
 echo ""
 echo "git-branch-guard tests: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
