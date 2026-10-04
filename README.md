@@ -159,6 +159,14 @@ apparent over-engineering is scar tissue from real incidents, and the tests in
   `store.emulator.test.ts`). A read that hits the 5,000-entry cap is flagged on the run record,
   not called complete. `pnpm ingest` runs this once; nothing schedules it yet (#6). The checkpoint
   is per (watched project, environment) and is not carried over when settings change either
+- an admin can retire an incident (`src/ingest/retire.ts`): it is closed for good with its history
+  kept, its incident key is removed, and the same error firing again opens a **new** incident
+  instead of coming back as `recurred`. One transaction does it together with an audit entry
+  (`starfish_audit`, admin-readable, engine-written), so a retire racing an occurrence loses none
+  (`retire.emulator.test.ts`). Admin is checked from the operator record, not from anything the caller
+  passes. **Not built:** the endpoint or admin action that calls it (the demo's reset script needs
+  one), and the fast-revert watch (#9) it is meant to disarm; `retired` is the flag that watch must
+  honour
 - a fingerprint ignores what varies per occurrence (ids, paths, timestamps, counts) but not
   what makes a bug distinct (status codes, quoted property names), and treats a function's
   first- and second-generation spellings as one

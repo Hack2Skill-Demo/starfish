@@ -31,6 +31,9 @@
  *     so the transaction sees `resolved` and takes the recurrence transition,
  *     exactly once: any later transaction sees `recurred`;
  *   - hourly buckets are merged from a read no other writer can slip past.
+ * A RETIRED incident (retire.ts) is invisible to all of this: its key is removed and no lookup returns it,
+ * so the same error firing again opens a new incident rather than a `recurred` one.
+ *
  * Incidents written before keys existed have none; the first upsert finds them
  * by query, as before, and writes the key that pins them from then on.
  *
@@ -323,6 +326,11 @@ function isOpen(status: unknown): boolean {
   return (OPEN_INCIDENT_STATUSES as readonly unknown[]).includes(status);
 }
 
+/** True for an incident an admin closed for good: it never accrues occurrences and is never reopened. */
+function isRetired(snap: DocumentSnapshot): boolean {
+  return (snap.data() as Partial<StoredIncident> | undefined)?.retired === true;
+}
+
 /** True when the document's own content hashes to `fingerprint`. */
 function holdsFingerprint(snap: DocumentSnapshot, fingerprint: string): boolean {
   const d = snap.data() as Partial<StoredIncident> | undefined;
@@ -343,7 +351,9 @@ async function readKeyedIncident(
   const snap = await tx.get(db.collection(store.incidentCollection).doc(incidentId));
   // Re-verify against content rather than trusting the pointer: a stale key or a
   // rewritten document can't cause a wrong merge.
-  return snap.exists && holdsFingerprint(snap, fingerprint) ? snap : null;
+  // A retired incident has been closed for good and its fingerprint freed (retire.ts): a key that still
+  // points at one is stale, and the occurrence opens a new incident instead of reopening it.
+  return snap.exists && holdsFingerprint(snap, fingerprint) && !isRetired(snap) ? snap : null;
 }
 
 /**
@@ -378,7 +388,7 @@ async function findUnkeyedIncident(
   let earliest: DocumentSnapshot | null = null;
   let earliestMs = Infinity;
   for (const doc of open.docs) {
-    if (!holdsFingerprint(doc, fingerprint)) continue;
+    if (!holdsFingerprint(doc, fingerprint) || isRetired(doc)) continue;
     const firstMs = tsMillis((doc.data() as StoredIncident).firstOccurredAt) ?? Infinity;
     if (earliest === null || firstMs < earliestMs) {
       earliest = doc;
@@ -405,7 +415,7 @@ async function findUnkeyedIncident(
   let latestMs = -Infinity;
   for (const doc of resolved.docs) {
     const d = doc.data() as StoredIncident;
-    if (d.status !== "resolved" || !holdsFingerprint(doc, fingerprint)) continue;
+    if (d.status !== "resolved" || !holdsFingerprint(doc, fingerprint) || isRetired(doc)) continue;
     const ms = tsMillis(d.resolvedAt) ?? tsMillis(d.lastOccurredAt) ?? -Infinity;
     if (latest === null || ms > latestMs) {
       latest = doc;

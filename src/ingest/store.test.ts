@@ -206,6 +206,39 @@ describe("upsertIncident: regressions", () => {
       ...overrides,
     });
 
+  it("never re-opens a retired incident: the occurrence opens a new one (#63)", async () => {
+    const { db, writes } = fakeDb([{ id: "retired", data: resolvedDoc({ retired: true }) }]);
+    expect(await upsertIncident(db, STORE, input, Timestamp.now())).toBe("new");
+    expect(writes.map((w) => w.op)).toEqual(["set"]);
+    expect(writes[0]!.id).not.toBe("retired");
+  });
+
+  it("does not accrue onto a retired incident an operator reopened from ignored", async () => {
+    // Retiring an ignored incident leaves it ignored, and an operator may move ignored back to new.
+    const { db, writes } = fakeDb([{ id: "reopened", data: stored("2026-09-10T00:00:00.000Z", { status: "new", environment: "prod", retired: true }) }]);
+    expect(await upsertIncident(db, STORE, input, Timestamp.now())).toBe("new");
+    expect(writes[0]!.op).toBe("set");
+  });
+
+  it("skips a retired incident for an earlier resolved one that is not retired", async () => {
+    const { db, writes } = fakeDb([
+      { id: "retired", data: resolvedDoc({ retired: true }) },
+      { id: "fixed", data: resolvedDoc() },
+    ]);
+    expect(await upsertIncident(db, STORE, input, Timestamp.now())).toBe("recurred");
+    expect(writes[0]).toMatchObject({ op: "update", id: "fixed" });
+  });
+
+  it("ignores a key that still points at a retired incident, and moves it to the new one", async () => {
+    const fp = computeErrorFingerprint(input.functionName, input.errorMessage);
+    const { db, writes, keyWrites } = fakeDb([{ id: "retired", data: resolvedDoc({ retired: true }) }], {
+      [incidentKeyId("prod", fp)]: "retired",
+    });
+    expect(await upsertIncident(db, STORE, input, Timestamp.now())).toBe("new");
+    expect(writes[0]!.op).toBe("set");
+    expect(keyWrites[0]?.data.incidentId).toBe("new-doc");
+  });
+
   it("re-opens a resolved incident as recurred when its error fires after the resolution", async () => {
     const { db, writes } = fakeDb([
       { id: "fixed", data: resolvedDoc({ githubIssueNumber: 42, githubIssueUrl: "https://example.test/issues/42" }) },

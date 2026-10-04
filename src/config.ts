@@ -72,6 +72,14 @@ export interface StarfishConfig {
   reviewRequired: boolean;
   /** The most model calls one cycle may make (triage, each fix attempt, each review): a spend cap. */
   modelCallBudget: number;
+  /**
+   * Firestore collection of operator records ({uid} -> { roles }). The engine reads it to check that
+   * whoever asks for an admin action is an admin, the same record firestore.rules reads. Must match
+   * the web's VITE_STARFISH_USERS_COLLECTION and the rules, which hardcode `starfish_users`.
+   */
+  usersCollection: string;
+  /** Firestore collection of audit entries for admin actions on the engine (src/ingest/retire.ts). */
+  auditCollection: string;
   /** Firestore collection holding incidents. */
   incidentCollection: string;
   /**
@@ -197,6 +205,8 @@ export function loadConfig(): StarfishConfig {
     dryRun: parseBoolean(process.env.STARFISH_DRY_RUN, true, "STARFISH_DRY_RUN"),
     reviewRequired: parseBoolean(process.env.STARFISH_REVIEW_REQUIRED, true, "STARFISH_REVIEW_REQUIRED"),
     modelCallBudget: positiveNumber(process.env.STARFISH_MODEL_CALL_BUDGET, 6, "STARFISH_MODEL_CALL_BUDGET"),
+    usersCollection: process.env.STARFISH_USERS_COLLECTION || "starfish_users",
+    auditCollection: process.env.STARFISH_AUDIT_COLLECTION || "starfish_audit",
     cycleCollection: process.env.STARFISH_CYCLE_COLLECTION || "starfish_cycles",
     leaseSeconds: positiveNumber(process.env.STARFISH_LEASE_SECONDS, 300, "STARFISH_LEASE_SECONDS"),
     cycleDeadlineMinutes: positiveNumber(process.env.STARFISH_CYCLE_DEADLINE_MINUTES, 60, "STARFISH_CYCLE_DEADLINE_MINUTES"),

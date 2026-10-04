@@ -128,6 +128,16 @@ export interface StoredIncident {
   lastRecurredAt?: Timestamp;
   /** The resolution the latest regression broke, so an operator can see what didn't hold. */
   lastResolution?: IncidentResolution;
+  /**
+   * Closed for good by an admin (src/ingest/retire.ts): its fingerprint is freed, so the same
+   * error firing again opens a NEW incident instead of reopening this one as a regression. Set only
+   * by the engine. Anything that watches an incident for a regression (the fast-revert watch, #9)
+   * must treat a retired one as finished.
+   */
+  retired?: boolean;
+  retiredAt?: Timestamp;
+  /** Uid of the admin who retired it. */
+  retiredBy?: string;
 }
 
 /**

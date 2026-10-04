@@ -172,3 +172,22 @@ describe("loadConfig: the loop's switches", () => {
   });
 });
 
+describe("loadConfig: admin actions", () => {
+  beforeEach(() => {
+    vi.stubEnv("STARFISH_USERS_COLLECTION", "");
+    vi.stubEnv("STARFISH_AUDIT_COLLECTION", "");
+    vi.stubEnv("GOOGLE_CLOUD_PROJECT", "home-project");
+  });
+  afterEach(() => vi.unstubAllEnvs());
+
+  it("defaults to starfish_users and starfish_audit", () => {
+    expect(loadConfig()).toMatchObject({ usersCollection: "starfish_users", auditCollection: "starfish_audit" });
+  });
+
+  it("reads both from the environment", () => {
+    vi.stubEnv("STARFISH_USERS_COLLECTION", "ops_people");
+    vi.stubEnv("STARFISH_AUDIT_COLLECTION", "ops_audit");
+    expect(loadConfig()).toMatchObject({ usersCollection: "ops_people", auditCollection: "ops_audit" });
+  });
+});
+
