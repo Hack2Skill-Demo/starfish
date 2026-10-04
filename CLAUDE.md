@@ -137,24 +137,29 @@ src/
     run            one scheduled run: resolve runtime settings, replay the pending window or plan
                    the next, advance the checkpoint only after it all commits, write last_run
   agent/triage.ts  stage 1 of the agent loop (#8): act/notify/decline for one incident; deterministic
-                   gates before the model, local validation after it; not run by any job yet
+                   gates before the model, local validation after it; run by `pnpm agent` (deployable, never run)
   agent/fixer.ts   stage 2: minimal patch or honest decline from a stubbed-testable model call;
-                   fails closed, redacts both ways. Not run by any job yet
+                   fails closed, redacts both ways. Run by `pnpm agent` (deployable, never run)
   agent/cycle.ts   cycle per (incident, recurrence), transactional lease with fencing, append-only run events
-                   (redacted) and the cycle's run record (summary.<stage>, path); infrastructure errors throw, logical refusals are returned. Not run by any job yet
+                   (redacted) and the cycle's run record (summary.<stage>, path); infrastructure errors throw, logical refusals are returned. Run by `pnpm agent` (deployable, never run)
   agent/loop.ts    one cycle: lease -> triage -> fix -> verify -> review -> PR (interface); rechecks status +
-                   kill switch, one shared revision, call budget, dry run by default. Not run by any job
-  agent/pass.ts    one pass over the store: candidate selection, stack trace → repo files, bounded driver. Not
-                   the job: no entrypoint, checkout or isolation of the verify step yet (#74)
+                   kill switch, one shared revision, call budget, dry run by default. Run by `pnpm agent`
+  agent/pass.ts    one pass over the store: candidate selection, stack trace → repo files, bounded driver
   agent/assemble.ts  one incident's inputs: shallow clone at a pinned revision, counter-check, samples, files the trace names
   agentCli.ts      `pnpm agent`: one pass. Dry run by default; refuses to start until STARFISH_VERIFY_ISOLATION is set
-                   (in-process is not a sandbox). Not in the Dockerfile, not scheduled
-  agent/automationSwitch.ts  the kill switch: reads the runtime settings fresh each time the loop asks; fails closed.
-                   Not run by any job yet
+                   (`in-process` is not a sandbox; `cloud-run-job` hands the source + patch to a separate job whose
+                   service account holds NO roles and never runs the command itself). Deployed by `DEPLOY_AGENT=1`; never run
+  agent/verifyRemote.ts  the agent's side of the isolated verify: bundle → signed URLs → start the job → validated result.
+                   Infra failures throw (the cycle resumes); a failed command is a result
+  agent/verifyRunner.ts  the verify job's side (`src/verifyRunnerCli.ts`): fetch the bundle, run the gate, write the result.
+                   Starts as root only to run the command as uid 65534 (docker-entrypoint.sh)
+  agent/verifyProtocol.ts  the request/result contract and its strict checks (bounded BEFORE redactPii: #96)
+  agent/cloudRunJob.ts  production adapters (GCS signed URLs, Cloud Run `jobs.run`): the part never run on a real project
+  agent/automationSwitch.ts  the kill switch: reads the runtime settings fresh each time the loop asks; fails closed
   agent/reviewer.ts  stage 4: attacks the verified patch; verdict computed from outcomes in code, bound
-                   to the patch hash the gate tested. Not run by any job yet
+                   to the patch hash the gate tested. Run by `pnpm agent` (deployable, never run)
   agent/verifyGate.ts  stage 3: apply a patch in a scratch copy, judge the tree that results, run the
-                   configured command with a scrubbed env. Not a sandbox; not run by any job yet
+                   configured command with a scrubbed env. Not a sandbox; run by `pnpm agent` (deployable, never run)
   operators.ts     grant a person an operator record (the first admin; `pnpm grant-operator`); the closed collection can't be written from the UI
   status.ts        judges the engine's last_run record (`pnpm status`): the same verdicts as the UI's engine line
   (repo root)      Dockerfile = the engine image the Cloud Run job runs; scripts/deploy-gcp.sh deploys it
@@ -163,7 +168,7 @@ src/
                    Parser and guard only: nothing creates an index; tested on URLs built from the documented proto
   integrations/githubPr.ts  the pull-request opener (#17): idempotent by cycle id, pushes only
                    starfish/<id>, never merges, token only in git's environment. Never run against real
-                   GitHub; not run by any job yet
+                   GitHub; run by `pnpm agent` (deployable, never run)
   runtimeSettings.ts  the settings document an admin edits: validated, applied over the
                    env defaults, last-good fallback, a frozen snapshot per run
 ```

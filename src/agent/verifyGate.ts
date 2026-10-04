@@ -79,6 +79,13 @@ export interface VerifyRequest {
   config: VerifyConfig;
   /** Names of environment variables to pass to the command (everything else is dropped). */
   passEnv?: string[];
+  /**
+   * Run the verify command as this unprivileged user instead of this process's own. Used by the verify
+   * runner (verifyRunner.ts), which starts as root: the command then cannot read the runner's memory or
+   * `/proc/<pid>/environ`, where the URL its result is written to is held. The scratch copy is handed to the
+   * user after the patch has been judged and applied, and before the command starts.
+   */
+  runAs?: { uid: number; gid: number };
 }
 
 export const MAX_PATCH_BYTES = 200_000;
@@ -178,11 +185,17 @@ function scrubbedEnv(home: string, passEnv: readonly string[]): NodeJS.ProcessEn
 function run(
   command: string,
   args: string[],
-  opts: { cwd: string; env: NodeJS.ProcessEnv; stdin?: string; timeoutMs: number }
+  opts: { cwd: string; env: NodeJS.ProcessEnv; stdin?: string; timeoutMs: number; runAs?: { uid: number; gid: number } }
 ): Promise<{ code: number | null; timedOut: boolean; output: string }> {
   return new Promise((resolve) => {
     // Own process group, so a timeout kills everything the command started, not only the shell.
-    const child = spawn(command, args, { cwd: opts.cwd, env: opts.env, detached: true, stdio: ["pipe", "pipe", "pipe"] });
+    const child = spawn(command, args, {
+      cwd: opts.cwd,
+      env: opts.env,
+      detached: true,
+      stdio: ["pipe", "pipe", "pipe"],
+      ...(opts.runAs && { uid: opts.runAs.uid, gid: opts.runAs.gid }),
+    });
     let output = "";
     let timedOut = false;
     const keep = (chunk: Buffer) => {
@@ -286,10 +299,15 @@ export async function verifyPatch(req: VerifyRequest): Promise<VerifyResult> {
       if (!a && b && (b.mode & 0o111) !== 0) return refuse("file-mode", `The patch adds an executable file (${redactPii(path)}).`);
     }
 
+    if (req.runAs) {
+      const handed = await run("chown", ["-R", `${req.runAs.uid}:${req.runAs.gid}`, scratch], { cwd: scratch, env, timeoutMs: 60_000 });
+      if (handed.code !== 0) return done("rejected", "setup-failed", "The scratch copy could not be handed to the unprivileged user.", { changedFiles });
+    }
     const ran = await run("sh", ["-c", req.config.verifyCommand], {
       cwd: tree,
       env,
       timeoutMs: req.config.verifyTimeoutSeconds * 1000,
+      ...(req.runAs && { runAs: req.runAs }),
     });
     const output = tail(ran.output);
     if (ran.timedOut) {

@@ -7,10 +7,23 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { MAX_CHANGED_FILES, MAX_OUTPUT_CHARS, MAX_PATCH_BYTES, isExcludedPath, verifyPatch, type VerifyConfig } from "./verifyGate.js";
 import { DEFAULT_PATCH_EXCLUDED_PATHS } from "../config.js";
 import { SEEDED_SECRETS } from "../ingest/testSecrets.js";
+
+// The gate makes its scratch copies in the OS temp directory, and a test below counts what is left there. Other
+// test files run the gate at the same time, so this file gets a temp directory of its own.
+const originalTmp = process.env.TMPDIR;
+const privateTmp = mkdtempSync(join(tmpdir(), "vg-private-tmp-"));
+beforeAll(() => {
+  process.env.TMPDIR = privateTmp;
+});
+afterAll(() => {
+  if (originalTmp === undefined) delete process.env.TMPDIR;
+  else process.env.TMPDIR = originalTmp;
+  rmSync(privateTmp, { recursive: true, force: true });
+});
 
 let src: string;
 let marker: string;
@@ -330,5 +343,31 @@ describe("isExcludedPath", () => {
   });
   it("ignores empty patterns", () => {
     expect(isExcludedPath("anything", ["", "  "])).toBe(false);
+  });
+});
+
+describe("verifyPatch: runAs", () => {
+  // Dropping privileges needs root, which a test is not. Handing the scratch copy to this process's own user
+  // exercises every step except the one that needs root: the copy is chowned, and the command still runs and
+  // still sees only its scrubbed environment.
+  it("runs the command as the named user, in a scratch copy handed to that user", async () => {
+    const me = { uid: process.getuid!(), gid: process.getgid!() };
+    const patch = diffOf({ "greeting.txt": "hello new\n" });
+    const r = await verifyPatch({ sourceDir: src, patch, config: cfg({ verifyCommand: `test "$(id -u)" = "${me.uid}" && grep -q new greeting.txt` }), runAs: me });
+    expect(r).toMatchObject({ status: "passed", rule: "command-passed" });
+  });
+
+  it("rejects, as setup failing, when the scratch copy cannot be handed over", async () => {
+    // A uid this user cannot chown to (unless root, where it is a real user and the command runs as it).
+    if (process.getuid!() === 0) return;
+    const patch = diffOf({ "greeting.txt": "hello new\n" });
+    const r = await verifyPatch({ sourceDir: src, patch, config: cfg(), runAs: { uid: 1, gid: 1 } });
+    expect(r).toMatchObject({ status: "rejected", rule: "setup-failed" });
+    expect(r.exitCode).toBeUndefined();
+  });
+
+  it("does nothing different when runAs is absent", async () => {
+    const patch = diffOf({ "greeting.txt": "hello new\n" });
+    expect(await verifyPatch({ sourceDir: src, patch, config: cfg() })).toMatchObject({ status: "passed" });
   });
 });

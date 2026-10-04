@@ -69,7 +69,7 @@ const FIELDS: Record<
     multiline: false,
     kind: "switch",
     placeholder: "",
-    hint: "On: the agent loop drafts, verifies and reviews fixes and opens nothing. Off: a verified, reviewed patch may become a pull request. The engine's default is on. Nothing runs the loop yet.",
+    hint: "On: the agent loop drafts, verifies and reviews fixes and opens nothing. Off: a verified, reviewed patch may become a pull request. The engine's default is on. The job that runs it has never run on a real project.",
   },
   reviewRequired: {
     label: "Review required",
@@ -83,7 +83,7 @@ const FIELDS: Record<
     multiline: false,
     kind: "switch",
     placeholder: "",
-    hint: "The kill switch. Off: the agent loop stops at its next step and opens nothing, whatever the other switches say. The engine's default is on. Nothing runs the loop yet.",
+    hint: "The kill switch. Off: the agent loop stops at its next step and opens nothing, whatever the other switches say. The engine's default is on. The job that runs it has never run on a real project.",
   },
   modelCallBudget: {
     label: "Model calls per cycle",

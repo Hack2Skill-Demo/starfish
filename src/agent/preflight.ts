@@ -6,7 +6,7 @@ import type { StarfishConfig } from "../config.js";
 
 export type PreflightConfig = Pick<
   StarfishConfig,
-  "verifyIsolation" | "verifyCommand" | "githubRepo" | "dryRun" | "environment"
+  "verifyIsolation" | "verifyCommand" | "githubRepo" | "dryRun" | "environment" | "verifyJobName" | "verifyBucket"
 >;
 
 export function agentPreflight(cfg: PreflightConfig, token: string | undefined): string[] {
@@ -16,6 +16,10 @@ export function agentPreflight(cfg: PreflightConfig, token: string | undefined):
       "STARFISH_VERIFY_ISOLATION is none: the verify step has nowhere safe to run, so the agent will not start. " +
         "How it is isolated is an open decision (#74); in-process is not a sandbox."
     );
+  }
+  if (cfg.verifyIsolation === "cloud-run-job") {
+    if (cfg.verifyJobName === "") problems.push("STARFISH_VERIFY_ISOLATION is cloud-run-job but STARFISH_VERIFY_JOB is empty: there is no job to run the verify command in.");
+    if (cfg.verifyBucket === "") problems.push("STARFISH_VERIFY_ISOLATION is cloud-run-job but STARFISH_VERIFY_BUCKET is empty: the source and the result have nowhere to pass through.");
   }
   if (cfg.verifyCommand.trim() === "") {
     problems.push("STARFISH_VERIFY_COMMAND is empty: with nothing to prove a patch, none would ever be accepted.");

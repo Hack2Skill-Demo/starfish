@@ -3,8 +3,8 @@
  * verify gate (a real scratch copy, `git apply` and shell command), and a scripted model. The only
  * stubs are the model and the pull-request opener. Run via `pnpm test:emulator`.
  */
-import { randomUUID } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -364,6 +364,32 @@ describe("runCycle: the fix, the gate and the review", () => {
     cfgOver = { patchExcludedPaths: [".github/"], verifyCommand: "touch /tmp/should-not-run-loop-test" };
     const r = await runCycle(deps(scripted({ triage: [act], fix: [fixOf(evil)] })), key);
     expect(r).toEqual({ kind: "finished", state: "waiting-human", outcome: "verify-excluded-path" });
+  });
+
+  it("verifies through the injected verifier and never runs the command in this process", async () => {
+    cfgOver = { verifyCommand: "touch /tmp/should-not-run-in-process-loop-test" };
+    const seen: { sourceDir: string; patch: string; baseRevision?: string }[] = [];
+    const remote: LoopDeps["verify"] = async (req) => {
+      seen.push({ sourceDir: req.sourceDir, patch: req.patch, ...(req.baseRevision !== undefined && { baseRevision: req.baseRevision }) });
+      return { status: "passed", rule: "command-passed", reason: "The verify command passed.", patchSha256: createHash("sha256").update(req.patch).digest("hex"), baseRevision: req.baseRevision, changedFiles: ["greeting.txt"], exitCode: 0, output: "ok", durationMs: 5 };
+    };
+    const opened: PullRequestRequest[] = [];
+    const model = scripted({ triage: [act], fix: [fixOf(GOOD_PATCH)], review: [held] });
+    const r = await runCycle(deps(model, { verify: remote }, opened), key);
+    expect(r).toMatchObject({ kind: "finished", state: "done" });
+    expect(seen).toEqual([{ sourceDir: src, patch: GOOD_PATCH, baseRevision: "rev1" }]);
+    expect(existsSync("/tmp/should-not-run-in-process-loop-test")).toBe(false);
+    expect(opened[0]!.verify).toMatchObject({ status: "passed", rule: "command-passed" });
+  });
+
+  it("lets an infrastructure failure of the verifier escape, so the lease expires and the cycle is resumed", async () => {
+    const down: LoopDeps["verify"] = async () => {
+      throw new Error("the verify job wrote no result before the deadline");
+    };
+    const model = scripted({ triage: [act], fix: [fixOf(GOOD_PATCH)] });
+    await expect(runCycle(deps(model, { verify: down }), key)).rejects.toThrow("no result");
+    expect((await cycleDoc()).state).toBe("running");
+    expect(model.count("fix")).toBe(1);
   });
 
   it("sends a patch the reviewer breaks back once, and accepts the corrected one", async () => {

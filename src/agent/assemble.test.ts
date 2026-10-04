@@ -124,12 +124,18 @@ describe("createLoader", () => {
 });
 
 describe("agentPreflight", () => {
-  const ok = { verifyIsolation: "in-process" as const, verifyCommand: "pnpm test", githubRepo: "a/b", dryRun: true, environment: "demo" };
+  const ok = { verifyIsolation: "in-process" as const, verifyCommand: "pnpm test", githubRepo: "a/b", dryRun: true, environment: "demo", verifyJobName: "", verifyBucket: "" };
   it("lets a fully configured dry run start", () => expect(agentPreflight(ok, undefined)).toEqual([]));
   it("refuses with no isolation chosen, no command, no repo", () => {
     const p = agentPreflight({ ...ok, verifyIsolation: "none", verifyCommand: " ", githubRepo: "" }, undefined);
     expect(p).toHaveLength(3);
     expect(p[0]).toMatch(/isolat/i);
+  });
+  it("lets the cloud-run-job isolation start only with its job and its bucket named", () => {
+    const remote = { ...ok, verifyIsolation: "cloud-run-job" as const };
+    expect(agentPreflight(remote, undefined)).toHaveLength(2);
+    expect(agentPreflight({ ...remote, verifyJobName: "starfish-verify" }, undefined)[0]).toMatch(/STARFISH_VERIFY_BUCKET/);
+    expect(agentPreflight({ ...remote, verifyJobName: "starfish-verify", verifyBucket: "b" }, undefined)).toEqual([]);
   });
   it("wants a token only when it is going to open pull requests", () => {
     expect(agentPreflight({ ...ok, dryRun: false }, undefined)).toHaveLength(1);

@@ -146,3 +146,125 @@ describe("scripts/deploy-gcp.sh", () => {
     expect(deploy({ ...dry, RUN_AFTER_DEPLOY: "1" }).out).toContain("gcloud run jobs execute starfish-ingest");
   });
 });
+
+describe("scripts/deploy-gcp.sh: the agent and its isolated verify job (#74)", () => {
+  const agent = { ...dry, DEPLOY_AGENT: "1", AGENT_REPO: "acme/shop", VERIFY_COMMAND: "pnpm install --frozen-lockfile && pnpm run verify" };
+  const sa = (name) => `serviceAccount:${name}@star-proj.iam.gserviceaccount.com`;
+  const line = (out, text) => out.split("\n").find((l) => l.includes(text)) ?? "";
+  const grants = (out, member) => out.split("\n").filter((l) => l.includes(`--member=${member}`)).map((l) => l.match(/--role=(\S+)/)?.[1]).sort();
+
+  it("is off unless asked: the default plan has no agent, no verify job and no bucket", () => {
+    const r = deploy(dry);
+    for (const word of ["starfish-agent", "starfish-verify", "agentCli", "verifyRunnerCli", "storage buckets"]) expect(r.out).not.toContain(word);
+  });
+
+  it("needs a repository and a verify command, and refuses what could not work", () => {
+    expect(deploy({ ...dry, DEPLOY_AGENT: "1", VERIFY_COMMAND: "x" }).out).toContain("AGENT_REPO");
+    expect(deploy({ ...dry, DEPLOY_AGENT: "1", AGENT_REPO: "acme/shop" }).out).toContain("VERIFY_COMMAND");
+    for (const bad of ["shop", "a/b/c", "/shop", "acme/", "acme/../x", "acme/sh op", "acme/shop;rm"]) {
+      expect(deploy({ ...agent, AGENT_REPO: bad }).status, bad).not.toBe(0);
+    }
+    expect(deploy({ ...agent, VERIFY_COMMAND: "a@b" }).out).toContain("'@'");
+    for (const t of ["0", "-1", "ten", "3001"]) expect(deploy({ ...agent, VERIFY_TIMEOUT_SECONDS: t }).status, t).not.toBe(0);
+    for (const b of ["Has Space", "UPPER", "-lead"]) expect(deploy({ ...agent, VERIFY_BUCKET: b }).status, b).not.toBe(0);
+    expect(deploy(agent).status).toBe(0);
+  });
+
+  it("creates the verifier's account and grants it NOTHING, on any project or resource", () => {
+    const r = deploy(agent);
+    expect(r.out).toContain("gcloud iam service-accounts create starfish-verifier");
+    expect(r.out).not.toContain(`--member=${sa("starfish-verifier")}`);
+    expect(r.out).not.toContain("--member=serviceAccount:starfish-verifier");
+  });
+
+  it("deploys the verify job under that account, with no secret and no setting of its own", () => {
+    const job = line(deploy(agent).out, "gcloud run jobs deploy starfish-verify");
+    expect(job).toContain(`--service-account=starfish-verifier@star-proj.iam.gserviceaccount.com`);
+    expect(job).toContain("--args=node,--import,tsx,src/verifyRunnerCli.ts");
+    // `--command` would replace the image's entrypoint, which is what starts the runner as root and everything else as `node`.
+    expect(job).not.toContain("--command");
+    expect(job).toContain("--task-timeout=1200s");
+    expect(job).not.toMatch(/--(update|set)-(env-vars|secrets)/);
+    expect(job).not.toContain("pnpm install");
+  });
+
+  it("gives the verify job's time as the command's limit plus ten minutes, and the agent's as three cycles of it", () => {
+    const r = deploy({ ...agent, VERIFY_TIMEOUT_SECONDS: "1200" });
+    expect(line(r.out, "gcloud run jobs deploy starfish-verify")).toContain("--task-timeout=1800s");
+    expect(line(r.out, "gcloud run jobs deploy starfish-agent")).toContain(`--task-timeout=${3 * (1200 + 300) + 600}s`);
+  });
+
+  it("gives the agent exactly what the loop and the isolated verify step need, and the engine's account none of it", () => {
+    const r = deploy(agent);
+    expect(grants(r.out, sa("starfish-agent"))).toEqual([
+      "roles/aiplatform.user",
+      "roles/datastore.user",
+      "roles/iam.serviceAccountTokenCreator",
+      "roles/logging.viewer",
+      "roles/run.invoker",
+      "roles/secretmanager.secretAccessor",
+      "roles/storage.objectAdmin",
+    ]);
+    // Each narrow grant is on the thing it is for, not on the project.
+    expect(line(r.out, "buckets add-iam-policy-binding")).toContain("gs://star-proj-starfish-verify");
+    expect(line(r.out, "run jobs add-iam-policy-binding starfish-verify")).toContain(sa("starfish-agent"));
+    expect(line(r.out, "roles/iam.serviceAccountTokenCreator")).toContain("service-accounts add-iam-policy-binding starfish-agent@star-proj");
+    const store = line(r.out, "roles/datastore.user");
+    expect(store).toContain('resource.name == "projects/star-proj/databases/starfish"');
+    // The ingest's account keeps its three roles and gains nothing from the agent.
+    expect(grants(r.out, sa("starfish-engine"))).toEqual(["roles/aiplatform.user", "roles/datastore.user", "roles/logging.viewer", "roles/secretmanager.secretAccessor"]);
+    expect(r.out).not.toMatch(/roles\/(owner|editor|admin)/i);
+  });
+
+  it("points the agent at the isolated verify job, and never at running the command in its own process", () => {
+    const job = line(deploy(agent).out, "gcloud run jobs deploy starfish-agent");
+    expect(job).toContain("STARFISH_VERIFY_ISOLATION=cloud-run-job");
+    expect(job).toContain("STARFISH_VERIFY_JOB=starfish-verify");
+    expect(job).toContain("STARFISH_VERIFY_BUCKET=star-proj-starfish-verify");
+    expect(job).toContain("STARFISH_VERIFY_JOB_REGION=us-central1");
+    expect(job).toContain("STARFISH_VERIFY_COMMAND=pnpm install --frozen-lockfile && pnpm run verify");
+    expect(job).toContain("STARFISH_GITHUB_REPO=acme/shop");
+    expect(job).toContain("STARFISH_DRY_RUN=true");
+    expect(job).not.toContain("in-process");
+    expect(job).toContain("STARFISH_EXCLUDED_SERVICES=starfish,starfish-ingest,starfish-agent,starfish-verify");
+  });
+
+  it("refuses a setting that would move the verify step: the script owns how it is isolated", () => {
+    for (const key of ["STARFISH_VERIFY_ISOLATION=in-process", "STARFISH_VERIFY_JOB=other", "STARFISH_VERIFY_BUCKET=b", "STARFISH_VERIFY_COMMAND=x", "STARFISH_VERIFY_JOB_REGION=r", "STARFISH_VERIFY_TIMEOUT_SECONDS=1"]) {
+      const r = deploy({ ...agent, AGENT_EXTRA_ENV_VARS: `STARFISH_LOOKBACK_HOURS=2@${key}` });
+      expect(r.status, key).not.toBe(0);
+      expect(r.out).toContain("STARFISH_VERIFY_*");
+      expect(r.out).not.toContain("gcloud run jobs deploy");
+    }
+    expect(deploy({ ...agent, AGENT_EXTRA_ENV_VARS: "MY_STARFISH_VERIFY_JOB_NOTE=1" }).status).toBe(0);
+  });
+
+  it("makes the bucket private, with a one-day lifecycle", () => {
+    const r = deploy(agent);
+    expect(line(r.out, "buckets create")).toContain("--uniform-bucket-level-access --public-access-prevention");
+    expect(r.out).toContain("--lifecycle-file=<delete objects after 1 day>");
+    expect(r.out).not.toContain("allUsers");
+  });
+
+  it("starts the agent on its own schedule, with the scheduler allowed to start only the two Starfish jobs", () => {
+    const r = deploy({ ...agent, AGENT_SCHEDULE: "*/10 * * * *", AGENT_BASE_BRANCH: "develop", AGENT_EXTRA_ENV_VARS: "STARFISH_MAX_CYCLES_PER_PASS=1" });
+    expect(r.out).toContain("gcloud scheduler jobs create http starfish-agent-tick");
+    expect(r.out).toContain("--schedule=*/10 * * * *");
+    expect(r.out).toContain("STARFISH_GITHUB_BASE_BRANCH=develop");
+    expect(r.out).toContain("STARFISH_MAX_CYCLES_PER_PASS=1");
+    expect(grants(r.out, sa("starfish-scheduler"))).toEqual(["roles/run.invoker", "roles/run.invoker"]);
+  });
+
+  it("lets a person turn the dry run off on purpose, and says so once", () => {
+    const r = deploy({ ...agent, AGENT_EXTRA_ENV_VARS: "STARFISH_DRY_RUN=false" });
+    expect(r.out.match(/STARFISH_DRY_RUN=/g)).toHaveLength(1);
+    expect(r.out).toContain("STARFISH_DRY_RUN=false");
+  });
+
+  it("mounts the token on the agent and never on the verify job, and never prints it", () => {
+    const r = deploy({ ...agent, STARFISH_GITHUB_TOKEN: "ghp_THIS_MUST_NOT_APPEAR" });
+    expect(line(r.out, "gcloud run jobs deploy starfish-agent")).toContain("--update-secrets=STARFISH_GITHUB_TOKEN=starfish-github-token:latest");
+    expect(line(r.out, "gcloud run jobs deploy starfish-verify")).not.toContain("--update-secrets");
+    expect(r.out).not.toContain("ghp_THIS_MUST_NOT_APPEAR");
+  });
+});
