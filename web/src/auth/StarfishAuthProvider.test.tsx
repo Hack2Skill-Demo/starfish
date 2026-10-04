@@ -14,6 +14,7 @@ const mocks = vi.hoisted(() => ({
   getIdToken: vi.fn(),
   queryClear: vi.fn(),
   resolveRoles: vi.fn(),
+  signInAnonymously: vi.fn(),
   auth: { currentUser: null as null | { getIdToken: typeof vi.fn }, signOut: vi.fn() },
 }));
 mocks.auth.signOut = mocks.authSignOut;
@@ -23,6 +24,7 @@ vi.mock("firebase/auth", () => ({
     mocks.tokenListener = callback;
     return mocks.unsubscribe;
   },
+  signInAnonymously: (...args: unknown[]) => mocks.signInAnonymously(...args),
 }));
 vi.mock("@tanstack/react-query", () => ({ useQueryClient: () => ({ clear: mocks.queryClear }) }));
 vi.mock("../lib/firebase", () => ({ firebaseAuth: () => mocks.auth }));
@@ -36,9 +38,25 @@ function Consumer() {
   return (
     <div>
       <span data-testid="state">
-        {JSON.stringify({ loading: auth.loading, roles: auth.roles, role: auth.role, uid: auth.user?.uid })}
+        {JSON.stringify({
+          loading: auth.loading,
+          roles: auth.roles,
+          role: auth.role,
+          uid: auth.user?.uid,
+          guest: auth.guest,
+        })}
       </span>
+      <span data-testid="guest-result" />
       <button onClick={() => void auth.signOut()}>Sign out</button>
+      <button
+        onClick={() =>
+          void auth.enterAsGuest().then((ok) => {
+            document.querySelector('[data-testid="guest-result"]')!.textContent = String(ok);
+          })
+        }
+      >
+        Enter as guest
+      </button>
     </div>
   );
 }
@@ -62,6 +80,7 @@ describe("StarfishAuthProvider", () => {
     mocks.auth.currentUser = null;
     mocks.authSignOut.mockResolvedValue(undefined);
     mocks.resolveRoles.mockResolvedValue(["admin"]);
+    mocks.signInAnonymously.mockResolvedValue({ user: { uid: "guest-1", isAnonymous: true } });
   });
 
   it("settles signed-out users without reading roles", async () => {
@@ -183,4 +202,69 @@ describe("StarfishAuthProvider", () => {
   it("treats permission-denied as definitive, not network", () => {
     expect(isNetworkError({ code: "permission-denied" })).toBe(false);
   });
+
+  describe("guests (anonymous sessions, issue #12)", () => {
+    const guestResult = () => screen.getByTestId("guest-result");
+
+    it("treats an anonymous session as a guest: no roles, and no operator-record read", async () => {
+      renderProvider();
+      await act(() => mocks.tokenListener!({ uid: "guest-1", isAnonymous: true }));
+      expect(state()).toHaveTextContent('"guest":true');
+      expect(state()).toHaveTextContent('"roles":[]');
+      expect(state()).toHaveTextContent('"loading":false');
+      expect(mocks.resolveRoles).not.toHaveBeenCalled();
+    });
+
+    it("a signed-in operator is not a guest", async () => {
+      renderProvider();
+      await act(() => mocks.tokenListener!({ uid: "op-1", isAnonymous: false }));
+      expect(state()).toHaveTextContent('"guest":false');
+      expect(state()).toHaveTextContent('"roles":["admin"]');
+    });
+
+    it("starts a guest session on request, once however often it is asked", async () => {
+      renderProvider();
+      await act(() => mocks.tokenListener!(null));
+      const user = userEvent.setup();
+      await user.click(screen.getByText("Enter as guest"));
+      await user.click(screen.getByText("Enter as guest"));
+      await waitFor(() => expect(guestResult()).toHaveTextContent("true"));
+      expect(mocks.signInAnonymously).toHaveBeenCalledTimes(1);
+      expect(mocks.signInAnonymously).toHaveBeenCalledWith(mocks.auth);
+    });
+
+    it("reports false, without throwing, when Anonymous sign-in is off for the project", async () => {
+      mocks.signInAnonymously.mockRejectedValue(Object.assign(new Error("off"), { code: "auth/admin-restricted-operation" }));
+      renderProvider();
+      await act(() => mocks.tokenListener!(null));
+      await userEvent.setup().click(screen.getByText("Enter as guest"));
+      await waitFor(() => expect(guestResult()).toHaveTextContent("false"));
+    });
+
+    it("makes no guest session after a deliberate sign-out: that visitor is heading to the sign-in page", async () => {
+      renderProvider();
+      await act(() => mocks.tokenListener!({ uid: "op-1", isAnonymous: false }));
+      const user = userEvent.setup();
+      await user.click(screen.getByText("Sign out"));
+      await act(() => mocks.tokenListener!(null));
+      await user.click(screen.getByText("Enter as guest"));
+      await waitFor(() => expect(guestResult()).toHaveTextContent("false"));
+      expect(mocks.signInAnonymously).not.toHaveBeenCalled();
+    });
+
+    it("clears cached data when a guest signs in as a team member, but not on a first sign-in", async () => {
+      renderProvider();
+      await act(() => mocks.tokenListener!({ uid: "first-visit", isAnonymous: false }));
+      expect(mocks.queryClear).not.toHaveBeenCalled();
+
+      mocks.queryClear.mockClear();
+      await act(() => mocks.tokenListener!({ uid: "guest-1", isAnonymous: true }));
+      expect(mocks.queryClear).toHaveBeenCalledTimes(1); // first-visit -> guest-1 is a different identity
+      await act(() => mocks.tokenListener!({ uid: "op-1", isAnonymous: false }));
+      expect(mocks.queryClear).toHaveBeenCalledTimes(2); // guest -> team member
+      await act(() => mocks.tokenListener!({ uid: "op-1", isAnonymous: false }));
+      expect(mocks.queryClear).toHaveBeenCalledTimes(2); // a token refresh for the same user clears nothing
+    });
+  });
 });
+

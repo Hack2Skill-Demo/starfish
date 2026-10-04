@@ -19,6 +19,9 @@
  * `CHROMIUM_PATH` is optional if Playwright's own browser is installed. `STARFISH_UI_URL`
  * overrides http://localhost:5177. Exits 1 when anything fails.
  *
+ * Guests: a fresh browser context with no sign-in is audited too (Anonymous sign-in must be
+ * enabled; the Auth emulator allows it).
+ *
  * Not covered: hover, focus and error/loading states that can't be reached with the seeded
  * data, and anything outside the screens listed at the bottom.
  */
@@ -101,7 +104,7 @@ const AUDIT = () => {
 const THEME_KEY = "starfish.theme";   // web/src/theme/ThemeProvider.tsx
 
 async function signIn(page, email, landing) {
-  await page.goto(base + "/");
+  await page.goto(base + "/signin");   // "/" would now open a guest session (#12)
   await page.locator("#email, input[type=email]").first().fill(email);
   await page.locator("#password").fill("starfish");
   await page.getByRole("button", { name: /sign in/i }).click();
@@ -151,6 +154,16 @@ try {
     await other.page.waitForTimeout(800);
     results[`${theme} /access-denied`] = await other.page.evaluate(AUDIT);
     await other.ctx.close();
+
+    // A brand-new visitor is a guest (#12): no sign-in, view-only Incidents and Settings.
+    const guest = await newPage(browser, theme);
+    await guest.page.goto(base + "/");
+    await guest.page.waitForSelector("tbody tr", { timeout: 20000 });
+    results[`${theme} /incidents (guest)`] = await guest.page.evaluate(AUDIT);
+    await guest.page.goto(base + "/settings");
+    await guest.page.getByText("Runtime settings").first().waitFor();
+    results[`${theme} /settings (guest)`] = await guest.page.evaluate(AUDIT);
+    await guest.ctx.close();
   }
 } finally {
   await browser.close();

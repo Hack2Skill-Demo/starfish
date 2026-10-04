@@ -13,6 +13,12 @@ describe("menuConfig", () => {
     expect(visibleMenuItems(menuItems, ["admin"]).map((i) => i.id)).toEqual(["incidents", "settings"]);
   });
 
+  it("shows a guest the incidents and a view-only Settings, never anything role-gated beyond that", () => {
+    expect(visibleMenuItems(menuItems, ["guest"]).map((i) => i.id)).toEqual(["incidents", "settings"]);
+    // A guest is not an admin or an operator.
+    expect(visibleMenuItems(menuItems, []).map((i) => i.id)).toEqual(["incidents"]);
+  });
+
   it("finds the active section by longest prefix", () => {
     expect(activeMenuItem(menuItems, "/settings")?.id).toBe("settings");
     expect(activeMenuItem(menuItems, "/nowhere")).toBeUndefined();

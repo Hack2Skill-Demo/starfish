@@ -113,7 +113,7 @@ descriptive settings page. The mockups below show where it is going and how the 
 - **Pre-recorded phone call:** to the on-call person when Slack goes unanswered.
 - **Settings:** connections, the engine's rules and on-call.
 
-The public demo is designed to need no sign-in, with visitors as view-only guests (#12); today every page requires an operator account.
+The public demo needs no sign-in: a visitor is signed in anonymously and sees the incidents and a view-only Settings page, with no triage buttons (#12). That needs Anonymous sign-in enabled in the Firebase project and only `demo`-labelled data; App Check, the seeded evidence history and the uptime check are not built. A private deployment leaves Anonymous sign-in disabled and still requires an operator account.
 
 ![Live runs: a missing-index fault, from first error to an evidence PR waiting for a human](docs/design/screens/live-runs-index.png)
 

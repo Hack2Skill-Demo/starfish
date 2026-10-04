@@ -8,8 +8,8 @@
  *
  * Sign-out is local only: there is no backend endpoint revoking refresh tokens.
  */
-import { useEffect, useMemo, useRef, useState } from "react";
-import { onIdTokenChanged, type User } from "firebase/auth";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { onIdTokenChanged, signInAnonymously, type User } from "firebase/auth";
 import { useQueryClient } from "@tanstack/react-query";
 import { firebaseAuth } from "../lib/firebase";
 import { readRoles } from "./session";
@@ -79,9 +79,20 @@ export function StarfishAuthProvider({
       }
 
       if (fbUser.uid !== lastResolvedUid.current) {
+        // A different identity (a guest who signs in as a team member, say): nothing cached
+        // for the previous one may be shown to this one. A first sign-in has nothing cached.
+        if (lastResolvedUid.current !== undefined) queryClient.clear();
         setLoading(true);
       }
       lastResolvedUid.current = fbUser.uid;
+
+      // A guest has no operator record, so there is nothing to read: no roles, and no
+      // Firestore round trip (which would be a pointless permission check).
+      if (fbUser.isAnonymous) {
+        setRoles([]);
+        setLoading(false);
+        return;
+      }
 
       try {
         const resolved = await resolveRoles(fbUser.uid);
@@ -133,8 +144,27 @@ export function StarfishAuthProvider({
     return () => document.removeEventListener("visibilitychange", handleVisibilityChange);
   }, [auth]);
 
+  // One guest attempt per page load, and none after a deliberate sign-out: someone who just
+  // signed out is heading to the sign-in page, not asking to be a guest again.
+  const guestAttempt = useRef<Promise<boolean> | null>(null);
+  const signedOutOnPurpose = useRef(false);
+
+  const enterAsGuest = useCallback(async (): Promise<boolean> => {
+    if (signedOutOnPurpose.current) return false;
+    guestAttempt.current ??= signInAnonymously(auth).then(
+      () => true,
+      (error: unknown) => {
+        // Anonymous sign-in is simply off (a private deployment), or the network failed.
+        console.debug("[StarfishAuthProvider] guest sign-in unavailable:", error);
+        return false;
+      }
+    );
+    return guestAttempt.current;
+  }, [auth]);
+
   const signOut = useMemo(() => {
     return async () => {
+      signedOutOnPurpose.current = true;
       // Clear cached incident data (may include redacted-but-sensitive text)
       // before the next operator signs in on this browser.
       queryClient.clear();
@@ -143,9 +173,10 @@ export function StarfishAuthProvider({
   }, [auth, queryClient]);
 
   const role = useMemo(() => primaryRole(roles), [roles]);
+  const guest = user?.isAnonymous === true;
   const value = useMemo(
-    () => ({ user, roles, role, loading, signOut }),
-    [user, roles, role, loading, signOut]
+    () => ({ user, roles, role, loading, signOut, guest, enterAsGuest }),
+    [user, roles, role, loading, signOut, guest, enterAsGuest]
   );
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
