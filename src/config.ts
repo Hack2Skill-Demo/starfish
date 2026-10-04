@@ -10,14 +10,27 @@
  */
 
 export interface StarfishConfig {
-  /** GCP project whose logs are read and whose incidents are stored. */
+  /** GCP project Starfish runs in: its Firestore store and its Vertex AI calls. */
   projectId: string;
+  /**
+   * GCP project whose Cloud Logging is read for errors. Defaults to `projectId`
+   * (Starfish running inside the project it watches); set it to watch another
+   * project. Single-target: one watched project per Starfish deployment, and
+   * `environment` must change with it, or two projects' incidents share a label.
+   */
+  watchedProjectId: string;
   /** Vertex AI region. */
   location: string;
   /** Gemini model used for triage, fix drafting and adversarial review. */
   model: string;
   /** Label attached to every incident, so environments can never mix. */
   environment: string;
+  /**
+   * Firestore collection holding the runtime settings document an admin edits
+   * from the UI (src/runtimeSettings.ts). Environment variables are the defaults;
+   * a valid settings document overrides the operational ones.
+   */
+  settingsCollection: string;
   /** Firestore collection holding incidents. */
   incidentCollection: string;
   /**
@@ -83,9 +96,11 @@ export function loadConfig(): StarfishConfig {
   }
   return {
     projectId,
+    watchedProjectId: process.env.STARFISH_WATCHED_PROJECT_ID || projectId,
     location: process.env.GOOGLE_CLOUD_LOCATION ?? "us-central1",
     model: process.env.STARFISH_MODEL ?? "gemini-3.1-pro-preview",
     environment: process.env.STARFISH_ENV ?? "dev",
+    settingsCollection: process.env.STARFISH_SETTINGS_COLLECTION ?? "starfish_settings",
     incidentCollection: process.env.STARFISH_INCIDENT_COLLECTION ?? "incidents",
     incidentKeyCollection: process.env.STARFISH_INCIDENT_KEY_COLLECTION ?? "incident_keys",
     databaseId: process.env.STARFISH_DATABASE_ID || "starfish",

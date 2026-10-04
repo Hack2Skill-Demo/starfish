@@ -36,7 +36,9 @@ Where it currently holds, and where it doesn't:
 | | Status |
 |---|---|
 | Service attribution | ✅ config patterns — no hardcoded service list |
-| Project, environment, collection, database, lookback | ✅ config (engine `src/config.ts`, UI `web/src/lib/config.ts`); changing the engine's needs a redeploy |
+| Project, environment, collection, database, lookback | ✅ config (engine `src/config.ts`, UI `web/src/lib/config.ts`); these are the defaults, and the engine's need a redeploy to change |
+| Watched project, environment label, log resource types, service patterns, noise list | ⚠️ the engine validates a settings document and applies it over the defaults, falling back to the last good one (`src/runtimeSettings.ts`, `runtimeSettings.test.ts`). **Built:** that reader. **Not built:** anything that writes the document (rules, the Settings editor), a job entrypoint that calls the reader (#6), and the UI following an overridden environment label. Single-target: one watched project per deployment |
+| Vertex model and region | ⚠️ environment only: `vertex.ts` reads them itself, so a settings document can't change them yet |
 | Firebase project the UI connects to | ✅ read at startup from Hosting's `/__/firebase/init.json`, so one build serves any project (`VITE_FIREBASE_*` is the local-dev fallback). Untested against a real Hosting site until the deploy path (#6) exists |
 | UI environment label, collections, region | ⚠️ still `VITE_*`, baked in at build time; moving them to runtime settings is the rest of #7 |
 | Collection names in `firestore.rules` | ⚠️ hardcoded `incidents` / `starfish_users`; rules can't read config, so a renamed collection means editing the rules file |

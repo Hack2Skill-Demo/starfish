@@ -57,7 +57,7 @@ export async function aggregateErrors(
   // Scope to the configured project explicitly. Defaulting to ambient project
   // resolution is how a log reader ends up silently watching the wrong project
   // and reporting "no errors" forever while production burns.
-  const logging = new Logging({ projectId: config.projectId });
+  const logging = new Logging({ projectId: config.watchedProjectId });
   const [entries] = await logging.getEntries({
     filter: buildLogFilter(config, since),
     pageSize: PAGE_SIZE,
