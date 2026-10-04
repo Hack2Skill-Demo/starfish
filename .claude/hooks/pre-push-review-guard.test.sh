@@ -87,6 +87,33 @@ fresh "$HERE"
 run_case deny  "$HERE" "git -C $ROOT/does-not-exist push origin x" "-C to a missing directory"
 run_case deny  "$ROOT" "git push origin x" "not inside any repo"
 
+# ── Compound and prefixed commands (issue #45): a push ANYWHERE on the line is gated ──
+none "$HERE"
+run_case deny  "$HERE" "cd /tmp && git push origin x" "cd then push"
+run_case deny  "$HERE" "FOO=1 git push origin x" "env assignment before push"
+run_case deny  "$HERE" "(git push origin x)" "subshell"
+run_case deny  "$HERE" "git status && git push origin x" "push after another git command"
+run_case deny  "$HERE" "if true; then git push origin x; fi" "push inside an if"
+run_case deny  "$HERE" "command git push origin x" "command wrapper"
+run_case deny  "$HERE" $'git commit -q -F - <<\'EOF\'\nmsg\nEOF\ngit push origin x' "push after a heredoc commit"
+run_case deny  "$HERE" "touch $(marker_of "$HERE") && git push origin x" "touch + push chained: the hook cannot know the touch will happen"
+run_case allow "$HERE" "git status && git log" "no push on the line"
+run_case allow "$HERE" 'echo "a; git push origin x"' "a push inside a quoted string"
+run_case allow "$HERE" "# git push origin x" "a comment"
+run_case allow "$HERE" $'cat <<EOF\ngit push origin x\nEOF' "a push inside a heredoc body"
+run_case allow "$HERE" "git status | grep push" "the word push is not a push"
+
+fresh "$HERE"
+run_case allow "$HERE" "cd /tmp && git push origin x" "cd then push, reviewed"
+run_case allow "$HERE" "FOO=1 git push origin x" "env assignment, reviewed"
+run_case allow "$HERE" $'git commit -q -F - <<\'EOF\'\nmsg\nEOF\ngit push origin x' "push after a heredoc commit, reviewed"
+
+# Two pushes on one line: each is judged, against its own -C repo.
+fresh "$HERE"; none "$THERE"
+run_case deny  "$HERE" "git push origin x && git -C $THERE push origin x" "second push targets an unreviewed repo"
+fresh "$THERE"
+run_case allow "$HERE" "git push origin x && git -C $THERE push origin x" "both targets reviewed"
+
 echo ""
 echo "pre-push-review-guard tests: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
