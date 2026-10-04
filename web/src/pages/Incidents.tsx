@@ -123,7 +123,7 @@ export default function Incidents() {
 
   // Incidents are filtered by the environment label, which a settings document can
   // override; wait for that to settle so the list never flashes the wrong label's.
-  const { environment, ready } = useEnvironment();
+  const { environment, ready, settingsUnavailable } = useEnvironment();
   const query = useQuery({
     queryKey: ["incidents", environment, windowHours],
     queryFn: () => listIncidents(windowHours, environment),
@@ -179,6 +179,16 @@ export default function Incidents() {
     <>
       <PageMeta title="Incidents | Starfish" description="Browse and triage production incidents" />
       <div className="space-y-6">
+        {settingsUnavailable && (
+          <p
+            role="status"
+            className="rounded-lg border border-warning-200 bg-warning-50 px-4 py-3 text-sm text-warning-800 dark:border-warning-500/30 dark:bg-warning-500/10 dark:text-warning-200"
+          >
+            Couldn&apos;t read the runtime settings, so incidents are filtered by this build&apos;s environment label (
+            <span className="font-mono">{environment}</span>). If an admin has changed the label, this list may be empty or
+            out of date.
+          </p>
+        )}
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Incidents</h1>
