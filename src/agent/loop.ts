@@ -201,7 +201,7 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
       if (fix.outcome === "error") return await release(fix.rule);
       if (fix.outcome === "declined" || fix.patch === undefined) return await finish("waiting-human", fix.rule, "human");
 
-      const verified = await (deps.verify ?? verifyPatch)({ sourceDir: loaded.sourceDir, patch: fix.patch, baseRevision: loaded.baseRevision, config: cfg });
+      const verified = await (deps.verify ?? verifyPatch)({ cycleId: id, sourceDir: loaded.sourceDir, patch: fix.patch, baseRevision: loaded.baseRevision, config: cfg });
       await note({
         stage: "verify",
         type: verified.status,

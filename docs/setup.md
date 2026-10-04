@@ -78,10 +78,11 @@ Be honest with yourself about this list before the demo:
 
 - **No incidents unless something errors.** An engine that finds nothing on a quiet project is working. The
   demo needs a source of real errors: the demo app with its faults (#5), which is not built.
-- **The loop is written as a job and has never run.** `DEPLOY_AGENT=1` deploys the agent, a separate verify job whose
-  service account holds no roles, and a bucket they pass the source and result through ([`deploy.md`](deploy.md#the-agent-and-its-isolated-verify-job-74)).
-  It is a dry run and opens nothing; Cloud Storage signing, the Cloud Run call and the privilege drop are untested on
-  a real project. So today's deployed Starfish *finds and shows* incidents; it does not yet *fix* any.
+- **The loop is written as a job and has never run.** `DEPLOY_AGENT=1` deploys the agent, whose patches are judged by the
+  target repository's own CI on a pushed `starfish/<cycle>` branch (or, heavier, by a separate credential-less job); see
+  [`deploy.md`](deploy.md#the-agent-and-where-its-tests-run-74), including the workflow the target needs. It is a dry run
+  and opens no pull request, but it pushes branches; nothing has run against real GitHub. So today's deployed Starfish
+  *finds and shows* incidents; it does not yet *fix* any.
 - **No Slack, no phone call, no issue filed** (#17, #37). The pull-request opener exists
   (`src/integrations/githubPr.ts`, tested against a local git remote and a fake GitHub API, **never against real
   GitHub**) and the mounted GitHub token has that one reader, but nothing that runs deployed calls it.

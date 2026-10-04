@@ -26,17 +26,24 @@
 #                        90% of this monthly amount for PROJECT_ID. An alert, not a cap: nothing stops spending
 #   BILLING_ACCOUNT      the billing account id (0123AB-456CDE-789FGH), needed with BUDGET_USD
 #   DEPLOY_AGENT=1       also deploy the AGENT (#74): triage -> fix -> verify -> review for open incidents, as a dry run.
-#                        Three more things, none of which the ingest has: a Cloud Run job and Scheduler job for the
-#                        agent under its own service account; a separate VERIFY job, under a service account that
-#                        holds NO roles, which is the only place the target repository's tests run (the agent holds
-#                        the store, Logging and Gemini credentials and never runs them); and a bucket the two pass the
-#                        source and the result through. Needs AGENT_REPO and VERIFY_COMMAND. Off by default
+#                        A Cloud Run job and Scheduler job for the agent, under its own service account. The agent
+#                        holds the store, Logging and Gemini credentials and NEVER runs the target repository's code:
+#                        where its tests run is VERIFY_ISOLATION. Needs AGENT_REPO. Off by default
 #   AGENT_REPO           owner/name of the repository the agent works on (STARFISH_GITHUB_REPO)
-#   VERIFY_COMMAND       the command that proves a patch (STARFISH_VERIFY_COMMAND), run in the verify job, e.g.
-#                        "pnpm install --frozen-lockfile && pnpm run verify". The verify job's image is this repo's
-#                        engine image (node, pnpm, git): a target that needs another toolchain needs another image
-#   VERIFY_TIMEOUT_SECONDS  how long that command may run. Default 600
-#   VERIFY_BUCKET        the bucket for bundles and results (objects deleted after a day). Default <PROJECT_ID>-starfish-verify
+#   VERIFY_ISOLATION     github-actions (default) or cloud-run-job.
+#                          github-actions: the patch is pushed to a starfish/<cycle> branch in AGENT_REPO and the
+#                            TARGET's own CI, on GitHub's disposable runners, is the judge. No other resource is
+#                            deployed. Needs VERIFY_CHECKS, and STARFISH_GITHUB_TOKEN stored (a branch is pushed even
+#                            in a dry run). The target's workflow must run on push to starfish/** and hold no secrets
+#                          cloud-run-job: a separate Cloud Run job, under a service account that holds NO roles, runs
+#                            the command, fed through a private bucket. Needs VERIFY_COMMAND. More infrastructure
+#   VERIFY_CHECKS        github-actions: the check runs on the pushed commit that must all pass (STARFISH_VERIFY_CHECKS),
+#                        comma-separated, e.g. "verify" or "ci / test"
+#   VERIFY_COMMAND       cloud-run-job: the command that proves a patch (STARFISH_VERIFY_COMMAND), run in the verify
+#                        job, e.g. "pnpm install --frozen-lockfile && pnpm run verify". That job's image is this
+#                        repo's engine image (node, pnpm, git): a target that needs another toolchain needs another
+#   VERIFY_TIMEOUT_SECONDS  how long the checks or the command may run. Default 600
+#   VERIFY_BUCKET        cloud-run-job: the bucket for bundles and results (objects deleted after a day). Default <PROJECT_ID>-starfish-verify
 #   AGENT_BASE_BRANCH    the branch the agent checks out. Default: the engine's own default (main)
 #   AGENT_SCHEDULE       cron for the agent tick. Default "30 * * * *" (hourly, after the ingest tick)
 #   AGENT_EXTRA_ENV_VARS more settings for the agent job, "@"-separated like EXTRA_ENV_VARS
@@ -64,6 +71,8 @@ AGENT_REPO="${AGENT_REPO:-}"
 AGENT_BASE_BRANCH="${AGENT_BASE_BRANCH:-}"
 AGENT_SCHEDULE="${AGENT_SCHEDULE:-30 * * * *}"
 AGENT_EXTRA_ENV_VARS="${AGENT_EXTRA_ENV_VARS:-}"
+VERIFY_ISOLATION="${VERIFY_ISOLATION:-github-actions}"
+VERIFY_CHECKS="${VERIFY_CHECKS:-}"
 VERIFY_COMMAND="${VERIFY_COMMAND:-}"
 VERIFY_TIMEOUT_SECONDS="${VERIFY_TIMEOUT_SECONDS:-600}"
 VERIFY_BUCKET="${VERIFY_BUCKET:-$PROJECT_ID-starfish-verify}"
@@ -96,22 +105,33 @@ if [ "$DEPLOY_AGENT" = "1" ]; then
     */*) ;;
     *) die "AGENT_REPO must be owner/name: $AGENT_REPO" ;;
   esac
-  [ -n "$VERIFY_COMMAND" ] || die "DEPLOY_AGENT=1 needs VERIFY_COMMAND: with nothing to prove a patch, none would ever be accepted and the agent will not start"
-  case "$VERIFY_COMMAND" in
-    *@*) die "VERIFY_COMMAND may not contain '@' (it is the separator of the job's environment variables)" ;;
+  case "$VERIFY_ISOLATION" in
+    github-actions)
+      [ -n "$VERIFY_CHECKS" ] || die "VERIFY_ISOLATION=github-actions needs VERIFY_CHECKS: name the check runs of the target's CI that must pass (a repository has other checks that say nothing about the patch)"
+      case "$VERIFY_CHECKS" in
+        *@*) die "VERIFY_CHECKS may not contain '@' (it is the separator of the job's environment variables)" ;;
+      esac
+      ;;
+    cloud-run-job)
+      [ -n "$VERIFY_COMMAND" ] || die "VERIFY_ISOLATION=cloud-run-job needs VERIFY_COMMAND: with nothing to prove a patch, none would ever be accepted and the agent will not start"
+      case "$VERIFY_COMMAND" in
+        *@*) die "VERIFY_COMMAND may not contain '@' (it is the separator of the job's environment variables)" ;;
+      esac
+      case "$VERIFY_BUCKET" in
+        *[!a-z0-9._-]*|-*|.*) die "VERIFY_BUCKET must be a bucket name (lowercase letters, digits, - . _): $VERIFY_BUCKET" ;;
+      esac
+      ;;
+    *) die "VERIFY_ISOLATION must be github-actions or cloud-run-job: $VERIFY_ISOLATION" ;;
   esac
   case "$VERIFY_TIMEOUT_SECONDS" in
     ''|*[!0-9]*|0) die "VERIFY_TIMEOUT_SECONDS must be a whole number of seconds above zero: $VERIFY_TIMEOUT_SECONDS" ;;
   esac
-  [ "$VERIFY_TIMEOUT_SECONDS" -le 3000 ] || die "VERIFY_TIMEOUT_SECONDS may not exceed 3000: the runner gets that plus 300 s of its own to start and report, and a verify result is waited for no longer than one hour"
-  case "$VERIFY_BUCKET" in
-    *[!a-z0-9._-]*|-*|.*) die "VERIFY_BUCKET must be a bucket name (lowercase letters, digits, - . _): $VERIFY_BUCKET" ;;
-  esac
+  [ "$VERIFY_TIMEOUT_SECONDS" -le 3000 ] || die "VERIFY_TIMEOUT_SECONDS may not exceed 3000: the runner gets that plus a few minutes of its own to start and report, and a verify result is waited for no longer than one hour"
   # The script owns how the agent's verify step is isolated: a person's extra setting must not point it elsewhere,
   # least of all at running the command in the agent's own process.
   case "@$AGENT_EXTRA_ENV_VARS" in
-    *@STARFISH_VERIFY_ISOLATION=*|*@STARFISH_VERIFY_JOB=*|*@STARFISH_VERIFY_BUCKET=*|*@STARFISH_VERIFY_COMMAND=*|*@STARFISH_VERIFY_JOB_REGION=*|*@STARFISH_VERIFY_TIMEOUT_SECONDS=*)
-      die "AGENT_EXTRA_ENV_VARS may not set STARFISH_VERIFY_*: DEPLOY_AGENT sets them (isolation, job, bucket, command, timeout)" ;;
+    *@STARFISH_VERIFY_ISOLATION=*|*@STARFISH_VERIFY_CHECKS=*|*@STARFISH_VERIFY_JOB=*|*@STARFISH_VERIFY_BUCKET=*|*@STARFISH_VERIFY_COMMAND=*|*@STARFISH_VERIFY_JOB_REGION=*|*@STARFISH_VERIFY_TIMEOUT_SECONDS=*)
+      die "AGENT_EXTRA_ENV_VARS may not set STARFISH_VERIFY_*: DEPLOY_AGENT sets them (isolation, checks, job, bucket, command, timeout)" ;;
   esac
 fi
 if [ -n "$BUDGET_USD" ]; then
@@ -291,61 +311,76 @@ else
 fi
 
 if [ "$DEPLOY_AGENT" = "1" ]; then
-  step "Verify job '$VERIFY_JOB_NAME' (#74): the only place the target's tests run. $VERIFIER_SA holds NO roles"
-  if ! exists gcloud storage buckets describe "gs://$VERIFY_BUCKET" --project="$PROJECT_ID"; then
-    run gcloud storage buckets create "gs://$VERIFY_BUCKET" --project="$PROJECT_ID" --location="$REGION" \
-      --uniform-bucket-level-access --public-access-prevention
-  fi
-  # Bundles and results are deleted by the agent when it is done; a day's lifecycle removes what a crash left.
-  if [ "$DRY_RUN" = "1" ]; then
-    echo "+ gcloud storage buckets update gs://$VERIFY_BUCKET --project=$PROJECT_ID --lifecycle-file=<delete objects after 1 day>"
-  else
-    LIFECYCLE_FILE="$(mktemp)"
-    printf '%s' '{"rule":[{"action":{"type":"Delete"},"condition":{"age":1}}]}' > "$LIFECYCLE_FILE"
-    gcloud storage buckets update "gs://$VERIFY_BUCKET" --project="$PROJECT_ID" --lifecycle-file="$LIFECYCLE_FILE"
-    rm -f "$LIFECYCLE_FILE"
+  if [ "$VERIFY_ISOLATION" = "cloud-run-job" ]; then
+    step "Verify job '$VERIFY_JOB_NAME' (#74): the only place the target's tests run. $VERIFIER_SA holds NO roles"
+    if ! exists gcloud storage buckets describe "gs://$VERIFY_BUCKET" --project="$PROJECT_ID"; then
+      run gcloud storage buckets create "gs://$VERIFY_BUCKET" --project="$PROJECT_ID" --location="$REGION" \
+        --uniform-bucket-level-access --public-access-prevention
+    fi
+    # Bundles and results are deleted by the agent when it is done; a day's lifecycle removes what a crash left.
+    if [ "$DRY_RUN" = "1" ]; then
+      echo "+ gcloud storage buckets update gs://$VERIFY_BUCKET --project=$PROJECT_ID --lifecycle-file=<delete objects after 1 day>"
+    else
+      LIFECYCLE_FILE="$(mktemp)"
+      printf '%s' '{"rule":[{"action":{"type":"Delete"},"condition":{"age":1}}]}' > "$LIFECYCLE_FILE"
+      gcloud storage buckets update "gs://$VERIFY_BUCKET" --project="$PROJECT_ID" --lifecycle-file="$LIFECYCLE_FILE"
+      rm -f "$LIFECYCLE_FILE"
+    fi
+
+    # No grant of any kind is made to this account, on any project or resource. That is the isolation: the code that
+    # runs here can use the network and the metadata server, and the token it gets there is worth nothing.
+    if ! exists gcloud iam service-accounts describe "$VERIFIER_SA" --project="$PROJECT_ID"; then
+      run gcloud iam service-accounts create "$VERIFIER_SA_NAME" --project="$PROJECT_ID" \
+        --display-name="Starfish verifier (runs the target's tests; holds no roles)"
+    fi
+    # The runner reads its whole input from the request the agent passes: no Starfish setting, no secret.
+    # The task timeout covers the command's own limit plus the time to start, fetch and report.
+    run gcloud run jobs deploy "$VERIFY_JOB_NAME" --source . --region="$REGION" --project="$PROJECT_ID" --quiet \
+      --service-account="$VERIFIER_SA" \
+      --args=node,--import,tsx,src/verifyRunnerCli.ts \
+      --max-retries=0 --task-timeout="$((VERIFY_TIMEOUT_SECONDS + 600))s" --cpu=2 --memory=4Gi
   fi
 
-  # No grant of any kind is made to this account, on any project or resource. That is the isolation: the code that
-  # runs here can use the network and the metadata server, and the token it gets there is worth nothing.
-  if ! exists gcloud iam service-accounts describe "$VERIFIER_SA" --project="$PROJECT_ID"; then
-    run gcloud iam service-accounts create "$VERIFIER_SA_NAME" --project="$PROJECT_ID" \
-      --display-name="Starfish verifier (runs the target's tests; holds no roles)"
+  step "Agent job '$AGENT_JOB_NAME' (#74): dry run; $AGENT_SA is its own identity and never runs the target's code ($VERIFY_ISOLATION)"
+  if [ "$VERIFY_ISOLATION" = "github-actions" ] && [ "$DRY_RUN" != "1" ] && [ "$SECRET_VERSION" != "1" ]; then
+    die "VERIFY_ISOLATION=github-actions pushes a branch to $AGENT_REPO for CI to judge, so the agent needs a token: set STARFISH_GITHUB_TOKEN (not GITHUB_TOKEN) and run again"
   fi
-  # The runner reads its whole input from the request the agent passes: no Starfish setting, no secret.
-  # The task timeout covers the command's own limit plus the time to start, fetch and report.
-  run gcloud run jobs deploy "$VERIFY_JOB_NAME" --source . --region="$REGION" --project="$PROJECT_ID" --quiet \
-    --service-account="$VERIFIER_SA" \
-    --args=node,--import,tsx,src/verifyRunnerCli.ts \
-    --max-retries=0 --task-timeout="$((VERIFY_TIMEOUT_SECONDS + 600))s" --cpu=2 --memory=4Gi
-
-  step "Agent job '$AGENT_JOB_NAME' (#74): dry run; $AGENT_SA is its own identity and never runs the target's code"
   if ! exists gcloud iam service-accounts describe "$AGENT_SA" --project="$PROJECT_ID"; then
     run gcloud iam service-accounts create "$AGENT_SA_NAME" --project="$PROJECT_ID" \
       --display-name="Starfish agent (triage, fix, review)"
   fi
   # What the loop itself needs: the store (its own database only), Gemini, the counter-check's read of the watched
-  # project's logs, the one secret; and what the isolated verify step needs of it: its bucket, a signature of its own
-  # (the signed URLs it hands the runner), and the right to start that one job.
+  # project's logs, the one secret. With cloud-run-job it also needs what the isolated verify step asks of it: its
+  # bucket, a signature of its own (the signed URLs it hands the runner), and the right to start that one job.
   bind "$WATCHED_PROJECT_ID" "$AGENT_SA" roles/logging.viewer
   bind "$PROJECT_ID" "$AGENT_SA" roles/datastore.user \
     "resource.name == \"$DB_RESOURCE\" || resource.name.startsWith(\"$DB_RESOURCE/\")"
   bind "$VERTEX_PROJECT_ID" "$AGENT_SA" roles/aiplatform.user
   retry gcloud secrets add-iam-policy-binding "$GITHUB_SECRET" --project="$PROJECT_ID" \
     --member="serviceAccount:$AGENT_SA" --role=roles/secretmanager.secretAccessor --quiet --format=none
-  retry gcloud storage buckets add-iam-policy-binding "gs://$VERIFY_BUCKET" --project="$PROJECT_ID" \
-    --member="serviceAccount:$AGENT_SA" --role=roles/storage.objectAdmin --quiet --format=none
-  retry gcloud iam service-accounts add-iam-policy-binding "$AGENT_SA" --project="$PROJECT_ID" \
-    --member="serviceAccount:$AGENT_SA" --role=roles/iam.serviceAccountTokenCreator --quiet --format=none
-  retry gcloud run jobs add-iam-policy-binding "$VERIFY_JOB_NAME" --region="$REGION" --project="$PROJECT_ID" \
-    --member="serviceAccount:$AGENT_SA" --role=roles/run.invoker --quiet --format=none
+  if [ "$VERIFY_ISOLATION" = "cloud-run-job" ]; then
+    retry gcloud storage buckets add-iam-policy-binding "gs://$VERIFY_BUCKET" --project="$PROJECT_ID" \
+      --member="serviceAccount:$AGENT_SA" --role=roles/storage.objectAdmin --quiet --format=none
+    retry gcloud iam service-accounts add-iam-policy-binding "$AGENT_SA" --project="$PROJECT_ID" \
+      --member="serviceAccount:$AGENT_SA" --role=roles/iam.serviceAccountTokenCreator --quiet --format=none
+    retry gcloud run jobs add-iam-policy-binding "$VERIFY_JOB_NAME" --region="$REGION" --project="$PROJECT_ID" \
+      --member="serviceAccount:$AGENT_SA" --role=roles/run.invoker --quiet --format=none
+  fi
 
   AGENT_ENV="GOOGLE_CLOUD_PROJECT=$PROJECT_ID@STARFISH_WATCHED_PROJECT_ID=$WATCHED_PROJECT_ID@STARFISH_VERTEX_PROJECT_ID=$VERTEX_PROJECT_ID"
   AGENT_ENV="$AGENT_ENV@GOOGLE_CLOUD_LOCATION=$REGION@STARFISH_ENV=$STARFISH_ENV@STARFISH_DATABASE_ID=$STARFISH_DATABASE_ID"
   AGENT_ENV="$AGENT_ENV@STARFISH_GITHUB_REPO=$AGENT_REPO"
   [ -z "$AGENT_BASE_BRANCH" ] || AGENT_ENV="$AGENT_ENV@STARFISH_GITHUB_BASE_BRANCH=$AGENT_BASE_BRANCH"
-  AGENT_ENV="$AGENT_ENV@STARFISH_VERIFY_ISOLATION=cloud-run-job@STARFISH_VERIFY_JOB=$VERIFY_JOB_NAME@STARFISH_VERIFY_BUCKET=$VERIFY_BUCKET"
-  AGENT_ENV="$AGENT_ENV@STARFISH_VERIFY_JOB_REGION=$REGION@STARFISH_VERIFY_TIMEOUT_SECONDS=$VERIFY_TIMEOUT_SECONDS@STARFISH_VERIFY_COMMAND=$VERIFY_COMMAND"
+  AGENT_ENV="$AGENT_ENV@STARFISH_VERIFY_ISOLATION=$VERIFY_ISOLATION@STARFISH_VERIFY_TIMEOUT_SECONDS=$VERIFY_TIMEOUT_SECONDS"
+  AGENT_EXCLUDED="starfish,$JOB_NAME,$AGENT_JOB_NAME"
+  AGENT_WAIT_SECONDS=$((VERIFY_TIMEOUT_SECONDS + 600))
+  if [ "$VERIFY_ISOLATION" = "github-actions" ]; then
+    AGENT_ENV="$AGENT_ENV@STARFISH_VERIFY_CHECKS=$VERIFY_CHECKS"
+  else
+    AGENT_ENV="$AGENT_ENV@STARFISH_VERIFY_JOB=$VERIFY_JOB_NAME@STARFISH_VERIFY_BUCKET=$VERIFY_BUCKET@STARFISH_VERIFY_JOB_REGION=$REGION@STARFISH_VERIFY_COMMAND=$VERIFY_COMMAND"
+    AGENT_EXCLUDED="$AGENT_EXCLUDED,$VERIFY_JOB_NAME"
+    AGENT_WAIT_SECONDS=$((VERIFY_TIMEOUT_SECONDS + 300))
+  fi
   # Nothing leaves Starfish until a person turns the dry run off on purpose (an admin on the Settings page, or here).
   case "@$AGENT_EXTRA_ENV_VARS" in
     *@STARFISH_DRY_RUN=*) ;;
@@ -353,7 +388,7 @@ if [ "$DEPLOY_AGENT" = "1" ]; then
   esac
   case "@$EXTRA_ENV_VARS@$AGENT_EXTRA_ENV_VARS" in
     *@STARFISH_EXCLUDED_SERVICES=*) ;;
-    *) AGENT_ENV="$AGENT_ENV@STARFISH_EXCLUDED_SERVICES=starfish,$JOB_NAME,$AGENT_JOB_NAME,$VERIFY_JOB_NAME" ;;
+    *) AGENT_ENV="$AGENT_ENV@STARFISH_EXCLUDED_SERVICES=$AGENT_EXCLUDED" ;;
   esac
   [ -z "$EXTRA_ENV_VARS" ] || AGENT_ENV="$AGENT_ENV@$EXTRA_ENV_VARS"
   [ -z "$AGENT_EXTRA_ENV_VARS" ] || AGENT_ENV="$AGENT_ENV@$AGENT_EXTRA_ENV_VARS"
@@ -362,7 +397,7 @@ if [ "$DEPLOY_AGENT" = "1" ]; then
     gcloud run jobs deploy "$AGENT_JOB_NAME" --source . --region="$REGION" --project="$PROJECT_ID" --quiet
     --service-account="$AGENT_SA"
     --args=node,--import,tsx,src/agentCli.ts
-    --max-retries=0 --task-timeout="$((3 * (VERIFY_TIMEOUT_SECONDS + 300) + 600))s" --cpu=1 --memory=1Gi
+    --max-retries=0 --task-timeout="$((3 * AGENT_WAIT_SECONDS + 600))s" --cpu=1 --memory=1Gi
     --update-env-vars="^@^$AGENT_ENV"
   )
   if [ "$SECRET_VERSION" = "1" ]; then
@@ -399,5 +434,8 @@ else
   echo "Job $JOB_NAME and scheduler $SCHEDULER_JOB_NAME are in place in $PROJECT_ID ($REGION)."
   echo "Run it now:  gcloud run jobs execute $JOB_NAME --region=$REGION --project=$PROJECT_ID --wait"
   echo "Read it:     gcloud run jobs executions list --job=$JOB_NAME --region=$REGION --project=$PROJECT_ID"
-  [ "$DEPLOY_AGENT" != "1" ] || echo "Agent $AGENT_JOB_NAME (tick $AGENT_SCHEDULER_JOB_NAME) and verify job $VERIFY_JOB_NAME are in place: a dry run; the tests run only in $VERIFY_JOB_NAME."
+  if [ "$DEPLOY_AGENT" = "1" ]; then
+    echo "Agent $AGENT_JOB_NAME (tick $AGENT_SCHEDULER_JOB_NAME) is in place: a dry run, verified by $VERIFY_ISOLATION."
+    [ "$VERIFY_ISOLATION" != "github-actions" ] || echo "Its CI judge: the target's workflow must run on push to starfish/** and report: $VERIFY_CHECKS."
+  fi
 fi

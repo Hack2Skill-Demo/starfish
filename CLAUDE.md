@@ -147,8 +147,11 @@ src/
   agent/pass.ts    one pass over the store: candidate selection, stack trace → repo files, bounded driver
   agent/assemble.ts  one incident's inputs: shallow clone at a pinned revision, counter-check, samples, files the trace names
   agentCli.ts      `pnpm agent`: one pass. Dry run by default; refuses to start until STARFISH_VERIFY_ISOLATION is set
-                   (`in-process` is not a sandbox; `cloud-run-job` hands the source + patch to a separate job whose
-                   service account holds NO roles and never runs the command itself). Deployed by `DEPLOY_AGENT=1`; never run
+                   (`in-process` is not a sandbox; `github-actions` = the target's own CI judges a pushed starfish/<cycle>
+                   branch, the demo's choice; `cloud-run-job` hands the source + patch to a separate job whose service
+                   account holds NO roles). The agent never runs the target's code. Deployed by `DEPLOY_AGENT=1`; never run
+  agent/verifyCi.ts  `github-actions` isolation: local gate checks (nothing executed) → push branch → wait for the NAMED check
+                   runs on that exact commit → delete the branch unless it passed. No check / only queued throws (cycle resumes)
   agent/verifyRemote.ts  the agent's side of the isolated verify: bundle → signed URLs → start the job → validated result.
                    Infra failures throw (the cycle resumes); a failed command is a result
   agent/verifyRunner.ts  the verify job's side (`src/verifyRunnerCli.ts`): fetch the bundle, run the gate, write the result.

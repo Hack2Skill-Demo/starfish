@@ -368,16 +368,17 @@ describe("runCycle: the fix, the gate and the review", () => {
 
   it("verifies through the injected verifier and never runs the command in this process", async () => {
     cfgOver = { verifyCommand: "touch /tmp/should-not-run-in-process-loop-test" };
-    const seen: { sourceDir: string; patch: string; baseRevision?: string }[] = [];
+    const seen: { sourceDir: string; patch: string; cycleId?: string; baseRevision?: string }[] = [];
     const remote: LoopDeps["verify"] = async (req) => {
-      seen.push({ sourceDir: req.sourceDir, patch: req.patch, ...(req.baseRevision !== undefined && { baseRevision: req.baseRevision }) });
+      seen.push({ sourceDir: req.sourceDir, patch: req.patch, ...(req.cycleId !== undefined && { cycleId: req.cycleId }), ...(req.baseRevision !== undefined && { baseRevision: req.baseRevision }) });
       return { status: "passed", rule: "command-passed", reason: "The verify command passed.", patchSha256: createHash("sha256").update(req.patch).digest("hex"), baseRevision: req.baseRevision, changedFiles: ["greeting.txt"], exitCode: 0, output: "ok", durationMs: 5 };
     };
     const opened: PullRequestRequest[] = [];
     const model = scripted({ triage: [act], fix: [fixOf(GOOD_PATCH)], review: [held] });
     const r = await runCycle(deps(model, { verify: remote }, opened), key);
     expect(r).toMatchObject({ kind: "finished", state: "done" });
-    expect(seen).toEqual([{ sourceDir: src, patch: GOOD_PATCH, baseRevision: "rev1" }]);
+    // The cycle id is what names the branch in the CI-backed verifier.
+    expect(seen).toEqual([{ sourceDir: src, patch: GOOD_PATCH, cycleId: "inc1_r0", baseRevision: "rev1" }]);
     expect(existsSync("/tmp/should-not-run-in-process-loop-test")).toBe(false);
     expect(opened[0]!.verify).toMatchObject({ status: "passed", rule: "command-passed" });
   });

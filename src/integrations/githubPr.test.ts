@@ -14,7 +14,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import { loadChildProcessBasics } from "../config.js";
 import { SEEDED_SECRETS } from "../ingest/testSecrets.js";
 import type { PullRequestRequest } from "../agent/loop.js";
-import { GithubError, branchFor, createPullRequestOpener, gitAuthEnv, pullRequestText, pushRefspec, type GithubPrConfig, type RunGit } from "./githubPr.js";
+import { GithubError, branchFor, createGithubClient, createPullRequestOpener, gitAuthEnv, pullRequestText, pushRefspec, type GithubPrConfig, type RunGit } from "./githubPr.js";
 
 const TOKEN = SEEDED_SECRETS.github!;
 const REPO = "acme/shop";
@@ -45,6 +45,8 @@ let api: {
   repo: () => Reply;
   list: (n: number) => Reply;
   create: (n: number) => Reply;
+  checks?: (commit: string) => Reply;
+  annotations?: (id: string) => Reply;
 };
 let listCalls: number;
 let createCalls: number;
@@ -101,9 +103,15 @@ beforeAll(async () => {
       if (req.method === "GET" && url.pathname === `/repos/${REPO}`) out = api.repo();
       else if (req.method === "GET" && url.pathname === `/repos/${REPO}/pulls`) out = api.list(++listCalls);
       else if (req.method === "POST" && url.pathname === `/repos/${REPO}/pulls`) out = api.create(++createCalls);
-      else out = { status: 404, json: { message: "not found" } };
+      else if (req.method === "GET" && url.pathname.startsWith(`/repos/${REPO}/commits/`) && url.pathname.endsWith("/check-runs") && api.checks) out = api.checks(url.pathname.split("/")[4]!);
+      else if (req.method === "GET" && url.pathname.startsWith(`/repos/${REPO}/check-runs/`) && api.annotations) out = api.annotations(url.pathname.split("/")[4]!);
+      else if (req.method === "DELETE" && url.pathname.startsWith(`/repos/${REPO}/git/refs/heads/`)) {
+        // Like GitHub: the branch is really gone afterwards.
+        const ref = `refs/heads/${decodeURIComponent(url.pathname.slice(`/repos/${REPO}/git/refs/heads/`.length))}`;
+        out = branches().some((b) => b.startsWith(`${ref} `)) ? (git(bare, "update-ref", "-d", ref), { status: 204, json: null }) : { status: 422, json: { message: "Reference does not exist" } };
+      } else out = { status: 404, json: { message: "not found" } };
       res.writeHead(out.status, { "content-type": "application/json", ...(out.headers ?? {}) });
-      res.end(JSON.stringify(out.json));
+      res.end(out.status === 204 ? undefined : JSON.stringify(out.json));
     });
   });
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
@@ -413,5 +421,123 @@ describe("createPullRequestOpener: configuration", () => {
     expect(() => createPullRequestOpener({ ...base, githubApiUrl: "http://evil.example" }, deps)).toThrow(/https/);
     expect(() => createPullRequestOpener({ ...base, githubApiUrl: "http://127.0.0.1:9" }, deps)).not.toThrow();
     expect(() => createPullRequestOpener(base, { ...deps, token: "  " })).toThrow(/token/);
+  });
+});
+
+describe("createGithubClient: the CI-backed verify step", () => {
+  const client = (over: { fetch?: typeof fetch; runGit?: RunGit } = {}) =>
+    createGithubClient(cfg(), { token: TOKEN, env: loadChildProcessBasics(), tmpDir: join(root, "scratch"), ...over });
+  const tip = (branch: string) => git(bare, "rev-parse", `refs/heads/${branch}`);
+  const patchReq = (over: Partial<PullRequestRequest> = {}) => request(over);
+  const OTHER_PATCH = "--- a/greeting.txt\n+++ b/greeting.txt\n@@ -1 +1 @@\n-hello old\n+hello other\n";
+
+  it("pushes the patch as one commit on starfish/<cycle> on top of the base, opens NO pull request, and returns the commit", async () => {
+    const { branch, commit } = await client().pushPatchBranch(patchReq());
+    expect(branch).toBe("starfish/inc1_r0");
+    expect(commit).toBe(tip(branch));
+    expect(git(bare, "rev-parse", `${commit}^`)).toBe(baseRev);
+    expect(git(bare, "show", `${commit}:greeting.txt`)).toBe("hello new");
+    expect(requests.some((r) => r.method === "POST")).toBe(false);
+    expect(scratchLeft()).toEqual([]);
+  });
+
+  it("is idempotent: the same patch again gives the same commit and writes nothing", async () => {
+    const c = client();
+    const first = await c.pushPatchBranch(patchReq());
+    const again = await c.pushPatchBranch(patchReq());
+    expect(again.commit).toBe(first.commit);
+    expect(branches().filter((b) => b.includes("starfish/"))).toHaveLength(1);
+  });
+
+  it("replaces the branch when the cycle's next draft differs: it deletes through the API, then pushes, never forcing", async () => {
+    const c = client();
+    const first = await c.pushPatchBranch(patchReq());
+    const second = await c.pushPatchBranch(patchReq({ patch: OTHER_PATCH }));
+    expect(second.commit).not.toBe(first.commit);
+    expect(git(bare, "show", `${second.commit}:greeting.txt`)).toBe("hello other");
+    expect(requests.filter((r) => r.method === "DELETE").map((r) => r.path)).toEqual([`/repos/${REPO}/git/refs/heads/starfish/inc1_r0`]);
+  });
+
+  it("never touches a branch that already has a pull request", async () => {
+    const c = client();
+    const first = await c.pushPatchBranch(patchReq());
+    api.list = () => ({ status: 200, json: [PR] });
+    await expect(c.pushPatchBranch(patchReq({ patch: OTHER_PATCH }))).rejects.toMatchObject({ rule: "branch-conflict" });
+    expect(tip("starfish/inc1_r0")).toBe(first.commit);
+    expect(requests.some((r) => r.method === "DELETE")).toBe(false);
+  });
+
+  it("lets the pull request be opened later from the branch it pushed: the commit is reused, and one pull request is created", async () => {
+    const c = client();
+    const { commit } = await c.pushPatchBranch(patchReq());
+    const pr = await c.openPullRequest(patchReq());
+    expect(pr).toEqual({ number: 7, url: PR.html_url });
+    expect(tip("starfish/inc1_r0")).toBe(commit);
+    expect(createCalls).toBe(1);
+  });
+
+  it("refuses a patch that is not the one named, before writing anything", async () => {
+    await expect(client().pushPatchBranch({ ...patchReq(), patchSha256: "0".repeat(64) })).rejects.toMatchObject({ rule: "patch-hash-mismatch" });
+    expect(branches()).toHaveLength(1);
+  });
+
+  it("only ever pushes to refs/heads/starfish/<cycle>, and never forces", async () => {
+    const pushes: string[][] = [];
+    const spy: RunGit = async (args, opts) => {
+      if (args[0] === "push") pushes.push(args);
+      return execFileSync("git", args, { cwd: opts.cwd, env: { ...opts.env, ...GIT_ENV }, encoding: "utf8" });
+    };
+    await client({ runGit: spy }).pushPatchBranch(patchReq());
+    expect(pushes).toEqual([["push", "--quiet", "origin", "HEAD:refs/heads/starfish/inc1_r0"]]);
+  });
+
+  it("deletes the cycle's branch, treats an already-gone one as done, and refuses an id that is not a plain id", async () => {
+    const c = client();
+    await c.pushPatchBranch(patchReq());
+    await c.deleteBranch("inc1_r0");
+    expect(branches().filter((b) => b.includes("starfish/"))).toEqual([]);
+    await expect(c.deleteBranch("inc1_r0")).resolves.toBeUndefined();
+    await expect(c.deleteBranch("../main")).rejects.toMatchObject({ rule: "invalid-request" });
+    await expect(c.deleteBranch("a b")).rejects.toMatchObject({ rule: "invalid-request" });
+    expect(requests.filter((r) => r.method === "DELETE").every((r) => r.path.includes("/refs/heads/starfish/"))).toBe(true);
+  });
+
+  it("lists the check runs on a commit, bounded, and with a token an API echoes back scrubbed", async () => {
+    const commit = "d".repeat(40);
+    api.checks = (sha) => ({
+      status: 200,
+      json: {
+        total_count: 2,
+        check_runs: [
+          { id: 11, name: "verify", status: "completed", conclusion: "success", html_url: "https://github.com/acme/shop/runs/11", output: { title: "ok", summary: `token ${TOKEN} ${"s".repeat(2000)}` } },
+          { id: 12, name: "lint", status: "in_progress", conclusion: null, html_url: "https://github.com/acme/shop/runs/12", output: null },
+          { id: "nope", name: "bad" },
+          "junk",
+        ],
+        sha,
+      },
+    });
+    const runs = await client().listCheckRuns(commit);
+    expect(runs.map((r) => [r.id, r.name, r.status, r.conclusion])).toEqual([[11, "verify", "completed", "success"], [12, "lint", "in_progress", null]]);
+    expect(runs[0]!.summary.length).toBeLessThanOrEqual(400);
+    expect(JSON.stringify(runs)).not.toContain(TOKEN);
+    expect(requests.at(-1)!.path).toBe(`/repos/${REPO}/commits/${commit}/check-runs?per_page=100`);
+  });
+
+  it("refuses a ref that is not a full commit id, and reports what the API cannot give", async () => {
+    await expect(client().listCheckRuns("main")).rejects.toMatchObject({ rule: "invalid-request" });
+    api.checks = () => ({ status: 403, json: { message: "Resource not accessible by integration" } });
+    await expect(client().listCheckRuns("e".repeat(40))).rejects.toMatchObject({ rule: "forbidden" });
+    api.checks = () => ({ status: 200, json: { check_runs: "nope" } });
+    await expect(client().listCheckRuns("e".repeat(40))).rejects.toMatchObject({ rule: "unexpected-response" });
+  });
+
+  it("reads a check run's annotations, bounded", async () => {
+    api.annotations = () => ({ status: 200, json: [{ path: "src/a.ts", start_line: 4, annotation_level: "failure", message: "m".repeat(1000) }, ...Array.from({ length: 40 }, () => ({ path: "x", start_line: 1, annotation_level: "notice", message: "n" }))] });
+    const a = await client().annotations(11);
+    expect(a).toHaveLength(20);
+    expect(a[0]).toMatchObject({ path: "src/a.ts", line: 4, level: "failure" });
+    expect(a[0]!.message.length).toBeLessThanOrEqual(400);
+    await expect(client().annotations(0)).rejects.toMatchObject({ rule: "invalid-request" });
   });
 });
