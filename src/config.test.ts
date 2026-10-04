@@ -232,6 +232,28 @@ describe("loadConfig: the pull-request target", () => {
   });
 });
 
+describe("loadConfig: where a missing index may be created", () => {
+  beforeEach(() => {
+    vi.stubEnv("STARFISH_INDEX_ALLOWED_TARGETS", "");
+    vi.stubEnv("GOOGLE_CLOUD_PROJECT", "home-project");
+  });
+  afterEach(() => vi.unstubAllEnvs());
+
+  it("allows nothing by default", () => {
+    expect(loadConfig().indexAllowedTargets).toEqual([]);
+  });
+
+  it("reads project/database pairs", () => {
+    vi.stubEnv("STARFISH_INDEX_ALLOWED_TARGETS", "demo-app-1/(default), demo-app-1/shop-db");
+    expect(loadConfig().indexAllowedTargets).toEqual(["demo-app-1/(default)", "demo-app-1/shop-db"]);
+  });
+
+  it.each(["demo-app-1", "demo-app-1/", "Demo/(default)", "a/b/c"])("refuses the entry %s at startup instead of widening the list", (bad) => {
+    vi.stubEnv("STARFISH_INDEX_ALLOWED_TARGETS", bad);
+    expect(() => loadConfig()).toThrow("STARFISH_INDEX_ALLOWED_TARGETS");
+  });
+});
+
 describe("loadConfig: admin actions", () => {
   beforeEach(() => {
     vi.stubEnv("STARFISH_USERS_COLLECTION", "");

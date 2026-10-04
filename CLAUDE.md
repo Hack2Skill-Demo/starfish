@@ -152,6 +152,8 @@ src/
   status.ts        judges the engine's last_run record (`pnpm status`): the same verdicts as the UI's engine line
   (repo root)      Dockerfile = the engine image the Cloud Run job runs; scripts/deploy-gcp.sh deploys it
                    (job, Scheduler, Secret Manager, IAM, Firestore rules). Written and tested by a dry run; not yet run against a real project
+  indexheal/createIndexUrl.ts  create-index URL → strict spec, default-deny target guard, index-file dedup (#11).
+                   Parser and guard only: nothing creates an index; tested on URLs built from the documented proto
   integrations/githubPr.ts  the pull-request opener (#17): idempotent by cycle id, pushes only
                    starfish/<id>, never merges, token only in git's environment. Never run against real
                    GitHub; not run by any job yet
