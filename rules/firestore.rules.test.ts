@@ -18,6 +18,8 @@ import {
   doc,
   getDoc,
   getDocs,
+  limit,
+  orderBy,
   query,
   where,
   serverTimestamp,
@@ -667,9 +669,9 @@ describe("agent cycles and their run events", () => {
   beforeEach(async () => {
     await env.withSecurityRulesDisabled(async (ctx) => {
       const db = ctx.firestore();
-      await setDoc(doc(db, CYCLE), { incidentId: "inc1", environment: "demo", state: "running", owner: "worker-a" });
+      await setDoc(doc(db, CYCLE), { incidentId: "inc1", environment: "demo", state: "running", owner: "worker-a", updatedAt: Timestamp.now() });
       await setDoc(doc(db, EVENT), { seq: 1, environment: "demo", stage: "triage", type: "decision", summary: "declined" });
-      await setDoc(doc(db, "starfish_cycles/inc2_r0"), { incidentId: "inc2", environment: "prod", state: "running" });
+      await setDoc(doc(db, "starfish_cycles/inc2_r0"), { incidentId: "inc2", environment: "prod", state: "running", updatedAt: Timestamp.now() });
       await setDoc(doc(db, "starfish_cycles/inc2_r0/events/000001"), { seq: 1, environment: "prod", summary: "x" });
     });
   });
@@ -689,6 +691,14 @@ describe("agent cycles and their run events", () => {
     await assertFails(getDoc(doc(guest(), "starfish_cycles/inc2_r0")));
     await assertFails(getDoc(doc(guest(), "starfish_cycles/inc2_r0/events/000001")));
     await assertFails(getDocs(collection(guest(), "starfish_cycles")));
+    // The Runs page's own list query (web/src/lib/runs.ts): the environment filter is what lets the rules serve it.
+    const listed = await assertSucceeds(
+      getDocs(query(collection(guest(), "starfish_cycles"), where("environment", "==", "demo"), orderBy("updatedAt", "desc"), limit(50)))
+    );
+    expect(listed.docs.map((d) => d.id)).toEqual(["inc1_r0"]);
+    await assertFails(
+      getDocs(query(collection(guest(), "starfish_cycles"), where("environment", "==", "prod"), orderBy("updatedAt", "desc"), limit(50)))
+    );
   });
 
   it("nobody else reads them: not an unauthenticated visitor, not an account with no role", async () => {

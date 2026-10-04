@@ -1,0 +1,271 @@
+/**
+ * The agent's cycles as the Live runs screen shows them, and the pure logic that turns a cycle and its
+ * events into a waterfall. Reads nothing: runs.ts subscribes, this file only parses and judges, so
+ * every rule here is testable without Firestore.
+ *
+ * The engine writes a cycle document and an append-only list of events (src/agent/cycle.ts), the
+ * loop's own stages being triage, fix, verify, review and pr (src/agent/loop.ts). An event is the
+ * proof that a step happened. A step with no event is "not reached": the screen never fills a step in
+ * from the stage order, so a partial run reads as partial.
+ */
+
+/** Mirrors CycleState in src/agent/cycle.ts. */
+export type CycleState = "running" | "waiting-human" | "done" | "declined" | "failed";
+const CYCLE_STATES: readonly string[] = ["running", "waiting-human", "done", "declined", "failed"];
+
+/** Mirrors CyclePath in src/agent/cycle.ts. */
+export type CyclePath = "decline" | "notify" | "draft" | "pr" | "human" | "failed";
+const CYCLE_PATHS: readonly string[] = ["decline", "notify", "draft", "pr", "human", "failed"];
+
+type Flat = Record<string, string | number | boolean | null>;
+
+export interface CycleRow {
+  id: string;
+  incidentId: string;
+  environment: string;
+  recurrence: number;
+  state: CycleState;
+  /** The last stage that wrote an event. */
+  stage?: string;
+  path?: CyclePath;
+  outcome?: string;
+  attempts: number;
+  eventCount: number;
+  createdAt: Date;
+  updatedAt: Date;
+  /** Null when no worker holds the cycle. */
+  leaseExpiresAt: Date | null;
+  deadlineAt: Date | null;
+  /** The run record: `summary.<stage>` as the stages stored it. */
+  summary: Record<string, Flat>;
+}
+
+export interface EventRow {
+  id: string;
+  seq: number;
+  stage: string;
+  type: string;
+  summary: string;
+  at: Date;
+  data: Flat;
+}
+
+const str = (v: unknown): string | undefined => (typeof v === "string" && v !== "" ? v : undefined);
+
+function date(v: unknown): Date | null {
+  const d = (v as { toDate?: () => Date } | null | undefined)?.toDate?.();
+  return d instanceof Date && !Number.isNaN(d.getTime()) ? d : null;
+}
+
+function flat(v: unknown): Flat {
+  const out: Flat = {};
+  if (typeof v !== "object" || v === null || Array.isArray(v)) return out;
+  for (const [k, x] of Object.entries(v)) {
+    if (typeof x === "string" || typeof x === "boolean" || x === null || (typeof x === "number" && Number.isFinite(x))) out[k] = x;
+  }
+  return out;
+}
+
+/** A cycle from its document, or null when it lacks what the screen cannot do without (never throws). */
+export function parseCycle(id: string, d: Record<string, unknown>): CycleRow | null {
+  const createdAt = date(d.createdAt);
+  const updatedAt = date(d.updatedAt);
+  const incidentId = str(d.incidentId);
+  if (!createdAt || !updatedAt || !incidentId || typeof d.state !== "string" || !CYCLE_STATES.includes(d.state)) return null;
+  const summary: Record<string, Flat> = {};
+  if (typeof d.summary === "object" && d.summary !== null && !Array.isArray(d.summary)) {
+    for (const [stage, record] of Object.entries(d.summary)) summary[stage] = flat(record);
+  }
+  return {
+    id,
+    incidentId,
+    environment: str(d.environment) ?? "",
+    recurrence: typeof d.recurrence === "number" ? d.recurrence : 0,
+    state: d.state as CycleState,
+    ...(str(d.stage) && { stage: str(d.stage) }),
+    ...(typeof d.path === "string" && CYCLE_PATHS.includes(d.path) && { path: d.path as CyclePath }),
+    ...(str(d.outcome) && { outcome: str(d.outcome) }),
+    attempts: typeof d.attempts === "number" ? d.attempts : 1,
+    eventCount: typeof d.eventCount === "number" ? d.eventCount : 0,
+    createdAt,
+    updatedAt,
+    leaseExpiresAt: date(d.leaseExpiresAt),
+    deadlineAt: date(d.deadlineAt),
+    summary,
+  };
+}
+
+/** An event from its document, or null when it lacks a stage, a time or a sequence number. */
+export function parseEvent(id: string, d: Record<string, unknown>): EventRow | null {
+  const at = date(d.at);
+  const stage = str(d.stage);
+  if (!at || !stage || typeof d.seq !== "number" || !Number.isInteger(d.seq)) return null;
+  return { id, seq: d.seq, stage, type: str(d.type) ?? "", summary: str(d.summary) ?? "", at, data: flat(d.data) };
+}
+
+// ---- Run state ---------------------------------------------------------------------------------
+
+export type RunTone = "info" | "success" | "warning" | "error" | "neutral";
+
+export interface RunStatus {
+  label: string;
+  tone: RunTone;
+  /** A worker holds the cycle right now. */
+  live: boolean;
+}
+
+/**
+ * How a cycle reads in the list. A cycle marked running whose lease has run out is not live: no
+ * worker is on it, and saying "in progress" would be a claim the data does not support.
+ */
+export function runStatus(c: CycleRow, nowMs: number): RunStatus {
+  switch (c.state) {
+    case "running": {
+      const live = c.leaseExpiresAt !== null && c.leaseExpiresAt.getTime() > nowMs;
+      return live
+        ? { label: "In progress", tone: "info", live: true }
+        : { label: "Waiting for a worker", tone: "warning", live: false };
+    }
+    case "waiting-human":
+      return { label: "Waiting for a human", tone: "warning", live: false };
+    case "done":
+      return { label: "Done", tone: "success", live: false };
+    case "declined":
+      return { label: "Declined", tone: "neutral", live: false };
+    case "failed":
+      return c.outcome === "deadline-passed"
+        ? { label: "Timed out", tone: "error", live: false }
+        : { label: "Failed", tone: "error", live: false };
+  }
+}
+
+/** What the cycle ended in, in the words of the loop's own paths. */
+export const PATH_LABELS: Record<CyclePath, string> = {
+  decline: "Declined: no fix attempted",
+  notify: "A person is told",
+  draft: "Fix drafted, nothing opened (dry run)",
+  pr: "Pull request opened",
+  human: "Handed to a person",
+  failed: "Failed",
+};
+
+/** The rule that chose the path, as triage recorded it, when it did. */
+export function triageRule(c: CycleRow): string | undefined {
+  const rule = c.summary.triage?.rule;
+  return typeof rule === "string" && rule !== "" ? rule : undefined;
+}
+
+/** A link is shown only if it is an https URL: the record is written by the engine, but it is still data. */
+export function safeUrl(v: unknown): string | undefined {
+  if (typeof v !== "string") return undefined;
+  try {
+    const u = new URL(v);
+    return u.protocol === "https:" ? u.toString() : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+// ---- Waterfall ---------------------------------------------------------------------------------
+
+/** The stages the loop runs, in order, with the words the screen uses for them. */
+export const KNOWN_STAGES = [
+  { stage: "triage", title: "Triage" },
+  { stage: "fix", title: "Draft a fix" },
+  { stage: "verify", title: "Verify gate" },
+  { stage: "review", title: "Adversarial review" },
+  { stage: "pr", title: "Pull request" },
+] as const;
+
+/** `cycle` events are the loop's own bookkeeping (started, stopped, budget), shown as notes. */
+const NOTE_STAGE = "cycle";
+
+export type StepStatus = "done" | "running" | "not-reached";
+
+export interface Step {
+  stage: string;
+  title: string;
+  status: StepStatus;
+  /** What the step's last event said happened ("proposed", "declined", "passed"...). */
+  outcome?: string;
+  summary?: string;
+  /** Where the step ended: the time of its last event. */
+  at?: Date;
+  /** Time since the step before it ended (or the cycle began): an event marks an end, not a start. */
+  durationMs?: number;
+  /** Position on the run's time axis, as fractions of the whole. */
+  offset?: number;
+  width?: number;
+}
+
+export interface Waterfall {
+  steps: Step[];
+  notes: EventRow[];
+  /** The axis: from the cycle's start to its last update, or to now while a worker holds it. */
+  startMs: number;
+  endMs: number;
+}
+
+const titleOf = (stage: string): string => KNOWN_STAGES.find((s) => s.stage === stage)?.title ?? stage;
+
+/**
+ * One row per stage that has an event, plus every known stage that has none, as "not reached", unless
+ * the cycle is still running, in which case the first of them is "running". Stages the screen does not
+ * know are kept, after the known ones, in the order they first appeared: a stage added to the loop
+ * shows up without a change here.
+ */
+export function buildWaterfall(cycle: CycleRow, events: readonly EventRow[], nowMs: number): Waterfall {
+  const ordered = [...events].sort((a, b) => a.seq - b.seq);
+  const notes = ordered.filter((e) => e.stage === NOTE_STAGE);
+  const byStage = new Map<string, EventRow[]>();
+  for (const e of ordered) {
+    if (e.stage === NOTE_STAGE) continue;
+    byStage.set(e.stage, [...(byStage.get(e.stage) ?? []), e]);
+  }
+
+  const known: string[] = KNOWN_STAGES.map((s) => s.stage);
+  const extra = [...byStage.keys()].filter((s) => !known.includes(s));
+  const stages = [...known, ...extra];
+
+  const status = runStatus(cycle, nowMs);
+  const startMs = cycle.createdAt.getTime();
+  const endMs = Math.max(status.live ? nowMs : cycle.updatedAt.getTime(), ...ordered.map((e) => e.at.getTime()), startMs + 1);
+  const span = endMs - startMs;
+
+  // Only the step right after the last one that happened can be in flight, and only while a worker holds the cycle.
+  const lastDone = stages.reduce((acc, stage, i) => (byStage.has(stage) ? i : acc), -1);
+  const runningIdx = status.live && cycle.state === "running" && lastDone + 1 < known.length ? lastDone + 1 : -1;
+
+  let previousEnd = startMs;
+  const steps: Step[] = stages.map((stage, i) => {
+    const evs = byStage.get(stage);
+    if (!evs) return { stage, title: titleOf(stage), status: i === runningIdx ? "running" : "not-reached" };
+    const last = evs[evs.length - 1]!;
+    const end = last.at.getTime();
+    const from = Math.min(previousEnd, end);
+    previousEnd = Math.max(previousEnd, end);
+    return {
+      stage,
+      title: titleOf(stage),
+      status: "done",
+      ...(last.type && { outcome: last.type }),
+      ...(last.summary && { summary: last.summary }),
+      at: last.at,
+      durationMs: end - from,
+      offset: (from - startMs) / span,
+      width: (end - from) / span,
+    };
+  });
+
+  return { steps, notes, startMs, endMs };
+}
+
+/** "850 ms", "12 s", "3 min 5 s". */
+export function formatDuration(ms: number): string {
+  if (!Number.isFinite(ms) || ms < 0) return "";
+  if (ms < 1000) return `${Math.round(ms)} ms`;
+  const s = Math.round(ms / 1000);
+  if (s < 60) return `${s} s`;
+  const m = Math.floor(s / 60);
+  return m < 60 ? `${m} min ${s % 60} s` : `${Math.floor(m / 60)} h ${m % 60} min`;
+}

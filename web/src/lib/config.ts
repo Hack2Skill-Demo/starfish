@@ -108,6 +108,11 @@ export interface WebConfig {
    */
   runCollection: string;
   /**
+   * Agent cycles and their run events (Live runs): {cycleCollection}/{id} and /events/{seq}.
+   * Must match the engine's STARFISH_CYCLE_COLLECTION and firestore.rules.
+   */
+  cycleCollection: string;
+  /**
    * The engine counts as stopped when its last run finished longer ago than this. Set it to
    * about three times the schedule's interval: the engine does not know its own cadence.
    */
@@ -149,6 +154,7 @@ export function bootstrapWebConfig(
         usersCollection: env.VITE_STARFISH_USERS_COLLECTION || "starfish_users",
     settingsCollection: env.VITE_STARFISH_SETTINGS_COLLECTION || "starfish_settings",
         runCollection: env.VITE_STARFISH_RUN_COLLECTION || "starfish_runs",
+        cycleCollection: env.VITE_STARFISH_CYCLE_COLLECTION || "starfish_cycles",
         engineStaleMinutes: positiveMinutes(env.VITE_STARFISH_STALE_MINUTES, 90),
         environment: env.VITE_STARFISH_ENV || "dev",
         functionsRegion: env.VITE_FUNCTIONS_REGION || "us-central1",
