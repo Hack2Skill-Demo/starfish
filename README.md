@@ -120,6 +120,12 @@ demo runs.
   empty;** it is exercised against the emulator with seeded data. Not built: the mockup's header
   (path rule, engine health), the Slack, GitHub-issue, index, deploy, phone and recovery steps (the
   loop has no code for them), and the four MVP cases observed end to end (#33 stays open).
+- **Incident evidence:** a first version is built: `/incidents/:id`, linked from the incidents table
+  and from the Runs page, shows what was detected and, from the agent's run record, the triage,
+  fix, verify, review and pull request results, with "not reached" for any stage not recorded. It
+  does **not** show the patch text (only its SHA-256 is stored), the counter-check result (the
+  engine recounts but does not keep it with the incident), the occurrences chart, or the
+  alternatives a fix rejected; the review's individual attacks are counted, not listed (#39 stays open).
 - **Overview:** what needs a human, and what was handled.
 - **Slack messages and GitHub issue/PR bodies:** what Starfish posts elsewhere.
 - **Pre-recorded phone call:** to the on-call person when Slack goes unanswered.

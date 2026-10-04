@@ -128,6 +128,12 @@ describe("Runs page", () => {
     expect(screen.getByRole("link", { name: /Pull request #9/ })).toHaveAttribute("href", "https://github.com/o/r/pull/9");
   });
 
+  it("links a run to its incident's evidence page", () => {
+    renderRuns();
+    act(() => mocks.cyclesCb!([cycle("inc-a_r0")], false));
+    expect(screen.getByRole("link", { name: "Evidence for this incident" })).toHaveAttribute("href", "/incidents/inc-a");
+  });
+
   it("does not link a pull request URL that isn't https", () => {
     renderRuns();
     act(() => mocks.cyclesCb!([cycle("inc-a_r0", { summary: { pr: { url: "javascript:alert(1)", number: 9 } } })], false));

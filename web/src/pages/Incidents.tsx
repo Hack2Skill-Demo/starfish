@@ -10,7 +10,7 @@
  *    yet: GitHub integration is design-only (docs/design/auto-merge-policy.md).
  */
 import { Fragment, useState } from "react";
-import { useSearchParams } from "react-router";
+import { Link, useSearchParams } from "react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertTriangle,
@@ -362,6 +362,13 @@ export default function Incidents() {
                                   {row.tenantId ? ` · ${row.tenantId}` : ""}
                                 </p>
                                 <div className="mt-1 flex flex-wrap items-center gap-2">
+                                  <Link
+                                    to={`/incidents/${encodeURIComponent(row.id)}`}
+                                    className="inline-flex items-center gap-1 text-xs font-medium text-brand-700 hover:underline dark:text-brand-400"
+                                    aria-label={`Evidence for ${row.functionName}`}
+                                  >
+                                    Evidence
+                                  </Link>
                                   {logsUrl && (
                                     <a
                                       href={logsUrl}

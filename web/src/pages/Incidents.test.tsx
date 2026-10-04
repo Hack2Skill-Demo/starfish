@@ -81,6 +81,12 @@ describe("Incidents page", () => {
     expect(mocks.listIncidents).toHaveBeenCalledWith(24, "staging-eu");
   });
 
+  it("links each incident to its evidence page", async () => {
+    renderPage();
+    const link = await screen.findByRole("link", { name: "Evidence for mailDrainer" });
+    expect(link).toHaveAttribute("href", "/incidents/1");
+  });
+
   it("shows the engine's status for the environment being viewed, once the settings have settled", async () => {
     mocks.env = { environment: "staging-eu", ready: true, settingsUnavailable: false };
     renderPage();

@@ -10,6 +10,7 @@
 import {
   collection,
   doc,
+  getDoc,
   getDocs,
   limit,
   orderBy,
@@ -150,6 +151,19 @@ export async function listIncidents(
     rows: snap.docs.map((d) => toRow(d.id, d.data(), windowHours, now)),
     capped: snap.size >= SCAN_LIMIT,
   };
+}
+
+/**
+ * One incident by id, or null when there is none for this environment. A document of another
+ * environment is "none": the list never mixes environments and neither does a link into it. A retired
+ * incident (src/ingest/retire.ts) is gone to the UI the same way it is to the store.
+ */
+export async function getIncident(id: string, environment: string): Promise<IncidentRow | null> {
+  const snap = await getDoc(doc(firestore(), webConfig().incidentCollection, id));
+  if (!snap.exists()) return null;
+  const data = snap.data();
+  if (data.environment !== environment || data.retired === true) return null;
+  return toRow(snap.id, data, 24);
 }
 
 export type IncidentAction = "acknowledge" | "resolve" | "ignore" | "reopen";
