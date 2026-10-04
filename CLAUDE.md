@@ -134,6 +134,8 @@ src/
                    gates before the model, local validation after it; not run by any job yet
   agent/fixer.ts   stage 2: minimal patch or honest decline from a stubbed-testable model call;
                    fails closed, redacts both ways. Not run by any job yet
+  agent/reviewer.ts  stage 4: attacks the verified patch; verdict computed from outcomes in code, bound
+                   to the patch hash the gate tested. Not run by any job yet
   agent/verifyGate.ts  stage 3: apply a patch in a scratch copy, judge the tree that results, run the
                    configured command with a scrubbed env. Not a sandbox; not run by any job yet
   runtimeSettings.ts  the settings document an admin edits: validated, applied over the
