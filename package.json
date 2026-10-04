@@ -15,6 +15,7 @@
     "ingest": "tsx src/ingestCli.ts",
     "agent": "tsx src/agentCli.ts",
     "status": "tsx src/statusCli.ts",
+    "smoke-check": "tsx src/smokeCheckCli.ts",
     "grant-operator": "tsx src/grantOperatorCli.ts",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",

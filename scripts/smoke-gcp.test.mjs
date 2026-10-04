@@ -21,11 +21,13 @@ function smoke(env) {
   return { ...r, out: `${r.stdout}${r.stderr}`.replace(/\\/g, ""), ran: existsSync(marker) };
 }
 
-const dry = { DRY_RUN: "1", PROJECT_ID: "star-proj" };
+const dry = { DRY_RUN: "1", PROJECT_ID: "star-proj", SMOKE_ACTOR_UID: "admin-uid-1" };
 
 describe("scripts/smoke-gcp.sh", () => {
   it("needs a project and a sane wait", () => {
     expect(smoke({ DRY_RUN: "1" }).out).toContain("PROJECT_ID is required");
+    expect(smoke({ DRY_RUN: "1", PROJECT_ID: "star-proj" }).out).toContain("SMOKE_ACTOR_UID is required");
+    expect(smoke({ ...dry, SMOKE_ACTOR_UID: "bad uid; rm" }).status).not.toBe(0);
     expect(smoke({ ...dry, SMOKE_WAIT_SECONDS: "soon" }).status).not.toBe(0);
   });
 
@@ -37,7 +39,17 @@ describe("scripts/smoke-gcp.sh", () => {
     expect(at("gcloud logging write starfish-smoke")).toBeGreaterThan(-1);
     expect(at("sleep 420")).toBeGreaterThan(at("gcloud logging write"));
     expect(at("gcloud run jobs execute starfish-ingest")).toBeGreaterThan(at("sleep 420"));
-    expect(at("pnpm status --stale-minutes 15 --min-incidents 1 --min-entries 1")).toBeGreaterThan(at("gcloud run jobs execute"));
+    expect(at("pnpm status --stale-minutes 15")).toBeGreaterThan(at("gcloud run jobs execute"));
+    expect(at("pnpm smoke-check")).toBeGreaterThan(at("pnpm status"));
+  });
+
+  it("checks its own planted incident against the time it planted, and cleans up with the admin it was given", () => {
+    const r = smoke(dry);
+    expect(r.out).toMatch(/pnpm smoke-check --since \d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ --cleanup --actor admin-uid-1/);
+    // The time is taken before the entry is written, not after.
+    expect(r.out.indexOf("pnpm smoke-check")).toBeGreaterThan(r.out.indexOf("gcloud logging write"));
+    // No check that any log entry at all satisfies.
+    expect(r.out).not.toContain("--min-entries");
   });
 
   it("writes the entry as a function resource with a name, which is what the ingest reads", () => {

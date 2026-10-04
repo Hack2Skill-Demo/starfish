@@ -75,7 +75,7 @@ the engine read itself. An explicit `STARFISH_EXCLUDED_SERVICES` in `EXTRA_ENV_V
 ## After the first deploy
 
 ```bash
-PROJECT_ID=my-project scripts/smoke-gcp.sh     # plants one error, runs the job, checks the incident arrived
+PROJECT_ID=my-project SMOKE_ACTOR_UID=<admin uid> scripts/smoke-gcp.sh   # plants one error, runs the job, checks THAT incident, retires it
 pnpm status                                    # is the engine alive? (needs GOOGLE_CLOUD_PROJECT and STARFISH_ENV)
 gcloud run jobs executions list --job=starfish-ingest --region=us-central1 --project=my-project
 ```
@@ -221,8 +221,11 @@ None of this has run against a real project. The likely first failures, and what
 - **An alert when ingestion stops.** The UI shows it; nothing pages anyone (an item on #6).
 - **An authenticated "run now" endpoint.** `src/ingest/trigger.ts` is the function; nothing serves
   it. For recording a demo, a short `SCHEDULE` or `gcloud run jobs execute` does the job.
-- **The agent loop as a job.** Triage, fix, verify and review exist as stages and are run by
-  nothing; the loop needs a repo checkout and the pull-request opener first.
+- **The agent loop as a job.** Triage, fix, verify, review and the loop exist, and so do the pieces of one pass
+  (candidate selection, stack trace to files, input assembly with a pinned checkout, the pull-request opener) and
+  an entrypoint, `pnpm agent`, which is not in the image and not scheduled. What is missing is the second
+  job and its own identity, and above all **a real isolation of the verify step** (#74): the entrypoint refuses to
+  start until `STARFISH_VERIFY_ISOLATION` is set, and `in-process` is not a sandbox.
 - **Cost.** Cloud Run jobs, Scheduler (three free jobs) and Secret Manager (a few free versions) sit
   inside the free tiers at one tick an hour. Cloud Build and Artifact Registry storage, and a 5-minute
   tick running all month, are not free; Gemini calls are billed to the Gemini project. Each Actions deploy runs one Cloud Build.

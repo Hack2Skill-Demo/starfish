@@ -161,7 +161,8 @@ export async function listIncidents(
   );
   const now = Date.now();
   return {
-    rows: snap.docs.map((d) => toRow(d.id, d.data(), windowHours, now)),
+    // A retired incident (src/ingest/retire.ts) is closed for good and gone from every list, as it is to the store.
+    rows: snap.docs.filter((d) => d.data().retired !== true).map((d) => toRow(d.id, d.data(), windowHours, now)),
     capped: snap.size >= SCAN_LIMIT,
   };
 }
