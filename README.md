@@ -36,7 +36,9 @@ Where it currently holds, and where it doesn't:
 | | Status |
 |---|---|
 | Service attribution | ✅ config patterns — no hardcoded service list |
-| Project, environment, collection, database, lookback | ✅ config (engine `src/config.ts`, UI `web/src/lib/config.ts`) |
+| Project, environment, collection, database, lookback | ✅ config (engine `src/config.ts`, UI `web/src/lib/config.ts`); changing the engine's needs a redeploy |
+| Firebase project the UI connects to | ✅ read at startup from Hosting's `/__/firebase/init.json`, so one build serves any project (`VITE_FIREBASE_*` is the local-dev fallback). Untested against a real Hosting site until the deploy path (#6) exists |
+| UI environment label, collections, region | ⚠️ still `VITE_*`, baked in at build time; moving them to runtime settings is the rest of #7 |
 | Collection names in `firestore.rules` | ⚠️ hardcoded `incidents` / `starfish_users`; rules can't read config, so a renamed collection means editing the rules file |
 | Log source resource types | ⚠️ config, but attribution reads only `function_name` / `service_name`, so only Cloud Functions and Cloud Run work |
 | Framework-noise suppression list | ✅ config, callable GET-probe noise by default |

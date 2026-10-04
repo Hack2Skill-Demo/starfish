@@ -6,6 +6,7 @@ import "./index.css";
 import App from "./App";
 import { ThemeProvider } from "./theme/ThemeProvider";
 import { StarfishAuthProvider } from "./auth/StarfishAuthProvider";
+import { BootstrapGate } from "./BootstrapGate";
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { staleTime: 30_000, refetchOnWindowFocus: false } },
@@ -14,13 +15,15 @@ const queryClient = new QueryClient({
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <ThemeProvider>
-      <QueryClientProvider client={queryClient}>
-        <StarfishAuthProvider>
-          <BrowserRouter>
-            <App />
-          </BrowserRouter>
-        </StarfishAuthProvider>
-      </QueryClientProvider>
+      <BootstrapGate>
+        <QueryClientProvider client={queryClient}>
+          <StarfishAuthProvider>
+            <BrowserRouter>
+              <App />
+            </BrowserRouter>
+          </StarfishAuthProvider>
+        </QueryClientProvider>
+      </BootstrapGate>
     </ThemeProvider>
   </StrictMode>
 );
