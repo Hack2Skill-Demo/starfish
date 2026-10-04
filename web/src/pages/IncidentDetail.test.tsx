@@ -66,6 +66,22 @@ describe("IncidentDetail page", () => {
     expect(within(stage("counter-check") as HTMLElement).getByText("Not stored")).toBeInTheDocument();
   });
 
+  it("draws this incident's own hourly occurrences, and nothing when it had none in the last day", async () => {
+    const hour = Math.floor(Date.now() / 3_600_000);
+    mocks.getIncident.mockResolvedValue({ ...row, occurrencesByHour: { [String(hour)]: 4, [String(hour - 1)]: 2, [String(hour - 90)]: 50 } });
+    const first = renderPage();
+    const bars = await screen.findByRole("list", { name: "Occurrences by hour, last 24 hours" });
+    expect(bars.querySelectorAll("li")).toHaveLength(24);
+    expect(bars.textContent).toMatch(/: 4/);
+    expect(bars.textContent).not.toMatch(/: 50/);
+    first.unmount();
+
+    mocks.getIncident.mockResolvedValue({ ...row, occurrencesByHour: { [String(hour - 90)]: 50 } });
+    renderPage();
+    await screen.findByRole("heading", { name: "orders-create" });
+    expect(screen.queryByRole("list", { name: /Occurrences by hour/ })).toBeNull();
+  });
+
   it("shows a recorded stage's result and links the pull request", async () => {
     mocks.readCycle.mockResolvedValue(
       cycle({

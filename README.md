@@ -126,8 +126,8 @@ demo runs.
 - **Incident evidence:** a first version is built: `/incidents/:id`, linked from the incidents table
   and from the Runs page, shows what was detected and, from the agent's run record, the triage,
   fix, verify, review and pull request results, with "not reached" for any stage not recorded. It
-  does **not** show the patch text (only its SHA-256 is stored), the counter-check result (the
-  engine recounts but does not keep it with the incident), the occurrences chart, or the
+  draws the incident's last 24 hours of occurrences as bars, and does **not** show the patch text (only its SHA-256 is stored), the counter-check result (the
+  engine recounts but does not keep it with the incident), or the
   alternatives a fix rejected; the review's individual attacks are counted, not listed (#39 stays open).
 - **Overview:** a first version is built and is the page the app opens on: how many runs wait on a
   human, runs in progress, open incidents, regressions, errors per hour (from the incidents' hourly
