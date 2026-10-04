@@ -1,0 +1,72 @@
+/**
+ * What the engine says about its own last run (`{runCollection}/last_run`, written by
+ * src/ingest/run.ts) and how the UI judges it.
+ *
+ * Only firebase/firestore is imported, so the reader can be exercised without the web config.
+ * The record holds counts and labels, never log text, because guests may read it.
+ */
+import { doc, getDoc, type Firestore } from "firebase/firestore";
+
+export const LAST_RUN_DOC = "last_run";
+
+export interface LastRun {
+  environment: string;
+  outcome: "ok" | "failed" | "idle";
+  finishedAt: Date;
+  windows: number;
+  /** A read hit the cap: counts are a floor. */
+  capped: boolean;
+  totals: { entriesProcessed: number; incidentsCreated: number; incidentsUpdated: number; incidentsRecurred: number };
+  /** Runtime settings the engine could not use, as field names and rules. */
+  problems: string[];
+  /** A code or error name; never a message. */
+  error?: string;
+}
+
+const num = (v: unknown): number => (typeof v === "number" && Number.isFinite(v) ? v : 0);
+
+/** The last run, or null when none has been recorded (or the record is unusable). */
+export async function readLastRun(db: Firestore, runCollection: string): Promise<LastRun | null> {
+  const snap = await getDoc(doc(db, runCollection, LAST_RUN_DOC));
+  if (!snap.exists()) return null;
+  const d = snap.data();
+  const finished = (d.finishedAt as { toDate?: () => Date } | undefined)?.toDate?.();
+  const outcome = d.outcome;
+  if (!finished || Number.isNaN(finished.getTime())) return null;
+  if (outcome !== "ok" && outcome !== "failed" && outcome !== "idle") return null;
+  const totals = (d.totals ?? {}) as Record<string, unknown>;
+  return {
+    environment: typeof d.environment === "string" ? d.environment : "",
+    outcome,
+    finishedAt: finished,
+    windows: num(d.windows),
+    capped: d.capped === true,
+    totals: {
+      entriesProcessed: num(totals.entriesProcessed),
+      incidentsCreated: num(totals.incidentsCreated),
+      incidentsUpdated: num(totals.incidentsUpdated),
+      incidentsRecurred: num(totals.incidentsRecurred),
+    },
+    problems: Array.isArray(d.problems) ? d.problems.filter((p): p is string => typeof p === "string") : [],
+    ...(typeof d.error === "string" && { error: d.error }),
+  };
+}
+
+export type EngineState = "ok" | "failed" | "stale" | "capped" | "never";
+
+export interface EngineHealth {
+  state: EngineState;
+  run: LastRun | null;
+}
+
+/**
+ * Worst first: a failed last run, then a stopped engine, then a read that hit the cap, then healthy.
+ * A run recorded for another environment is not this environment's run (the label was changed).
+ */
+export function judgeRun(run: LastRun | null, environment: string, nowMs: number, staleAfterMinutes: number): EngineHealth {
+  if (!run || run.environment !== environment) return { state: "never", run: null };
+  if (run.outcome === "failed") return { state: "failed", run };
+  if (nowMs - run.finishedAt.getTime() > staleAfterMinutes * 60_000) return { state: "stale", run };
+  if (run.capped) return { state: "capped", run };
+  return { state: "ok", run };
+}

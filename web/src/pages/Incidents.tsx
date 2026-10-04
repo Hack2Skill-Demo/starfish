@@ -31,6 +31,7 @@ import {
 } from "lucide-react";
 import { EmptyState } from "../components/ui/EmptyState";
 import PageMeta from "../components/PageMeta";
+import { EngineStatus } from "../components/EngineStatus";
 import { toast } from "../components/ui/toast";
 import { useAuth } from "../auth/authCore";
 import { asFilterValue } from "../lib/urlFilters";
@@ -222,6 +223,8 @@ export default function Incidents() {
             </button>
           </div>
         </div>
+
+        {ready && <EngineStatus environment={environment} />}
 
         {data?.capped && (
           <div className="flex items-start gap-3 rounded-lg border border-warning-200 bg-warning-50 p-4 text-sm text-warning-800 dark:border-warning-900/40 dark:bg-warning-900/10 dark:text-warning-300">

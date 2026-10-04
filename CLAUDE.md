@@ -170,6 +170,8 @@ React 19, Vite, Tailwind 4, react-router, TanStack Query; Starfish's own theme i
   (`STARFISH_DATABASE_ID` / `VITE_STARFISH_DATABASE_ID`), which `firebase.json` targets for
   rules and indexes. Never deploy `firestore.rules` to the watched app's database: a rules
   file governs a whole database and would replace the app's own rules.
+- **Engine status:** the Incidents page shows a line from `{runCollection}/last_run` (`web/src/lib/engineStatus.ts`):
+  failed, stopped (older than `VITE_STARFISH_STALE_MINUTES`), capped, or never recorded. Read errors say nothing.
 - **Config:** `web/src/lib/config.ts` is the only reader of `import.meta.env`. The Firebase
   project comes from Hosting's `/__/firebase/init.json` at startup (`VITE_FIREBASE_*` only for
   local dev); the rest from `web/.env` (`web/.env.example`).
