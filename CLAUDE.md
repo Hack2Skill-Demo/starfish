@@ -132,6 +132,8 @@ src/
                    the next, advance the checkpoint only after it all commits, write last_run
   agent/triage.ts  stage 1 of the agent loop (#8): act/notify/decline for one incident; deterministic
                    gates before the model, local validation after it; not run by any job yet
+  agent/fixer.ts   stage 2: minimal patch or honest decline from a stubbed-testable model call;
+                   fails closed, redacts both ways. Not run by any job yet
   agent/verifyGate.ts  stage 3: apply a patch in a scratch copy, judge the tree that results, run the
                    configured command with a scrubbed env. Not a sandbox; not run by any job yet
   runtimeSettings.ts  the settings document an admin edits: validated, applied over the

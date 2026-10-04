@@ -208,7 +208,17 @@ output tied to the SHA-256 of the exact patch. **It is not a sandbox:** the comm
 process's user with the machine's network and filesystem, so it belongs on a disposable runner
 that holds no credentials, which is infrastructure that does not exist yet (#8).
 
-What does **not** exist yet is the rest of that half: fix drafting, adversarial review, the PR. That is the work, and it is gated on one question the
+The **fixer** (`src/agent/fixer.ts`) is the third stage as a contract, run by no job: given an
+incident and the source files the caller chose to show it, it returns a unified diff with its
+root cause, risk and rejected alternatives, or honestly declines (an empty patch means "I lack
+the context", an outcome and not an error). It fails closed on a malformed answer, a patch
+that isn't a unified diff, one over the size limit, or one that *adds* credential-shaped text,
+and redacts what it shows and what it returns. It applies and runs nothing; the verify gate
+judges. Tested with a stubbed model; whether Gemini actually writes patches a human would is
+still the spike's open question, not something these tests can say.
+
+What does **not** exist yet is the rest of that half: adversarial review, the PR, and the
+orchestration that would run the stages. That is the work, and it is gated on one question the
 [spike](docs/spike.md) exists to answer — does Gemini actually produce the patch a human
 wrote?
 
@@ -218,7 +228,7 @@ src/
   vertex.ts          Vertex AI client
   spike.ts           the fix-quality spike
   ingest/            logs -> classified, deduped incidents + counter-check
-  agent/             triage (act / notify / decline) and the verify gate: stage contracts, run by no job yet
+  agent/             triage, fixer and verify gate: stage contracts, run by no job yet
 web/                 operator UI: sign-in, incidents, settings
 firestore.rules      what the UI may read and change (tested on the emulator)
 fixtures/incidents/   spike fixtures (synthetic; see docs/spike.md)
