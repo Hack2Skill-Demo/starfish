@@ -63,6 +63,15 @@ export interface StarfishConfig {
   cycleDeadlineMinutes: number;
   /** How many times a cycle may be started (the first try included) before it is given up on. */
   maxCycleAttempts: number;
+  /**
+   * Dry run: the agent loop drafts and verifies everything but opens nothing. On by default, so
+   * nothing leaves Starfish until a deployment turns it off on purpose.
+   */
+  dryRun: boolean;
+  /** Whether a patch must survive the adversarial review before it can become a pull request. */
+  reviewRequired: boolean;
+  /** The most model calls one cycle may make (triage, each fix attempt, each review): a spend cap. */
+  modelCallBudget: number;
   /** Firestore collection holding incidents. */
   incidentCollection: string;
   /**
@@ -185,6 +194,9 @@ export function loadConfig(): StarfishConfig {
       "STARFISH_INGEST_MAX_WINDOW_HOURS"
     ),
     runCollection: process.env.STARFISH_RUN_COLLECTION || "starfish_runs",
+    dryRun: parseBoolean(process.env.STARFISH_DRY_RUN, true, "STARFISH_DRY_RUN"),
+    reviewRequired: parseBoolean(process.env.STARFISH_REVIEW_REQUIRED, true, "STARFISH_REVIEW_REQUIRED"),
+    modelCallBudget: positiveNumber(process.env.STARFISH_MODEL_CALL_BUDGET, 6, "STARFISH_MODEL_CALL_BUDGET"),
     cycleCollection: process.env.STARFISH_CYCLE_COLLECTION || "starfish_cycles",
     leaseSeconds: positiveNumber(process.env.STARFISH_LEASE_SECONDS, 300, "STARFISH_LEASE_SECONDS"),
     cycleDeadlineMinutes: positiveNumber(process.env.STARFISH_CYCLE_DEADLINE_MINUTES, 60, "STARFISH_CYCLE_DEADLINE_MINUTES"),
@@ -204,6 +216,15 @@ function positiveNumber(raw: string | undefined, fallback: number, name: string)
   const n = Number(raw);
   if (!Number.isFinite(n) || n <= 0) throw new Error(`${name} must be a number above zero, got "${raw}"`);
   return n;
+}
+
+/** true/false/1/0/yes/no, or the default when unset. Anything else is a mistake worth refusing at startup. */
+function parseBoolean(raw: string | undefined, fallback: boolean, name: string): boolean {
+  if (raw === undefined || raw.trim() === "") return fallback;
+  const v = raw.trim().toLowerCase();
+  if (["true", "1", "yes"].includes(v)) return true;
+  if (["false", "0", "no"].includes(v)) return false;
+  throw new Error(`${name} must be true or false, got "${raw}"`);
 }
 
 /** `"api:api,worker:jobs"` → `{ api: "api", worker: "jobs" }`. Empty is valid. */

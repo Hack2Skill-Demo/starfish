@@ -211,6 +211,23 @@ export async function recordEvent(
   });
 }
 
+/**
+ * Give the lease up without ending the cycle, so another worker can try again (a missing counter-check,
+ * a model that failed). The start already counted stays counted, so retrying is bounded by
+ * `maxCycleAttempts` like any other resume.
+ */
+export async function releaseLease(db: Firestore, cfg: CycleConfig, id: string, owner: string, now: Date, reason: string): Promise<FenceResult> {
+  const ref = cycleRef(db, cfg, id);
+  return db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    const d = snap.data() as Record<string, unknown> | undefined;
+    if (!snap.exists) return { ok: false, reason: "no-such-cycle" } as const;
+    if (!fence(d, owner, now)) return { ok: false, reason: "lease-lost" } as const;
+    tx.update(ref, { owner: null, leaseExpiresAt: null, releasedBecause: clip(reason, MAX_OUTCOME), updatedAt: Timestamp.fromDate(now) });
+    return { ok: true } as const;
+  });
+}
+
 /** End the owner's hold on the cycle: it is finished, or resting until a person acts. */
 export async function finishCycle(
   db: Firestore,

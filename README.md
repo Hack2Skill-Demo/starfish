@@ -43,6 +43,7 @@ Where it currently holds, and where it doesn't:
 | UI environment label | ✅ follows the runtime settings once signed in (the build-time `VITE_STARFISH_ENV` is the fallback when none is set or the read fails) |
 | UI collections and region | ⚠️ still `VITE_*`, baked in at build time |
 | Collection names in `firestore.rules` | ⚠️ hardcoded `incidents` / `starfish_users`; rules can't read config, so a renamed collection means editing the rules file |
+| Dry run, review required, model-call budget | ⚠️ environment only (`STARFISH_DRY_RUN` on by default, `STARFISH_REVIEW_REQUIRED`, `STARFISH_MODEL_CALL_BUDGET`); the loop reads them, no job runs it |
 | Agent cycle collection, lease length, cycle deadline, attempts | ⚠️ environment only (`STARFISH_CYCLE_COLLECTION`, `STARFISH_LEASE_SECONDS`, `STARFISH_CYCLE_DEADLINE_MINUTES`, `STARFISH_MAX_CYCLE_ATTEMPTS`); the rules name `starfish_cycles` too |
 | Ingest lag, longest window, run-record collection | ⚠️ environment only (`STARFISH_INGEST_LAG_MINUTES`, `STARFISH_INGEST_MAX_WINDOW_HOURS`, `STARFISH_RUN_COLLECTION`); the rules name `starfish_runs` too |
 | Log source resource types | ⚠️ config, but attribution reads only `function_name` / `service_name`, so only Cloud Functions and Cloud Run work |
@@ -235,9 +236,24 @@ lease holder can write (fenced inside the same transaction, so a worker that los
 record and finish nothing). Events are redacted and bounded, and `firestore.rules` let operators
 and guests (for the demo environment) read them and nobody write them.
 
-What does **not** exist yet is the PR opener and the loop that would drive the stages through a
-cycle: recheck of the operator's status and the kill switches before each external action,
-spend caps, reconsideration of a declined incident, and the disposable runner. That is the work, and it is gated on one question the
+The **loop** that drives them (`src/agent/loop.ts`, tested on the emulator with the real cycle,
+lease and verify gate and a scripted model) orders the stages for one cycle and wraps them in
+what makes unattended running safe: it stops at the next step if an operator resolves or ignores
+the incident or automation is switched off (asked before every stage and again just before
+anything is opened); it allows **one revision**, shared between a failed verify and a blocking
+review, then hands the cycle to a person; it stops at a **model-call budget**; it releases the
+lease to retry when the evidence is missing or the model failed (bounded by the attempts cap); a
+worker that loses its lease stops and opens nothing; and it is a **dry run by default**
+(`STARFISH_DRY_RUN`): a verified, reviewed patch ends the cycle waiting for a person. Opening a
+pull request is an interface keyed by the cycle id, so a retry after a timeout cannot open a
+second one; **no implementation of it exists**, because there is no GitHub App yet (#17). No job
+runs the loop. It is plain code, not on Google's Agent Development Kit: in `@google/adk` 2.2.0
+`SequentialAgent`, the class #8 names, is deprecated in favour of `Workflow`, which is marked
+experimental, so wrapping the loop in ADK is a decision still open.
+
+What does **not** exist yet is the code that assembles an incident's inputs (the counter-check,
+samples and a checkout of the target repo at a pinned revision), the pull-request opener, the
+reconsideration of a declined incident, and the disposable runner the verify gate needs. That is the work, and it is gated on one question the
 [spike](docs/spike.md) exists to answer — does Gemini actually produce the patch a human
 wrote?
 
@@ -247,7 +263,7 @@ src/
   vertex.ts          Vertex AI client
   spike.ts           the fix-quality spike
   ingest/            logs -> classified, deduped incidents + counter-check
-  agent/             triage, fixer, verify gate, reviewer: stage contracts, run by no job yet
+  agent/             triage, fixer, verify gate, reviewer, cycle state and the loop: run by no job yet
 web/                 operator UI: sign-in, incidents, settings
 firestore.rules      what the UI may read and change (tested on the emulator)
 fixtures/incidents/   spike fixtures (synthetic; see docs/spike.md)
