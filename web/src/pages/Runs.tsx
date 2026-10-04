@@ -254,7 +254,7 @@ function RunDetail({ cycle, environment, now }: { cycle: CycleRow; environment: 
         <>
           <ol aria-label="Steps" className="space-y-2">
             {water.steps.map((step) => (
-              <StepRow key={step.stage} step={step} />
+              <StepRow key={step.stage} step={step} href={step.stage === "pr" ? prUrl : undefined} />
             ))}
           </ol>
           {water.notes.length > 0 && (
@@ -277,7 +277,7 @@ function RunDetail({ cycle, environment, now }: { cycle: CycleRow; environment: 
 
 const STEP_LABEL = { done: "Done", running: "Running", "not-reached": "Not reached" } as const;
 
-function StepRow({ step }: { step: Step }) {
+function StepRow({ step, href }: { step: Step; href?: string }) {
   const Icon = step.status === "done" ? Check : step.status === "running" ? Loader2 : CircleDashed;
   return (
     <li className="rounded-lg border border-gray-200 p-3 dark:border-gray-700" data-step={step.stage} data-status={step.status}>
@@ -299,6 +299,11 @@ function StepRow({ step }: { step: Step }) {
         )}
       </div>
       {step.summary && <p className="mt-1 text-sm text-gray-700 dark:text-gray-300">{step.summary}</p>}
+      {href && step.status === "done" && (
+        <a href={href} target="_blank" rel="noreferrer noopener" className="mt-1 inline-flex items-center gap-1 break-all text-sm font-medium text-brand-700 hover:underline dark:text-brand-400">
+          Open the pull request <ExternalLink className="h-3 w-3" aria-hidden />
+        </a>
+      )}
       {step.status === "done" && step.offset !== undefined && step.width !== undefined && (
         <div className="mt-2 h-2 rounded bg-gray-100 dark:bg-gray-700" aria-hidden>
           <div

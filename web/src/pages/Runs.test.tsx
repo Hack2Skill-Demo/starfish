@@ -164,6 +164,15 @@ describe("Runs page", () => {
     expect(screen.getByRole("link", { name: "Evidence for this incident" })).toHaveAttribute("href", "/incidents/inc-a");
   });
 
+  it("links the pull request from its own step too, but only once that step happened", () => {
+    renderRuns();
+    act(() => mocks.cyclesCb!([cycle("inc-a_r0", { state: "waiting-human", leaseExpiresAt: null, summary: { pr: { url: "https://github.com/o/r/pull/9", number: 9 } } })], false));
+    act(() => mocks.eventsCb!([]));
+    expect(screen.queryByRole("link", { name: /Open the pull request/ })).toBeNull();
+    act(() => mocks.eventsCb!([event(1, "pr", "opened", "Opened a pull request", 1000)]));
+    expect(screen.getByRole("link", { name: /Open the pull request/ })).toHaveAttribute("href", "https://github.com/o/r/pull/9");
+  });
+
   it("does not link a pull request URL that isn't https", () => {
     renderRuns();
     act(() => mocks.cyclesCb!([cycle("inc-a_r0", { summary: { pr: { url: "javascript:alert(1)", number: 9 } } })], false));
