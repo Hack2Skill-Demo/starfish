@@ -101,6 +101,23 @@ Autonomy is earned in stages, not switched on:
 
 Each rung is a prerequisite for the next. Rung 4 is not a switch we get to flip on our own.
 
+## Where the UI is heading
+
+**Designed, not built.** The operator UI today has sign-in, the incidents table and a
+descriptive settings page. The mockups below show where it is going and how the demo runs.
+
+- **Live runs:** a real-time waterfall of each fault cycle.
+- **Overview:** what needs a human, and what was handled.
+- **Slack messages and GitHub issue/PR bodies:** what Starfish posts elsewhere.
+- **Pre-recorded phone call:** to the on-call person when Slack goes unanswered.
+- **Settings:** connections, the engine's rules and on-call.
+
+The public demo is designed to need no sign-in, with visitors as view-only guests (#12); today every page requires an operator account.
+
+![Live runs: a missing-index fault, from first error to an evidence PR waiting for a human](docs/design/screens/live-runs-index.png)
+
+Every screen, and what each one is for: [`docs/design/mockups.md`](docs/design/mockups.md).
+
 ## Google Cloud stack
 
 Vertex AI (Gemini) · Cloud Run / Firebase Functions · Firestore · Cloud Scheduler ·
@@ -168,7 +185,7 @@ web/                 operator UI: sign-in, incidents, settings
 firestore.rules      what the UI may read and change (tested on the emulator)
 fixtures/incidents/   spike fixtures (synthetic; see docs/spike.md)
 docs/
-  design/            the auto-merge policy
+  design/            the auto-merge policy, UI mockups (mockups.md, screens/)
   research/          self-healing systems: the literature, and where Starfish sits
   spike.md           what the spike measures and how to read it
 ```
