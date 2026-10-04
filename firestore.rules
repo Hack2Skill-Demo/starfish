@@ -14,7 +14,9 @@ rules_version = '2';
 // VITE_STARFISH_USERS_COLLECTION), change them here too: this file is
 // deployment config, like firestore.indexes.json. The engine's incident keys
 // (STARFISH_INCIDENT_KEY_COLLECTION, "incident_keys") are engine-only and fall
-// to the closing rule at the bottom.
+// to the closing rule at the bottom. The runtime settings use starfish_settings
+// (STARFISH_SETTINGS_COLLECTION), with their operator copy and audit trail in
+// starfish_settings_public and starfish_settings_audit.
 //
 // Model: roles live on an operator record and are read fresh on every request,
 // never cached in a token.
@@ -29,6 +31,12 @@ service cloud.firestore {
       return request.auth != null
         && exists(/databases/$(database)/documents/starfish_users/$(request.auth.uid))
         && operatorRoles().hasAny(['admin', 'operator']);
+    }
+
+    function isAdmin() {
+      return request.auth != null
+        && exists(/databases/$(database)/documents/starfish_users/$(request.auth.uid))
+        && operatorRoles().hasAny(['admin']);
     }
 
     // Operators read only their own record. Roles are granted from the Admin SDK
@@ -69,6 +77,120 @@ service cloud.firestore {
 
       // Incidents are created and removed by the engine only.
       allow create, delete: if false;
+    }
+
+    // ---- Runtime settings (src/runtimeSettings.ts) --------------------------
+    //
+    // Three documents change together, in ONE batch, and each rule checks the
+    // other two with getAfter(), so none can be written alone:
+    //   starfish_settings/current          what the engine runs on. Admins only.
+    //   starfish_settings_audit/{auditId}  who changed what, when. Immutable.
+    //   starfish_settings_public/current   the copy operators may read.
+    // Reads of a document are all-or-nothing, so the operator copy is a separate
+    // document holding only what the UI needs, not a redacted view of this one.
+    //
+    // Not here: secrets (they are never stored in Firestore: any key outside the
+    // list below is rejected), and starfish_settings/last_good, the engine's own
+    // copy, which only the Admin SDK touches. Rules have no loops, so they check
+    // the shape and size of each list but not every entry; the engine validates
+    // entries on read and falls back to the last good document if one is bad.
+    // `current` can't be deleted from a client: a reset saves an empty settings
+    // document, which keeps revisions counting up and the audit trail whole.
+
+    function settingsDoc() {
+      return /databases/$(database)/documents/starfish_settings/current;
+    }
+
+    function publicSettingsDoc() {
+      return /databases/$(database)/documents/starfish_settings_public/current;
+    }
+
+    function auditDoc(auditId) {
+      return /databases/$(database)/documents/starfish_settings_audit/$(auditId);
+    }
+
+    function settingsShapeOk(d) {
+      return d.keys().hasOnly(['version', 'revision', 'auditId', 'watchedProjectId', 'environment',
+                               'logResourceTypes', 'servicePatterns', 'ignoredMessages',
+                               'updatedAt', 'updatedBy'])
+        && d.keys().hasAll(['version', 'revision', 'auditId', 'updatedAt', 'updatedBy'])
+        && d.version == 1
+        && d.revision is int
+        && d.auditId is string && d.auditId.size() >= 8 && d.auditId.size() <= 64
+        && d.updatedBy == request.auth.uid
+        && d.updatedAt == request.time
+        && (!('watchedProjectId' in d)
+            || (d.watchedProjectId is string && d.watchedProjectId.matches('^[a-z][a-z0-9-]{4,28}[a-z0-9]$')))
+        && (!('environment' in d)
+            || (d.environment is string && d.environment.matches('^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$')))
+        && (!('logResourceTypes' in d)
+            || (d.logResourceTypes is list && d.logResourceTypes.size() >= 1 && d.logResourceTypes.size() <= 20))
+        && (!('servicePatterns' in d) || (d.servicePatterns is map && d.servicePatterns.size() <= 100))
+        && (!('ignoredMessages' in d) || (d.ignoredMessages is list && d.ignoredMessages.size() <= 100));
+    }
+
+    // The change being written also creates its audit entry (new in this batch, so
+    // an old one can't be pointed at) and brings the operator copy to this revision.
+    function changeRecorded(d) {
+      return !exists(auditDoc(d.auditId))
+        && existsAfter(auditDoc(d.auditId))
+        && existsAfter(publicSettingsDoc())
+        && getAfter(publicSettingsDoc()).data.revision == d.revision;
+    }
+
+    match /starfish_settings/current {
+      allow read: if isAdmin();
+
+      allow create: if isAdmin()
+        && settingsShapeOk(request.resource.data)
+        && request.resource.data.revision == 1
+        && changeRecorded(request.resource.data);
+
+      // Each save is revision + 1 of what the admin saw, so a stale tab can't
+      // overwrite another admin's change. A document made from the console has no
+      // revision; the first save from the UI is then revision 1.
+      allow update: if isAdmin()
+        && settingsShapeOk(request.resource.data)
+        && request.resource.data.revision == resource.data.get('revision', 0) + 1
+        && changeRecorded(request.resource.data);
+
+      allow delete: if false;
+    }
+
+    // Written with its change, and equal to what that change put in `current`.
+    match /starfish_settings_audit/{auditId} {
+      allow read: if isAdmin();
+
+      allow create: if isAdmin()
+        && request.resource.data.keys().hasOnly(['revision', 'by', 'at', 'before', 'after'])
+        && request.resource.data.keys().hasAll(['revision', 'by', 'at', 'before', 'after'])
+        && request.resource.data.by == request.auth.uid
+        && request.resource.data.at == request.time
+        && existsAfter(settingsDoc())
+        && getAfter(settingsDoc()).data.auditId == auditId
+        && request.resource.data.revision == getAfter(settingsDoc()).data.revision
+        && request.resource.data.after == getAfter(settingsDoc()).data
+        && request.resource.data.before == (exists(settingsDoc()) ? get(settingsDoc()).data : null);
+
+      allow update, delete: if false;
+    }
+
+    // What operators may know: the environment label the UI filters incidents by,
+    // and the watched project's id. Equal to the same fields of `current`.
+    match /starfish_settings_public/current {
+      allow read: if isOperator();
+
+      allow create, update: if isAdmin()
+        && request.resource.data.keys().hasOnly(['version', 'revision', 'watchedProjectId', 'environment', 'updatedAt'])
+        && request.resource.data.keys().hasAll(['version', 'revision', 'updatedAt'])
+        && request.resource.data.version == 1
+        && existsAfter(settingsDoc())
+        && request.resource.data.revision == getAfter(settingsDoc()).data.revision
+        && request.resource.data.updatedAt == getAfter(settingsDoc()).data.updatedAt
+        && request.resource.data.get('watchedProjectId', null) == getAfter(settingsDoc()).data.get('watchedProjectId', null)
+        && request.resource.data.get('environment', null) == getAfter(settingsDoc()).data.get('environment', null);
+
+      allow delete: if false;
     }
 
     // Everything else is closed.
