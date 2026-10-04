@@ -72,3 +72,39 @@ describe("loadConfig: ingest windows", () => {
     expect(() => loadConfig()).toThrow("STARFISH_INGEST_MAX_WINDOW_HOURS");
   });
 });
+
+describe("loadConfig: the verify gate", () => {
+  const KEYS = ["STARFISH_VERIFY_COMMAND", "STARFISH_VERIFY_TIMEOUT_SECONDS", "STARFISH_PATCH_EXCLUDED_PATHS"];
+  beforeEach(() => {
+    for (const k of KEYS) vi.stubEnv(k, "");
+    vi.stubEnv("GOOGLE_CLOUD_PROJECT", "home-project");
+  });
+  afterEach(() => vi.unstubAllEnvs());
+
+  it("has no command by default: with none configured no patch is ever accepted", () => {
+    expect(loadConfig()).toMatchObject({ verifyCommand: "", verifyTimeoutSeconds: 600 });
+  });
+
+  it("reads the command (trimmed) and the timeout", () => {
+    vi.stubEnv("STARFISH_VERIFY_COMMAND", "  pnpm run verify  ");
+    vi.stubEnv("STARFISH_VERIFY_TIMEOUT_SECONDS", "90");
+    expect(loadConfig()).toMatchObject({ verifyCommand: "pnpm run verify", verifyTimeoutSeconds: 90 });
+  });
+
+  it.each(["0", "-1", "soon"])("refuses a timeout of %s", (bad) => {
+    vi.stubEnv("STARFISH_VERIFY_TIMEOUT_SECONDS", bad);
+    expect(() => loadConfig()).toThrow("STARFISH_VERIFY_TIMEOUT_SECONDS");
+  });
+
+  it("adds the deployment's excluded paths to the built-in ones, never replacing them", () => {
+    vi.stubEnv("STARFISH_PATCH_EXCLUDED_PATHS", "package.json, jest.config.js ,");
+    const { patchExcludedPaths } = loadConfig();
+    expect(patchExcludedPaths).toEqual(expect.arrayContaining([".github/", ".env", "*.pem", "package.json", "jest.config.js"]));
+    expect(patchExcludedPaths).not.toContain("");
+  });
+
+  it("keeps the built-in excluded paths when none are added", () => {
+    expect(loadConfig().patchExcludedPaths).toEqual(expect.arrayContaining([".git/", ".github/", ".claude/", ".env"]));
+  });
+});
+
