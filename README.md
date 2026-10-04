@@ -45,6 +45,7 @@ Where it currently holds, and where it doesn't:
 | Collection names in `firestore.rules` | ⚠️ hardcoded `incidents` / `starfish_users`; rules can't read config, so a renamed collection means editing the rules file |
 | Dry run, review required, model-call budget | ⚠️ environment defaults (`STARFISH_DRY_RUN` on by default, `STARFISH_REVIEW_REQUIRED`, `STARFISH_MODEL_CALL_BUDGET`) that an admin can override on the Settings page (first row); the loop reads them, no job runs it |
 | GitHub target (repository, base branch, API and remote URL, commit identity) and token | ⚠️ environment only (`STARFISH_GITHUB_REPO` empty by default, so nothing can be opened; `STARFISH_GITHUB_BASE_BRANCH`, `_API_URL`, `_REMOTE_URL`, `_COMMIT_NAME`, `_COMMIT_EMAIL`); the token is read on its own from `STARFISH_GITHUB_TOKEN` and is not part of the config object. One repository per deployment |
+| Where a missing index may be created | ⚠️ environment only (`STARFISH_INDEX_ALLOWED_TARGETS`, empty by default: nothing allowed; a malformed entry stops startup); nothing creates an index yet |
 | Agent cycle collection, lease length, cycle deadline, attempts | ⚠️ environment only (`STARFISH_CYCLE_COLLECTION`, `STARFISH_LEASE_SECONDS`, `STARFISH_CYCLE_DEADLINE_MINUTES`, `STARFISH_MAX_CYCLE_ATTEMPTS`); the rules name `starfish_cycles` too |
 | Ingest lag, longest window, run-record collection | ⚠️ environment only (`STARFISH_INGEST_LAG_MINUTES`, `STARFISH_INGEST_MAX_WINDOW_HOURS`, `STARFISH_RUN_COLLECTION`); the rules name `starfish_runs` too |
 | Services Starfish never ingests (its own) | ✅ config (`STARFISH_EXCLUDED_SERVICES`, default `starfish`), applied at query time and at parse time; environment-only on purpose, because it guards against a feedback loop and is not an operational preference. Set it to the name Starfish is actually deployed under; nothing is deployed yet (#6, #32) |
@@ -318,6 +319,17 @@ a GitHub App's permission cannot be scoped to a branch prefix. Not built: the Gi
 incident, Slack, reconciling a later merge or CI result. No job runs the loop. It is plain code, not on Google's Agent Development Kit: in `@google/adk` 2.2.0
 `SequentialAgent`, the class #8 names, is deprecated in favour of `Workflow`, which is marked
 experimental, so wrapping the loop in ADK is a decision still open.
+
+**Missing-index heal (#11): only the deterministic front end exists.** `src/indexheal/createIndexUrl.ts`
+finds the create-index URL in an error message, decodes it strictly into a spec (project, database,
+collection group, scope, plain ascending or descending fields; array, vector and anything unknown are
+refused and left to a person), checks the target against `STARFISH_INDEX_ALLOWED_TARGETS` (empty by
+default, so nothing is allowed; Starfish's own database is refused even if listed), and compares the spec
+with the repository's `firestore.indexes.json` (an unreadable file is "unknown", never "absent"). It is
+tested on URLs **built here from the documented `Index` message, not captured from a real error**, which is
+the first thing to check before wiring it to anything. **Nothing creates an index**: the Admin API call,
+live-inventory dedup, operation tracking, quotas, the READY and recovery checks and the evidence PR are not
+built, and no error is classified as its own "needs an index" class yet.
 
 What does **not** exist yet is the code that assembles an incident's inputs (the counter-check,
 samples and a checkout of the target repo at a pinned revision), the incident's GitHub issue, the

@@ -8,6 +8,7 @@
  * any particular product. Point it at a different GCP project, give it different
  * service patterns, and it works there.
  */
+import { parseAllowedTargets } from "./indexheal/createIndexUrl.js";
 
 export interface StarfishConfig {
   /** GCP project Starfish runs in: its Firestore store and its Vertex AI calls. */
@@ -84,6 +85,12 @@ export interface StarfishConfig {
   githubApiUrl: string;
   /** Where the repository is fetched from and pushed to. Empty means `https://github.com/<githubRepo>.git`. */
   githubRemoteUrl: string;
+  /**
+   * `project/database` pairs a missing Firestore index may be created in (src/indexheal/createIndexUrl.ts),
+   * e.g. `my-demo/(default)`. Empty by default: nothing is allowed. Starfish's own database is refused
+   * even if listed.
+   */
+  indexAllowedTargets: string[];
   /** The author and committer on the commit Starfish pushes. */
   githubCommitName: string;
   githubCommitEmail: string;
@@ -237,6 +244,7 @@ export function loadConfig(): StarfishConfig {
     githubBaseBranch: (process.env.STARFISH_GITHUB_BASE_BRANCH ?? "").trim() || "main",
     githubApiUrl: (process.env.STARFISH_GITHUB_API_URL ?? "").trim() || "https://api.github.com",
     githubRemoteUrl: (process.env.STARFISH_GITHUB_REMOTE_URL ?? "").trim(),
+    indexAllowedTargets: validIndexTargets(parseList(process.env.STARFISH_INDEX_ALLOWED_TARGETS, ",") ?? []),
     githubCommitName: (process.env.STARFISH_GITHUB_COMMIT_NAME ?? "").trim() || "Starfish",
     githubCommitEmail: (process.env.STARFISH_GITHUB_COMMIT_EMAIL ?? "").trim() || "starfish@users.noreply.github.com",
     usersCollection: process.env.STARFISH_USERS_COLLECTION || "starfish_users",
@@ -271,6 +279,12 @@ export function loadGithubToken(): string | undefined {
  */
 export function loadChildProcessBasics(): { PATH?: string; HOME?: string } {
   return { PATH: process.env.PATH, HOME: process.env.HOME };
+}
+
+/** The entries unchanged if each is `project/database`; a typo throws at startup rather than widening what is allowed. */
+function validIndexTargets(entries: string[]): string[] {
+  parseAllowedTargets(entries);
+  return entries;
 }
 
 /** A number above zero, or the default when unset. A window of zero or negative length would never advance. */
