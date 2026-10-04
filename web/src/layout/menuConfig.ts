@@ -2,7 +2,7 @@
  * Sidebar menu: top-level items with optional
  * children, each optionally restricted to roles (empty/unset = any role).
  */
-import { Activity, Settings, Workflow, type LucideIcon } from "lucide-react";
+import { Activity, LayoutDashboard, Settings, Workflow, type LucideIcon } from "lucide-react";
 import type { ViewerRole } from "../auth/authCore";
 
 export interface MenuChild {
@@ -18,6 +18,7 @@ export interface MenuItem extends MenuChild {
 }
 
 export const menuItems: MenuItem[] = [
+  { id: "overview", label: "Overview", path: "/overview", icon: LayoutDashboard },
   { id: "incidents", label: "Incidents", path: "/incidents", icon: Activity },
   { id: "runs", label: "Runs", path: "/runs", icon: Workflow },
   // Guests see Settings read-only: it shows the connections and says to sign in to change them.

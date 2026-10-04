@@ -10,6 +10,7 @@ import { SignIn } from "./auth/SignIn";
 import { AccessDenied } from "./auth/AccessDenied";
 import { StarfishLayout } from "./layout/StarfishLayout";
 
+const Overview = lazy(() => import("./pages/Overview"));
 const Incidents = lazy(() => import("./pages/Incidents"));
 const IncidentDetail = lazy(() => import("./pages/IncidentDetail"));
 const Runs = lazy(() => import("./pages/Runs"));
@@ -31,7 +32,8 @@ export default function App() {
             </RequireRole>
           }
         >
-          <Route index element={<Navigate to="/incidents" replace />} />
+          <Route index element={<Navigate to="/overview" replace />} />
+          <Route path="overview" element={<Overview />} />
           <Route path="incidents" element={<Incidents />} />
           <Route path="incidents/:id" element={<IncidentDetail />} />
           <Route path="runs" element={<Runs />} />

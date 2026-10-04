@@ -127,7 +127,13 @@ try {
     await page.waitForTimeout(800);
     results[`${theme} /signin`] = await page.evaluate(AUDIT);
 
-    await signIn(page, "admin@starfish.local", /incidents/);
+    await signIn(page, "admin@starfish.local", /overview/);
+    await page.getByRole("list", { name: "Occurrences by hour" }).waitFor({ timeout: 15000 });
+    await page.getByRole("list", { name: "Latest activity" }).or(page.getByRole("region", { name: "Latest activity" })).first().waitFor();
+    await page.waitForTimeout(500);
+    results[`${theme} /overview`] = await page.evaluate(AUDIT);
+
+    await page.goto(base + "/incidents");
     await page.waitForSelector("tbody tr", { timeout: 15000 });
     results[`${theme} /incidents`] = await page.evaluate(AUDIT);
 
@@ -168,6 +174,10 @@ try {
     // A brand-new visitor is a guest (#12): no sign-in, view-only Incidents and Settings.
     const guest = await newPage(browser, theme);
     await guest.page.goto(base + "/");
+    await guest.page.getByRole("list", { name: "Occurrences by hour" }).waitFor({ timeout: 20000 });
+    await guest.page.waitForTimeout(500);
+    results[`${theme} /overview (guest)`] = await guest.page.evaluate(AUDIT);
+    await guest.page.goto(base + "/incidents");
     await guest.page.waitForSelector("tbody tr", { timeout: 20000 });
     results[`${theme} /incidents (guest)`] = await guest.page.evaluate(AUDIT);
     await guest.page.goto(base + "/settings");

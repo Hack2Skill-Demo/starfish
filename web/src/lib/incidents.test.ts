@@ -117,6 +117,16 @@ describe("nextStatus — the transitions operators may make", () => {
   });
 });
 
+describe("toRow: hourly buckets", () => {
+  const base = { functionName: "f", environment: "demo", status: "new" };
+  it("carries only the usable buckets, and none when there are none", () => {
+    expect(toRow("a", { ...base, occurrencesByHour: { "100": 2, junk: 5, "101": -1, "102": "3" } }, 24).occurrencesByHour).toEqual({ "100": 2 });
+    expect(toRow("a", { ...base, occurrencesByHour: { junk: 5 } }, 24)).not.toHaveProperty("occurrencesByHour");
+    expect(toRow("a", base, 24)).not.toHaveProperty("occurrencesByHour");
+    expect(toRow("a", { ...base, occurrencesByHour: [1, 2] }, 24)).not.toHaveProperty("occurrencesByHour");
+  });
+});
+
 describe("getIncident", () => {
   const snap = (data: Record<string, unknown> | null) => ({ exists: () => data !== null, id: "abc", data: () => data });
   const stored = { functionName: "fn", environment: "demo", status: "new", occurrenceCount: 1 };
