@@ -14,6 +14,7 @@ import { detectErrorType, extractErrorCode, detectService } from "./classify.js"
 import { computeErrorFingerprint } from "./fingerprint.js";
 import { sanitize } from "./redact.js";
 import { upsertIncident, type IncidentInput } from "./store.js";
+import type { IngestWindow } from "./window.js";
 
 const PAGE_SIZE = 500;
 /**
@@ -43,10 +44,15 @@ export interface AggregationResult {
   capped: boolean;
 }
 
+/**
+ * Read one window of the watched project's ERROR logs and fold it into the store. Every upsert
+ * carries the window's id, so running the same window again (after a run that failed part-way)
+ * counts each incident once; see the "Replays" note in store.ts.
+ */
 export async function aggregateErrors(
   db: Firestore,
   config: StarfishConfig,
-  since: Date
+  window: IngestWindow
 ): Promise<AggregationResult> {
   const result: AggregationResult = {
     entriesProcessed: 0,
@@ -62,7 +68,7 @@ export async function aggregateErrors(
   // and reporting "no errors" forever while production burns.
   const logging = new Logging({ projectId: config.watchedProjectId });
   const [entries] = await logging.getEntries({
-    filter: buildLogFilter(config, since),
+    filter: buildLogFilter(config, window.start, undefined, window.end),
     pageSize: PAGE_SIZE,
     maxResults: MAX_ENTRIES_PER_RUN,
     orderBy: "timestamp desc",
@@ -122,6 +128,7 @@ export async function aggregateErrors(
         tenantId: parsed.tenantId,
         requestId: parsed.requestId,
         sourceProjectId: parsed.sourceProjectId,
+        windowId: window.id,
       },
     });
   }

@@ -189,6 +189,14 @@ describe("buildLogFilter", () => {
   const since = new Date("2026-09-21T00:00:00.000Z");
   const source = { logResourceTypes: DEFAULT_LOG_RESOURCE_TYPES, ignoredMessages: DEFAULT_IGNORED_MESSAGES };
 
+  it("bounds a window at both ends when given an upper bound, and only below otherwise", () => {
+    const until = new Date("2026-09-21T06:00:00.000Z");
+    expect(buildLogFilter(source, since)).not.toContain("timestamp<=");
+    const bounded = buildLogFilter(source, since, undefined, until);
+    expect(bounded).toContain('timestamp>"2026-09-21T00:00:00.000Z"');
+    expect(bounded).toContain('timestamp<="2026-09-21T06:00:00.000Z"');
+  });
+
   it("excludes the same noise at query time that parsing drops", () => {
     const filter = buildLogFilter(source, since);
     for (const m of DEFAULT_IGNORED_MESSAGES) {

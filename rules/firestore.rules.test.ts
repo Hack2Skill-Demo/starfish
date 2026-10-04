@@ -597,3 +597,49 @@ describe("guests (anonymous sessions)", () => {
   });
 });
 
+describe("ingest run records", () => {
+  const guest = () =>
+    env.authenticatedContext("guest1", { firebase: { sign_in_provider: "anonymous" } }).firestore();
+
+  beforeEach(async () => {
+    await env.withSecurityRulesDisabled(async (ctx) => {
+      const db = ctx.firestore();
+      await setDoc(doc(db, "starfish_runs/last_run"), { environment: "demo", outcome: "ok", windows: 1 });
+      await setDoc(doc(db, "starfish_runs/state"), { target: { environment: "demo" }, checkpoint: Timestamp.now() });
+    });
+  });
+
+  it("operators and admins read the last run", async () => {
+    await assertSucceeds(getDoc(doc(as("op1"), "starfish_runs/last_run")));
+    await assertSucceeds(getDoc(doc(as("admin1"), "starfish_runs/last_run")));
+  });
+
+  it("a guest reads the last run of the demo environment, and no other", async () => {
+    await assertSucceeds(getDoc(doc(guest(), "starfish_runs/last_run")));
+    await env.withSecurityRulesDisabled((ctx) =>
+      setDoc(doc(ctx.firestore(), "starfish_runs/last_run"), { environment: "prod", outcome: "ok" })
+    );
+    await assertFails(getDoc(doc(guest(), "starfish_runs/last_run")));
+  });
+
+  it("nobody else reads it: not an unauthenticated visitor, not a signed-in account with no role", async () => {
+    await assertFails(getDoc(doc(anon(), "starfish_runs/last_run")));
+    await assertFails(getDoc(doc(as("nobody"), "starfish_runs/last_run")));
+  });
+
+  it("the checkpoint is the engine's alone: no client reads or writes it, an admin included", async () => {
+    for (const db of [as("admin1"), as("op1"), guest(), anon()]) {
+      await assertFails(getDoc(doc(db, "starfish_runs/state")));
+      await assertFails(setDoc(doc(db, "starfish_runs/state"), { checkpoint: Timestamp.now() }));
+    }
+  });
+
+  it("no client writes the last run, an admin included", async () => {
+    for (const db of [as("admin1"), as("op1"), guest()]) {
+      await assertFails(setDoc(doc(db, "starfish_runs/last_run"), { environment: "demo", outcome: "ok" }));
+      await assertFails(updateDoc(doc(db, "starfish_runs/last_run"), { outcome: "failed" }));
+      await assertFails(deleteDoc(doc(db, "starfish_runs/last_run")));
+    }
+  });
+});
+

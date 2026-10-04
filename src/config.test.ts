@@ -47,3 +47,28 @@ describe("loadConfig: the projects", () => {
     expect(() => loadConfig()).toThrow("GOOGLE_CLOUD_PROJECT is not set");
   });
 });
+
+describe("loadConfig: ingest windows", () => {
+  const WINDOW_KEYS = ["STARFISH_INGEST_LAG_MINUTES", "STARFISH_INGEST_MAX_WINDOW_HOURS", "STARFISH_RUN_COLLECTION"];
+  beforeEach(() => {
+    for (const k of WINDOW_KEYS) vi.stubEnv(k, "");
+    vi.stubEnv("GOOGLE_CLOUD_PROJECT", "home-project");
+  });
+  afterEach(() => vi.unstubAllEnvs());
+
+  it("has defaults: a 5-minute lag, 6-hour windows, starfish_runs", () => {
+    expect(loadConfig()).toMatchObject({ ingestLagMinutes: 5, ingestMaxWindowHours: 6, runCollection: "starfish_runs" });
+  });
+
+  it("reads each from the environment", () => {
+    vi.stubEnv("STARFISH_INGEST_LAG_MINUTES", "10");
+    vi.stubEnv("STARFISH_INGEST_MAX_WINDOW_HOURS", "1.5");
+    vi.stubEnv("STARFISH_RUN_COLLECTION", "my_runs");
+    expect(loadConfig()).toMatchObject({ ingestLagMinutes: 10, ingestMaxWindowHours: 1.5, runCollection: "my_runs" });
+  });
+
+  it.each(["0", "-3", "abc", "NaN", "Infinity"])("refuses %s, which would stall or break the window", (bad) => {
+    vi.stubEnv("STARFISH_INGEST_MAX_WINDOW_HOURS", bad);
+    expect(() => loadConfig()).toThrow("STARFISH_INGEST_MAX_WINDOW_HOURS");
+  });
+});

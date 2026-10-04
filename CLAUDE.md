@@ -40,6 +40,7 @@ pnpm test:emulator    # firestore.rules + store concurrency against the emulator
 pnpm -C web dev       # the operator UI on :5177
 pnpm audit:contrast   # WCAG AA audit of the rendered UI (needs `pnpm dev:emulated` + a Chromium)
 pnpm spike            # the Gemini fix-quality spike (needs .env + Vertex access)
+pnpm ingest           # one ingest run: next window(s) of the watched project's logs → the store
 pnpm scrub            # dry-run: how many stored incidents still hold a credential/email (--apply to rewrite)
 bash .claude/hooks/git-branch-guard.test.sh        # hook suites
 bash .claude/hooks/pre-push-review-guard.test.sh
@@ -124,7 +125,11 @@ src/
                    again is re-opened as `recurred` (a regression). One transaction per
                    upsert, through a per-(environment, fingerprint) key document
     counterCheck   independent raw-log recount + redacted samples
-    aggregate      the scheduled job tying it together
+    aggregate      reads one window of logs and folds it into the store (each upsert carries
+                   the window id, so a replayed window counts once)
+    window         (start, end] windows: pure planning; ids come from the boundaries
+    run            one scheduled run: resolve runtime settings, replay the pending window or plan
+                   the next, advance the checkpoint only after it all commits, write last_run
   runtimeSettings.ts  the settings document an admin edits: validated, applied over the
                    env defaults, last-good fallback, a frozen snapshot per run
 ```

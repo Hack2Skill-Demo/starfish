@@ -12,6 +12,7 @@
     "prepare": "git config core.hooksPath .githooks 2>/dev/null || true",
     "spike": "tsx src/spike.ts",
     "scrub": "tsx src/scrubCli.ts",
+    "ingest": "tsx src/ingestCli.ts",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "typecheck": "tsc --noEmit && pnpm -C web typecheck",

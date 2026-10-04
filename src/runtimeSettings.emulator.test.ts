@@ -37,6 +37,9 @@ beforeEach(() => {
     databaseId: "starfish",
     servicePatterns: {},
     defaultLookbackHours: 24,
+    ingestLagMinutes: 5,
+    ingestMaxWindowHours: 6,
+    runCollection: "starfish_runs",
     logResourceTypes: [...DEFAULT_LOG_RESOURCE_TYPES],
     ignoredMessages: [...DEFAULT_IGNORED_MESSAGES],
   };
