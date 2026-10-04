@@ -108,3 +108,33 @@ describe("loadConfig: the verify gate", () => {
   });
 });
 
+describe("loadConfig: agent cycles", () => {
+  const KEYS = ["STARFISH_CYCLE_COLLECTION", "STARFISH_LEASE_SECONDS", "STARFISH_CYCLE_DEADLINE_MINUTES", "STARFISH_MAX_CYCLE_ATTEMPTS"];
+  beforeEach(() => {
+    for (const k of KEYS) vi.stubEnv(k, "");
+    vi.stubEnv("GOOGLE_CLOUD_PROJECT", "home-project");
+  });
+  afterEach(() => vi.unstubAllEnvs());
+
+  it("defaults: starfish_cycles, a 5-minute lease, a 60-minute deadline, 3 starts", () => {
+    expect(loadConfig()).toMatchObject({ cycleCollection: "starfish_cycles", leaseSeconds: 300, cycleDeadlineMinutes: 60, maxCycleAttempts: 3 });
+  });
+
+  it("reads each from the environment", () => {
+    vi.stubEnv("STARFISH_CYCLE_COLLECTION", "my_cycles");
+    vi.stubEnv("STARFISH_LEASE_SECONDS", "45");
+    vi.stubEnv("STARFISH_CYCLE_DEADLINE_MINUTES", "15");
+    vi.stubEnv("STARFISH_MAX_CYCLE_ATTEMPTS", "5");
+    expect(loadConfig()).toMatchObject({ cycleCollection: "my_cycles", leaseSeconds: 45, cycleDeadlineMinutes: 15, maxCycleAttempts: 5 });
+  });
+
+  it.each([
+    ["STARFISH_LEASE_SECONDS", "0"],
+    ["STARFISH_CYCLE_DEADLINE_MINUTES", "-1"],
+    ["STARFISH_MAX_CYCLE_ATTEMPTS", "many"],
+  ])("refuses %s=%s, which would stall or loop the cycle", (name, bad) => {
+    vi.stubEnv(name, bad);
+    expect(() => loadConfig()).toThrow(name);
+  });
+});
+

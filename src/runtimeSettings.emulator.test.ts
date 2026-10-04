@@ -9,7 +9,8 @@ import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { deleteApp, initializeApp } from "firebase-admin/app";
 import { FieldValue, getFirestore } from "firebase-admin/firestore";
 import type { Firestore } from "firebase-admin/firestore";
-import { DEFAULT_IGNORED_MESSAGES, DEFAULT_LOG_RESOURCE_TYPES, type StarfishConfig } from "./config.js";
+import type { StarfishConfig } from "./config.js";
+import { testConfig } from "./testConfig.js";
 import { LAST_GOOD_DOC, RuntimeConfigLoader, SETTINGS_DOC } from "./runtimeSettings.js";
 
 // Never let this suite reach a real project with ambient credentials.
@@ -23,29 +24,14 @@ afterAll(() => deleteApp(app));
 
 let base: StarfishConfig;
 beforeEach(() => {
-  base = {
+  base = testConfig({
     projectId: "starfish-home",
     watchedProjectId: "starfish-home",
     vertexProjectId: "starfish-home",
-    location: "us-central1",
-    model: "m",
     environment: "dev",
-    incidentCollection: "incidents",
-    incidentKeyCollection: "incident_keys",
     // Its own collection per test, so tests never see each other's documents.
     settingsCollection: `settings_${randomUUID().slice(0, 8)}`,
-    databaseId: "starfish",
-    servicePatterns: {},
-    defaultLookbackHours: 24,
-    verifyCommand: "",
-    verifyTimeoutSeconds: 600,
-    patchExcludedPaths: [],
-    ingestLagMinutes: 5,
-    ingestMaxWindowHours: 6,
-    runCollection: "starfish_runs",
-    logResourceTypes: [...DEFAULT_LOG_RESOURCE_TYPES],
-    ignoredMessages: [...DEFAULT_IGNORED_MESSAGES],
-  };
+  });
 });
 
 const doc = (id: string) => db.collection(base.settingsCollection).doc(id);

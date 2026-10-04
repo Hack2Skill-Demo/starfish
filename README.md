@@ -43,6 +43,7 @@ Where it currently holds, and where it doesn't:
 | UI environment label | ✅ follows the runtime settings once signed in (the build-time `VITE_STARFISH_ENV` is the fallback when none is set or the read fails) |
 | UI collections and region | ⚠️ still `VITE_*`, baked in at build time |
 | Collection names in `firestore.rules` | ⚠️ hardcoded `incidents` / `starfish_users`; rules can't read config, so a renamed collection means editing the rules file |
+| Agent cycle collection, lease length, cycle deadline, attempts | ⚠️ environment only (`STARFISH_CYCLE_COLLECTION`, `STARFISH_LEASE_SECONDS`, `STARFISH_CYCLE_DEADLINE_MINUTES`, `STARFISH_MAX_CYCLE_ATTEMPTS`); the rules name `starfish_cycles` too |
 | Ingest lag, longest window, run-record collection | ⚠️ environment only (`STARFISH_INGEST_LAG_MINUTES`, `STARFISH_INGEST_MAX_WINDOW_HOURS`, `STARFISH_RUN_COLLECTION`); the rules name `starfish_runs` too |
 | Log source resource types | ⚠️ config, but attribution reads only `function_name` / `service_name`, so only Cloud Functions and Cloud Run work |
 | Framework-noise suppression list | ✅ config, callable GET-probe noise by default |
@@ -224,8 +225,19 @@ verdict is computed in code from those outcomes**, never taken from the model (a
 blocks, any flag approves with flags), and a review with no attacks is an error rather than
 "found nothing".
 
-What does **not** exist yet is the PR opener and the orchestration that would run the stages
-(state, leases, retries, spend caps, one PR per recurrence cycle). That is the work, and it is gated on one question the
+The state those stages need in order to run more than once safely exists too, and is also
+run by no job (`src/agent/cycle.ts`, tested on the emulator): one **cycle** per incident and
+recurrence (so a regression gets a fresh fix and a retry cannot open a second PR for the same
+one), a **lease** taken in a transaction (one worker at a time; a crashed worker's lease runs
+out and another resumes, up to a configured number of starts; the lease can never be extended
+past the cycle's deadline), and an append-only list of **run events** that only the current
+lease holder can write (fenced inside the same transaction, so a worker that lost its lease can
+record and finish nothing). Events are redacted and bounded, and `firestore.rules` let operators
+and guests (for the demo environment) read them and nobody write them.
+
+What does **not** exist yet is the PR opener and the loop that would drive the stages through a
+cycle: recheck of the operator's status and the kill switches before each external action,
+spend caps, reconsideration of a declined incident, and the disposable runner. That is the work, and it is gated on one question the
 [spike](docs/spike.md) exists to answer — does Gemini actually produce the patch a human
 wrote?
 

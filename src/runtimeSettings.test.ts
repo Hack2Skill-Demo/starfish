@@ -7,31 +7,17 @@ import {
   applySettings,
   validateSettings,
 } from "./runtimeSettings.js";
-import { DEFAULT_IGNORED_MESSAGES, DEFAULT_LOG_RESOURCE_TYPES, type StarfishConfig } from "./config.js";
+import { DEFAULT_IGNORED_MESSAGES, type StarfishConfig } from "./config.js";
+import { testConfig } from "./testConfig.js";
 import { SEEDED_SECRETS } from "./ingest/testSecrets.js";
 
-const base: StarfishConfig = {
+const base: StarfishConfig = testConfig({
   projectId: "starfish-home",
   watchedProjectId: "starfish-home",
   vertexProjectId: "starfish-home",
-  location: "us-central1",
-  model: "m",
   environment: "dev",
-  incidentCollection: "incidents",
-  incidentKeyCollection: "incident_keys",
-  settingsCollection: "starfish_settings",
-  databaseId: "starfish",
   servicePatterns: { api: "api" },
-  defaultLookbackHours: 24,
-  verifyCommand: "",
-  verifyTimeoutSeconds: 600,
-  patchExcludedPaths: [],
-  ingestLagMinutes: 5,
-  ingestMaxWindowHours: 6,
-  runCollection: "starfish_runs",
-  logResourceTypes: [...DEFAULT_LOG_RESOURCE_TYPES],
-  ignoredMessages: [...DEFAULT_IGNORED_MESSAGES],
-};
+});
 
 const valid = { version: 1, watchedProjectId: "watched-app-1", environment: "prod" };
 

@@ -643,3 +643,55 @@ describe("ingest run records", () => {
   });
 });
 
+describe("agent cycles and their run events", () => {
+  const guest = () =>
+    env.authenticatedContext("guest1", { firebase: { sign_in_provider: "anonymous" } }).firestore();
+  const CYCLE = "starfish_cycles/inc1_r0";
+  const EVENT = `${CYCLE}/events/000001`;
+
+  beforeEach(async () => {
+    await env.withSecurityRulesDisabled(async (ctx) => {
+      const db = ctx.firestore();
+      await setDoc(doc(db, CYCLE), { incidentId: "inc1", environment: "demo", state: "running", owner: "worker-a" });
+      await setDoc(doc(db, EVENT), { seq: 1, environment: "demo", stage: "triage", type: "decision", summary: "declined" });
+      await setDoc(doc(db, "starfish_cycles/inc2_r0"), { incidentId: "inc2", environment: "prod", state: "running" });
+      await setDoc(doc(db, "starfish_cycles/inc2_r0/events/000001"), { seq: 1, environment: "prod", summary: "x" });
+    });
+  });
+
+  it("operators and admins read cycles and their events", async () => {
+    for (const uid of ["op1", "admin1"]) {
+      await assertSucceeds(getDoc(doc(as(uid), CYCLE)));
+      await assertSucceeds(getDoc(doc(as(uid), EVENT)));
+      await assertSucceeds(getDoc(doc(as(uid), "starfish_cycles/inc2_r0")));
+    }
+  });
+
+  it("a guest reads the demo environment's cycles and events, and no other", async () => {
+    await assertSucceeds(getDoc(doc(guest(), CYCLE)));
+    await assertSucceeds(getDoc(doc(guest(), EVENT)));
+    await assertSucceeds(getDocs(query(collection(guest(), `${CYCLE}/events`), where("environment", "==", "demo"))));
+    await assertFails(getDoc(doc(guest(), "starfish_cycles/inc2_r0")));
+    await assertFails(getDoc(doc(guest(), "starfish_cycles/inc2_r0/events/000001")));
+    await assertFails(getDocs(collection(guest(), "starfish_cycles")));
+  });
+
+  it("nobody else reads them: not an unauthenticated visitor, not an account with no role", async () => {
+    for (const db of [anon(), as("nobody")]) {
+      await assertFails(getDoc(doc(db, CYCLE)));
+      await assertFails(getDoc(doc(db, EVENT)));
+    }
+  });
+
+  it("no client writes a cycle, its lease or its events, an admin included", async () => {
+    for (const db of [as("admin1"), as("op1"), guest(), anon()]) {
+      await assertFails(setDoc(doc(db, CYCLE), { state: "done" }));
+      await assertFails(updateDoc(doc(db, CYCLE), { owner: "me", leaseExpiresAt: Timestamp.now() }));
+      await assertFails(deleteDoc(doc(db, CYCLE)));
+      await assertFails(setDoc(doc(db, `${CYCLE}/events/000002`), { seq: 2, environment: "demo" }));
+      await assertFails(updateDoc(doc(db, EVENT), { summary: "rewritten" }));
+      await assertFails(deleteDoc(doc(db, EVENT)));
+    }
+  });
+});
+
