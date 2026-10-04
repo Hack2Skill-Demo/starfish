@@ -144,6 +144,8 @@ src/
                    (redacted) and the cycle's run record (summary.<stage>, path); infrastructure errors throw, logical refusals are returned. Not run by any job yet
   agent/loop.ts    one cycle: lease -> triage -> fix -> verify -> review -> PR (interface); rechecks status +
                    kill switch, one shared revision, call budget, dry run by default. Not run by any job
+  agent/pass.ts    one pass over the store: candidate selection, stack trace → repo files, bounded driver. Not
+                   the job: no entrypoint, checkout or isolation of the verify step yet (#74)
   agent/reviewer.ts  stage 4: attacks the verified patch; verdict computed from outcomes in code, bound
                    to the patch hash the gate tested. Not run by any job yet
   agent/verifyGate.ts  stage 3: apply a patch in a scratch copy, judge the tree that results, run the
