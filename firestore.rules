@@ -130,6 +130,7 @@ service cloud.firestore {
     function settingsShapeOk(d) {
       return d.keys().hasOnly(['version', 'revision', 'auditId', 'watchedProjectId', 'environment',
                                'logResourceTypes', 'servicePatterns', 'ignoredMessages',
+                               'dryRun', 'reviewRequired', 'modelCallBudget',
                                'updatedAt', 'updatedBy'])
         && d.keys().hasAll(['version', 'revision', 'auditId', 'updatedAt', 'updatedBy'])
         && d.version == 1
@@ -144,7 +145,10 @@ service cloud.firestore {
         && (!('logResourceTypes' in d)
             || (d.logResourceTypes is list && d.logResourceTypes.size() >= 1 && d.logResourceTypes.size() <= 20))
         && (!('servicePatterns' in d) || (d.servicePatterns is map && d.servicePatterns.size() <= 100))
-        && (!('ignoredMessages' in d) || (d.ignoredMessages is list && d.ignoredMessages.size() <= 100));
+        && (!('ignoredMessages' in d) || (d.ignoredMessages is list && d.ignoredMessages.size() <= 100))
+        && (!('dryRun' in d) || d.dryRun is bool)
+        && (!('reviewRequired' in d) || d.reviewRequired is bool)
+        && (!('modelCallBudget' in d) || (d.modelCallBudget is int && d.modelCallBudget >= 1 && d.modelCallBudget <= 50));
     }
 
     // The change being written also creates its audit entry (new in this batch, so

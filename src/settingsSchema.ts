@@ -12,6 +12,12 @@ export interface RuntimeSettings {
   logResourceTypes?: string[];
   servicePatterns?: Record<string, string>;
   ignoredMessages?: string[];
+  /** Draft, verify and review fixes but open nothing. The engine's default is on. */
+  dryRun?: boolean;
+  /** Whether a patch must survive the adversarial review before it can become a pull request. */
+  reviewRequired?: boolean;
+  /** The most model calls one cycle may make. */
+  modelCallBudget?: number;
 }
 
 /** The document's schema version. A document of another version is invalid to this engine. */
@@ -27,6 +33,9 @@ const SETTINGS_KEYS = [
   "logResourceTypes",
   "servicePatterns",
   "ignoredMessages",
+  "dryRun",
+  "reviewRequired",
+  "modelCallBudget",
   // Written with the document by whoever edited it (the rules require them);
   // carried, not used by the engine.
   "revision",
@@ -36,6 +45,9 @@ const SETTINGS_KEYS = [
 ] as const;
 
 const MAX_LIST = 100;
+/** A cycle needs at least triage, a fix and a review; fifty is far past any sensible spend cap. */
+export const MODEL_CALL_BUDGET_MIN = 1;
+export const MODEL_CALL_BUDGET_MAX = 50;
 const PROJECT_ID = /^[a-z][a-z0-9-]{4,28}[a-z0-9]$/;
 const ENVIRONMENT = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 // Cloud Logging `resource.type` values: cloud_function, cloud_run_revision, ...
@@ -113,6 +125,20 @@ export function validateSettings(raw: unknown): Validation {
     } else if (!list.every((m) => typeof m === "string" && m.length >= 1 && m.length <= 300 && !CONTROL.test(m))) {
       problems.push("ignoredMessages: each entry must be 1-300 characters, no control characters");
     } else settings.ignoredMessages = [...(list as string[])];
+  }
+
+  for (const flag of ["dryRun", "reviewRequired"] as const) {
+    if (raw[flag] !== undefined) {
+      if (typeof raw[flag] === "boolean") settings[flag] = raw[flag] as boolean;
+      else problems.push(`${flag}: true or false`);
+    }
+  }
+
+  if (raw.modelCallBudget !== undefined) {
+    const n = raw.modelCallBudget;
+    if (typeof n === "number" && Number.isInteger(n) && n >= MODEL_CALL_BUDGET_MIN && n <= MODEL_CALL_BUDGET_MAX) {
+      settings.modelCallBudget = n;
+    } else problems.push(`modelCallBudget: a whole number from ${MODEL_CALL_BUDGET_MIN} to ${MODEL_CALL_BUDGET_MAX}`);
   }
 
   if (raw.revision !== undefined && !(Number.isInteger(raw.revision) && (raw.revision as number) >= 0)) {

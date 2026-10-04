@@ -21,6 +21,9 @@ export const FIELD_NAMES = [
   "logResourceTypes",
   "servicePatterns",
   "ignoredMessages",
+  "dryRun",
+  "reviewRequired",
+  "modelCallBudget",
 ] as const;
 export type FieldName = (typeof FIELD_NAMES)[number];
 export type FormState = Record<FieldName, FieldState>;
@@ -47,6 +50,9 @@ export function formFromStored(stored: StoredSettings | null): FormState {
     logResourceTypes: { override: "logResourceTypes" in s, text: list(s.logResourceTypes) },
     servicePatterns: { override: "servicePatterns" in s, text: patterns(s.servicePatterns) },
     ignoredMessages: { override: "ignoredMessages" in s, text: list(s.ignoredMessages) },
+    dryRun: { override: "dryRun" in s, text: typeof s.dryRun === "boolean" ? String(s.dryRun) : "true" },
+    reviewRequired: { override: "reviewRequired" in s, text: typeof s.reviewRequired === "boolean" ? String(s.reviewRequired) : "true" },
+    modelCallBudget: { override: "modelCallBudget" in s, text: typeof s.modelCallBudget === "number" ? String(s.modelCallBudget) : "" },
   };
 }
 
@@ -64,6 +70,16 @@ export function settingsFromForm(form: FormState): FormResult {
   if (form.environment.override) raw.environment = form.environment.text.trim();
   if (form.logResourceTypes.override) raw.logResourceTypes = lines(form.logResourceTypes.text);
   if (form.ignoredMessages.override) raw.ignoredMessages = lines(form.ignoredMessages.text);
+
+  // The two switches are a select, so the text is exactly "true" or "false"; anything else is left as it is
+  // for the validator to refuse rather than guessed at.
+  for (const flag of ["dryRun", "reviewRequired"] as const) {
+    if (form[flag].override) raw[flag] = form[flag].text === "true" ? true : form[flag].text === "false" ? false : form[flag].text;
+  }
+  if (form.modelCallBudget.override) {
+    const text = form.modelCallBudget.text.trim();
+    raw.modelCallBudget = text === "" ? Number.NaN : Number(text);
+  }
 
   if (form.servicePatterns.override) {
     const patterns: Record<string, string> = {};

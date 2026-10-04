@@ -32,7 +32,7 @@ import {
 
 const FIELDS: Record<
   FieldName,
-  { label: string; multiline: boolean; placeholder: string; hint: string }
+  { label: string; multiline: boolean; placeholder: string; hint: string; kind?: "switch" | "number" }
 > = {
   watchedProjectId: {
     label: "Watched project",
@@ -63,6 +63,27 @@ const FIELDS: Record<
     multiline: true,
     placeholder: "Request has invalid method",
     hint: "One per line. Framework noise to leave out. An override with nothing in it suppresses nothing.",
+  },
+  dryRun: {
+    label: "Dry run",
+    multiline: false,
+    kind: "switch",
+    placeholder: "",
+    hint: "On: the agent loop drafts, verifies and reviews fixes and opens nothing. Off: a verified, reviewed patch may become a pull request. The engine's default is on. Nothing runs the loop yet.",
+  },
+  reviewRequired: {
+    label: "Review required",
+    multiline: false,
+    kind: "switch",
+    placeholder: "",
+    hint: "On: a patch must survive the adversarial review before it can become a pull request.",
+  },
+  modelCallBudget: {
+    label: "Model calls per cycle",
+    multiline: false,
+    kind: "number",
+    placeholder: "6",
+    hint: "The most model calls one cycle may make (triage, each fix attempt, each review), 1 to 50. A spend cap per incident.",
   },
 };
 
@@ -188,7 +209,18 @@ export function SettingsEditor() {
                 </label>
               </div>
               <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">{spec.hint}</p>
-              {spec.multiline ? (
+              {spec.kind === "switch" ? (
+                <select
+                  id={id}
+                  className={`${INPUT} mt-2`}
+                  disabled={!field.override}
+                  value={field.text}
+                  onChange={(e) => update(name, { text: e.target.value })}
+                >
+                  <option value="true">On</option>
+                  <option value="false">Off</option>
+                </select>
+              ) : spec.multiline ? (
                 <textarea
                   id={id}
                   rows={4}
@@ -201,7 +233,7 @@ export function SettingsEditor() {
               ) : (
                 <input
                   id={id}
-                  type="text"
+                  type={spec.kind === "number" ? "number" : "text"}
                   className={`${INPUT} mt-2`}
                   placeholder={spec.placeholder}
                   disabled={!field.override}
