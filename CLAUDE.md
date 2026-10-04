@@ -146,6 +146,9 @@ src/
                    kill switch, one shared revision, call budget, dry run by default. Not run by any job
   agent/pass.ts    one pass over the store: candidate selection, stack trace → repo files, bounded driver. Not
                    the job: no entrypoint, checkout or isolation of the verify step yet (#74)
+  agent/assemble.ts  one incident's inputs: shallow clone at a pinned revision, counter-check, samples, files the trace names
+  agentCli.ts      `pnpm agent`: one pass. Dry run by default; refuses to start until STARFISH_VERIFY_ISOLATION is set
+                   (in-process is not a sandbox). Not in the Dockerfile, not scheduled
   agent/automationSwitch.ts  the kill switch: reads the runtime settings fresh each time the loop asks; fails closed.
                    Not run by any job yet
   agent/reviewer.ts  stage 4: attacks the verified patch; verdict computed from outcomes in code, bound

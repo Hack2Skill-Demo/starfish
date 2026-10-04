@@ -240,6 +240,28 @@ describe("loadConfig: the pull-request target", () => {
   });
 });
 
+describe("loadConfig: the agent entrypoint's guards", () => {
+  beforeEach(() => {
+    vi.stubEnv("STARFISH_VERIFY_ISOLATION", "");
+    vi.stubEnv("STARFISH_MAX_CYCLES_PER_PASS", "");
+    vi.stubEnv("GOOGLE_CLOUD_PROJECT", "home-project");
+  });
+  afterEach(() => vi.unstubAllEnvs());
+
+  it("defaults to no verify isolation, which keeps the agent from starting, and three cycles a pass", () => {
+    expect(loadConfig()).toMatchObject({ verifyIsolation: "none", maxCyclesPerPass: 3 });
+  });
+  it("reads in-process, refuses any other value, and refuses a cap of zero", () => {
+    vi.stubEnv("STARFISH_VERIFY_ISOLATION", " In-Process ");
+    expect(loadConfig().verifyIsolation).toBe("in-process");
+    vi.stubEnv("STARFISH_VERIFY_ISOLATION", "sandbox");
+    expect(() => loadConfig()).toThrow("STARFISH_VERIFY_ISOLATION");
+    vi.stubEnv("STARFISH_VERIFY_ISOLATION", "");
+    vi.stubEnv("STARFISH_MAX_CYCLES_PER_PASS", "0");
+    expect(() => loadConfig()).toThrow("STARFISH_MAX_CYCLES_PER_PASS");
+  });
+});
+
 describe("loadConfig: where a missing index may be created", () => {
   beforeEach(() => {
     vi.stubEnv("STARFISH_INDEX_ALLOWED_TARGETS", "");

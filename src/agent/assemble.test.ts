@@ -1,0 +1,138 @@
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import type { Firestore } from "firebase-admin/firestore";
+import { loadChildProcessBasics } from "../config.js";
+import { createGitCheckout, createLoader, toIncident, type CheckoutFn } from "./assemble.js";
+import { agentPreflight } from "./preflight.js";
+
+const ENV = { ...loadChildProcessBasics(), GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t", GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" };
+const git = (cwd: string, ...a: string[]) => execFileSync("git", a, { cwd, env: ENV, encoding: "utf8" }).trim();
+const ts = (iso: string) => ({ toDate: () => new Date(iso) });
+
+let root: string;
+let bare: string;
+let tip: string;
+const scratch = () => join(root, "scratch");
+
+beforeAll(() => {
+  root = mkdtempSync(join(tmpdir(), "assemble-test-"));
+  mkdirSync(scratch());
+  bare = join(root, "remote.git");
+  const seed = join(root, "seed");
+  execFileSync("git", ["init", "--quiet", "--bare", "-b", "main", bare], { env: ENV });
+  mkdirSync(seed);
+  git(seed, "init", "--quiet", "-b", "main");
+  mkdirSync(join(seed, "src"));
+  writeFileSync(join(seed, "src/orders.ts"), "export const x = 1;\n");
+  writeFileSync(join(seed, "src/big.ts"), "x".repeat(2000));
+  writeFileSync(join(seed, "src/bin.ts"), "a\0b");
+  writeFileSync(join(seed, "package.json"), "{}\n");
+  symlinkSync("/etc/hostname", join(seed, "src/link.ts"));
+  git(seed, "add", ".");
+  git(seed, "commit", "--quiet", "-m", "base");
+  tip = git(seed, "rev-parse", "HEAD");
+  git(seed, "push", "--quiet", bare, "main");
+});
+afterAll(() => rmSync(root, { recursive: true, force: true }));
+
+const cfgRepo = (over = {}) => ({ githubRepo: "acme/shop", githubBaseBranch: "main", githubRemoteUrl: bare, ...over });
+
+describe("createGitCheckout", () => {
+  it("clones the base branch at its tip, lists the tracked files and cleans up", async () => {
+    const co = await createGitCheckout(cfgRepo(), { env: loadChildProcessBasics(), tmpDir: scratch() })();
+    expect(co.revision).toBe(tip);
+    expect(co.files.sort()).toEqual(["package.json", "src/big.ts", "src/bin.ts", "src/link.ts", "src/orders.ts"]);
+    await co.dispose();
+    expect(readdirSync(scratch())).toEqual([]);
+  });
+
+  it("leaves nothing behind when the clone fails, and throws", async () => {
+    await expect(createGitCheckout(cfgRepo({ githubBaseBranch: "nope" }), { env: loadChildProcessBasics(), tmpDir: scratch() })()).rejects.toThrow();
+    expect(readdirSync(scratch())).toEqual([]);
+  });
+
+  it("never puts the token in a git command line", async () => {
+    const seen: string[][] = [];
+    const runGit = vi.fn(async (args: string[], o: { cwd: string; env: NodeJS.ProcessEnv }) => {
+      seen.push(args);
+      return execFileSync("git", args, { cwd: o.cwd, env: { ...o.env, ...ENV }, encoding: "utf8" });
+    });
+    const co = await createGitCheckout(cfgRepo(), { token: "ghp_SECRETSECRETSECRET", env: loadChildProcessBasics(), tmpDir: scratch(), runGit })();
+    await co.dispose();
+    expect(JSON.stringify(seen)).not.toContain("SECRET");
+  });
+});
+
+describe("toIncident", () => {
+  it("maps the stored document, converts times, and sets only what exists", () => {
+    const i = toIncident("a", { environment: "demo", functionName: "f", errorMessage: "boom", httpStatus: 500, lastOccurredAt: ts("2026-10-04T12:00:00Z"), stackTrace: "", junk: 1 });
+    expect(i).toEqual({ id: "a", environment: "demo", functionName: "f", message: "boom", httpStatus: 500, lastOccurredAt: "2026-10-04T12:00:00.000Z" });
+  });
+});
+
+function fakeDb(docs: Record<string, Record<string, unknown>>) {
+  return { collection: () => ({ doc: (id: string) => ({ get: async () => ({ exists: id in docs, data: () => docs[id] }) }) }) } as unknown as Firestore;
+}
+const config = { environment: "demo", incidentCollection: "incidents", patchExcludedPaths: [], logResourceTypes: ["cloud_function"], ignoredMessages: [], excludedServices: [] };
+const logging = (entries: unknown[] = []) => ({ getEntries: vi.fn(async () => [entries, null] as [unknown[], object | null]) });
+const checkoutFn = (): CheckoutFn => createGitCheckout(cfgRepo(), { env: loadChildProcessBasics(), tmpDir: scratch() });
+
+describe("createLoader", () => {
+  const incident = { environment: "demo", status: "new", functionName: "orders-create", errorMessage: "boom", stackTrace: "at f (/app/src/orders.ts:1:1)\nat g (/app/src/big.ts:1:1)\nat h (/app/src/bin.ts:1:1)\nat l (/app/src/link.ts:1:1)", occurrenceCount: 3 };
+
+  it("assembles the subject: the incident, the counter-check, the pinned revision and the files the trace names", async () => {
+    const loader = createLoader({ db: fakeDb({ i1: incident }), config, logging: logging([{}, {}]), checkout: checkoutFn(), maxFileBytes: 1000 });
+    const s = await loader.load("i1");
+    expect(s!.baseRevision).toBe(tip);
+    expect(s!.subject.status).toBe("new");
+    expect(s!.subject.incident).toMatchObject({ id: "i1", functionName: "orders-create", logCounterCheck: { count: 2, window: "24h" } });
+    // Too big, binary and symlinked files are left out; the plain one is read.
+    expect(s!.files).toEqual([{ path: "src/orders.ts", content: "export const x = 1;\n" }]);
+    await loader.disposeAll();
+    expect(readdirSync(scratch())).toEqual([]);
+  });
+
+  it("says the counter-check is missing, not zero, when Logging fails", async () => {
+    const failing = { getEntries: vi.fn(async () => { throw new Error("down"); }) };
+    const loader = createLoader({ db: fakeDb({ i1: incident }), config, logging: failing, checkout: checkoutFn() });
+    const s = await loader.load("i1");
+    expect(s!.subject.incident.logCounterCheck).toBeUndefined();
+    expect(s!.subject.samples).toBeUndefined();
+    await loader.disposeAll();
+  });
+
+  it("returns null for a missing, retired or other-environment incident, without cloning anything", async () => {
+    const checkout = vi.fn(checkoutFn());
+    const loader = createLoader({ db: fakeDb({ gone: { ...incident, retired: true }, other: { ...incident, environment: "prod" } }), config, logging: logging(), checkout });
+    for (const id of ["nope", "gone", "other"]) expect(await loader.load(id)).toBeNull();
+    expect(checkout).not.toHaveBeenCalled();
+  });
+
+  it("lets a failed checkout throw, so the cycle's lease expires and it is resumed", async () => {
+    const loader = createLoader({ db: fakeDb({ i1: incident }), config, logging: logging(), checkout: async () => { throw new Error("clone failed"); } });
+    await expect(loader.load("i1")).rejects.toThrow("clone failed");
+  });
+
+  it("treats an unknown status as new rather than trusting it", async () => {
+    const loader = createLoader({ db: fakeDb({ i1: { ...incident, status: "weird" } }), config, logging: logging(), checkout: checkoutFn() });
+    expect((await loader.load("i1"))!.subject.status).toBe("new");
+    await loader.disposeAll();
+  });
+});
+
+describe("agentPreflight", () => {
+  const ok = { verifyIsolation: "in-process" as const, verifyCommand: "pnpm test", githubRepo: "a/b", dryRun: true, environment: "demo" };
+  it("lets a fully configured dry run start", () => expect(agentPreflight(ok, undefined)).toEqual([]));
+  it("refuses with no isolation chosen, no command, no repo", () => {
+    const p = agentPreflight({ ...ok, verifyIsolation: "none", verifyCommand: " ", githubRepo: "" }, undefined);
+    expect(p).toHaveLength(3);
+    expect(p[0]).toMatch(/isolat/i);
+  });
+  it("wants a token only when it is going to open pull requests", () => {
+    expect(agentPreflight({ ...ok, dryRun: false }, undefined)).toHaveLength(1);
+    expect(agentPreflight({ ...ok, dryRun: false }, "t")).toEqual([]);
+  });
+});

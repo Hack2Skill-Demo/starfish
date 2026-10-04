@@ -25,6 +25,8 @@ export function testConfig(over: Partial<StarfishConfig> = {}): StarfishConfig {
     defaultLookbackHours: 24,
     verifyCommand: "",
     verifyTimeoutSeconds: 600,
+    verifyIsolation: "none",
+    maxCyclesPerPass: 3,
     patchExcludedPaths: [],
     ingestLagMinutes: 5,
     ingestMaxWindowHours: 6,
