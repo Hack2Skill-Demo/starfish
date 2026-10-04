@@ -143,6 +143,11 @@ try {
     await page.getByText("Runtime settings").waitFor();
     results[`${theme} /settings`] = await page.evaluate(AUDIT);
 
+    await page.goto(base + "/runs");
+    await page.getByRole("region", { name: "Run detail" }).waitFor({ timeout: 15000 });
+    await page.getByRole("list", { name: "Steps" }).waitFor();
+    results[`${theme} /runs`] = await page.evaluate(AUDIT);
+
     await page.goto(base + "/nope");
     await page.waitForTimeout(500);
     results[`${theme} /404`] = await page.evaluate(AUDIT);
@@ -163,6 +168,9 @@ try {
     await guest.page.goto(base + "/settings");
     await guest.page.getByText("Runtime settings").first().waitFor();
     results[`${theme} /settings (guest)`] = await guest.page.evaluate(AUDIT);
+    await guest.page.goto(base + "/runs");
+    await guest.page.getByRole("list", { name: "Steps" }).waitFor({ timeout: 15000 });
+    results[`${theme} /runs (guest)`] = await guest.page.evaluate(AUDIT);
     await guest.ctx.close();
   }
 } finally {

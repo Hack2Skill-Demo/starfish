@@ -9,18 +9,19 @@ describe("menuConfig", () => {
   });
 
   it("hides admin-only items from operators", () => {
-    expect(visibleMenuItems(menuItems, ["operator"]).map((i) => i.id)).toEqual(["incidents"]);
-    expect(visibleMenuItems(menuItems, ["admin"]).map((i) => i.id)).toEqual(["incidents", "settings"]);
+    expect(visibleMenuItems(menuItems, ["operator"]).map((i) => i.id)).toEqual(["incidents", "runs"]);
+    expect(visibleMenuItems(menuItems, ["admin"]).map((i) => i.id)).toEqual(["incidents", "runs", "settings"]);
   });
 
   it("shows a guest the incidents and a view-only Settings, never anything role-gated beyond that", () => {
-    expect(visibleMenuItems(menuItems, ["guest"]).map((i) => i.id)).toEqual(["incidents", "settings"]);
+    expect(visibleMenuItems(menuItems, ["guest"]).map((i) => i.id)).toEqual(["incidents", "runs", "settings"]);
     // A guest is not an admin or an operator.
-    expect(visibleMenuItems(menuItems, []).map((i) => i.id)).toEqual(["incidents"]);
+    expect(visibleMenuItems(menuItems, []).map((i) => i.id)).toEqual(["incidents", "runs"]);
   });
 
   it("finds the active section by longest prefix", () => {
     expect(activeMenuItem(menuItems, "/settings")?.id).toBe("settings");
+    expect(activeMenuItem(menuItems, "/runs")?.id).toBe("runs");
     expect(activeMenuItem(menuItems, "/nowhere")).toBeUndefined();
   });
 });

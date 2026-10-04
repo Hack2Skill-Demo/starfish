@@ -7,6 +7,14 @@
         { "fieldPath": "environment", "order": "ASCENDING" },
         { "fieldPath": "lastOccurredAt", "order": "DESCENDING" }
       ]
+    },
+    {
+      "collectionGroup": "starfish_cycles",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "environment", "order": "ASCENDING" },
+        { "fieldPath": "updatedAt", "order": "DESCENDING" }
+      ]
     }
   ],
   "fieldOverrides": []

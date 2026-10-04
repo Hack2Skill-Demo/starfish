@@ -119,6 +119,18 @@ describe("bootstrapWebConfig: the engine's run record", () => {
     ).toMatchObject({ runCollection: "my_runs", engineStaleMinutes: 15 });
   });
 
+  it("defaults the cycle collection to starfish_cycles and reads it from the environment", async () => {
+    vi.resetModules();
+    const fresh = await import("./config");
+    expect(await fresh.bootstrapWebConfig({}, respond(served))).toMatchObject({ cycleCollection: "starfish_cycles" });
+
+    vi.resetModules();
+    const other = await import("./config");
+    expect(
+      await other.bootstrapWebConfig({ VITE_STARFISH_CYCLE_COLLECTION: "my_cycles" }, respond(served))
+    ).toMatchObject({ cycleCollection: "my_cycles" });
+  });
+
   it.each(["0", "-5", "abc", "Infinity"])("falls back to the default for %s rather than blocking startup", async (bad) => {
     vi.resetModules();
     const fresh = await import("./config");

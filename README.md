@@ -109,10 +109,17 @@ Each rung is a prerequisite for the next. Rung 4 is not a switch we get to flip 
 
 ## Where the UI is heading
 
-**Designed, not built.** The operator UI today has sign-in, the incidents table and a
-descriptive settings page. The mockups below show where it is going and how the demo runs.
+**Mostly designed, not built.** The operator UI today has sign-in, the incidents table, an
+editable settings page and a **Runs** page. The mockups below show where it is going and how the
+demo runs.
 
-- **Live runs:** a real-time waterfall of each fault cycle.
+- **Live runs:** a first version is built: the **Runs** page lists the agent's cycles and draws
+  each one's steps (triage, fix, verify, review, pull request) from the events the engine records,
+  live. A step with no event reads "not reached", and a run with no worker holding it is not shown
+  as in progress. **Nothing runs the agent loop as a job yet, so on a real deployment the page is
+  empty;** it is exercised against the emulator with seeded data. Not built: the mockup's header
+  (path rule, engine health), the Slack, GitHub-issue, index, deploy, phone and recovery steps (the
+  loop has no code for them), and the four MVP cases observed end to end (#33 stays open).
 - **Overview:** what needs a human, and what was handled.
 - **Slack messages and GitHub issue/PR bodies:** what Starfish posts elsewhere.
 - **Pre-recorded phone call:** to the on-call person when Slack goes unanswered.

@@ -79,4 +79,52 @@ await db.doc("starfish_runs/last_run").set({
   totals: { entriesProcessed: 12, incidentsCreated: 1, incidentsUpdated: 3, incidentsRecurred: 0, incidentsReplayed: 0 },
   configSource: "env", actionsAllowed: true, problems: [],
 });
-console.log(`seed-emulator: ${users.length} users (password "starfish"), ${incidents.length} incidents`);
+// Agent cycles and their run events (src/agent/cycle.ts), so the Runs page has something to show:
+// one that ended at triage (every later step "not reached"), one still running, one waiting for a
+// person with a pull request. Illustrative data for the emulator only: no job runs the loop yet.
+const cycles = [
+  {
+    id: "seed-0_r0", state: "declined", path: "decline", outcome: "declined by triage", ageMin: 50,
+    events: [
+      ["cycle", "started", "Attempt 1", 0, { attempt: 1 }],
+      ["triage", "decision", "Declined: the error comes from a dependency, not this code", 0.4, { rule: "upstream-fault" }, { decision: "decline", rule: "upstream-fault" }],
+    ],
+  },
+  {
+    id: "seed-1_r0", state: "running", ageMin: 3, live: true,
+    events: [
+      ["cycle", "started", "Attempt 1", 0, { attempt: 1 }],
+      ["triage", "decision", "Act: a null dereference in the order handler", 0.5, { rule: "model-act" }, { decision: "act", rule: "model-act" }],
+      ["fix", "proposed", "Proposed a two-line guard and a test", 1.8, {}, { outcome: "proposed" }],
+    ],
+  },
+  {
+    id: "seed-2_r0", state: "waiting-human", path: "pr", outcome: "pull request opened", ageMin: 20,
+    events: [
+      ["cycle", "started", "Attempt 1", 0, { attempt: 1 }],
+      ["triage", "decision", "Act: a missing await on a Firestore write", 0.4, { rule: "model-act" }, { decision: "act", rule: "model-act" }],
+      ["fix", "proposed", "Proposed a one-line fix and a test", 1.5, {}, { outcome: "proposed" }],
+      ["verify", "passed", "The configured command passed on the patched tree", 2.6, {}, { status: "passed" }],
+      ["review", "approved", "The reviewer found nothing it could hold against the patch", 3.4, {}, { verdict: "approved" }],
+      ["pr", "opened", "Opened a pull request", 3.9, {}, { opened: true, number: 42, url: "https://github.com/example/app/pull/42" }],
+    ],
+  },
+];
+for (const c of cycles) {
+  const start = Date.now() - c.ageMin * 60_000;
+  const at = (min) => Timestamp.fromMillis(start + min * 60_000);
+  const last = c.events[c.events.length - 1][3];
+  await db.doc(`starfish_cycles/${c.id}`).set({
+    incidentId: c.id.replace(/_r\d+$/, ""), environment: "demo", recurrence: 0, state: c.state, attempts: 1,
+    eventCount: c.events.length, createdAt: at(0), updatedAt: at(last), stage: c.events[c.events.length - 1][0],
+    leaseExpiresAt: c.live ? Timestamp.fromMillis(Date.now() + 10 * 60_000) : null,
+    deadlineAt: at(30), ...(c.path && { path: c.path }), ...(c.outcome && { outcome: c.outcome }),
+    summary: Object.fromEntries(c.events.filter((e) => e[5]).map((e) => [e[0], e[5]])),
+  });
+  for (const [i, [stage, type, summary, min, data]] of c.events.entries()) {
+    await db.doc(`starfish_cycles/${c.id}/events/${String(i + 1).padStart(6, "0")}`).set({
+      seq: i + 1, environment: "demo", at: at(min), stage, type, summary, data,
+    });
+  }
+}
+console.log(`seed-emulator: ${users.length} users (password "starfish"), ${incidents.length} incidents, ${cycles.length} cycles`);
