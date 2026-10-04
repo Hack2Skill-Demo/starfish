@@ -185,6 +185,58 @@ describe("runCycle: the whole way through", () => {
   });
 });
 
+describe("runCycle: seeded secrets stay out of everything that leaves the process (#18)", () => {
+  const all = Object.values(SEEDED_SECRETS);
+  /** The seeded values and the fragments of them that would still identify a leak. */
+  const leaked = (text: string) => all.filter((secret) => text.includes(secret));
+
+  it("keeps every seeded credential out of the prompts, the stored records and the pull request payload", async () => {
+    const S = SEEDED_SECRETS;
+    const leakyIncident: Incident = {
+      ...incident,
+      message: `Cannot use undefined as a Firestore value; header ${S.bearerHeader}; key ${S.google}`,
+      errorDetail: `upstream said ${S.stripe} and ${S.awsId}`,
+      stackTrace: `Error at createOrder\n  token=${S.jwt}\n  hook ${S.slackHook}`,
+    };
+    const opened: PullRequestRequest[] = [];
+    const model = scripted({
+      triage: [{ ...act, reasoning: `saw ${S.github} in the log`, suspectedCause: `url had ${S.githubPat}` }],
+      // The first patch fails the gate, so the verify output is fed back to the fixer on the second call.
+      fix: [
+        fixOf(BAD_PATCH, { rootCause: `first try ${S.slack}` }),
+        fixOf(GOOD_PATCH, { rootCause: `couponCode is undefined; token was ${S.googleOauth}`, risk: `risk ${S.jwt}`, rejectedAlternatives: [`alt ${S.pem}`] }),
+      ],
+      review: [{ attacks: [{ attack: `Probe ${S.stripe}`, outcome: "held", detail: `Held; output had ${S.github}` }] }],
+    });
+    const base = deps(model, {}, opened);
+    const r = await runCycle(
+      {
+        ...base,
+        // The gate's own output carries a secret: it is shown to the fixer and to people, so it must be redacted first.
+        config: { ...base.config, verifyCommand: `echo "${S.github}"; grep -q new greeting.txt` },
+        load: async () => ({
+          subject: { incident: leakyIncident, status: "new" },
+          files: [{ path: "greeting.txt", content: `hello old\nconst key = "${S.stripe}";\nconst t = "${S.githubPat}";\n` }],
+          sourceDir: src,
+          baseRevision: "rev1",
+        }),
+      },
+      key
+    );
+    expect(r).toMatchObject({ kind: "finished", outcome: "pr-opened" });
+    expect(model.count("fix")).toBe(2); // the feedback path ran
+
+    // What the model was shown.
+    expect(leaked(model.calls.map((c) => c.prompt).join("\n"))).toEqual([]);
+    // What was stored, and so shown to guests.
+    expect(leaked(JSON.stringify(await cycleDoc()))).toEqual([]);
+    expect(leaked(JSON.stringify(await events()))).toEqual([]);
+    // What the pull request opener is handed. The patch is a diff of the repository's own files and goes only to a
+    // pull request in that repository (the fixer refuses a patch that ADDS a credential shape); everything else is text.
+    expect(leaked(JSON.stringify({ ...opened[0], patch: undefined }))).toEqual([]);
+  });
+});
+
 describe("runCycle: the run record on the cycle", () => {
   it("holds each stage that ran and the way it went, so a reader can tell the outcomes apart", async () => {
     const model = scripted({ triage: [act], fix: [fixOf(GOOD_PATCH, { testAdded: true })], review: [held] });

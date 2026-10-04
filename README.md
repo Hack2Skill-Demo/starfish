@@ -219,6 +219,13 @@ apparent over-engineering is scar tissue from real incidents, and the tests in
   URL credentials and credential-named `key=value` pairs. The store re-applies it on
   every write, so no caller can persist a seeded secret; the model prompt, model error
   messages and the spike's printed output go through it too (`redact.test.ts`)
+- what the agent loop records and sends is checked end to end: one emulator test runs a whole
+  cycle with every seeded credential planted in the incident's message, detail and stack, the source
+  files, the verify command's output and each model answer, and asserts none of them appears in a
+  prompt, a stored cycle or event, or the pull request opener's payload (`loop.emulator.test.ts`).
+  The patch itself is the exception: it is a diff of the repository's own files, goes only to a pull
+  request in that repository, and the fixer refuses a patch that *adds* a credential shape
+  (a secret already sitting in a context or removed line is not caught)
 
 **Redaction limits.** It is pattern matching: a credential in a format nobody listed will
 get through, and free-form PII (names, addresses, record ids) is not detectable at all —
@@ -231,8 +238,10 @@ text, so otherwise the next occurrence would fork a duplicate), removes the stal
 key, and is safe to re-run (`scrub.test.ts`, `scrub.emulator.test.ts`). Run it before real
 data is exposed to anyone. It does not touch Firestore exports or backups, logs, or anything
 outside the incident collection, and it finds only what the pattern list finds. There is no
-Slack, issue/PR or judge-facing output yet, so the output allowlist for those surfaces is
-still to be built with them (issue #18).
+Slack or issue/PR output yet, so the output allowlist for those surfaces is still to be built
+with them (issue #18). What a demo guest can read of the agent's work is already an allowlist:
+events and the run record are flat, key-filtered, redacted and bounded (`sanitizeEvent`); the
+incident documents guests read are the redacted ones, so keep the public demo's data synthetic.
 
 Alongside it, the **counter-check** (`src/ingest/counterCheck.ts`): an independent raw-log
 recount of a function's errors over 24h, plus a few redacted recent samples. Nothing calls it
