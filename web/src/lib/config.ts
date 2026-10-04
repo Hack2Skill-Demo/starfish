@@ -102,12 +102,28 @@ export interface WebConfig {
    * Must match the engine's STARFISH_SETTINGS_COLLECTION and firestore.rules.
    */
   settingsCollection: string;
+  /**
+   * Ingest run records: {runCollection}/last_run is what the engine writes after each run.
+   * Must match the engine's STARFISH_RUN_COLLECTION and firestore.rules.
+   */
+  runCollection: string;
+  /**
+   * The engine counts as stopped when its last run finished longer ago than this. Set it to
+   * about three times the schedule's interval: the engine does not know its own cadence.
+   */
+  engineStaleMinutes: number;
   /** Label for the environment the incidents come from. */
   environment: string;
   /** Region the watched Cloud Functions deploy to, for Cloud Logging links. */
   functionsRegion: string;
   /** Use the local Auth + Firestore emulators (`pnpm dev:emulated`), never a real project. */
   useEmulators: boolean;
+}
+
+/** A number above zero, else the default: a bad value here only affects a status line, so it never blocks startup. */
+function positiveMinutes(raw: string | undefined, fallback: number): number {
+  const n = Number(raw);
+  return raw !== undefined && raw !== "" && Number.isFinite(n) && n > 0 ? n : fallback;
 }
 
 let cached: WebConfig | undefined;
@@ -132,6 +148,8 @@ export function bootstrapWebConfig(
         incidentCollection: env.VITE_STARFISH_INCIDENT_COLLECTION || "incidents",
         usersCollection: env.VITE_STARFISH_USERS_COLLECTION || "starfish_users",
     settingsCollection: env.VITE_STARFISH_SETTINGS_COLLECTION || "starfish_settings",
+        runCollection: env.VITE_STARFISH_RUN_COLLECTION || "starfish_runs",
+        engineStaleMinutes: positiveMinutes(env.VITE_STARFISH_STALE_MINUTES, 90),
         environment: env.VITE_STARFISH_ENV || "dev",
         functionsRegion: env.VITE_FUNCTIONS_REGION || "us-central1",
         useEmulators: env.VITE_USE_EMULATORS === "1",

@@ -11,6 +11,9 @@ const mocks = vi.hoisted(() => ({
   applyAction: vi.fn(),
   env: { environment: "prod", ready: true, settingsUnavailable: false },
 }));
+vi.mock("../components/EngineStatus", () => ({
+  EngineStatus: ({ environment }: { environment: string }) => <div data-testid="engine-status-stub">{environment}</div>,
+}));
 vi.mock("../lib/useSettings", () => ({ useEnvironment: () => mocks.env }));
 vi.mock("../lib/incidents", async (orig) => ({
   ...(await orig<typeof import("../lib/incidents")>()),
@@ -76,6 +79,12 @@ describe("Incidents page", () => {
     renderPage();
     await screen.findByText("mailDrainer");
     expect(mocks.listIncidents).toHaveBeenCalledWith(24, "staging-eu");
+  });
+
+  it("shows the engine's status for the environment being viewed, once the settings have settled", async () => {
+    mocks.env = { environment: "staging-eu", ready: true, settingsUnavailable: false };
+    renderPage();
+    expect(await screen.findByTestId("engine-status-stub")).toHaveTextContent("staging-eu");
   });
 
   it("shows a guest the incidents but offers no triage action at all (#12)", async () => {

@@ -99,3 +99,32 @@ describe("bootstrapWebConfig", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("bootstrapWebConfig: the engine's run record", () => {
+  it("defaults to starfish_runs and a 90-minute stale threshold, and reads both from the environment", async () => {
+    vi.resetModules();
+    const fresh = await import("./config");
+    expect(await fresh.bootstrapWebConfig({}, respond(served))).toMatchObject({
+      runCollection: "starfish_runs",
+      engineStaleMinutes: 90,
+    });
+
+    vi.resetModules();
+    const other = await import("./config");
+    expect(
+      await other.bootstrapWebConfig(
+        { VITE_STARFISH_RUN_COLLECTION: "my_runs", VITE_STARFISH_STALE_MINUTES: "15" },
+        respond(served)
+      )
+    ).toMatchObject({ runCollection: "my_runs", engineStaleMinutes: 15 });
+  });
+
+  it.each(["0", "-5", "abc", "Infinity"])("falls back to the default for %s rather than blocking startup", async (bad) => {
+    vi.resetModules();
+    const fresh = await import("./config");
+    expect(await fresh.bootstrapWebConfig({ VITE_STARFISH_STALE_MINUTES: bad }, respond(served))).toMatchObject({
+      engineStaleMinutes: 90,
+    });
+  });
+});
+

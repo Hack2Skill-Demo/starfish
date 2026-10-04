@@ -73,4 +73,10 @@ for (const [i, inc] of incidents.entries()) {
     createdAt: inc.firstOccurredAt, updatedAt: inc.lastOccurredAt, ...inc,
   });
 }
+// What the engine writes after a run (src/ingest/run.ts), so the status line has something to show.
+await db.doc("starfish_runs/last_run").set({
+  environment: "demo", outcome: "ok", startedAt: ts(0.21), finishedAt: ts(0.2), windows: 1, capped: false,
+  totals: { entriesProcessed: 12, incidentsCreated: 1, incidentsUpdated: 3, incidentsRecurred: 0, incidentsReplayed: 0 },
+  configSource: "env", actionsAllowed: true, problems: [],
+});
 console.log(`seed-emulator: ${users.length} users (password "starfish"), ${incidents.length} incidents`);
