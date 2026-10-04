@@ -23,6 +23,7 @@
 import { Timestamp } from "firebase-admin/firestore";
 import type { Firestore } from "firebase-admin/firestore";
 import type { StarfishConfig } from "../config.js";
+import { hasAdminRole, isValidUid } from "../adminAuth.js";
 import { computeErrorFingerprint } from "./fingerprint.js";
 import { redactPii } from "./redact.js";
 import { incidentKeyId } from "./store.js";
@@ -45,15 +46,14 @@ export async function retireIncident(
   reason: string,
   now: Date
 ): Promise<RetireResult> {
-  if (!ID_RE.test(incidentId) || !ID_RE.test(actorUid)) return { ok: false, reason: "invalid-id" };
+  if (!ID_RE.test(incidentId) || !isValidUid(actorUid)) return { ok: false, reason: "invalid-id" };
   const incidentRef = db.collection(cfg.incidentCollection).doc(incidentId);
   const actorRef = db.collection(cfg.usersCollection).doc(actorUid);
 
   return db.runTransaction(async (tx): Promise<RetireResult> => {
     // Every read before any write.
     const [actor, snap] = await Promise.all([tx.get(actorRef), tx.get(incidentRef)]);
-    const roles = actor.get("roles") as unknown;
-    if (!Array.isArray(roles) || !roles.includes("admin")) return { ok: false, reason: "not-admin" };
+    if (!hasAdminRole(actor)) return { ok: false, reason: "not-admin" };
     if (!snap.exists) return { ok: false, reason: "no-such-incident" };
     const data = snap.data() as StoredIncident;
     if (data.retired === true) return { ok: true, alreadyRetired: true };
