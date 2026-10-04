@@ -137,7 +137,7 @@ src/
   agent/fixer.ts   stage 2: minimal patch or honest decline from a stubbed-testable model call;
                    fails closed, redacts both ways. Not run by any job yet
   agent/cycle.ts   cycle per (incident, recurrence), transactional lease with fencing, append-only run events
-                   (redacted); infrastructure errors throw, logical refusals are returned. Not run by any job yet
+                   (redacted) and the cycle's run record (summary.<stage>, path); infrastructure errors throw, logical refusals are returned. Not run by any job yet
   agent/loop.ts    one cycle: lease -> triage -> fix -> verify -> review -> PR (interface); rechecks status +
                    kill switch, one shared revision, call budget, dry run by default. Not run by any job
   agent/reviewer.ts  stage 4: attacks the verified patch; verdict computed from outcomes in code, bound

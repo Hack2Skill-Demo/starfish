@@ -44,6 +44,8 @@ const MAX_VALUE = 300;
 const MAX_DATA_KEYS = 20;
 const MAX_OUTCOME = 200;
 const DATA_KEY_RE = /^[A-Za-z0-9_.-]{1,40}$/;
+/** A stage name safe to use as a field path under `summary`. */
+const STAGE_RE = /^[a-z]{1,20}$/;
 const MS_PER_MINUTE = 60_000;
 
 /** The document id of a cycle, or null for an incident id that is not a plain id. */
@@ -106,7 +108,7 @@ export async function acquireLease(db: Firestore, cfg: CycleConfig, key: CycleKe
 
     const deadlineMs = ms(d.deadlineAt) ?? 0;
     if (now.getTime() >= deadlineMs) {
-      tx.update(ref, { state: "failed", outcome: "deadline-passed", owner: null, leaseExpiresAt: null, updatedAt: Timestamp.fromDate(now) });
+      tx.update(ref, { state: "failed", outcome: "deadline-passed", path: "failed", owner: null, leaseExpiresAt: null, updatedAt: Timestamp.fromDate(now) });
       return { acquired: false, reason: "deadline-passed" };
     }
 
@@ -117,7 +119,7 @@ export async function acquireLease(db: Firestore, cfg: CycleConfig, key: CycleKe
     // Same owner with a live lease is a renewal; otherwise the lease ran out and this is a takeover.
     const renewing = heldUntil > now.getTime() && d.owner === owner;
     if (!renewing && attempts >= cfg.maxCycleAttempts) {
-      tx.update(ref, { state: "failed", outcome: "retries-exhausted", owner: null, leaseExpiresAt: null, updatedAt: Timestamp.fromDate(now) });
+      tx.update(ref, { state: "failed", outcome: "retries-exhausted", path: "failed", owner: null, leaseExpiresAt: null, updatedAt: Timestamp.fromDate(now) });
       return { acquired: false, reason: "retries-exhausted" };
     }
 
@@ -148,7 +150,7 @@ export async function renewLease(db: Firestore, cfg: CycleConfig, id: string, ow
     if (!fence(d, owner, now)) return { ok: false, reason: "lease-lost" } as const;
     const deadlineMs = ms(d.deadlineAt) ?? 0;
     if (now.getTime() >= deadlineMs) {
-      tx.update(ref, { state: "failed", outcome: "deadline-passed", owner: null, leaseExpiresAt: null, updatedAt: Timestamp.fromDate(now) });
+      tx.update(ref, { state: "failed", outcome: "deadline-passed", path: "failed", owner: null, leaseExpiresAt: null, updatedAt: Timestamp.fromDate(now) });
       return { ok: false, reason: "lease-lost" } as const;
     }
     const expires = leaseEnd(cfg, now, deadlineMs);
@@ -166,21 +168,40 @@ export interface RunEvent {
   summary: string;
   /** Small structured detail (rule, counts, hashes). Sensitive-looking keys are dropped. */
   data?: Record<string, string | number | boolean | null>;
+  /**
+   * This stage's part of the cycle's run record: stored on the cycle document at `summary.<stage>`,
+   * replacing the stage's earlier entry, in the same fenced transaction as the event. A stage that
+   * did not run has no entry: the record never fakes one. Same limits and redaction as `data`.
+   */
+  record?: Record<string, string | number | boolean | null>;
 }
 
 const clip = (text: string, max: number) => redactPii(String(text)).slice(0, max);
 
-/** An event reduced to what may be stored and shown: redacted, bounded, no nested values. */
-export function sanitizeEvent(event: RunEvent): { stage: string; type: string; summary: string; data: Record<string, string | number | boolean | null> } {
-  const data: Record<string, string | number | boolean | null> = {};
-  for (const [k, v] of Object.entries(event.data ?? {})) {
-    if (Object.keys(data).length >= MAX_DATA_KEYS) break;
+type Flat = Record<string, string | number | boolean | null>;
+
+/** A flat map reduced to what may be stored and shown: redacted, bounded, no nested values. */
+function sanitizeFlat(input: Record<string, unknown> | undefined): Flat {
+  const out: Flat = {};
+  for (const [k, v] of Object.entries(input ?? {})) {
+    if (Object.keys(out).length >= MAX_DATA_KEYS) break;
     if (!DATA_KEY_RE.test(k) || isSensitiveKey(k)) continue;
-    if (typeof v === "string") data[k] = clip(v, MAX_VALUE);
-    else if (typeof v === "number" && Number.isFinite(v)) data[k] = v;
-    else if (typeof v === "boolean" || v === null) data[k] = v;
+    if (typeof v === "string") out[k] = clip(v, MAX_VALUE);
+    else if (typeof v === "number" && Number.isFinite(v)) out[k] = v;
+    else if (typeof v === "boolean" || v === null) out[k] = v;
   }
-  return { stage: clip(event.stage, 40), type: clip(event.type, 40), summary: clip(event.summary, MAX_SUMMARY), data };
+  return out;
+}
+
+/** An event reduced to what may be stored and shown: redacted, bounded, no nested values. */
+export function sanitizeEvent(event: RunEvent): { stage: string; type: string; summary: string; data: Flat; record?: Flat } {
+  return {
+    stage: clip(event.stage, 40),
+    type: clip(event.type, 40),
+    summary: clip(event.summary, MAX_SUMMARY),
+    data: sanitizeFlat(event.data),
+    ...(event.record && { record: sanitizeFlat(event.record) }),
+  };
 }
 
 /** Append an event. Only the current lease holder can; the sequence stays contiguous. */
@@ -200,13 +221,20 @@ export async function recordEvent(
     if (!snap.exists) return { ok: false, reason: "no-such-cycle" } as const;
     if (!fence(d, owner, now)) return { ok: false, reason: "lease-lost" } as const;
     const seq = Number(d.eventCount ?? 0) + 1;
+    const { record, ...eventFields } = clean;
     tx.create(ref.collection("events").doc(String(seq).padStart(6, "0")), {
       seq,
       environment: d.environment,
       at: Timestamp.fromDate(now),
-      ...clean,
+      ...eventFields,
     });
-    tx.update(ref, { eventCount: seq, stage: clean.stage, updatedAt: Timestamp.fromDate(now) });
+    tx.update(ref, {
+      eventCount: seq,
+      stage: clean.stage,
+      updatedAt: Timestamp.fromDate(now),
+      // The stage's part of the run record. A dotted path replaces only this stage's entry.
+      ...(record && STAGE_RE.test(clean.stage) && { [`summary.${clean.stage}`]: record }),
+    });
     return { ok: true, seq } as const;
   });
 }
@@ -229,6 +257,13 @@ export async function releaseLease(db: Firestore, cfg: CycleConfig, id: string, 
 }
 
 /** End the owner's hold on the cycle: it is finished, or resting until a person acts. */
+/**
+ * Which way a finished cycle went, for whoever reads the record (the scenario runner, Live runs, the
+ * scoreboard): declined, a person to be told, a patch drafted but nothing opened (dry run), a pull
+ * request opened, handed to a person, or failed. Merge and index paths do not exist yet (#9, #11).
+ */
+export type CyclePath = "decline" | "notify" | "draft" | "pr" | "human" | "failed";
+
 export async function finishCycle(
   db: Firestore,
   cfg: CycleConfig,
@@ -236,7 +271,8 @@ export async function finishCycle(
   owner: string,
   now: Date,
   state: Exclude<CycleState, "running">,
-  outcome: string
+  outcome: string,
+  path?: CyclePath
 ): Promise<FenceResult> {
   const ref = cycleRef(db, cfg, id);
   return db.runTransaction(async (tx) => {
@@ -244,7 +280,14 @@ export async function finishCycle(
     const d = snap.data() as Record<string, unknown> | undefined;
     if (!snap.exists) return { ok: false, reason: "no-such-cycle" } as const;
     if (!fence(d, owner, now)) return { ok: false, reason: "lease-lost" } as const;
-    tx.update(ref, { state, outcome: clip(outcome, MAX_OUTCOME), owner: null, leaseExpiresAt: null, updatedAt: Timestamp.fromDate(now) });
+    tx.update(ref, {
+      state,
+      outcome: clip(outcome, MAX_OUTCOME),
+      ...(path && { path }),
+      owner: null,
+      leaseExpiresAt: null,
+      updatedAt: Timestamp.fromDate(now),
+    });
     return { ok: true } as const;
   });
 }

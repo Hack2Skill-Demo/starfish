@@ -239,7 +239,10 @@ run by no job (`src/agent/cycle.ts`, tested on the emulator): one **cycle** per 
 recurrence (so a regression gets a fresh fix and a retry cannot open a second PR for the same
 one), a **lease** taken in a transaction (one worker at a time; a crashed worker's lease runs
 out and another resumes, up to a configured number of starts; the lease can never be extended
-past the cycle's deadline), and an append-only list of **run events** that only the current
+past the cycle's deadline), and an append-only list of **run events** (each stage also writes its part of a **run record** on
+the cycle itself, `summary.<stage>`, plus which way the cycle went, `path`: decline, notify, draft,
+pr, human or failed, so a reader can tell a declined cycle from a notified one, a draft or an
+opened PR, and a timeout, from that document alone; a stage that did not run has no entry) that only the current
 lease holder can write (fenced inside the same transaction, so a worker that lost its lease can
 record and finish nothing). Events are redacted and bounded, and `firestore.rules` let operators
 and guests (for the demo environment) read them and nobody write them.
