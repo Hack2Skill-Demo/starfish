@@ -2,11 +2,13 @@
 
 > **Status: proposed, not built.** The demo app repositories hold no code yet, and most of what the
 > scenarios check is designed but not built in Starfish (see the status column in
-> [`demo-app-scenarios.md`](demo-app-scenarios.md)). Written 2026-10-04 for #5 and #32.
+> [`demo-app-scenarios.md`](demo-app-scenarios.md)). Written 2026-10-04 for #5 and #32. Updated the
+> same day with the decisions taken after #50 (see "Decisions needed": what is decided and what is
+> still open, which is tracked in #68).
 
 ## Summary
 
-The demo app is a small shop whose code and cloud setup carry **84 planted scenarios**. Every setting and rule on Starfish's Engine, On-call and Connections screens has at least one ([`demo-app-scenarios.md`](demo-app-scenarios.md)). A **Scenario lab** page, in a separate control app, has one button per scenario. Pressing it changes what the shop's synthetic customers do, or what the cloud project allows. It never switches the code to a buggy path. A **scenario runner** then checks what Starfish did against that scenario's expected outcome, so the same buttons serve as an end-to-end test suite for Starfish.
+The demo app is a small shop whose code and cloud setup carry **84 planted scenarios**. Every setting and rule on Starfish's Engine, On-call and Connections screens has at least one ([`demo-app-scenarios.md`](demo-app-scenarios.md)). A **Scenario lab** page, inside the shop but a thin client of a separate, private controller, has one button per scenario. Pressing it changes what the shop's synthetic customers do, or what the cloud project allows. It never switches the code to a buggy path. A **scenario runner** then checks what Starfish did against that scenario's expected outcome, so the same buttons serve as an end-to-end test suite for Starfish.
 
 Four of them are the core of the live 3-minute demo, taken straight from the mockup's Live runs screen:
 
@@ -34,7 +36,7 @@ The one exception is the stubs that stand in for vendors (mail, payments, a slow
 
 ## The app
 
-A small storefront: browse products, check out (with an optional coupon field), see "My recent orders", download an invoice. The Scenario lab is not part of it (see "Two repos" below). It uses the same stack as Starfish's own UI so one team can work on both: TypeScript, pnpm, React 19 + Vite, Firebase gen2 Functions on Node 22, and Firestore.
+A small storefront: browse products, check out (with an optional coupon field), see "My recent orders", download an invoice. The Scenario lab is a page in it, but only a thin client (see "Two repos" below), and the whole app sits behind an access code (see "The button"). It uses the same stack as Starfish's own UI so one team can work on both: TypeScript, pnpm, React 19 + Vite, Firebase gen2 Functions on Node 22, and Firestore.
 
 | Function (as logged) | Kind | Scenarios it hosts |
 | --- | --- | --- |
@@ -73,8 +75,8 @@ Separation from Starfish, set up from the first commit:
 
 **Two repos, so Starfish can't read the answers.** Starfish reads the repo it fixes, and [#10](https://github.com/Hack2Skill-Demo/starfish/issues/10) requires the ground truth to stay hidden from the fixer and the reviewer. So everything that knows where the faults are lives apart from the shop:
 
-- **`demo-app`**, which Starfish watches and fixes: the shop, its functions, its tests, `firestore.indexes.json` and its CI/CD. Starfish's GitHub App is installed here only.
-- **`demo-control`**, private, and never visible to Starfish: the Scenario lab, the controller, `traffic-tick`, the stubs, the scenario files, the runner, the reset workflow and the evaluator tests.
+- **`demo-app`**, which Starfish watches and fixes: the shop, the Scenario lab page, its functions, its tests, `firestore.indexes.json` and its CI/CD. Starfish's GitHub App is installed here only. The lab page is a **thin client**: it loads the scenario list from the controller at runtime and sends the controller only a scenario id, so nothing in `demo-app` says what a scenario changes or where its fault is.
+- **`demo-control`**, private, and never visible to Starfish: the controller, `traffic-tick`, the stubs, the scenario files, the runner, the reset script and the evaluator tests.
 
 Both deploy into the same project as separate functions codebases (`demo`, `demo-control`) and separate Hosting sites. The shop reaches the stubs through configured URLs, just as it would a real vendor.
 
@@ -85,7 +87,7 @@ These four are the storyboard's runs, and the rest of the catalog follows the sa
 | Button | What the press changes | Error in the logs | Starfish's path (mockup) | Reset |
 | --- | --- | --- | --- | --- |
 | **Missing index** | Synthetic customers start opening "My recent orders". Baseline traffic never calls it. | `9 FAILED_PRECONDITION: The query requires an index. You can create it here: …` | Create the index, then an evidence PR waits for a human | Controller deletes the index and removes its entry from `firestore.indexes.json`; recent-orders traffic stops |
-| **Checkout without coupon** | Synthetic customers start checking out without a coupon. Baseline orders always carry one. | `Cannot use "undefined" as a Firestore value (found in field "couponCode")` | Fix PR, merge on green, the app's CI/CD deploys, fast-revert armed (#9) | A reset workflow restores the baseline line on `main` and deploys it; coupon-less traffic stops |
+| **Checkout without coupon** | Synthetic customers start checking out without a coupon. Baseline orders always carry one. | `Cannot use "undefined" as a Firestore value (found in field "couponCode")` | Fix PR, merge on green, the app's CI/CD deploys, fast-revert armed (#9) | The reset script restores the baseline line on `main` and the app's CI/CD deploys it; coupon-less traffic stops |
 | **API disabled** | Controller disables the one API `invoices-renderPdf` uses | `7 PERMISSION_DENIED: Cloud Translation API has not been used in project … or it is disabled` | Notify on-call with the console step; no patch | Nothing if the human re-enabled it; otherwise the controller re-enables it |
 | **Slow upstream** | Sets a one-shot slow marker on the upstream stub and starts an export run now | `4 DEADLINE_EXCEEDED: Deadline exceeded` (once) | Decline and record why | None; the marker is used up and the next run succeeds |
 
@@ -105,13 +107,15 @@ The app itself costs close to nothing. There are 6 Scheduler jobs: traffic, the 
 
 ## The button
 
-The Scenario lab is a page in the control app, not the shop. It lists all 84 scenarios, grouped as in the catalog, each with a Run button, its expected outcome, its status (Today, Designed, Gap) and its last result. Four large buttons at the top are the live-demo core. Anyone can view the lab, but only signed-in team members can press. This matches the mockup's rule that visitors are view-only guests. It also stops a stranger from burning the Gemini budget or starting a scenario on top of one Starfish is still handling.
+The Scenario lab is a page in the shop (`demo-app`), served by a thin client: it fetches the scenario list (84 scenarios, grouped as in the catalog, each with its expected outcome, status and last result) from the controller in `demo-control` when it loads, and a Run button sends only the scenario id back. Four large buttons at the top are the live-demo core.
+
+**The whole demo app sits behind an access code**, which a judge enters once on the app's first screen. Codes are issued by the team, expire, can be revoked, are rate-limited, and are stored only as hashes. Holding a valid code is what lets a visitor press a button; without one they reach nothing. This replaces the earlier idea of per-button unlock codes and of a team-only sign-in. It stops a stranger from burning the Gemini budget, and the one-cycle-at-a-time rule below stops a press from starting a scenario on top of one Starfish is still handling.
 
 Only one scenario runs at a time. Each run is a **cycle** with its own id and a deadline (the `maxCycleDurationMinutes` setting from [#5](https://github.com/Hack2Skill-Demo/starfish/issues/5)). While a cycle is active, the other buttons are disabled. #5's 30-minute default fits the index, notify and decline paths. A code fix runs CI, merges, deploys through the app's CI/CD and then waits out a 30-minute watch, so code-fix scenarios get 90 minutes.
 
 What one press does:
 
-1. `control-triggerFault({ caseId })` checks that the caller is on the team list.
+1. `control-triggerFault({ caseId })` checks that the caller holds a valid, unexpired, unrevoked access code and is inside its rate limit.
 2. In one Firestore transaction it checks that `demo_control/cycle` is idle. It then writes `{ caseId, cycleId, startedAt, deadline, state: "active" }`.
 3. It applies that case's change to the world (the table below).
 4. It sends one burst of traffic straight away, so the first errors land within seconds rather than at the next minute.
@@ -120,11 +124,11 @@ What one press does:
 
 The cycle ends in one of three ways:
 
-- Starfish's run reaches a final outcome: healed, merged, notified or declined. For the MVP a team member confirms this with Reset. Later the lab can read Starfish's run state itself.
+- Starfish's run reaches a final outcome: healed, merged, notified or declined. For the MVP a team member confirms this by running the reset script. Later the lab can read Starfish's run state itself.
 - The deadline passes. The cycle is recorded as `timed_out`.
-- A team member presses Reset.
+- A team member runs the reset script.
 
-Reset undoes the world change. For the code fault it also restores the baseline code. It never erases the incident, issue or PR history.
+Reset (a private script, see "Reset: the same bugs, again and again") undoes the world change. For the code fault it also restores the baseline code. It never erases the incident, issue or PR history.
 
 **Timing on camera.** Errors appear in Cloud Logging within seconds of the press. Starfish only sees them on its next ingest run, and the mockup shows a 5-minute schedule. For the live video, either run ingest every minute during the demo, or add a "run ingest now" to Starfish. That is a Starfish-side change.
 
@@ -155,19 +159,19 @@ A reset puts the fault back but leaves it latent. The dot stays green until the 
 The starting state of every fault lives in git as a tag, `baseline-v1`. A reset copies only the files that scenario owns back from that tag, in a normal commit on `main`. History is never rewritten, so it reads fault, fix, reset, fix. That is the public evidence trail #5 asks for.
 
 1. **The baseline tag.** `baseline-v1` marks a commit where every latent fault is present and `pnpm run verify` is green. Each scenario file lists the paths it owns. CODE-01 owns `functions/src/orders/createOrder.ts`; IDX-01 owns `firestore.indexes.json`.
-2. **The reset workflow.** `control-reset` starts a GitHub Actions workflow, `reset-scenario.yml`, with the scenario and cycle ids. It closes Starfish's open PRs and issues for that cycle with a comment. It then branches from `main` and runs `git restore --source=baseline-v1 -- <owned paths>`.
+2. **The reset script.** Reset is a private local script in `demo-control`, run by the team: `pnpm reset <ID>` for one scenario, `pnpm reset --all` for every scenario. It is not a deployed workflow and no button in the lab starts it, so a judge cannot reset anything. It acts through two narrow identities: a service account for the cloud side, and a reset bot for GitHub. It closes Starfish's open PRs and issues for that cycle with a comment, then branches from `main` and runs `git restore --source=baseline-v1 -- <owned paths>`.
 3. **Nothing changed?** The fix was never merged, so the bug is still there. Skip straight to the non-git state.
-4. **Otherwise a reset PR,** `chore(demo): reset CODE-01 to baseline (cycle …)`. CI runs the verify gate, plus the scenario's private evaluator test, which must **fail**. A failing test proves the fault is back. The controller's own GitHub App merges it, never Starfish's, and the app's normal CI/CD deploys it. A reset never runs while Starfish is verifying a fix or inside its revert window. #9 forbids it, and it would look like an unrelated change landing on top of the fix.
+4. **Otherwise a reset PR,** `chore(demo): reset CODE-01 to baseline (cycle …)`. CI runs the verify gate, plus the scenario's private evaluator test, which must **fail**. A failing test proves the fault is back. The reset bot merges it, never Starfish's identity, and the app's normal CI/CD deploys it. A reset never runs while Starfish is verifying a fix or inside its revert window. #9 forbids it, and it would look like an unrelated change landing on top of the fix.
 5. **Non-git state.** The controller deletes the healed index, re-enables the API, restores the IAM grant and the secret version, and clears traffic flags and stub markers. The button stays disabled until a deleted index is really gone and a re-enabled API really answers; both take minutes.
 6. **A fresh start in Starfish.** See the first trap below.
 
-A **Full reset** button does this for every scenario at once. Use it before recording.
+`pnpm reset --all` does this for every scenario at once. Use it before recording.
 
 **Why not `git reset --hard baseline` and a force-push.** It would erase Starfish's merged fixes from public history and break every PR link. It would also invalidate everyone's checkout and need force-push rights on `main`, which branch protection should forbid.
 
 **Trap 1: Starfish would see a regression.** Last cycle's incident is resolved. When the same bug fires again, Starfish correctly reopens it as `recurred`. If that lands inside the fast-revert window, it would open a revert PR. So Starfish needs a **cycle boundary** action. It closes the old incident for good and frees its fingerprint, so the next occurrence starts a new incident and fast-revert stays quiet. This is a Starfish-side change. The controller calls it and never writes to Starfish's database. ING-05 and FR-03 skip this step on purpose, to test recurrence.
 
-**Trap 2: the baseline drifts.** When app code changes for other reasons, an old baseline copy of a file may no longer fit. The reset PR's verify gate catches that, and the reset stops with "baseline needs a refresh" in the lab. The fix is a new tag, `baseline-v2`, cut with the fault still in place, and a manifest update.
+**Trap 2: the baseline drifts.** When app code changes for other reasons, an old baseline copy of a file may no longer fit. The reset PR's verify gate catches that, and the reset stops and prints "baseline needs a refresh". The fix is a new tag, `baseline-v2`, cut with the fault still in place, and a manifest update.
 
 ## Testing the scenarios
 
@@ -205,7 +209,7 @@ Suites:
 
 The demo side:
 
-- **A controller identity of its own.** The control functions run as their own service account. That account can delete and create indexes on `(default)`, disable and re-enable the one allowlisted API, change IAM on the one invoices bucket, disable and enable versions of the one mail secret, and run the reset workflow. Every target is hard-coded; nothing is chosen at run time. Starfish's account gets none of these, and per #5 the healer never deletes an index.
+- **A controller identity of its own.** The control functions run as their own service account. That account can delete and create indexes on `(default)`, disable and re-enable the one allowlisted API, change IAM on the one invoices bucket, disable and enable versions of the one mail secret, and, for the reset script, delete and recreate what a scenario changed. Every target is hard-coded; nothing is chosen at run time. Starfish's account gets none of these, and per #5 the healer never deletes an index.
 - **IAM can't limit API disabling to one API,** so `control-triggerFault` hard-codes the single service name it may touch.
 - **Deploys go through the app's own CI/CD** ([#9](https://github.com/Hack2Skill-Demo/starfish/issues/9)). Merging to `main` deploys the changed functions. The pipeline records the commit, the deployed revision and the completion time, because Starfish's fast-revert window starts at completion. It never deploys `firestore.indexes.json` with `--force`, so a lagging index file can't delete an index Starfish created.
 
@@ -222,7 +226,7 @@ Starfish's side:
 
 The mockups now exist in two places: the Starfish Screens canvas and `docs/design/html` in the Starfish repo ([#42](https://github.com/Hack2Skill-Demo/starfish/pull/42)). Each change below goes into both.
 
-- **Add two screens.** First, the shop, showing each feature's broken and working states. Second, the Scenario lab: the four core buttons, the catalog with last results, the health strip, the active cycle with its deadline, and Reset.
+- **Add two screens.** First, the shop, showing each feature's broken and working states. Second, the Scenario lab: the four core buttons, the catalog with last results, the health strip, and the active cycle with its deadline. There is no Reset button: reset is the private script.
 - **Notify run:** wherever it appears (Live runs, the Incidents row, Overview activity, the Slack card), change "Cloud Storage JSON API" to the API we actually disable.
 - **Engine screen, hard-exclude list:** it shows shared packages and "more than one function", while #9 lists dependencies and CI config. Show the union, which is what G1-03, G1-06 and G1-07 test.
 - **Story chart caption:** "the moment a deploy went out" becomes "the moment checkout without a coupon opened up", because no deploy causes this fault.
@@ -234,25 +238,27 @@ Phase 1 is your starting point: the button for IDX-01 with its reset, plus the r
 
 | Phase | What it builds | Gate to the next phase |
 | --- | --- | --- |
-| 1. The button and the ingest suite | Two repos, verify gate, own codebases, Hosting sites, `(default)` database; shop orders, `traffic-tick`, Scenario lab with IDX-01 and Reset; the runner and the 18 scenarios on built Starfish code | The ingest suite passes against live Starfish, and IDX-01 makes an incident |
-| 2. The live-demo core | CODE-01, CFG-01 and NOISE-01 with their resets; the reset workflow, and fixes deployed by the app's CI/CD; the cycle deadline and the frozen manifest | All four core cycles reach a recorded outcome |
+| 1. The button and the ingest suite | Two repos, verify gate, own codebases, Hosting sites, `(default)` database; shop orders, `traffic-tick`, Scenario lab (a page in the shop) with IDX-01 and its reset script; the runner and the 18 scenarios on built Starfish code | The ingest suite passes against live Starfish, and IDX-01 makes an incident |
+| 2. The live-demo core | CODE-01, CFG-01 and NOISE-01 with their resets; the reset script, and fixes deployed by the app's CI/CD; the cycle deadline and the frozen manifest | All four core cycles reach a recorded outcome |
 | 3. Rules, gates and feedback | The remaining IDX, CODE, CFG and NOISE variants; Gate 1 and Gate 2 cases, fast-revert, feedback, triage settings; the payment, mail and upstream stubs | Every scenario triggers on demand and resets cleanly |
 | 4. Escalation, budgets and connections | The on-call ladder with test phone numbers (needs Twilio); caps, token budget, `demo-infra` repo, auto-merge switch; gap scenarios become tests as their designs land | Every row passes, or waits on a named Starfish stage |
 
 Each phase starts only after the gate of the one before it is passed.
 
-## Decisions needed
+## Decisions
+
+Four are still open and tracked in [#68](https://github.com/Hack2Skill-Demo/starfish/issues/68), each with its recommendation. The rest were decided on 2026-10-04.
 
 | Decision | Recommended | Alternative |
 | --- | --- | --- |
-| Repos | Two: `demo-app` (Starfish fixes it) and a private `demo-control` (lab, controller, scenarios, evaluator tests) | One repo with scenario files kept outside Starfish's read path. Weaker: the fixer could still find them |
-| Who can press the buttons | Signed-in team only; the public sees the lab's state and results | Anyone, with a queue and a daily cap |
-| What exposes the code fault | Traffic changes (checkout without coupon): instant, no deploy | Deploy a breaking commit. It matches "a deploy went out", but takes 2 to 4 minutes before the first error |
-| API for the notify case | Cloud Translation, which nothing else in the project uses | A misconfigured Secret Manager secret, which is also CFG-03 |
-| Ingest speed for the video | Schedule ingest every minute while recording (#6) | A "run ingest now" control in Starfish |
-| Twilio for the escalation scenarios | Yes, one number, Phase 4 only. It is paid per number and per minute | Leave ESC-02 to ESC-07 untested and say so |
-| A second named database, `analytics` | Yes, for IDX-04. Small paid usage | Test the allowlist in Starfish's unit tests only |
-| A second repo, `demo-infra` | Yes, for CON-01 | Keep indexes in `demo-app` and leave CON-01 untested |
-| Where scenario results live | In `demo-control`, in #10's results format, read by the lab and by `pnpm scoreboard` | In Starfish, as part of its run records |
+| Repos | **Decided (2026-10-04):** two. `demo-app` (Starfish fixes it; `main` created) and a private `demo-control` (controller, scenarios, reset script, evaluator tests) | One repo with scenario files kept outside Starfish's read path. Weaker: the fixer could still find them |
+| Who can press the buttons | **Decided:** anyone holding a valid access code, entered once on the app's first screen; codes are issued by the team, expire, can be revoked, are rate-limited and stored only as hashes. The Lab page is in the shop as a thin client; reset is not a button | Team sign-in only, or per-button unlock codes (the earlier proposals) |
+| What exposes the code fault | **Open (#68).** Recommended: Traffic changes (checkout without coupon): instant, no deploy | Deploy a breaking commit. It matches "a deploy went out", but takes 2 to 4 minutes before the first error |
+| API for the notify case | **Open (#68).** Recommended: Cloud Translation, which nothing else in the project uses | A misconfigured Secret Manager secret, which is also CFG-03 |
+| Ingest speed for the video | **Open (#68).** Recommended: Schedule ingest every minute while recording (#6) | A "run ingest now" control in Starfish |
+| Twilio for the escalation scenarios | **Decided: yes**, one number, Phase 4 only. It is paid per number and per minute | Leave ESC-02 to ESC-07 untested and say so |
+| A second named database, `analytics` | **Decided: yes**, for IDX-04. Small paid usage | Test the allowlist in Starfish's unit tests only |
+| A second repo, `demo-infra` | **Decided: yes**, for CON-01 | Keep indexes in `demo-app` and leave CON-01 untested |
+| Where scenario results live | **Open (#68).** Recommended: In `demo-control`, in #10's results format, read by the lab and by `pnpm scoreboard` | In Starfish, as part of its run records |
 
-Once these are settled, demo-control gets created and Phase 1 starts in `Hack2Skill-Demo/demo-app` on `claude/kind-johnson-3pf3w3`.
+Once the four open ones are settled, `demo-control` gets created and Phase 1 starts in `Hack2Skill-Demo/demo-app` on `claude/kind-johnson-3pf3w3`.
