@@ -10,6 +10,9 @@ starts on a cron, under its own service account, with the image built from the `
 
 ## Run it
 
+The whole sequence, in order, with the console steps only a person can do, is in [`setup.md`](setup.md).
+This page is the reference for the deploy script itself.
+
 ```bash
 DRY_RUN=1 PROJECT_ID=my-project scripts/deploy-gcp.sh   # prints every command, changes nothing
 PROJECT_ID=my-project scripts/deploy-gcp.sh             # does it
@@ -57,15 +60,20 @@ secret is plumbing, not a feature, until then.
 ## The job does not read its own errors
 
 The engine's job logs under `cloud_run_job`; the default log resource types are `cloud_function` and
-`cloud_run_revision`. So with the defaults Starfish does not ingest its own failures. If you add
-`cloud_run_job` to `STARFISH_LOG_RESOURCE_TYPES` you also need the self-exclusion of #32.
+`cloud_run_revision`. So with the defaults Starfish does not ingest its own failures. As a second guard,
+the deploy sets `STARFISH_EXCLUDED_SERVICES=starfish,<job name>` on the job (#32: matched on the exact
+name, not a prefix), so adding `cloud_run_job` to `STARFISH_LOG_RESOURCE_TYPES` later still would not make
+the engine read itself. An explicit `STARFISH_EXCLUDED_SERVICES` in `EXTRA_ENV_VARS` replaces it.
 
 ## After the first deploy
 
 ```bash
-gcloud run jobs execute starfish-ingest --region=us-central1 --project=my-project --wait
+PROJECT_ID=my-project scripts/smoke-gcp.sh     # plants one error, runs the job, checks the incident arrived
+pnpm status                                    # is the engine alive? (needs GOOGLE_CLOUD_PROJECT and STARFISH_ENV)
 gcloud run jobs executions list --job=starfish-ingest --region=us-central1 --project=my-project
 ```
+
+`scripts/preflight-gcp.sh` is the read-only check to run *before* the deploy.
 
 Then look at `starfish_runs/last_run` in the `starfish` database (it is what the Incidents page
 shows as "engine status") and at the incidents collection. A failed run exits 1; a missing run shows

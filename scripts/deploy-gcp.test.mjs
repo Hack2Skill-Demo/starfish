@@ -117,6 +117,29 @@ describe("scripts/deploy-gcp.sh", () => {
     expect(withToken.out).not.toContain("ghp_THIS_MUST_NOT_APPEAR");
   });
 
+  it("creates a budget alert only when asked, and only with a billing account", () => {
+    expect(deploy(dry).out).not.toContain("billing budgets");
+    const bad = deploy({ ...dry, BUDGET_USD: "20" });
+    expect(bad.status).not.toBe(0);
+    expect(bad.out).toContain("BILLING_ACCOUNT");
+    expect(deploy({ ...dry, BUDGET_USD: "twenty", BILLING_ACCOUNT: "0123AB-456CDE-789FGH" }).status).not.toBe(0);
+    const r = deploy({ ...dry, BUDGET_USD: "20", BILLING_ACCOUNT: "0123AB-456CDE-789FGH" });
+    expect(r.status).toBe(0);
+    expect(r.out).toContain("gcloud billing budgets create --billing-account=0123AB-456CDE-789FGH");
+    expect(r.out).toContain("--budget-amount=20USD");
+    expect(r.out).toContain("--filter-projects=projects/star-proj");
+    // The step says what a budget is: an email, not a ceiling.
+    expect(r.out).toContain("does not stop spending");
+  });
+
+  it("keeps the deployed job out of its own ingest, unless told otherwise", () => {
+    expect(deploy(dry).out).toContain("STARFISH_EXCLUDED_SERVICES=starfish,starfish-ingest");
+    expect(deploy({ ...dry, JOB_NAME: "mine" }).out).toContain("STARFISH_EXCLUDED_SERVICES=starfish,mine");
+    const own = deploy({ ...dry, EXTRA_ENV_VARS: "STARFISH_EXCLUDED_SERVICES=a,b" });
+    expect(own.out).toContain("STARFISH_EXCLUDED_SERVICES=a,b");
+    expect(own.out.match(/STARFISH_EXCLUDED_SERVICES=/g)).toHaveLength(1);
+  });
+
   it("deploys no rules when asked not to, and runs once when asked to", () => {
     expect(deploy({ ...dry, SKIP_FIRESTORE_RULES: "1" }).out).not.toContain("deploy --only firestore");
     expect(deploy(dry).out).not.toContain("jobs execute");

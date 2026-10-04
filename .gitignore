@@ -7,3 +7,7 @@ dist/
 .spike-output/
 .verify-logs/
 coverage/
+
+# Written by scripts/deploy-web.sh: maps the "starfish" hosting target to this deployment's site.
+.firebaserc
+.firebase/
