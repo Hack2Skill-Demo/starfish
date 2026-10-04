@@ -74,6 +74,7 @@ jobs:
       - name: Hook tests
         run: |
           bash .claude/hooks/git-branch-guard.test.sh
+          bash .claude/hooks/pre-push-review-guard.test.sh
           bash .claude/hooks/config-boundary-guard.test.sh
 
       - name: Dependency audit (high and above)
