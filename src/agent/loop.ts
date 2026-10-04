@@ -25,7 +25,7 @@
  * needs must not carry on. The lease then expires and the cycle is resumed.
  *
  * Events hold rule names, counts and hashes, never the patch, a log line or model text beyond the
- * short redacted reasons the stages already produce. Not run by any job yet, and not on the Agent
+ * short redacted reasons the stages already produce. Run by the agent job (`pnpm agent`), and not on the Agent
  * Development Kit: the stage ordering here is plain code, which an ADK workflow can wrap.
  */
 import type { Firestore } from "firebase-admin/firestore";
@@ -47,7 +47,7 @@ import {
 import { proposeFix, type FixRequest, type SourceFile } from "./fixer.js";
 import { reviewPatch, type Attack, type ReviewVerdict } from "./reviewer.js";
 import { triageIncident, type AskJson, type TriageSubject } from "./triage.js";
-import { verifyPatch, type VerifyConfig, type VerifyResult } from "./verifyGate.js";
+import { verifyPatch, type VerifyConfig, type VerifyRequest, type VerifyResult } from "./verifyGate.js";
 
 /** Everything about the incident the stages need, assembled by the caller (it owns the repo checkout). */
 export interface LoopSubject {
@@ -84,6 +84,12 @@ export interface LoopDeps {
   incidentStatus: (incidentId: string) => Promise<IncidentStatus | null>;
   /** The kill switch, asked before each stage and before anything is opened. */
   automationEnabled: () => Promise<boolean>;
+  /**
+   * Where the verify command runs. Absent: `verifyPatch`, in THIS process (the `in-process` isolation). The agent
+   * entrypoint passes a remote verifier for `cloud-run-job` (verifyRemote.ts), so this process never runs the
+   * target's code. A failure of the infrastructure throws; a command that failed is a result.
+   */
+  verify?: (req: VerifyRequest) => Promise<VerifyResult>;
   /** Opens (or finds, by `cycleId`) the pull request. Absent means nothing can be opened. */
   openPullRequest?: (req: PullRequestRequest) => Promise<{ number: number; url: string }>;
 }
@@ -195,7 +201,7 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
       if (fix.outcome === "error") return await release(fix.rule);
       if (fix.outcome === "declined" || fix.patch === undefined) return await finish("waiting-human", fix.rule, "human");
 
-      const verified = await verifyPatch({ sourceDir: loaded.sourceDir, patch: fix.patch, baseRevision: loaded.baseRevision, config: cfg });
+      const verified = await (deps.verify ?? verifyPatch)({ sourceDir: loaded.sourceDir, patch: fix.patch, baseRevision: loaded.baseRevision, config: cfg });
       await note({
         stage: "verify",
         type: verified.status,

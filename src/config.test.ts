@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { loadChildProcessBasics, loadConfig, loadGithubToken } from "./config.js";
+import { loadChildProcessBasics, loadConfig, loadGithubToken, loadVerifyRunnerRequest } from "./config.js";
 
 // Env vars that loadConfig reads; cleared first so the developer's own .env/shell can't leak in.
 const KEYS = [
@@ -259,6 +259,38 @@ describe("loadConfig: the agent entrypoint's guards", () => {
     vi.stubEnv("STARFISH_VERIFY_ISOLATION", "");
     vi.stubEnv("STARFISH_MAX_CYCLES_PER_PASS", "0");
     expect(() => loadConfig()).toThrow("STARFISH_MAX_CYCLES_PER_PASS");
+  });
+});
+
+describe("loadConfig: the isolated verify job", () => {
+  beforeEach(() => {
+    for (const k of ["STARFISH_VERIFY_ISOLATION", "STARFISH_VERIFY_JOB", "STARFISH_VERIFY_BUCKET", "STARFISH_VERIFY_JOB_REGION", "GOOGLE_CLOUD_LOCATION"]) vi.stubEnv(k, "");
+    vi.stubEnv("GOOGLE_CLOUD_PROJECT", "home-project");
+  });
+  afterEach(() => vi.unstubAllEnvs());
+
+  it("names no job and no bucket by default, in the Vertex region", () => {
+    expect(loadConfig()).toMatchObject({ verifyJobName: "", verifyBucket: "", verifyJobRegion: "us-central1" });
+  });
+  it("reads cloud-run-job and its job, bucket and region, which falls back to the project's location", () => {
+    vi.stubEnv("STARFISH_VERIFY_ISOLATION", "Cloud-Run-Job");
+    vi.stubEnv("STARFISH_VERIFY_JOB", " starfish-verify ");
+    vi.stubEnv("STARFISH_VERIFY_BUCKET", "star-verify");
+    expect(loadConfig()).toMatchObject({ verifyIsolation: "cloud-run-job", verifyJobName: "starfish-verify", verifyBucket: "star-verify", verifyJobRegion: "us-central1" });
+    vi.stubEnv("GOOGLE_CLOUD_LOCATION", "europe-west1");
+    expect(loadConfig().verifyJobRegion).toBe("europe-west1");
+    vi.stubEnv("STARFISH_VERIFY_JOB_REGION", "asia-southeast1");
+    expect(loadConfig().verifyJobRegion).toBe("asia-southeast1");
+  });
+});
+
+describe("loadVerifyRunnerRequest", () => {
+  afterEach(() => vi.unstubAllEnvs());
+  it("is the one place the runner's request is read from the environment, and empty is absent", () => {
+    vi.stubEnv("STARFISH_VERIFY_REQUEST", "");
+    expect(loadVerifyRunnerRequest()).toBeUndefined();
+    vi.stubEnv("STARFISH_VERIFY_REQUEST", '{"v":1}');
+    expect(loadVerifyRunnerRequest()).toBe('{"v":1}');
   });
 });
 

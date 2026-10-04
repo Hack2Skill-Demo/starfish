@@ -20,7 +20,7 @@
  * checked here and redacted again before it is stored, because it is shown to people (guests,
  * on the public demo) and a model can echo what it was shown.
  *
- * Not wired into any job yet, and not on Google's Agent Development Kit yet: this is the stage's
+ * Run by the agent job (`pnpm agent`), and not on Google's Agent Development Kit yet: this is the stage's
  * contract, testable with a stubbed model, so the orchestration can be put around it.
  */
 import { askJson } from "../vertex.js";

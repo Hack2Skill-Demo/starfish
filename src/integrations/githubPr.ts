@@ -29,7 +29,7 @@
  * child git gets only PATH and HOME besides that.
  *
  * Not built here: filing an issue for the incident, Slack, reconciling a later merge or CI result, and
- * the link back to the UI. Not run by any job yet.
+ * the link back to the UI. Its only caller is the agent job (`pnpm agent`), a dry run by default.
  */
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";

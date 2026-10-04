@@ -4,7 +4,7 @@
  * agent's cycles, the incidents' hourly buckets); an empty store reads as empty, not as good news.
  *
  * Not here, because nothing records it yet: a run "healed on its own", the next scheduled run, and
- * anything about merges or deploys. Nothing runs the agent loop as a job yet, so on a real
+ * anything about merges or deploys. The agent job has never run on a real project, so on a real
  * deployment the run counts are zero until it does, and the page says so.
  */
 import { useEffect, useState } from "react";

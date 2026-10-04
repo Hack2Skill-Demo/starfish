@@ -37,16 +37,16 @@ Where it currently holds, and where it doesn't:
 |---|---|
 | Service attribution | ✅ config patterns — no hardcoded service list |
 | Project, environment, collection, database, lookback | ✅ config (engine `src/config.ts`, UI `web/src/lib/config.ts`); these are the defaults, and the engine's need a redeploy to change |
-| Watched project, environment label, log resource types, service patterns, noise list, and the pipeline switches (dry run, review required, model calls per cycle) | ⚠️ an admin edits them on the Settings page; the engine validates the saved document and applies it over the defaults, falling back to the last good one (`src/runtimeSettings.ts`). `firestore.rules` let only admins write it, each save in one batch with an immutable audit entry (before and after) and a separate operator copy; the engine's last-good copy and any secret-shaped key are closed to clients. The editor and the engine run the same validator (`src/settingsSchema.ts`). Rules check each list's shape and size but not each entry (they have no loops); the engine checks entries on read. Tested on the emulator, and the editor's own save is the one the rules suite runs. `pnpm ingest` reads it on each run (`src/ingest/run.ts`), and `scripts/deploy-gcp.sh` defines the scheduled job that runs it, but that script has **not been run against a real project yet** (#6), so until it has, a saved document is read only when someone runs `pnpm ingest`; secrets (Secret Manager and its endpoint). The pipeline switches (dry run, review required, automation, model calls) are stored and applied the same way, but **nothing runs the agent loop yet**, so today they change nothing; the verify command, its timeout and the excluded paths stay environment-only on purpose (an editable command would be code execution on the engine host, and the excluded paths guard the judge). Single-target: one watched project per deployment |
+| Watched project, environment label, log resource types, service patterns, noise list, and the pipeline switches (dry run, review required, model calls per cycle) | ⚠️ an admin edits them on the Settings page; the engine validates the saved document and applies it over the defaults, falling back to the last good one (`src/runtimeSettings.ts`). `firestore.rules` let only admins write it, each save in one batch with an immutable audit entry (before and after) and a separate operator copy; the engine's last-good copy and any secret-shaped key are closed to clients. The editor and the engine run the same validator (`src/settingsSchema.ts`). Rules check each list's shape and size but not each entry (they have no loops); the engine checks entries on read. Tested on the emulator, and the editor's own save is the one the rules suite runs. `pnpm ingest` reads it on each run (`src/ingest/run.ts`), and `scripts/deploy-gcp.sh` defines the scheduled job that runs it, but that script has **not been run against a real project yet** (#6), so until it has, a saved document is read only when someone runs `pnpm ingest`; secrets (Secret Manager and its endpoint). The pipeline switches (dry run, review required, automation, model calls) are stored and applied the same way, but **no deployed job runs the agent loop yet** (`DEPLOY_AGENT=1` would deploy one; it has never run), so today they change nothing; the verify command, its timeout and the excluded paths stay environment-only on purpose (an editable command would be code execution on the engine host, and the excluded paths guard the judge). Single-target: one watched project per deployment |
 | Vertex project, model and region | ⚠️ environment only (`STARFISH_VERTEX_PROJECT_ID`, defaulting to `GOOGLE_CLOUD_PROJECT`, so Gemini can run in a different project from the store): `vertex.ts` reads them itself, so a settings document can't change them yet |
 | Firebase project the UI connects to | ✅ read at startup from Hosting's `/__/firebase/init.json`, so one build serves any project (`VITE_FIREBASE_*` is the local-dev fallback). `scripts/deploy-web.sh` deploys it to its own Hosting site; written and dry-run tested, **untested against a real Hosting site** (#12) |
 | UI environment label | ✅ follows the runtime settings once signed in (the build-time `VITE_STARFISH_ENV` is the fallback when none is set or the read fails) |
 | UI collections and region | ⚠️ still `VITE_*`, baked in at build time |
 | Collection names in `firestore.rules` | ⚠️ hardcoded `incidents` / `starfish_users`; rules can't read config, so a renamed collection means editing the rules file |
-| Dry run, review required, model-call budget, automation kill switch | ⚠️ environment defaults (`STARFISH_DRY_RUN` on by default, `STARFISH_REVIEW_REQUIRED`, `STARFISH_MODEL_CALL_BUDGET`, `STARFISH_AUTOMATION_ENABLED` on by default) that an admin can override on the Settings page (first row); the loop reads them, no job runs it. The kill switch is read fresh before every stage (`src/agent/automationSwitch.ts`) and fails closed: if the settings cannot be resolved and nothing good is known, it reads as off |
+| Dry run, review required, model-call budget, automation kill switch | ⚠️ environment defaults (`STARFISH_DRY_RUN` on by default, `STARFISH_REVIEW_REQUIRED`, `STARFISH_MODEL_CALL_BUDGET`, `STARFISH_AUTOMATION_ENABLED` on by default) that an admin can override on the Settings page (first row); the loop reads them; the agent job that runs it is deployable (`DEPLOY_AGENT=1`) and has never run. The kill switch is read fresh before every stage (`src/agent/automationSwitch.ts`) and fails closed: if the settings cannot be resolved and nothing good is known, it reads as off |
 | GitHub target (repository, base branch, API and remote URL, commit identity) and token | ⚠️ environment only (`STARFISH_GITHUB_REPO` empty by default, so nothing can be opened; `STARFISH_GITHUB_BASE_BRANCH`, `_API_URL`, `_REMOTE_URL`, `_COMMIT_NAME`, `_COMMIT_EMAIL`); the token is read on its own from `STARFISH_GITHUB_TOKEN` and is not part of the config object. One repository per deployment |
 | Where a missing index may be created | ⚠️ environment only (`STARFISH_INDEX_ALLOWED_TARGETS`, empty by default: nothing allowed; a malformed entry stops startup); nothing creates an index yet |
-| Verify isolation, cycles per agent pass | ⚠️ environment only (`STARFISH_VERIFY_ISOLATION`, default `none`: the agent will not start; `in-process` is not a sandbox; `STARFISH_MAX_CYCLES_PER_PASS`, default 3) |
+| Verify isolation, cycles per agent pass | ⚠️ environment only (`STARFISH_VERIFY_ISOLATION`, default `none`: the agent will not start; `in-process` is not a sandbox; `cloud-run-job` runs the command in a separate job whose service account holds no roles, with `STARFISH_VERIFY_JOB`, `_BUCKET`, `_JOB_REGION` (written, never run, #74); `STARFISH_MAX_CYCLES_PER_PASS`, default 3) |
 | Agent cycle collection, lease length, cycle deadline, attempts | ⚠️ environment only (`STARFISH_CYCLE_COLLECTION`, `STARFISH_LEASE_SECONDS`, `STARFISH_CYCLE_DEADLINE_MINUTES`, `STARFISH_MAX_CYCLE_ATTEMPTS`); the rules name `starfish_cycles` too |
 | Ingest lag, longest window, run-record collection | ⚠️ environment only (`STARFISH_INGEST_LAG_MINUTES`, `STARFISH_INGEST_MAX_WINDOW_HOURS`, `STARFISH_RUN_COLLECTION`); the rules name `starfish_runs` too |
 | Services Starfish never ingests (its own) | ✅ config (`STARFISH_EXCLUDED_SERVICES`, default `starfish`), applied at query time and at parse time; environment-only on purpose, because it guards against a feedback loop and is not an operational preference. Set it to the name Starfish is actually deployed under; nothing is deployed yet (#6, #32) |
@@ -54,7 +54,7 @@ Where it currently holds, and where it doesn't:
 | Framework-noise suppression list | ✅ config, callable GET-probe noise by default |
 | Deployment: project, region, schedule, the watched and Gemini projects, the environment label | ✅ environment variables of `scripts/deploy-gcp.sh`; no file is edited. Written, **not yet run against a real project** (#6). `.github/workflows/deploy.yml` runs the same script by hand-dispatch with Workload Identity Federation and repository variables, no stored key; written and pinned by a test, **never run** (#75) |
 | Incident store | ❌ assumes Firestore |
-| Verify-gate command, timeout and excluded paths | ⚠️ environment only (`STARFISH_VERIFY_COMMAND`, `STARFISH_VERIFY_TIMEOUT_SECONDS`, `STARFISH_PATCH_EXCLUDED_PATHS`); `src/agent/verifyGate.ts` reads them, but no job calls it yet |
+| Verify-gate command, timeout and excluded paths | ⚠️ environment only (`STARFISH_VERIFY_COMMAND`, `STARFISH_VERIFY_TIMEOUT_SECONDS`, `STARFISH_PATCH_EXCLUDED_PATHS`); `src/agent/verifyGate.ts` reads them; in the isolated deployment only the verify job runs it (written, never run) |
 
 The ❌ rows are tracked work, not accepted limitations.
 
@@ -119,8 +119,8 @@ demo runs.
 - **Live runs:** a first version is built: the **Runs** page lists the agent's cycles and draws
   each one's steps (triage, fix, verify, review, pull request) from the events the engine records,
   live. A step with no event reads "not reached", and a run with no worker holding it is not shown
-  as in progress. **Nothing runs the agent loop as a job yet, so on a real deployment the page is
-  empty;** it is exercised against the emulator with seeded data. Not built: the mockup's header
+  as in progress. **The agent job that would fill it is deployable (`DEPLOY_AGENT=1`) and has never run, so on a real
+  deployment the page is empty;** it is exercised against the emulator with seeded data. Not built: the mockup's header
   (path rule, engine health), the Slack, GitHub-issue, index, deploy, phone and recovery steps (the
   loop has no code for them), and the four MVP cases observed end to end (#33 stays open).
 - **Incident evidence:** a first version is built: `/incidents/:id`, linked from the incidents table
@@ -162,10 +162,11 @@ is tested; "deployed" would mean it has run in a real project, and **nothing has
 | Firestore (its own `starfish` database) | incidents, settings, cycles, run records | built; rules and store tested on the emulator |
 | Firebase Auth | operator sign-in, guest view | built |
 | Cloud Run (a job) | runs one ingest per tick, as its own least-privilege service account | `Dockerfile` and deploy script written; not deployed |
+| Cloud Run: agent job and verify job, Cloud Storage bucket | the agent runs triage → fix → review; the target's tests run only in a separate job whose service account holds no roles, fed through the bucket (`DEPLOY_AGENT=1`) | in the deploy script (`docs/deploy.md`); never deployed |
 | Cloud Scheduler | starts that job on a cron (`SCHEDULE`, hourly by default) | in the deploy script; not deployed |
-| Secret Manager | the GitHub token the pull-request step uses | secret, access grant and mount are in the deploy script, and `loadGithubToken()` reads it; the opener is built and tested against a local git remote and a fake API, **not against real GitHub**, and no job runs it |
+| Secret Manager | the GitHub token the pull-request step uses | secret, access grant and mount are in the deploy script, and `loadGithubToken()` reads it; the opener is built and tested against a local git remote and a fake API, **not against real GitHub**; its only caller is the agent job (a dry run, never run) |
 | Firebase Hosting | the operator UI, on its own site (not the project's default one) | `scripts/deploy-web.sh` and the Hosting config written; not deployed |
-| Cloud Build, Artifact Registry | build the image (`gcloud run jobs deploy --source`) | in the deploy script; not deployed |
+| Cloud Build, Artifact Registry | build the image (`gcloud run jobs deploy --source`; one build per job) | in the deploy script; not deployed |
 | Cloud Monitoring | a second signal beside logs (see the blind spot above) | planned |
 
 ## Status
@@ -255,11 +256,11 @@ The first stage of the half that acts exists as a **tested contract** and nothin
 that isn't open, defers when the counter-check is missing (missing is not zero), declines a
 counter-check of zero without asking the model, validates the model's answer locally and
 fails closed, and redacts and bounds both what the model is shown and what it returns. It is
-tested with a stubbed model; **no job runs it**, the counter-check isn't fed to it by any run,
+tested with a stubbed model; the agent job (`pnpm agent`, deployable with `DEPLOY_AGENT=1`, never run) runs it and takes the counter-check itself,
 and it is not on Google's Agent Development Kit yet.
 
 The **verify gate** (`src/agent/verifyGate.ts`) is also built as a function and tested for real
-(real `git apply`, real child processes), and also run by no job. Given a checkout and a
+(real `git apply`, real child processes), and run by the verify job in the isolated deployment (never run). Given a checkout and a
 patch it applies the patch in a scratch copy without `.git` or `node_modules`, compares the
 trees to see what *actually* changed, and refuses a change to CI or secrets or any path the
 deployment excluded (the files that define the verify command and the tests), a symbolic link,
@@ -269,7 +270,7 @@ output tied to the SHA-256 of the exact patch. **It is not a sandbox:** the comm
 process's user with the machine's network and filesystem, so it belongs on a disposable runner
 that holds no credentials, which is infrastructure that does not exist yet (#8).
 
-The **fixer** (`src/agent/fixer.ts`) is the third stage as a contract, run by no job: given an
+The **fixer** (`src/agent/fixer.ts`) is the third stage as a contract, run by the agent job (never run): given an
 incident and the source files the caller chose to show it, it returns a unified diff with its
 root cause, risk and rejected alternatives, or honestly declines (an empty patch means "I lack
 the context", an outcome and not an error). It fails closed on a malformed answer, a patch
@@ -286,7 +287,7 @@ blocks, any flag approves with flags), and a review with no attacks is an error 
 "found nothing".
 
 The state those stages need in order to run more than once safely exists too, and is also
-run by no job (`src/agent/cycle.ts`, tested on the emulator): one **cycle** per incident and
+run by the agent job, never run (`src/agent/cycle.ts`, tested on the emulator): one **cycle** per incident and
 recurrence (so a regression gets a fresh fix and a retry cannot open a second PR for the same
 one), a **lease** taken in a transaction (one worker at a time; a crashed worker's lease runs
 out and another resumes, up to a configured number of starts; the lease can never be extended
@@ -317,7 +318,7 @@ merges, passes the token to git in the environment and not on a command line, an
 SHA-256 is not the one that was verified. The engine's check is a convention: that Starfish can write
 only its own branches has to be enforced by branch protection or a ruleset on the repository, because
 a GitHub App's permission cannot be scoped to a branch prefix. Not built: the GitHub issue for the
-incident, Slack, reconciling a later merge or CI result. No job runs the loop. The pieces of one *pass* over the store exist as plain functions (`src/agent/pass.ts`, #74): choosing open incidents with no settled cycle for their current recurrence, mapping a stack trace to files that really are in the repository (never a path read from the log, never `node_modules` or an excluded path, no guessing when a match is ambiguous), and a bounded driver that runs one cycle at a time and stops when cycles keep throwing. **Also built, not deployed:** `src/agent/assemble.ts` (a shallow clone of the base branch whose tip is the pinned revision, the log counter-check and samples, the files the trace names) and the entrypoint `pnpm agent` (`src/agentCli.ts`): dry run by default, and it **refuses to start** unless `STARFISH_VERIFY_ISOLATION=in-process` is set on purpose (`none` is the default), which means the target repo's tests run on that machine as that identity, not in a sandbox. It is not in the Dockerfile and the deploy script does not schedule it. **Not built:** the Cloud Run job and its schedule, and above all a real **isolation of the verify step**, which runs the target repository's own tests and is not a sandbox; how it is isolated is an open decision, and until it is made nothing should run the loop unattended against real credentials. It is plain code, not on Google's Agent Development Kit: in `@google/adk` 2.2.0
+incident, Slack, reconciling a later merge or CI result. The pieces of one *pass* over the store exist as plain functions (`src/agent/pass.ts`, #74): choosing open incidents with no settled cycle for their current recurrence, mapping a stack trace to files that really are in the repository (never a path read from the log, never `node_modules` or an excluded path, no guessing when a match is ambiguous), and a bounded driver that runs one cycle at a time and stops when cycles keep throwing. **Also built, not deployed:** `src/agent/assemble.ts` (a shallow clone of the base branch whose tip is the pinned revision, the log counter-check and samples, the files the trace names) and the entrypoint `pnpm agent` (`src/agentCli.ts`): dry run by default, and it **refuses to start** unless `STARFISH_VERIFY_ISOLATION=in-process` is set on purpose (`none` is the default), which means the target repo's tests run on that machine as that identity, not in a sandbox. **Isolation of the verify step (#74), decided and written, never run:** the verify command runs target-repository code, so with `STARFISH_VERIFY_ISOLATION=cloud-run-job` the agent never runs it. It packs the source and the patch into a bucket, hands a **separate Cloud Run job whose service account holds no roles** two per-run signed URLs, and waits for a result it then validates (typed, tied to the SHA-256 of the exact patch, a pass only on exit 0). The job runs the command as an unprivileged user so the command cannot read the URL its result is written to. `scripts/deploy-gcp.sh` deploys the agent job, its Scheduler job, the verify job and the bucket with `DEPLOY_AGENT=1`; the protocol is tested end to end against a local stand-in for the bucket with the real verify gate, but **Cloud Storage signing, the Cloud Run call, the image's privilege drop and the claim that the verifier can reach nothing have never been exercised on a real project**. The command can still use the network, so candidate code can send out the source it was given. Nothing has opened a pull request: the agent is a dry run and has never run against real GitHub, Cloud Logging or Gemini from a job. It is plain code, not on Google's Agent Development Kit: in `@google/adk` 2.2.0
 `SequentialAgent`, the class #8 names, is deprecated in favour of `Workflow`, which is marked
 experimental, so wrapping the loop in ADK is a decision still open.
 
@@ -344,7 +345,7 @@ src/
   vertex.ts          Vertex AI client
   spike.ts           the fix-quality spike
   ingest/            logs -> classified, deduped incidents + counter-check
-  agent/             triage, fixer, verify gate, reviewer, cycle state and the loop: run by no job yet
+  agent/             triage, fixer, verify gate, reviewer, cycle state and the loop: run by the agent job (`pnpm agent`), deployable and never run
 web/                 operator UI: sign-in, incidents, settings
 firestore.rules      what the UI may read and change (tested on the emulator)
 fixtures/incidents/   spike fixtures (synthetic; see docs/spike.md)

@@ -89,3 +89,10 @@ jobs:
           docker build -t starfish-engine:ci .
           docker run --rm -e GOOGLE_CLOUD_PROJECT=ci starfish-engine:ci \
             node --import tsx -e "import('./src/config.ts').then(m => console.log('config ok:', m.loadConfig().databaseId))"
+          # The agent and verify jobs run this image with their arguments replaced. The entrypoint runs everything
+          # as `node`, except the verify runner, which starts as root to hand the command to another user.
+          docker run --rm starfish-engine:ci id -u | grep -qx 1000
+          docker run --rm starfish-engine:ci git --version
+          docker run --rm starfish-engine:ci node --import tsx src/verifyRunnerCli.ts 2>&1 | grep -q 'starting as uid 0'
+          docker run --rm -e GOOGLE_CLOUD_PROJECT=ci starfish-engine:ci \
+            node --import tsx -e "Promise.all([import('./src/agent/verifyRemote.ts'), import('./src/agent/cloudRunJob.ts')]).then(() => console.log('verify modules ok'))"

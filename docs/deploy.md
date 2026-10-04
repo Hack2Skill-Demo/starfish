@@ -55,8 +55,8 @@ not mounted.
 
 `loadGithubToken()` (`src/config.ts`) reads that variable, and the pull-request opener
 (`src/integrations/githubPr.ts`) is its only user. The opener is tested against a local git remote
-and a fake GitHub API, **not against real GitHub**, and no job runs the agent loop, so the secret is
-still plumbing until one does. The deploy script does not set `STARFISH_GITHUB_REPO`; without it the
+and a fake GitHub API, **not against real GitHub**, and the only job that calls it (the agent job, never
+deployed) is a dry run, so the secret is still plumbing. The deploy script does not set `STARFISH_GITHUB_REPO`; without it the
 opener cannot be built.
 
 Starfish pushes only to branches named `starfish/<id>` and the engine checks that, but a GitHub App's
@@ -156,7 +156,7 @@ deployment branch rule above.
 |---|---|
 | enable APIs | `roles/serviceusage.serviceUsageAdmin` (on the Gemini and watched projects too, when they differ) |
 | create the engine and scheduler service accounts | `roles/iam.serviceAccountAdmin` |
-| run a job, and a scheduler call, *as* those accounts | `roles/iam.serviceAccountUser`, on `starfish-engine` and `starfish-scheduler` only, not project-wide |
+| run a job, and a scheduler call, *as* those accounts | `roles/iam.serviceAccountUser`, on `starfish-engine`, `starfish-scheduler` and, with `DEPLOY_AGENT`, `starfish-agent` and `starfish-verifier` only, not project-wide |
 | bind the engine's three roles | `roles/resourcemanager.projectIamAdmin`, on `PROJECT_ID`, the watched project and the Gemini project (see the warning below) |
 | create the `starfish` database, deploy rules and indexes | `roles/datastore.owner`, `roles/firebaserules.admin` |
 | create the secret, grant the engine access, add a version | `roles/secretmanager.admin` |
@@ -190,6 +190,8 @@ defaults when empty.
 | `STARFISH_DATABASE_ID`, `STARFISH_FIRESTORE_LOCATION` | `STARFISH_DATABASE_ID`, `FIRESTORE_LOCATION` | |
 | `STARFISH_SCHEDULE`, `STARFISH_SCHEDULE_TIME_ZONE` | `SCHEDULE`, `SCHEDULE_TIME_ZONE` | default hourly, UTC |
 | `STARFISH_EXTRA_ENV_VARS` | `EXTRA_ENV_VARS` | `A=1@B=2` |
+| `STARFISH_DEPLOY_AGENT`, `STARFISH_AGENT_REPO`, `STARFISH_VERIFY_COMMAND` | `DEPLOY_AGENT`, `AGENT_REPO`, `VERIFY_COMMAND` | set `1`, `owner/name` and the command to deploy the agent and its verify job too ([below](#the-agent-and-its-isolated-verify-job-74)); default off |
+| `STARFISH_VERIFY_TIMEOUT_SECONDS`, `STARFISH_VERIFY_BUCKET`, `STARFISH_AGENT_BASE_BRANCH`, `STARFISH_AGENT_SCHEDULE`, `STARFISH_AGENT_EXTRA_ENV_VARS` | `VERIFY_TIMEOUT_SECONDS`, `VERIFY_BUCKET`, `AGENT_BASE_BRANCH`, `AGENT_SCHEDULE`, `AGENT_EXTRA_ENV_VARS` | default 600, `<project>-starfish-verify`, `main`, `30 * * * *` |
 
 `BUDGET_USD` and `BILLING_ACCOUNT` are not wired: a budget lives on the billing account, which the deployer
 has no role on. Create the budget once from a terminal (`docs/setup.md`).
@@ -227,6 +229,69 @@ web app named `starfish` when the project has none). Keep both off the engine's 
 `STARFISH_WEB_HOSTING_SITE` (default `<project>-starfish`, its own site so the watched app's keeps the default).
 Anonymous sign-in is **not** turned on by the workflow: it is project-wide (see `setup.md`). Input: `dry_run`.
 
+## The agent and its isolated verify job (#74)
+
+`DEPLOY_AGENT=1 AGENT_REPO=owner/name VERIFY_COMMAND='…'` makes the script deploy three more things, none of which
+the ingest has:
+
+| Resource | What it is |
+|---|---|
+| Cloud Run job `starfish-agent` + Scheduler job `starfish-agent-tick` (hourly at :30), service account `starfish-agent` | `pnpm agent` (`src/agentCli.ts`): pick open incidents with no settled cycle, check the repository out, run triage, fix, verify, review as a **dry run** |
+| Cloud Run job `starfish-verify`, service account `starfish-verifier` which **holds no roles** | the **only** place the target repository's tests run (`src/verifyRunnerCli.ts`) |
+| Bucket `<project>-starfish-verify` (private, objects deleted after a day) | where the agent and the verify job pass the source and the result |
+
+> **Status: written, and tested against fakes and a local stand-in for the bucket; never deployed.** The deploy plan
+> is pinned by a dry run. The two halves of the protocol (`verifyRemote.ts`, `verifyRunner.ts`) are tested together,
+> with the real verify gate running a real command, over a local HTTP server that, like a signed URL, allows one
+> method on one object. **Not exercised:** Cloud Storage signing, the Cloud Run API call, the entrypoint's
+> privilege drop in the real image, and the guarantee that the verifier's account can do nothing. Expect fixes on
+> the first real run.
+
+**Why a separate job.** The agent holds the store, Logging and Gemini credentials. The verify gate runs the target
+repository's own tests, which is running candidate code (a model wrote the patch from log text an attacker can
+influence), and `verifyGate.ts` is not a sandbox. In the agent's own process that code could read the metadata
+server's token and reach the store. So the agent never runs it:
+
+1. The agent packs the source snapshot (no `.git`, no `node_modules`) and the patch into a bundle in the bucket.
+2. It mints two signed URLs for this run only (read the bundle, write the result), starts `starfish-verify` through
+   the Cloud Run API with them as one environment override, and polls for the result object.
+3. The verify job fetches the bundle, applies and judges the patch (the same gate: excluded paths, links, modes,
+   size), runs the command, and writes the result to its URL.
+4. The agent validates the result (typed, bounded, tied to the SHA-256 of the exact patch it sent, a pass only if
+   the command exited 0), redacts its text again, and deletes the objects.
+
+**What the verify job can and cannot do**, stated plainly: its account holds no role on any project or resource
+(the script grants it nothing; a test pins that). It has no Starfish setting and no secret. The command runs as an
+unprivileged user (uid 65534), in a scratch copy it owns, with a scrubbed environment: the runner starts as root
+only to hand the command over, so the command cannot read the runner's memory or environment, where its result URL
+is held. **It can still** use the network and the metadata server (a token for an account with no roles), so
+candidate code can send out the source snapshot it was given, which is the target repository's own source. A
+private repository's code leaves its network. Restricting the job's egress (a VPC with a firewall) would stop that
+and would also stop the command installing dependencies, so it is not done.
+
+**What it costs the agent in permissions:** `roles/storage.objectAdmin` on that bucket,
+`roles/iam.serviceAccountTokenCreator` on **itself** (to sign the URLs), and `roles/run.invoker` on the verify job,
+besides what the loop needs (the store, Gemini, `logging.viewer` on the watched project for the counter-check, the
+secret). `run.invoker` may not be enough to start a job with overrides; if the first start is refused (403), the
+error names the role, and the likely fix is a role that includes `run.jobs.runWithOverrides` on that job only.
+
+**Failure modes, on purpose:** a command that failed or timed out is a **result**, and the loop sends the patch
+back to the fixer once. A verify job that cannot be started, writes no result before the deadline (the command's
+limit plus 300 s), or writes something that is not a result **throws**: the cycle's lease expires and it is
+resumed, counted against its attempts. A forged or mismatched result is refused.
+
+**What is still not true.** Nothing here has opened a pull request; the agent is a dry run and has never run
+against real GitHub, Cloud Logging or Gemini from this job. The ingest's account still holds the secret grant and
+mount from #73 although it never reads the token. The verify job's image is this repository's engine image (Node,
+pnpm, git): a target repository that needs another toolchain needs another image. The Deploy engine workflow's
+deployer needs more roles for this (a bucket, a service account that must not be given any role, `actAs` on three
+accounts); see the table above.
+
+```bash
+DRY_RUN=1 DEPLOY_AGENT=1 AGENT_REPO=owner/name VERIFY_COMMAND='pnpm install --frozen-lockfile && pnpm run verify' \
+  PROJECT_ID=my-project scripts/deploy-gcp.sh
+```
+
 ## What is most likely to go wrong the first time
 
 None of this has run against a real project. The likely first failures, and what they mean:
@@ -245,11 +310,9 @@ None of this has run against a real project. The likely first failures, and what
 - **An alert when ingestion stops.** The UI shows it; nothing pages anyone (an item on #6).
 - **An authenticated "run now" endpoint.** `src/ingest/trigger.ts` is the function; nothing serves
   it. For recording a demo, a short `SCHEDULE` or `gcloud run jobs execute` does the job.
-- **The agent loop as a job.** Triage, fix, verify, review and the loop exist, and so do the pieces of one pass
-  (candidate selection, stack trace to files, input assembly with a pinned checkout, the pull-request opener) and
-  an entrypoint, `pnpm agent`, which is not in the image and not scheduled. What is missing is the second
-  job and its own identity, and above all **a real isolation of the verify step** (#74): the entrypoint refuses to
-  start until `STARFISH_VERIFY_ISOLATION` is set, and `in-process` is not a sandbox.
+- **The agent has never run on a real project.** The agent job and its isolated verify job are written and deploy
+  with `DEPLOY_AGENT=1` ([above](#the-agent-and-its-isolated-verify-job-74)); `in-process` verification is not a
+  sandbox and is for a machine with nothing to protect.
 - **Cost.** Cloud Run jobs, Scheduler (three free jobs) and Secret Manager (a few free versions) sit
   inside the free tiers at one tick an hour. Cloud Build and Artifact Registry storage, and a 5-minute
   tick running all month, are not free; Gemini calls are billed to the Gemini project. Each Actions deploy runs one Cloud Build.

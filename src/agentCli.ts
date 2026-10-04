@@ -3,8 +3,11 @@
  * assemble each one's source, and run the loop. Dry run by default (nothing is opened), and it refuses to start
  * at all until the verify step's isolation is set on purpose (src/agent/preflight.ts).
  *
- * NOT the deployed job. It is not in the Dockerfile and `scripts/deploy-gcp.sh` does not schedule it: the
- * engine's own job must not run candidate code under the engine's credentials. Run it where that is acceptable.
+ * Where the verify command runs is STARFISH_VERIFY_ISOLATION. `in-process` runs the target's tests in this process
+ * as this identity: not a sandbox, so only where that is acceptable. `cloud-run-job` hands the source and the patch
+ * to a separate job whose service account holds no roles and waits for its result, so this process, which holds
+ * the credentials, never runs the target's code (src/agent/verifyRemote.ts). `scripts/deploy-gcp.sh` deploys this
+ * as a Cloud Run job with DEPLOY_AGENT=1 and the second isolation; neither has run against a real project.
  *
  * It reads the watched project's logs (counter-check and samples), the target repository (a shallow clone,
  * with STARFISH_GITHUB_TOKEN if one is set), writes Starfish's store, and calls Gemini. Exits 1 when a cycle
@@ -24,6 +27,8 @@ import { createGitCheckout, createLoader } from "./agent/assemble.js";
 import { runCycle } from "./agent/loop.js";
 import { runAgentPass, selectCandidates } from "./agent/pass.js";
 import { agentPreflight } from "./agent/preflight.js";
+import { createCloudRunJobStarter, createGcsStore } from "./agent/cloudRunJob.js";
+import { createRemoteVerifier } from "./agent/verifyRemote.js";
 import { createPullRequestOpener } from "./integrations/githubPr.js";
 import { INCIDENT_STATUSES, type IncidentStatus } from "./types.js";
 
@@ -36,7 +41,7 @@ if (refused.length > 0) {
   process.exit(2);
 }
 
-initializeApp({ projectId: base.projectId });
+const app = initializeApp({ projectId: base.projectId });
 const db = getFirestore(base.databaseId);
 
 // One snapshot of the runtime settings for the whole pass; the kill switch below re-reads them every time it is asked.
@@ -50,6 +55,16 @@ const cfg = resolved.config;
 if (cfg.verifyIsolation === "in-process") {
   console.warn("agent: verify runs IN THIS PROCESS (STARFISH_VERIFY_ISOLATION=in-process): not a sandbox.");
 }
+
+// `cloud-run-job`: the verify command runs in a separate job whose service account holds no roles, and this
+// process never runs it. Otherwise the loop's own `verifyPatch` runs it in-process (`in-process`, not a sandbox).
+const remoteVerify =
+  cfg.verifyIsolation === "cloud-run-job"
+    ? createRemoteVerifier(cfg, {
+        store: createGcsStore(app, cfg.verifyBucket),
+        startJob: createCloudRunJobStarter({ projectId: cfg.projectId, region: cfg.verifyJobRegion, jobName: cfg.verifyJobName }),
+      })
+    : undefined;
 
 const loader = createLoader({
   db,
@@ -72,6 +87,7 @@ const deps = {
     return snap.exists && INCIDENT_STATUSES.includes(status as IncidentStatus) ? (status as IncidentStatus) : null;
   },
   automationEnabled: makeAutomationSwitch(settings, db),
+  ...(remoteVerify && { verify: remoteVerify }),
   // Absent in a dry run: the loop then ends a verified, reviewed patch as "waiting for a person" and opens nothing.
   ...(!cfg.dryRun && token && { openPullRequest: createPullRequestOpener(cfg, { token, env: loadChildProcessBasics() }) }),
 };

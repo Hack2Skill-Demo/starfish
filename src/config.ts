@@ -51,9 +51,17 @@ export interface StarfishConfig {
    * start, because running the target repository's own tests is running candidate code and how that is
    * isolated is undecided. `in-process`: on this machine, as this process's identity: NOT a sandbox, so only
    * for a machine that holds no credentials the code must not reach. A real isolation (a disposable runner)
-   * would be a further value here.
+   * would be a further value here. `cloud-run-job`: the command runs in a SEPARATE Cloud Run job whose service
+   * account holds no roles (src/agent/verifyRemote.ts, src/agent/verifyRunner.ts); the agent never runs it
+   * itself. Needs `verifyJobName` and `verifyBucket`.
    */
-  verifyIsolation: "none" | "in-process";
+  verifyIsolation: "none" | "in-process" | "cloud-run-job";
+  /** The Cloud Run job that runs the verify command when `verifyIsolation` is `cloud-run-job`. */
+  verifyJobName: string;
+  /** The bucket the source bundle and the result pass through (one day lifecycle); the verifier job has no access to it except per-run signed URLs. */
+  verifyBucket: string;
+  /** Region of that job. Defaults to `location`. */
+  verifyJobRegion: string;
   /** The most cycles one agent pass starts. */
   maxCyclesPerPass: number;
   /**
@@ -242,6 +250,9 @@ export function loadConfig(): StarfishConfig {
       "STARFISH_VERIFY_TIMEOUT_SECONDS"
     ),
     verifyIsolation: parseVerifyIsolation(process.env.STARFISH_VERIFY_ISOLATION),
+    verifyJobName: (process.env.STARFISH_VERIFY_JOB ?? "").trim(),
+    verifyBucket: (process.env.STARFISH_VERIFY_BUCKET ?? "").trim(),
+    verifyJobRegion: (process.env.STARFISH_VERIFY_JOB_REGION ?? "").trim() || process.env.GOOGLE_CLOUD_LOCATION || "us-central1",
     maxCyclesPerPass: positiveNumber(process.env.STARFISH_MAX_CYCLES_PER_PASS, 3, "STARFISH_MAX_CYCLES_PER_PASS"),
     patchExcludedPaths: [
       ...DEFAULT_PATCH_EXCLUDED_PATHS,
@@ -293,6 +304,16 @@ export function loadGithubToken(): string | undefined {
 }
 
 /**
+ * The request the agent hands the verify job (src/agent/verifyRunner.ts), or undefined. Read here because this is
+ * the only file that reads the environment; the verifier job is given nothing else, no Starfish setting and no
+ * credential, which is the point of it.
+ */
+export function loadVerifyRunnerRequest(): string | undefined {
+  const raw = process.env.STARFISH_VERIFY_REQUEST ?? "";
+  return raw.trim() === "" ? undefined : raw;
+}
+
+/**
  * The two variables a child `git` needs to find itself and a home directory, and nothing else: a child
  * process must not inherit the engine's environment (the GitHub token is in it).
  */
@@ -315,11 +336,11 @@ function positiveNumber(raw: string | undefined, fallback: number, name: string)
 }
 
 /** `none` when unset; anything but the two known values is a mistake worth refusing at startup. */
-function parseVerifyIsolation(raw: string | undefined): "none" | "in-process" {
+function parseVerifyIsolation(raw: string | undefined): "none" | "in-process" | "cloud-run-job" {
   const v = (raw ?? "").trim().toLowerCase();
   if (v === "" || v === "none") return "none";
-  if (v === "in-process") return "in-process";
-  throw new Error(`STARFISH_VERIFY_ISOLATION must be none or in-process, got "${raw}"`);
+  if (v === "in-process" || v === "cloud-run-job") return v;
+  throw new Error(`STARFISH_VERIFY_ISOLATION must be none, in-process or cloud-run-job, got "${raw}"`);
 }
 
 /** true/false/1/0/yes/no, or the default when unset. Anything else is a mistake worth refusing at startup. */
