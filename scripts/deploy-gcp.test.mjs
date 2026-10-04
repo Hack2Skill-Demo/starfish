@@ -132,6 +132,14 @@ describe("scripts/deploy-gcp.sh", () => {
     expect(r.out).toContain("does not stop spending");
   });
 
+  it("keeps the deployed job out of its own ingest, unless told otherwise", () => {
+    expect(deploy(dry).out).toContain("STARFISH_EXCLUDED_SERVICES=starfish,starfish-ingest");
+    expect(deploy({ ...dry, JOB_NAME: "mine" }).out).toContain("STARFISH_EXCLUDED_SERVICES=starfish,mine");
+    const own = deploy({ ...dry, EXTRA_ENV_VARS: "STARFISH_EXCLUDED_SERVICES=a,b" });
+    expect(own.out).toContain("STARFISH_EXCLUDED_SERVICES=a,b");
+    expect(own.out.match(/STARFISH_EXCLUDED_SERVICES=/g)).toHaveLength(1);
+  });
+
   it("deploys no rules when asked not to, and runs once when asked to", () => {
     expect(deploy({ ...dry, SKIP_FIRESTORE_RULES: "1" }).out).not.toContain("deploy --only firestore");
     expect(deploy(dry).out).not.toContain("jobs execute");

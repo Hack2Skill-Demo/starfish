@@ -5,6 +5,8 @@ import { chmodSync, existsSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { DEFAULT_EXCLUDED_SERVICES } from "../src/config.ts";
+import { isExcludedService } from "../src/ingest/parseLogEntry.ts";
 
 const script = new URL("./smoke-gcp.sh", import.meta.url).pathname;
 
@@ -44,6 +46,14 @@ describe("scripts/smoke-gcp.sh", () => {
     expect(r.out).toContain("--monitored-resource-type=cloud_function");
     expect(r.out).toContain("function_name=starfish-smoke");
     expect(r.out).toContain("project_id=star-proj");
+  });
+
+  it("plants the error from a name the ingest does not exclude: a smoke test that excludes itself would never pass", () => {
+    const planted = /function_name=([\w-]+)/.exec(smoke(dry).out)?.[1];
+    expect(planted).toBe("starfish-smoke");
+    expect(isExcludedService(planted, DEFAULT_EXCLUDED_SERVICES)).toBe(false);
+    // ...nor from the name the deploy gives the job, which the deploy itself excludes.
+    expect(isExcludedService(planted, ["starfish", "starfish-ingest"])).toBe(false);
   });
 
   it("writes the error to the watched project but runs the job in Starfish's", () => {

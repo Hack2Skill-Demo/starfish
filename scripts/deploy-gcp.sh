@@ -195,6 +195,13 @@ fi
 step "Cloud Run job '$JOB_NAME' (image built from the Dockerfile)"
 ENV_VARS="GOOGLE_CLOUD_PROJECT=$PROJECT_ID@STARFISH_WATCHED_PROJECT_ID=$WATCHED_PROJECT_ID@STARFISH_VERTEX_PROJECT_ID=$VERTEX_PROJECT_ID"
 ENV_VARS="$ENV_VARS@GOOGLE_CLOUD_LOCATION=$REGION@STARFISH_ENV=$STARFISH_ENV@STARFISH_DATABASE_ID=$STARFISH_DATABASE_ID"
+# The deployed job's own name is never ingested (STARFISH_EXCLUDED_SERVICES, matched on the exact name, not a
+# prefix): were it ever added to the log resource types, the engine would otherwise read its own failures and
+# the fixer could be asked to patch Starfish itself (#32). An explicit value in EXTRA_ENV_VARS wins.
+case "@$EXTRA_ENV_VARS" in
+  *@STARFISH_EXCLUDED_SERVICES=*) ;;
+  *) ENV_VARS="$ENV_VARS@STARFISH_EXCLUDED_SERVICES=starfish,$JOB_NAME" ;;
+esac
 [ -z "$EXTRA_ENV_VARS" ] || ENV_VARS="$ENV_VARS@$EXTRA_ENV_VARS"
 DEPLOY_ARGS=(
   gcloud run jobs deploy "$JOB_NAME" --source . --region="$REGION" --project="$PROJECT_ID" --quiet
