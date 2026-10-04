@@ -146,6 +146,8 @@ src/
                    kill switch, one shared revision, call budget, dry run by default. Not run by any job
   agent/pass.ts    one pass over the store: candidate selection, stack trace → repo files, bounded driver. Not
                    the job: no entrypoint, checkout or isolation of the verify step yet (#74)
+  agent/automationSwitch.ts  the kill switch: reads the runtime settings fresh each time the loop asks; fails closed.
+                   Not run by any job yet
   agent/reviewer.ts  stage 4: attacks the verified patch; verdict computed from outcomes in code, bound
                    to the patch hash the gate tested. Not run by any job yet
   agent/verifyGate.ts  stage 3: apply a patch in a scratch copy, judge the tree that results, run the

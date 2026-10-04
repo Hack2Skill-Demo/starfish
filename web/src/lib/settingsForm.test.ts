@@ -10,6 +10,7 @@ describe("formFromStored", () => {
     // A switch that gets overridden starts On, the safe side.
     expect(defaults.dryRun.text).toBe("true");
     expect(defaults.reviewRequired.text).toBe("true");
+    expect(defaults.automationEnabled.text).toBe("true");
   });
 
   it("overrides exactly the fields the document holds, and formats lists and patterns for editing", () => {
@@ -32,7 +33,8 @@ describe("formFromStored", () => {
 
 describe("pipeline switches", () => {
   it("shows a stored switch and budget as an override", () => {
-    const form = formFromStored({ version: 1, dryRun: false, reviewRequired: true, modelCallBudget: 12 });
+    const form = formFromStored({ version: 1, dryRun: false, reviewRequired: true, automationEnabled: false, modelCallBudget: 12 });
+    expect(form.automationEnabled).toEqual({ override: true, text: "false" });
     expect(form.dryRun).toEqual({ override: true, text: "false" });
     expect(form.reviewRequired).toEqual({ override: true, text: "true" });
     expect(form.modelCallBudget).toEqual({ override: true, text: "12" });
@@ -59,7 +61,7 @@ describe("pipeline switches", () => {
   });
 
   it("round-trips a stored pipeline document", () => {
-    const stored = { dryRun: false, reviewRequired: false, modelCallBudget: 3 };
+    const stored = { dryRun: false, reviewRequired: false, automationEnabled: false, modelCallBudget: 3 };
     expect(settingsFromForm(formFromStored({ version: 1, ...stored }))).toEqual({ ok: true, settings: stored });
   });
 });

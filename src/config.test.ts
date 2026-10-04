@@ -139,7 +139,7 @@ describe("loadConfig: agent cycles", () => {
 });
 
 describe("loadConfig: the loop's switches", () => {
-  const KEYS = ["STARFISH_DRY_RUN", "STARFISH_REVIEW_REQUIRED", "STARFISH_MODEL_CALL_BUDGET"];
+  const KEYS = ["STARFISH_DRY_RUN", "STARFISH_REVIEW_REQUIRED", "STARFISH_MODEL_CALL_BUDGET", "STARFISH_AUTOMATION_ENABLED"];
   beforeEach(() => {
     for (const k of KEYS) vi.stubEnv(k, "");
     vi.stubEnv("GOOGLE_CLOUD_PROJECT", "home-project");
@@ -161,6 +161,14 @@ describe("loadConfig: the loop's switches", () => {
   it.each(["maybe", "off", "2"])("refuses STARFISH_DRY_RUN=%s rather than guessing which way it was meant", (bad) => {
     vi.stubEnv("STARFISH_DRY_RUN", bad);
     expect(() => loadConfig()).toThrow("STARFISH_DRY_RUN");
+  });
+
+  it("leaves automation on by default, reads the kill switch, and refuses a value it cannot read", () => {
+    expect(loadConfig().automationEnabled).toBe(true);
+    vi.stubEnv("STARFISH_AUTOMATION_ENABLED", "false");
+    expect(loadConfig().automationEnabled).toBe(false);
+    vi.stubEnv("STARFISH_AUTOMATION_ENABLED", "maybe");
+    expect(() => loadConfig()).toThrow("STARFISH_AUTOMATION_ENABLED");
   });
 
   it("reads the review switch and the budget, and refuses a budget that would stop every cycle", () => {

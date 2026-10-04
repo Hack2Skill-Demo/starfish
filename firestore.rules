@@ -130,7 +130,7 @@ service cloud.firestore {
     function settingsShapeOk(d) {
       return d.keys().hasOnly(['version', 'revision', 'auditId', 'watchedProjectId', 'environment',
                                'logResourceTypes', 'servicePatterns', 'ignoredMessages',
-                               'dryRun', 'reviewRequired', 'modelCallBudget',
+                               'dryRun', 'reviewRequired', 'automationEnabled', 'modelCallBudget',
                                'updatedAt', 'updatedBy'])
         && d.keys().hasAll(['version', 'revision', 'auditId', 'updatedAt', 'updatedBy'])
         && d.version == 1
@@ -148,6 +148,7 @@ service cloud.firestore {
         && (!('ignoredMessages' in d) || (d.ignoredMessages is list && d.ignoredMessages.size() <= 100))
         && (!('dryRun' in d) || d.dryRun is bool)
         && (!('reviewRequired' in d) || d.reviewRequired is bool)
+        && (!('automationEnabled' in d) || d.automationEnabled is bool)
         && (!('modelCallBudget' in d) || (d.modelCallBudget is int && d.modelCallBudget >= 1 && d.modelCallBudget <= 50));
     }
 

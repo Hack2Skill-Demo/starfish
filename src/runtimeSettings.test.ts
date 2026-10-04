@@ -142,8 +142,11 @@ describe("validateSettings", () => {
   });
 
   it("accepts the pipeline switches and a whole-number budget within bounds", () => {
-    const raw = { version: 1, dryRun: false, reviewRequired: true, modelCallBudget: 12 };
-    expect(validateSettings(raw)).toEqual({ ok: true, settings: { dryRun: false, reviewRequired: true, modelCallBudget: 12 } });
+    const raw = { version: 1, dryRun: false, reviewRequired: true, automationEnabled: false, modelCallBudget: 12 };
+    expect(validateSettings(raw)).toEqual({
+      ok: true,
+      settings: { dryRun: false, reviewRequired: true, automationEnabled: false, modelCallBudget: 12 },
+    });
     expect(validateSettings({ version: 1, modelCallBudget: 1 }).ok).toBe(true);
     expect(validateSettings({ version: 1, modelCallBudget: 50 }).ok).toBe(true);
   });
@@ -152,6 +155,7 @@ describe("validateSettings", () => {
     for (const bad of ["false", 0, 1, null, "yes"]) {
       expect(validateSettings({ version: 1, dryRun: bad }).ok).toBe(false);
       expect(validateSettings({ version: 1, reviewRequired: bad }).ok).toBe(false);
+      expect(validateSettings({ version: 1, automationEnabled: bad }).ok).toBe(false);
     }
     for (const bad of [0, 51, -3, 2.5, "6", Number.NaN, Infinity, null]) {
       expect(validateSettings({ version: 1, modelCallBudget: bad }).ok).toBe(false);
@@ -160,9 +164,9 @@ describe("validateSettings", () => {
 
   it("names the pipeline fields in problems without echoing what was given", () => {
     const secret = SEEDED_SECRETS.google!;
-    const v = validateSettings({ version: 1, dryRun: secret, reviewRequired: secret, modelCallBudget: secret });
+    const v = validateSettings({ version: 1, dryRun: secret, reviewRequired: secret, automationEnabled: secret, modelCallBudget: secret });
     expect(v.ok).toBe(false);
-    expect(!v.ok && v.problems.map((p) => p.split(":")[0]).sort()).toEqual(["dryRun", "modelCallBudget", "reviewRequired"]);
+    expect(!v.ok && v.problems.map((p) => p.split(":")[0]).sort()).toEqual(["automationEnabled", "dryRun", "modelCallBudget", "reviewRequired"]);
     expect(JSON.stringify(v)).not.toContain(secret);
   });
 
@@ -201,13 +205,14 @@ describe("applySettings", () => {
   });
 
   it("overrides the pipeline switches, including turning a safe default off, and leaves them alone otherwise", () => {
-    const safe = testConfig({ dryRun: true, reviewRequired: true, modelCallBudget: 6 });
-    expect(applySettings(safe, { dryRun: false, reviewRequired: false, modelCallBudget: 9 })).toMatchObject({
+    const safe = testConfig({ dryRun: true, reviewRequired: true, automationEnabled: true, modelCallBudget: 6 });
+    expect(applySettings(safe, { dryRun: false, reviewRequired: false, automationEnabled: false, modelCallBudget: 9 })).toMatchObject({
       dryRun: false,
       reviewRequired: false,
+      automationEnabled: false,
       modelCallBudget: 9,
     });
-    expect(applySettings(safe, {})).toMatchObject({ dryRun: true, reviewRequired: true, modelCallBudget: 6 });
+    expect(applySettings(safe, {})).toMatchObject({ dryRun: true, reviewRequired: true, automationEnabled: true, modelCallBudget: 6 });
   });
 
   it("returns a frozen snapshot that shares nothing mutable with the defaults", () => {

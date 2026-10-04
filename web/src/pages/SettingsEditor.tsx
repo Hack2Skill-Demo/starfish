@@ -78,6 +78,13 @@ const FIELDS: Record<
     placeholder: "",
     hint: "On: a patch must survive the adversarial review before it can become a pull request.",
   },
+  automationEnabled: {
+    label: "Automation",
+    multiline: false,
+    kind: "switch",
+    placeholder: "",
+    hint: "The kill switch. Off: the agent loop stops at its next step and opens nothing, whatever the other switches say. The engine's default is on. Nothing runs the loop yet.",
+  },
   modelCallBudget: {
     label: "Model calls per cycle",
     multiline: false,
