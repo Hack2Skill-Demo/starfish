@@ -116,6 +116,8 @@ src/
                    upsert, through a per-(environment, fingerprint) key document
     counterCheck   independent raw-log recount + redacted samples
     aggregate      the scheduled job tying it together
+  runtimeSettings.ts  the settings document an admin edits: validated, applied over the
+                   env defaults, last-good fallback, a frozen snapshot per run
 ```
 
 Conventions that carry real weight (the `starfish-dev` skill has the reasoning):

@@ -2,9 +2,16 @@ import { describe, it, expect, vi } from "vitest";
 import type { Firestore } from "firebase-admin/firestore";
 
 const entries: unknown[] = [];
+const logging = { projects: [] as unknown[], filters: [] as string[] };
 vi.mock("@google-cloud/logging", () => ({
   Logging: class {
-    getEntries = async () => [entries];
+    constructor(options: unknown) {
+      logging.projects.push(options);
+    }
+    getEntries = async (request: { filter: string }) => {
+      logging.filters.push(request.filter);
+      return [entries];
+    };
   },
 }));
 
@@ -14,6 +21,8 @@ const { DEFAULT_IGNORED_MESSAGES, DEFAULT_LOG_RESOURCE_TYPES } = await import(".
 
 const config = {
   projectId: "p",
+  watchedProjectId: "p",
+  settingsCollection: "starfish_settings",
   location: "l",
   model: "m",
   environment: "prod",
@@ -95,5 +104,23 @@ describe("aggregateErrors", () => {
     await expect(aggregateErrors(db, config, new Date(0))).rejects.toThrow("1 of 3 incident upserts failed");
     // The failure doesn't strand the others: they committed and the next run accrues onto them.
     expect(created.map((c) => c.errorMessage).sort()).toEqual(["first failure", "third failure"]);
+  });
+
+  it("reads the watched project's logs, not the project Starfish runs in, with the configured filter", async () => {
+    entries.splice(0, entries.length);
+    logging.projects.length = 0;
+    logging.filters.length = 0;
+    const { db } = fakeDb();
+
+    await aggregateErrors(
+      db,
+      { ...config, watchedProjectId: "watched-app-1", logResourceTypes: ["gae_app"], ignoredMessages: ["probe"] },
+      new Date(0)
+    );
+
+    expect(logging.projects).toEqual([{ projectId: "watched-app-1" }]);
+    expect(logging.filters[0]).toContain('resource.type="gae_app"');
+    expect(logging.filters[0]).not.toContain("cloud_function");
+    expect(logging.filters[0]).toContain('NOT textPayload:"probe"');
   });
 });
