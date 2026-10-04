@@ -44,6 +44,7 @@ Where it currently holds, and where it doesn't:
 | UI collections and region | ⚠️ still `VITE_*`, baked in at build time |
 | Collection names in `firestore.rules` | ⚠️ hardcoded `incidents` / `starfish_users`; rules can't read config, so a renamed collection means editing the rules file |
 | Dry run, review required, model-call budget | ⚠️ environment defaults (`STARFISH_DRY_RUN` on by default, `STARFISH_REVIEW_REQUIRED`, `STARFISH_MODEL_CALL_BUDGET`) that an admin can override on the Settings page (first row); the loop reads them, no job runs it |
+| GitHub target (repository, base branch, API and remote URL, commit identity) and token | ⚠️ environment only (`STARFISH_GITHUB_REPO` empty by default, so nothing can be opened; `STARFISH_GITHUB_BASE_BRANCH`, `_API_URL`, `_REMOTE_URL`, `_COMMIT_NAME`, `_COMMIT_EMAIL`); the token is read on its own from `STARFISH_GITHUB_TOKEN` and is not part of the config object. One repository per deployment |
 | Agent cycle collection, lease length, cycle deadline, attempts | ⚠️ environment only (`STARFISH_CYCLE_COLLECTION`, `STARFISH_LEASE_SECONDS`, `STARFISH_CYCLE_DEADLINE_MINUTES`, `STARFISH_MAX_CYCLE_ATTEMPTS`); the rules name `starfish_cycles` too |
 | Ingest lag, longest window, run-record collection | ⚠️ environment only (`STARFISH_INGEST_LAG_MINUTES`, `STARFISH_INGEST_MAX_WINDOW_HOURS`, `STARFISH_RUN_COLLECTION`); the rules name `starfish_runs` too |
 | Services Starfish never ingests (its own) | ✅ config (`STARFISH_EXCLUDED_SERVICES`, default `starfish`), applied at query time and at parse time; environment-only on purpose, because it guards against a feedback loop and is not an operational preference. Set it to the name Starfish is actually deployed under; nothing is deployed yet (#6, #32) |
@@ -160,7 +161,7 @@ is tested; "deployed" would mean it has run in a real project, and **nothing has
 | Firebase Auth | operator sign-in, guest view | built |
 | Cloud Run (a job) | runs one ingest per tick, as its own least-privilege service account | `Dockerfile` and deploy script written; not deployed |
 | Cloud Scheduler | starts that job on a cron (`SCHEDULE`, hourly by default) | in the deploy script; not deployed |
-| Secret Manager | the GitHub token the pull-request step will need | secret, access grant and mount are in the deploy script; **nothing in the engine reads it yet**, because the step that opens pull requests is not built |
+| Secret Manager | the GitHub token the pull-request step uses | secret, access grant and mount are in the deploy script, and `loadGithubToken()` reads it; the opener is built and tested against a local git remote and a fake API, **not against real GitHub**, and no job runs it |
 | Firebase Hosting | the operator UI, on its own site (not the project's default one) | `scripts/deploy-web.sh` and the Hosting config written; not deployed |
 | Cloud Build, Artifact Registry | build the image (`gcloud run jobs deploy --source`) | in the deploy script; not deployed |
 | Cloud Monitoring | a second signal beside logs (see the blind spot above) | planned |
@@ -305,13 +306,21 @@ lease to retry when the evidence is missing or the model failed (bounded by the 
 worker that loses its lease stops and opens nothing; and it is a **dry run by default**
 (`STARFISH_DRY_RUN`): a verified, reviewed patch ends the cycle waiting for a person. Opening a
 pull request is an interface keyed by the cycle id, so a retry after a timeout cannot open a
-second one; **no implementation of it exists**, because there is no GitHub App yet (#17). No job
-runs the loop. It is plain code, not on Google's Agent Development Kit: in `@google/adk` 2.2.0
+second one. Its implementation (`src/integrations/githubPr.ts`, #17) is built and tested with real
+git against a bare repository and a fake GitHub API, and **has never run against GitHub**: it checks
+that the API names the configured repository, returns the pull request that already exists for the
+cycle's branch `starfish/<cycle id>`, reuses a branch an earlier call pushed only if it holds exactly
+this change, pushes only to `refs/heads/starfish/<id>` (never forced, never the base branch), never
+merges, passes the token to git in the environment and not on a command line, and refuses a patch whose
+SHA-256 is not the one that was verified. The engine's check is a convention: that Starfish can write
+only its own branches has to be enforced by branch protection or a ruleset on the repository, because
+a GitHub App's permission cannot be scoped to a branch prefix. Not built: the GitHub issue for the
+incident, Slack, reconciling a later merge or CI result. No job runs the loop. It is plain code, not on Google's Agent Development Kit: in `@google/adk` 2.2.0
 `SequentialAgent`, the class #8 names, is deprecated in favour of `Workflow`, which is marked
 experimental, so wrapping the loop in ADK is a decision still open.
 
 What does **not** exist yet is the code that assembles an incident's inputs (the counter-check,
-samples and a checkout of the target repo at a pinned revision), the pull-request opener, the
+samples and a checkout of the target repo at a pinned revision), the incident's GitHub issue, the
 reconsideration of a declined incident, and the disposable runner the verify gate needs. That is the work, and it is gated on one question the
 [spike](docs/spike.md) exists to answer — does Gemini actually produce the patch a human
 wrote?
