@@ -59,6 +59,9 @@ export function applySettings(base: StarfishConfig, settings: RuntimeSettings): 
     ...(settings.logResourceTypes !== undefined && { logResourceTypes: settings.logResourceTypes }),
     ...(settings.servicePatterns !== undefined && { servicePatterns: settings.servicePatterns }),
     ...(settings.ignoredMessages !== undefined && { ignoredMessages: settings.ignoredMessages }),
+    ...(settings.dryRun !== undefined && { dryRun: settings.dryRun }),
+    ...(settings.reviewRequired !== undefined && { reviewRequired: settings.reviewRequired }),
+    ...(settings.modelCallBudget !== undefined && { modelCallBudget: settings.modelCallBudget }),
   });
 }
 

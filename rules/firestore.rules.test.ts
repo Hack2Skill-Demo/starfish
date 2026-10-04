@@ -383,6 +383,12 @@ describe("runtime settings", () => {
       ["a resource type list that isn't a list", { logResourceTypes: "cloud_function" }],
       ["more than 100 noise fragments", { ignoredMessages: Array(101).fill("x") }],
       ["a pattern table that isn't a map", { servicePatterns: ["x"] }],
+      ["a dry run switch that isn't a boolean", { dryRun: "false" }],
+      ["a review switch that isn't a boolean", { reviewRequired: 0 }],
+      ["a model call budget of zero", { modelCallBudget: 0 }],
+      ["a model call budget above fifty", { modelCallBudget: 51 }],
+      ["a fractional model call budget", { modelCallBudget: 2.5 }],
+      ["a model call budget that is a string", { modelCallBudget: "6" }],
       ["someone else's name on the change", { updatedBy: "op1" }],
       ["a backdated change", { updatedAt: Timestamp.fromMillis(0) }],
       ["a revision that isn't an integer", { revision: 1.5 }],
@@ -401,6 +407,15 @@ describe("runtime settings", () => {
           ignoredMessages: ["probe"],
         })
       );
+    });
+
+    it("accepts the pipeline switches at their bounds, and the engine agrees", async () => {
+      await assertSucceeds(save("admin1", { ...settings, dryRun: false, reviewRequired: false, modelCallBudget: 50 }));
+      expect(validateSettings(await stored())).toMatchObject({
+        ok: true,
+        settings: { dryRun: false, reviewRequired: false, modelCallBudget: 50 },
+      });
+      await assertSucceeds(save("admin1", { ...settings, dryRun: true, modelCallBudget: 1 }));
     });
 
     it("a document the rules accept is one the engine accepts", async () => {
