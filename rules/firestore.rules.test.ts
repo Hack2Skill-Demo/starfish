@@ -387,6 +387,7 @@ describe("runtime settings", () => {
       ["a pattern table that isn't a map", { servicePatterns: ["x"] }],
       ["a dry run switch that isn't a boolean", { dryRun: "false" }],
       ["a review switch that isn't a boolean", { reviewRequired: 0 }],
+      ["a kill switch that isn't a boolean", { automationEnabled: "off" }],
       ["a model call budget of zero", { modelCallBudget: 0 }],
       ["a model call budget above fifty", { modelCallBudget: 51 }],
       ["a fractional model call budget", { modelCallBudget: 2.5 }],
@@ -412,10 +413,10 @@ describe("runtime settings", () => {
     });
 
     it("accepts the pipeline switches at their bounds, and the engine agrees", async () => {
-      await assertSucceeds(save("admin1", { ...settings, dryRun: false, reviewRequired: false, modelCallBudget: 50 }));
+      await assertSucceeds(save("admin1", { ...settings, dryRun: false, reviewRequired: false, automationEnabled: false, modelCallBudget: 50 }));
       expect(validateSettings(await stored())).toMatchObject({
         ok: true,
-        settings: { dryRun: false, reviewRequired: false, modelCallBudget: 50 },
+        settings: { dryRun: false, reviewRequired: false, automationEnabled: false, modelCallBudget: 50 },
       });
       await assertSucceeds(save("admin1", { ...settings, dryRun: true, modelCallBudget: 1 }));
     });

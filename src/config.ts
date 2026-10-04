@@ -71,6 +71,12 @@ export interface StarfishConfig {
   dryRun: boolean;
   /** Whether a patch must survive the adversarial review before it can become a pull request. */
   reviewRequired: boolean;
+  /**
+   * The kill switch: when false the agent loop stops at the next step (it is asked before every stage and
+   * again before anything is opened). On by default because a dry run is the default guard; an admin turns it
+   * off from Settings, and it is read fresh, not once per run (src/agent/automationSwitch.ts).
+   */
+  automationEnabled: boolean;
   /** The most model calls one cycle may make (triage, each fix attempt, each review): a spend cap. */
   modelCallBudget: number;
   /**
@@ -239,6 +245,7 @@ export function loadConfig(): StarfishConfig {
     runCollection: process.env.STARFISH_RUN_COLLECTION || "starfish_runs",
     dryRun: parseBoolean(process.env.STARFISH_DRY_RUN, true, "STARFISH_DRY_RUN"),
     reviewRequired: parseBoolean(process.env.STARFISH_REVIEW_REQUIRED, true, "STARFISH_REVIEW_REQUIRED"),
+    automationEnabled: parseBoolean(process.env.STARFISH_AUTOMATION_ENABLED, true, "STARFISH_AUTOMATION_ENABLED"),
     modelCallBudget: positiveNumber(process.env.STARFISH_MODEL_CALL_BUDGET, 6, "STARFISH_MODEL_CALL_BUDGET"),
     githubRepo: (process.env.STARFISH_GITHUB_REPO ?? "").trim(),
     githubBaseBranch: (process.env.STARFISH_GITHUB_BASE_BRANCH ?? "").trim() || "main",

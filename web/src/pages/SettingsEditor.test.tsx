@@ -55,7 +55,7 @@ describe("SettingsEditor", () => {
     expect(field("Environment label").value).toBe("prod");
     expect(field("Environment label").disabled).toBe(false);
     expect(field("Watched project").disabled).toBe(true);
-    expect(screen.getAllByText("Using the engine's default.")).toHaveLength(7);
+    expect(screen.getAllByText("Using the engine's default.")).toHaveLength(8);
     expect(screen.getByText("Revision 2")).toBeInTheDocument();
   });
 
@@ -90,12 +90,19 @@ describe("SettingsEditor", () => {
     expect(field("Dry run").disabled).toBe(true);
     await override("Dry run");
     await userEvent.selectOptions(field("Dry run"), "false");
+    await override("Automation");
+    await userEvent.selectOptions(field("Automation"), "false");
     await override("Model calls per cycle");
     await userEvent.type(field("Model calls per cycle"), "9");
     await userEvent.click(screen.getByRole("button", { name: "Save settings" }));
 
     await waitFor(() => expect(mocks.saveSettings).toHaveBeenCalledTimes(1));
-    expect(mocks.saveSettings.mock.calls[0]![3]).toEqual({ environment: "prod", dryRun: false, modelCallBudget: 9 });
+    expect(mocks.saveSettings.mock.calls[0]![3]).toEqual({
+      environment: "prod",
+      dryRun: false,
+      automationEnabled: false,
+      modelCallBudget: 9,
+    });
   });
 
   it("refuses an out-of-range budget without saving", async () => {

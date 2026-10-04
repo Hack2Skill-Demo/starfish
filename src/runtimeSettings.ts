@@ -61,6 +61,7 @@ export function applySettings(base: StarfishConfig, settings: RuntimeSettings): 
     ...(settings.ignoredMessages !== undefined && { ignoredMessages: settings.ignoredMessages }),
     ...(settings.dryRun !== undefined && { dryRun: settings.dryRun }),
     ...(settings.reviewRequired !== undefined && { reviewRequired: settings.reviewRequired }),
+    ...(settings.automationEnabled !== undefined && { automationEnabled: settings.automationEnabled }),
     ...(settings.modelCallBudget !== undefined && { modelCallBudget: settings.modelCallBudget }),
   });
 }

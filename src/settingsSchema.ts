@@ -16,6 +16,8 @@ export interface RuntimeSettings {
   dryRun?: boolean;
   /** Whether a patch must survive the adversarial review before it can become a pull request. */
   reviewRequired?: boolean;
+  /** The kill switch: false stops the agent loop at its next step. */
+  automationEnabled?: boolean;
   /** The most model calls one cycle may make. */
   modelCallBudget?: number;
 }
@@ -35,6 +37,7 @@ const SETTINGS_KEYS = [
   "ignoredMessages",
   "dryRun",
   "reviewRequired",
+  "automationEnabled",
   "modelCallBudget",
   // Written with the document by whoever edited it (the rules require them);
   // carried, not used by the engine.
@@ -127,7 +130,7 @@ export function validateSettings(raw: unknown): Validation {
     } else settings.ignoredMessages = [...(list as string[])];
   }
 
-  for (const flag of ["dryRun", "reviewRequired"] as const) {
+  for (const flag of ["dryRun", "reviewRequired", "automationEnabled"] as const) {
     if (raw[flag] !== undefined) {
       if (typeof raw[flag] === "boolean") settings[flag] = raw[flag] as boolean;
       else problems.push(`${flag}: true or false`);

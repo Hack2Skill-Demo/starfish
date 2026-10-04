@@ -30,6 +30,7 @@ export function testConfig(over: Partial<StarfishConfig> = {}): StarfishConfig {
     ingestMaxWindowHours: 6,
     dryRun: true,
     reviewRequired: true,
+    automationEnabled: true,
     modelCallBudget: 6,
     githubRepo: "",
     githubBaseBranch: "main",
