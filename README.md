@@ -186,12 +186,19 @@ Slack, issue/PR or judge-facing output yet, so the output allowlist for those su
 still to be built with them (issue #18).
 
 Alongside it, the **counter-check** (`src/ingest/counterCheck.ts`): an independent raw-log
-recount of a function's errors over 24h, plus a few redacted recent samples. It is built for
-triage to use and not yet wired in, because triage doesn't exist yet. The spike's triage
-prompt already reasons over it.
+recount of a function's errors over 24h, plus a few redacted recent samples. Nothing calls it
+in a run yet; the triage stage below consumes what it produces.
 
-What does **not** exist yet is the half that acts: triage, fix drafting, the verify gate,
-adversarial review. That is the work, and it is gated on one question the
+The first stage of the half that acts exists as a **tested contract** and nothing more: triage
+(`src/agent/triage.ts`) decides act / notify / decline for one incident. It skips an incident
+that isn't open, defers when the counter-check is missing (missing is not zero), declines a
+counter-check of zero without asking the model, validates the model's answer locally and
+fails closed, and redacts and bounds both what the model is shown and what it returns. It is
+tested with a stubbed model; **no job runs it**, the counter-check isn't fed to it by any run,
+and it is not on Google's Agent Development Kit yet.
+
+What does **not** exist yet is the rest of that half: fix drafting, the verify gate,
+adversarial review, the PR. That is the work, and it is gated on one question the
 [spike](docs/spike.md) exists to answer — does Gemini actually produce the patch a human
 wrote?
 
@@ -201,6 +208,7 @@ src/
   vertex.ts          Vertex AI client
   spike.ts           the fix-quality spike
   ingest/            logs -> classified, deduped incidents + counter-check
+  agent/             triage: act / notify / decline for one incident (a stage contract; not run by any job)
 web/                 operator UI: sign-in, incidents, settings
 firestore.rules      what the UI may read and change (tested on the emulator)
 fixtures/incidents/   spike fixtures (synthetic; see docs/spike.md)

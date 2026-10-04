@@ -130,6 +130,8 @@ src/
     window         (start, end] windows: pure planning; ids come from the boundaries
     run            one scheduled run: resolve runtime settings, replay the pending window or plan
                    the next, advance the checkpoint only after it all commits, write last_run
+  agent/triage.ts  stage 1 of the agent loop (#8): act/notify/decline for one incident; deterministic
+                   gates before the model, local validation after it; not run by any job yet
   runtimeSettings.ts  the settings document an admin edits: validated, applied over the
                    env defaults, last-good fallback, a frozen snapshot per run
 ```
