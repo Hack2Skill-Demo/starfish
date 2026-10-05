@@ -206,7 +206,13 @@ export interface Waterfall {
   endMs: number;
 }
 
-const titleOf = (stage: string): string => KNOWN_STAGES.find((s) => s.stage === stage)?.title ?? stage;
+/**
+ * Stages that appear only on some cycles (a cycle Starfish acts on or escalates files an issue, one that ends waiting for a person tells one, #17), so they are not in
+ * KNOWN_STAGES, which would show every cycle a "not reached" row for them. They get a readable title when present.
+ */
+const OPTIONAL_STAGE_TITLES: Record<string, string> = { issue: "GitHub issue", notify: "Tell a person" };
+
+const titleOf = (stage: string): string => KNOWN_STAGES.find((s) => s.stage === stage)?.title ?? OPTIONAL_STAGE_TITLES[stage] ?? stage;
 
 /**
  * One row per stage that has an event, plus every known stage that has none, as "not reached", unless

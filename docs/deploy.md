@@ -53,11 +53,29 @@ the value as a new version (over stdin, never printed or passed as an argument) 
 the job as `STARFISH_GITHUB_TOKEN`; without a version, Cloud Run would refuse the deploy, so it is
 not mounted.
 
+**Slack (#17).** With `DEPLOY_AGENT=1` and `STARFISH_SLACK_WEBHOOK_ONCALL=https://hooks.slack.com/services/...` set, the script stores the
+webhook as a version of its own secret, `starfish-slack-oncall` (over stdin, never printed; any other URL is refused, unechoed),
+lets only the **agent's** account read it, and mounts it on the **agent** job only, in the same `--update-secrets` flag as the
+GitHub token. Add `AGENT_EXTRA_ENV_VARS="STARFISH_UI_URL=https://<site>.web.app"` so the message can link back to the incident and its run.
+Without a webhook nothing Slack-shaped is created. The agent is a dry run by default and a dry run **sends nothing**: the cycle's
+record says `dry-run`. To post for real, turn dry run off (`STARFISH_DRY_RUN=false`), which also lets a configured GitHub client open pull requests.
+A failed delivery is recorded on the cycle (`summary.notify`: `failed`, the status and Slack's short error code, never the URL) and the cycle still
+finishes. Delivery is at-least-once: after a crash between the post and its record a resumed cycle posts again. Never run against real Slack.
+
 `loadGithubToken()` (`src/config.ts`) reads that variable, and the pull-request opener
 (`src/integrations/githubPr.ts`) is its only user. The opener is tested against a local git remote
 and a fake GitHub API, **not against real GitHub**, and the only job that calls it (the agent job, never
 deployed) is a dry run, so the secret is still plumbing. The deploy script does not set `STARFISH_GITHUB_REPO`; without it the
 opener cannot be built.
+
+**The incident's issue (#17).** For every incident the agent acts on or escalates (not a declined one) it files one GitHub issue in
+`STARFISH_GITHUB_REPO`, labelled `starfish`, with what is failing, the evidence (fingerprint, the independent counter-check, the suspected
+cause), what Starfish will do, and links to the incident and the run (with `STARFISH_UI_URL`). The token therefore needs **Issues: read and
+write** as well as contents and pull requests. A retry after a crash or timeout finds the issue it already filed (a marker in its body, among the
+newest `starfish`-labelled issues in the repository's own list, not the search index, which lags) and files no second. A pull request the cycle
+opens says `Closes #N`; the Slack message links the issue. A failure to file is recorded on the cycle (`summary.issue`: `failed`, GitHub's rule)
+and the cycle goes on, because the issue is the incident's history and not a step the fix depends on. A dry run files nothing and says so.
+Tested against a fake GitHub API over local HTTP; never run against real GitHub.
 
 Starfish pushes only to branches named `starfish/<id>` and the engine checks that, but a GitHub App's
 permission cannot be limited to a branch prefix. If "Starfish can write only its own branches" is to be

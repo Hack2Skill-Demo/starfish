@@ -177,9 +177,14 @@ src/
                    (job, Scheduler, Secret Manager, IAM, Firestore rules). Written and tested by a dry run; ingest part run once on the demo project (2026-10-05), agent part not
   indexheal/createIndexUrl.ts  create-index URL → strict spec, default-deny target guard, index-file dedup (#11).
                    Parser and guard only: nothing creates an index; tested on URLs built from the documented proto
+  integrations/slack.ts  Slack delivery (#17): one "needs a human" message through an incoming webhook, from redacted plain-text
+                   fields; bounded retries, a failed delivery is a recorded result (`summary.notify`), a dry run sends nothing; the webhook
+                   (a secret, `loadSlackOnCallWebhook`) never appears in a result. Run by `pnpm agent`; never run against real Slack
   integrations/githubPr.ts  the pull-request opener (#17): idempotent by cycle id, pushes only
-                   starfish/<id>, never merges, token only in git's environment. Never run against real
+                   starfish/<id>, never merges, token only in git's environment. Also files the incident's issue
+                   (`openIssue`: idempotent by a marker, label `starfish`, a failure recorded on the cycle). Never run against real
                    GitHub; run by `pnpm agent` (deployable, never run)
+  integrations/links.ts  links from Slack and issues back to the UI, built from the configured origin and a plain id
   runtimeSettings.ts  the settings document an admin edits: validated, applied over the
                    env defaults, last-good fallback, a frozen snapshot per run
 ```

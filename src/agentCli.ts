@@ -19,7 +19,7 @@ import { hostname } from "node:os";
 import { Logging } from "@google-cloud/logging";
 import { initializeApp } from "firebase-admin/app";
 import { getFirestore } from "firebase-admin/firestore";
-import { loadChildProcessBasics, loadConfig, loadGithubToken } from "./config.js";
+import { loadChildProcessBasics, loadConfig, loadGithubToken, loadSlackOnCallWebhook } from "./config.js";
 import { RuntimeConfigLoader } from "./runtimeSettings.js";
 import { askJson } from "./vertex.js";
 import { redactPii } from "./ingest/redact.js";
@@ -32,10 +32,12 @@ import { createCloudRunJobStarter, createGcsStore } from "./agent/cloudRunJob.js
 import { createRemoteVerifier } from "./agent/verifyRemote.js";
 import { createCiVerifier } from "./agent/verifyCi.js";
 import { createGithubClient } from "./integrations/githubPr.js";
+import { createSlackNotifier } from "./integrations/slack.js";
 import { INCIDENT_STATUSES, type IncidentStatus } from "./types.js";
 
 const base = loadConfig();
 const token = loadGithubToken();
+const slackOnCall = loadSlackOnCallWebhook();
 
 const refused = agentPreflight(base, token);
 if (refused.length > 0) {
@@ -105,6 +107,10 @@ const deps = {
   ...(remoteVerify && { verify: remoteVerify }),
   // Absent in a dry run: the loop then ends a verified, reviewed patch as "waiting for a person" and opens nothing.
   ...(!cfg.dryRun && github && { openPullRequest: github.openPullRequest }),
+  // Given in a dry run too, so the cycle records that an issue would have been filed; the loop files nothing then.
+  ...(github && { openIssue: github.openIssue }),
+  // Given in a dry run too, so the cycle records that a person would have been told; the loop sends nothing then.
+  ...(slackOnCall && { notify: createSlackNotifier({ webhookUrl: slackOnCall, uiBaseUrl: cfg.uiBaseUrl }) }),
 };
 
 let failed: boolean;

@@ -410,3 +410,43 @@ describe("scripts/deploy-gcp.sh: the agent verified by the target's CI (#74), VE
     expect(grants(r.out, sa("starfish-scheduler"))).toEqual(["roles/run.invoker", "roles/run.invoker"]);
   });
 });
+
+describe("scripts/deploy-gcp.sh: the agent's Slack webhook (#17)", () => {
+  const agent = { ...dry, DEPLOY_AGENT: "1", AGENT_REPO: "acme/shop", VERIFY_CHECKS: "verify", STARFISH_GITHUB_TOKEN: "ghp_x" };
+  const HOOK = "https://hooks.slack.com/services/T000AAAA/B000BBBB/" + "x".repeat(24);
+
+  it("creates and mounts nothing for Slack when no webhook is given", () => {
+    const r = deploy(agent);
+    expect(r.status).toBe(0);
+    expect(r.out).not.toContain("starfish-slack-oncall");
+    expect(r.out).not.toContain("STARFISH_SLACK_WEBHOOK_ONCALL");
+  });
+
+  it("stores the webhook in its own secret for the agent's account only, over stdin, and never prints it", () => {
+    const r = deploy({ ...agent, STARFISH_SLACK_WEBHOOK_ONCALL: HOOK });
+    expect(r.status).toBe(0);
+    expect(r.out).not.toContain(HOOK);
+    expect(r.out).toContain("gcloud secrets create starfish-slack-oncall");
+    expect(r.out).toContain("<STARFISH_SLACK_WEBHOOK_ONCALL> | gcloud secrets versions add starfish-slack-oncall --data-file=-");
+    const bindings = r.out.split("\n").filter((l) => l.includes("add-iam-policy-binding starfish-slack-oncall"));
+    expect(bindings).toHaveLength(1);
+    expect(bindings[0]).toContain("--member=serviceAccount:starfish-agent@star-proj.iam.gserviceaccount.com");
+  });
+
+  it("mounts it on the agent job only, in ONE secrets flag beside the GitHub token", () => {
+    const r = deploy({ ...agent, STARFISH_SLACK_WEBHOOK_ONCALL: HOOK });
+    const agentDeploy = r.out.split("\n").find((l) => l.includes("gcloud run jobs deploy starfish-agent")) ?? "";
+    const ingestDeploy = r.out.split("\n").find((l) => l.includes("gcloud run jobs deploy starfish-ingest")) ?? "";
+    expect(agentDeploy).toContain("--update-secrets=STARFISH_GITHUB_TOKEN=starfish-github-token:latest,STARFISH_SLACK_WEBHOOK_ONCALL=starfish-slack-oncall:latest");
+    expect(agentDeploy.match(/--update-secrets/g)).toHaveLength(1);
+    expect(ingestDeploy).not.toContain("SLACK");
+  });
+
+  it("refuses a value that is not a Slack webhook, without echoing it", () => {
+    const bad = "https://evil.example/services/T000AAAA/B000BBBB/secretvalue";
+    const r = deploy({ ...agent, STARFISH_SLACK_WEBHOOK_ONCALL: bad });
+    expect(r.status).not.toBe(0);
+    expect(r.out).toContain("is not a Slack incoming-webhook URL");
+    expect(r.out).not.toContain("secretvalue");
+  });
+});
