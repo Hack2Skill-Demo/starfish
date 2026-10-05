@@ -37,6 +37,18 @@ describe("scripts/deploy-gcp.sh", () => {
     expect(r.out).toContain("PROJECT_ID is required");
   });
 
+  it("refuses an env list with an empty entry instead of letting gcloud say \"Invalid flag value []\"", () => {
+    for (const bad of ["@STARFISH_X=1", "STARFISH_X=1@", "A=1@@B=2"]) {
+      const r = deploy({ ...dry, EXTRA_ENV_VARS: bad });
+      expect(r.status, bad).not.toBe(0);
+      expect(r.out).toContain("EXTRA_ENV_VARS is a list of NAME=value entries separated by @");
+    }
+    expect(deploy({ ...dry, AGENT_EXTRA_ENV_VARS: "@B=2" }).out).toContain("AGENT_EXTRA_ENV_VARS is a list");
+    const ok = deploy({ ...dry, EXTRA_ENV_VARS: "STARFISH_EXCLUDED_SERVICES=starfish,control-*@STARFISH_X=1" });
+    expect(ok.status).toBe(0);
+    expect(ok.out).toContain("STARFISH_EXCLUDED_SERVICES=starfish,control-*@STARFISH_X=1");
+  });
+
   it("does not pick up the CI workflow's own GITHUB_TOKEN as the secret's value", () => {
     const r = deploy({ ...dry, GITHUB_TOKEN: "ghp_ACTIONS_TOKEN" });
     expect(r.out).not.toContain("secrets versions add");

@@ -99,6 +99,13 @@ VERIFIER_SA_NAME="${VERIFIER_SA_NAME:-starfish-verifier}"
 die() { echo "deploy-gcp: $*" >&2; exit 1; }
 
 [ -n "$PROJECT_ID" ] || die "PROJECT_ID is required"
+# The lists are joined with "@" by this script, so an empty entry (a leading, trailing or doubled "@") would reach gcloud as
+# "Invalid flag value []". Say what is wrong here instead.
+for var in EXTRA_ENV_VARS AGENT_EXTRA_ENV_VARS; do
+  case "${!var}" in
+    @*|*@|*@@*) die "$var is a list of NAME=value entries separated by @ (no leading, trailing or doubled @): ${!var}" ;;
+  esac
+done
 [ "$STARFISH_DATABASE_ID" != "(default)" ] ||
   die "STARFISH_DATABASE_ID=(default) is refused: deploying firestore.rules to the default database would replace the watched app's own rules"
 if [ "$DEPLOY_AGENT" = "1" ]; then
