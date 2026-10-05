@@ -1,5 +1,5 @@
 /**
- * `pnpm grant-operator --email you@example.com --role admin [--create]`
+ * `pnpm grant-operator --project <id> --email you@example.com --role admin [--create]`
  *
  * Gives a person access to the operator UI (src/operators.ts). Run it once after the first deploy to
  * make the first admin. It writes Starfish's store and reads Firebase Auth, so it needs credentials
@@ -14,6 +14,7 @@ import { grantOperator, parseRoles } from "./operators.js";
 
 const { values } = parseArgs({
   options: {
+    project: { type: "string" },
     email: { type: "string" },
     role: { type: "string", default: "admin" },
     create: { type: "boolean", default: false },
@@ -21,12 +22,22 @@ const { values } = parseArgs({
   allowPositionals: false,
 });
 
-if (values.email === undefined) {
-  console.error("usage: pnpm grant-operator --email <address> [--role admin|operator[,..]] [--create]");
+if (values.email === undefined || values.project === undefined) {
+  console.error("usage: pnpm grant-operator --project <id> --email <address> [--role admin|operator[,..]] [--create]");
   process.exit(2);
 }
 
 const config = loadConfig();
+// The project is named on the command line AND read from GOOGLE_CLOUD_PROJECT (which Cloud Shell sets to whatever
+// project the shell is on, and which changes under you). They must agree, or nothing is touched.
+if (config.projectId !== values.project) {
+  console.error(
+    `grant-operator: refusing: --project is ${values.project} but GOOGLE_CLOUD_PROJECT is ${config.projectId}. ` +
+      `Run \`export GOOGLE_CLOUD_PROJECT=${values.project}\` and try again.`
+  );
+  process.exit(2);
+}
+console.log(`project ${config.projectId}, database ${config.databaseId}`);
 initializeApp({ projectId: config.projectId });
 
 try {

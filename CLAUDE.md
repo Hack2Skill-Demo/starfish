@@ -167,7 +167,7 @@ src/
                    to the patch hash the gate tested. Run by `pnpm agent` (deployable, never run)
   agent/verifyGate.ts  stage 3: apply a patch in a scratch copy, judge the tree that results, run the
                    configured command with a scrubbed env. Not a sandbox; run by `pnpm agent` (deployable, never run)
-  operators.ts     grant a person an operator record (the first admin; `pnpm grant-operator`); the closed collection can't be written from the UI
+  operators.ts     grant a person an operator record (the first admin; `pnpm grant-operator --project <id>`, which refuses if the shell's project differs and reads the store before creating an account); the closed collection can't be written from the UI
   status.ts        judges the engine's last_run record (`pnpm status`): the same verdicts as the UI's engine line
   (repo root)      Dockerfile = the engine image the Cloud Run job runs; scripts/deploy-gcp.sh deploys it
                    (job, Scheduler, Secret Manager, IAM, Firestore rules). Written and tested by a dry run; not yet run against a real project
