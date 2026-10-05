@@ -324,6 +324,24 @@ describe("loadConfig: where a missing index may be created", () => {
     expect(loadConfig().indexAllowedTargets).toEqual([]);
   });
 
+  it("reads the admin API's browser origins, exact and https only", () => {
+    expect(loadConfig().adminApiOrigins).toEqual([]);
+    vi.stubEnv("STARFISH_ADMIN_API_ORIGINS", "https://site.web.app/, http://localhost:5177");
+    expect(loadConfig().adminApiOrigins).toEqual(["https://site.web.app", "http://localhost:5177"]);
+    for (const bad of ["site.web.app", "http://site.web.app", "https://site.web.app/app", "https://u:p@site.web.app", "*"]) {
+      vi.stubEnv("STARFISH_ADMIN_API_ORIGINS", bad);
+      expect(() => loadConfig(), bad).toThrow(/STARFISH_ADMIN_API_ORIGINS/);
+    }
+  });
+
+  it("listens on PORT when Cloud Run sets it, and refuses nonsense", () => {
+    expect(loadConfig().adminApiPort).toBe(8080);
+    vi.stubEnv("PORT", "9090");
+    expect(loadConfig().adminApiPort).toBe(9090);
+    vi.stubEnv("PORT", "0");
+    expect(() => loadConfig()).toThrow(/PORT/);
+  });
+
   it("reads project/database pairs", () => {
     vi.stubEnv("STARFISH_INDEX_ALLOWED_TARGETS", "demo-app-1/(default), demo-app-1/shop-db");
     expect(loadConfig().indexAllowedTargets).toEqual(["demo-app-1/(default)", "demo-app-1/shop-db"]);

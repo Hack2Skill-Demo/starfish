@@ -47,6 +47,12 @@
 #   AGENT_BASE_BRANCH    the branch the agent checks out. Default: the engine's own default (main)
 #   AGENT_SCHEDULE       cron for the agent tick. Default "30 * * * *" (hourly, after the ingest tick)
 #   AGENT_EXTRA_ENV_VARS more settings for the agent job, "@"-separated like EXTRA_ENV_VARS
+#   DEPLOY_ADMIN_API=1   also deploy the admin API (#63, #65): a Cloud Run SERVICE, public on the network on purpose, that
+#                        runs ingest now and retires an incident for a caller holding a Firebase ID token AND the admin
+#                        role. It reuses the ingest job's image and the engine's account (no second build, no new role)
+#   ADMIN_API_ORIGINS    the operator UI's origin(s), comma-separated, allowed to call it from a browser, e.g.
+#                        https://my-site.web.app. Empty: no browser may (a server-side caller is not affected)
+#   ADMIN_SERVICE_NAME   Default starfish-admin (never ingested: it is added to STARFISH_EXCLUDED_SERVICES)
 #   SKIP_FIRESTORE_RULES=1   do not deploy firestore.rules and firestore.indexes.json
 #   RUN_AFTER_DEPLOY=1       execute the job once and wait for it
 #   BUILD_SERVICE_ACCOUNT   the account Cloud Run builds the image as, which is granted roles/run.builder. Default: the
@@ -73,6 +79,9 @@ AGENT_REPO="${AGENT_REPO:-}"
 AGENT_BASE_BRANCH="${AGENT_BASE_BRANCH:-}"
 AGENT_SCHEDULE="${AGENT_SCHEDULE:-30 * * * *}"
 AGENT_EXTRA_ENV_VARS="${AGENT_EXTRA_ENV_VARS:-}"
+DEPLOY_ADMIN_API="${DEPLOY_ADMIN_API:-0}"
+ADMIN_API_ORIGINS="${ADMIN_API_ORIGINS:-}"
+ADMIN_SERVICE_NAME="${ADMIN_SERVICE_NAME:-starfish-admin}"
 VERIFY_ISOLATION="${VERIFY_ISOLATION:-github-actions}"
 VERIFY_CHECKS="${VERIFY_CHECKS:-}"
 VERIFY_COMMAND="${VERIFY_COMMAND:-}"
@@ -99,6 +108,10 @@ VERIFIER_SA_NAME="${VERIFIER_SA_NAME:-starfish-verifier}"
 die() { echo "deploy-gcp: $*" >&2; exit 1; }
 
 [ -n "$PROJECT_ID" ] || die "PROJECT_ID is required"
+if [ "$DEPLOY_ADMIN_API" = "1" ]; then
+  case "$ADMIN_SERVICE_NAME" in ''|*[!a-z0-9-]*|-*|*-) die "ADMIN_SERVICE_NAME must be lowercase letters, digits and hyphens: $ADMIN_SERVICE_NAME" ;; esac
+  case "$ADMIN_API_ORIGINS" in *[[:space:]]*|*[\"\'\@]*) die "ADMIN_API_ORIGINS is a comma-separated list of origins like https://my-site.web.app: $ADMIN_API_ORIGINS" ;; esac
+fi
 # The lists are joined with "@" by this script, so an empty entry (a leading, trailing or doubled "@") would reach gcloud as
 # "Invalid flag value []". Say what is wrong here instead.
 for var in EXTRA_ENV_VARS AGENT_EXTRA_ENV_VARS; do
@@ -295,12 +308,25 @@ fi
 step "Cloud Run job '$JOB_NAME' (image built from the Dockerfile)"
 ENV_VARS="GOOGLE_CLOUD_PROJECT=$PROJECT_ID@STARFISH_WATCHED_PROJECT_ID=$WATCHED_PROJECT_ID@STARFISH_VERTEX_PROJECT_ID=$VERTEX_PROJECT_ID"
 ENV_VARS="$ENV_VARS@GOOGLE_CLOUD_LOCATION=$REGION@STARFISH_ENV=$STARFISH_ENV@STARFISH_DATABASE_ID=$STARFISH_DATABASE_ID"
+# With the admin API, its service name is never ingested either: its errors would otherwise become incidents.
+ADMIN_EXCLUDED=""
+[ "$DEPLOY_ADMIN_API" != "1" ] || ADMIN_EXCLUDED=",$ADMIN_SERVICE_NAME"
+# An explicit list replaces the default, so it must name the admin service too (or cover it with a prefix like starfish-*).
+if [ "$DEPLOY_ADMIN_API" = "1" ]; then
+  case "@$EXTRA_ENV_VARS" in
+    *@STARFISH_EXCLUDED_SERVICES=*)
+      case "$EXTRA_ENV_VARS" in
+        *"$ADMIN_SERVICE_NAME"*|*starfish-\**) ;;
+        *) echo "warning: EXTRA_ENV_VARS sets STARFISH_EXCLUDED_SERVICES without $ADMIN_SERVICE_NAME: the admin API's own errors would be ingested" >&2 ;;
+      esac ;;
+  esac
+fi
 # The deployed job's own name is never ingested (STARFISH_EXCLUDED_SERVICES, matched on the exact name, not a
 # prefix): were it ever added to the log resource types, the engine would otherwise read its own failures and
 # the fixer could be asked to patch Starfish itself (#32). An explicit value in EXTRA_ENV_VARS wins.
 case "@$EXTRA_ENV_VARS" in
   *@STARFISH_EXCLUDED_SERVICES=*) ;;
-  *) ENV_VARS="$ENV_VARS@STARFISH_EXCLUDED_SERVICES=starfish,$JOB_NAME" ;;
+  *) ENV_VARS="$ENV_VARS@STARFISH_EXCLUDED_SERVICES=starfish,$JOB_NAME${ADMIN_EXCLUDED}" ;;
 esac
 [ -z "$EXTRA_ENV_VARS" ] || ENV_VARS="$ENV_VARS@$EXTRA_ENV_VARS"
 DEPLOY_ARGS=(
@@ -397,7 +423,7 @@ if [ "$DEPLOY_AGENT" = "1" ]; then
   AGENT_ENV="$AGENT_ENV@STARFISH_GITHUB_REPO=$AGENT_REPO"
   [ -z "$AGENT_BASE_BRANCH" ] || AGENT_ENV="$AGENT_ENV@STARFISH_GITHUB_BASE_BRANCH=$AGENT_BASE_BRANCH"
   AGENT_ENV="$AGENT_ENV@STARFISH_VERIFY_ISOLATION=$VERIFY_ISOLATION@STARFISH_VERIFY_TIMEOUT_SECONDS=$VERIFY_TIMEOUT_SECONDS"
-  AGENT_EXCLUDED="starfish,$JOB_NAME,$AGENT_JOB_NAME"
+  AGENT_EXCLUDED="starfish,$JOB_NAME,$AGENT_JOB_NAME${ADMIN_EXCLUDED}"
   AGENT_WAIT_SECONDS=$((VERIFY_TIMEOUT_SECONDS + 600))
   if [ "$VERIFY_ISOLATION" = "github-actions" ]; then
     AGENT_ENV="$AGENT_ENV@STARFISH_VERIFY_CHECKS=$VERIFY_CHECKS"
@@ -447,6 +473,28 @@ if [ "$DEPLOY_AGENT" = "1" ]; then
   fi
 fi
 
+if [ "$DEPLOY_ADMIN_API" = "1" ]; then
+  step "Admin API '$ADMIN_SERVICE_NAME' (#63, #65): public URL; every action needs a Firebase ID token AND the admin role"
+  # The same image as the ingest job (no second Cloud Build): only its arguments differ.
+  if [ "$DRY_RUN" = "1" ]; then
+    ADMIN_IMAGE="<the ingest job's image>"
+  else
+    ADMIN_IMAGE="$(gcloud run jobs describe "$JOB_NAME" --region="$REGION" --project="$PROJECT_ID" \
+      --format='value(spec.template.spec.template.spec.containers[0].image)')"
+    [ -n "$ADMIN_IMAGE" ] || die "could not read the image of job $JOB_NAME"
+  fi
+  ADMIN_ENV="$ENV_VARS"
+  [ -z "$ADMIN_API_ORIGINS" ] || ADMIN_ENV="$ADMIN_ENV@STARFISH_ADMIN_API_ORIGINS=$ADMIN_API_ORIGINS"
+  # --allow-unauthenticated: a browser must reach it, so Cloud Run's own IAM check cannot be the gate. An organisation
+  # policy that forbids public services will refuse this line, and then the admin API cannot serve a browser.
+  # Capped instances and a cheap token check are the only limits on a stranger who calls it.
+  run gcloud run deploy "$ADMIN_SERVICE_NAME" --image="$ADMIN_IMAGE" --region="$REGION" --project="$PROJECT_ID" --quiet \
+    --service-account="$ENGINE_SA" \
+    --args=node,--import,tsx,src/adminApiCli.ts \
+    --allow-unauthenticated --max-instances=2 --concurrency=8 --timeout=900 --cpu=1 --memory=512Mi \
+    --update-env-vars="^@^$ADMIN_ENV"
+fi
+
 if [ "$RUN_AFTER_DEPLOY" = "1" ]; then
   step "First run"
   run gcloud run jobs execute "$JOB_NAME" --region="$REGION" --project="$PROJECT_ID" --wait
@@ -459,6 +507,9 @@ else
   echo "Job $JOB_NAME and scheduler $SCHEDULER_JOB_NAME are in place in $PROJECT_ID ($REGION)."
   echo "Run it now:  gcloud run jobs execute $JOB_NAME --region=$REGION --project=$PROJECT_ID --wait"
   echo "Read it:     gcloud run jobs executions list --job=$JOB_NAME --region=$REGION --project=$PROJECT_ID"
+  if [ "$DEPLOY_ADMIN_API" = "1" ]; then
+    echo "Admin API $ADMIN_SERVICE_NAME: $(gcloud run services describe "$ADMIN_SERVICE_NAME" --region="$REGION" --project="$PROJECT_ID" --format='value(status.url)')"
+  fi
   if [ "$DEPLOY_AGENT" = "1" ]; then
     echo "Agent $AGENT_JOB_NAME (tick $AGENT_SCHEDULER_JOB_NAME) is in place: a dry run, verified by $VERIFY_ISOLATION."
     [ "$VERIFY_ISOLATION" != "github-actions" ] || echo "Its CI judge: the target's workflow must run on push to starfish/** and report: $VERIFY_CHECKS."

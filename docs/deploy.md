@@ -369,6 +369,33 @@ DRY_RUN=1 DEPLOY_AGENT=1 AGENT_REPO=owner/name VERIFY_ISOLATION=cloud-run-job VE
   PROJECT_ID=my-project scripts/deploy-gcp.sh
 ```
 
+## The admin API: run ingest now, and retire an incident (#63, #65)
+
+`DEPLOY_ADMIN_API=1 ADMIN_API_ORIGINS=https://<your-site>.web.app scripts/deploy-gcp.sh` also deploys a Cloud Run **service**,
+`starfish-admin`, from the ingest job's own image (no second build) and the engine's own account (no new role). Two
+actions, both admin-only, both audited, both the functions that already existed (`triggerIngest`, `retireIncident`):
+
+| Call | What it does |
+|---|---|
+| `POST /api/ingest/run` | one ingest run, the same `runIngest` a tick runs; the answer is the run's counts. One at a time per instance (a second is a 409) |
+| `POST /api/incidents/<id>/retire` with `{"reason": "..."}` | closes the incident for good and frees its fingerprint, so the demo's reset can replay a fault |
+| `GET /healthz` | `{ok:true}`, no token |
+
+**Who may call.** The caller sends `Authorization: Bearer <Firebase ID token>`. The token is checked (signature, expiry), and
+its uid is all that is believed; whether that uid is an admin is read from `starfish_users/{uid}.roles` on every call,
+so revoking the role stops the next request even though the token lives an hour. One 401 for any bad token, one 403
+for a non-admin; no error text from inside ever leaves. A header token, not a cookie, so another site cannot make a
+browser send it; browsers are allowed only from `ADMIN_API_ORIGINS`. For a script (the demo's reset), sign a
+dedicated admin account in through the Firebase Auth REST API and send its ID token.
+
+**It is public on the network on purpose** (`--allow-unauthenticated`: a browser must reach it, so Cloud Run's own IAM check
+cannot be the gate), capped at two instances, with no rate limit beyond that. An organisation policy that forbids public
+services will refuse the deploy line. Its name is added to `STARFISH_EXCLUDED_SERVICES` so its own errors are never ingested; an
+explicit list in `EXTRA_ENV_VARS` replaces that default, and the script warns if it leaves the service out.
+
+> **Status: written; tested with stubs for every rule and over a real local HTTP server; the deploy plan is pinned by a dry
+> run. Never deployed, and the real token check against Firebase Auth has never run.** No button in the UI calls it yet.
+
 ## Recording the demo: a shorter tick, and a run now (#65)
 
 `scripts/ingest-cadence.sh` changes the Scheduler job's cron and puts it back; it holds no state between calls, so
@@ -408,8 +435,8 @@ The ingest path ran once on a real project (the demo project, 2026-10-05); the s
 - **The web UI** deploys to Hosting with `scripts/deploy-web.sh`, from a terminal or from the Deploy web UI
   workflow above (never run).
 - **An alert when ingestion stops.** The UI shows it; nothing pages anyone (an item on #6).
-- **An authenticated "run now" endpoint.** `src/ingest/trigger.ts` is the function; nothing serves
-  it. For recording a demo, see [the cadence script](#recording-the-demo-a-shorter-tick-and-a-run-now-65).
+- **The admin API has never been deployed.** It exists ([above](#the-admin-api-run-ingest-now-and-retire-an-incident-63-65)) with no button in the
+  UI yet. Without it, for recording a demo, see [the cadence script](#recording-the-demo-a-shorter-tick-and-a-run-now-65).
 - **The agent has never run on a real project.** The agent job deploys with `DEPLOY_AGENT=1`, verified by the target's
   CI or by a separate credential-less job ([above](#the-agent-and-where-its-tests-run-74)); `in-process` verification is
   not a sandbox and is for a machine with nothing to protect.
