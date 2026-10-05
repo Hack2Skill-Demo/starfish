@@ -181,8 +181,8 @@ export function SettingsEditor() {
         </h2>
         <p className="mt-1 text-sm text-gray-600 dark:text-gray-400">
           Override the engine&apos;s defaults. A field left on its default uses the engine&apos;s environment variables.
-          The engine applies a saved document at the start of each run, but the scheduled job that runs it is not
-          deployed yet, so nothing reads these today. Secrets are not stored here.
+          The engine applies a saved document at the start of each run of its scheduled job. If no job is deployed for
+          this project, nothing reads these. Secrets are not stored here.
         </p>
       </div>
 

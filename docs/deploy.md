@@ -381,7 +381,7 @@ trigger #65 asks for: anyone with `roles/run.developer` on the job can run it.
 
 ## What is most likely to go wrong the first time
 
-None of this has run against a real project. The likely first failures, and what they mean:
+The ingest path ran once on a real project (the demo project, 2026-10-05); the agent job, the smoke test and the Actions workflows have not. The likely first failures, and what they mean:
 
 - **The build is denied** ("Build failed because the default service account is missing required IAM permissions", seen
   on a first run). `gcloud run jobs deploy --source` builds as the Compute Engine default account, which a newer

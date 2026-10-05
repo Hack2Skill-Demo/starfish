@@ -31,7 +31,7 @@ export const CONNECTIONS: Connection[] = [
     icon: Bot,
     state: "engine",
     purpose:
-      "The model Starfish will use for triage, fix drafting and adversarial review. Today only the fix-quality spike calls it; those three agents are not built yet.",
+      "The model Starfish uses for triage, fix drafting and adversarial review. Those stages are built as the agent job (pnpm agent), which is deployable but has never run; the scheduled ingest does not call Gemini.",
     detail: "Configured on the engine: GOOGLE_CLOUD_PROJECT, GOOGLE_CLOUD_LOCATION, STARFISH_MODEL.",
   },
   {
@@ -39,7 +39,7 @@ export const CONNECTIONS: Connection[] = [
     icon: GitBranch,
     state: "planned",
     purpose: "File an issue per incident, open fix PRs, and sync status back when they close.",
-    detail: "Design only; not built yet.",
+    detail: "The pull-request opener is built and tested against a local remote and a fake GitHub API; it has never run against real GitHub. Filing issues and syncing status back are not built.",
   },
   {
     name: "Slack",
