@@ -49,6 +49,8 @@
 #   AGENT_EXTRA_ENV_VARS more settings for the agent job, "@"-separated like EXTRA_ENV_VARS
 #   SKIP_FIRESTORE_RULES=1   do not deploy firestore.rules and firestore.indexes.json
 #   RUN_AFTER_DEPLOY=1       execute the job once and wait for it
+#   BUILD_SERVICE_ACCOUNT   the account Cloud Run builds the image as, which is granted roles/run.builder. Default: the
+#                        Compute Engine default account (<project-number>-compute@developer.gserviceaccount.com)
 #   DRY_RUN=1                print the commands instead of running them
 #
 # The person running this needs, on PROJECT_ID, roles to enable APIs, create service accounts, set IAM
@@ -80,6 +82,7 @@ BUDGET_USD="${BUDGET_USD:-}"
 BILLING_ACCOUNT="${BILLING_ACCOUNT:-}"
 SKIP_FIRESTORE_RULES="${SKIP_FIRESTORE_RULES:-0}"
 RUN_AFTER_DEPLOY="${RUN_AFTER_DEPLOY:-0}"
+BUILD_SERVICE_ACCOUNT="${BUILD_SERVICE_ACCOUNT:-}"
 DRY_RUN="${DRY_RUN:-0}"
 
 JOB_NAME="${JOB_NAME:-starfish-ingest}"
@@ -206,6 +209,21 @@ run gcloud services enable aiplatform.googleapis.com --project="$VERTEX_PROJECT_
 if [ "$WATCHED_PROJECT_ID" != "$PROJECT_ID" ]; then
   run gcloud services enable logging.googleapis.com --project="$WATCHED_PROJECT_ID"
 fi
+
+# `gcloud run jobs deploy --source` builds the image as this account, and a project made recently does not give it
+# the right to read the uploaded source ("Build failed because the default service account is missing required
+# IAM permissions"). It is the Compute Engine default account unless BUILD_SERVICE_ACCOUNT names another.
+step "Build permissions: the account Cloud Run builds the image as"
+if [ -n "$BUILD_SERVICE_ACCOUNT" ]; then
+  BUILD_SA="$BUILD_SERVICE_ACCOUNT"
+elif [ "$DRY_RUN" = "1" ]; then
+  BUILD_SA="<project-number>-compute@developer.gserviceaccount.com"
+else
+  PROJECT_NUMBER="$(gcloud projects describe "$PROJECT_ID" --format='value(projectNumber)')" \
+    || die "could not read the project number of $PROJECT_ID (needed to name the default build account)"
+  BUILD_SA="$PROJECT_NUMBER-compute@developer.gserviceaccount.com"
+fi
+bind "$PROJECT_ID" "$BUILD_SA" roles/run.builder
 
 if [ -n "$BUDGET_USD" ]; then
   step "Budget alert: \$$BUDGET_USD a month on $PROJECT_ID (emails billing admins; does not stop spending)"
