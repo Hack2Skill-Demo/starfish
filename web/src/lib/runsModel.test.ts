@@ -92,6 +92,15 @@ describe("runStatus", () => {
 });
 
 describe("buildWaterfall", () => {
+  it("shows the Slack step, with how it went, only on a cycle that has one", () => {
+    const c = cycle({ state: "waiting-human", leaseExpiresAt: null, updatedAt: new Date(T0 + 9000) });
+    const without = buildWaterfall(c, [ev("triage", "decision", 5000)], T0 + 10_000);
+    expect(without.steps.some((s) => s.stage === "notify")).toBe(false);
+    const withIt = buildWaterfall(c, [ev("triage", "decision", 5000), ev("notify", "failed", 8000)], T0 + 10_000);
+    const step = withIt.steps.find((s) => s.stage === "notify");
+    expect(step).toMatchObject({ title: "Tell a person", status: "done", outcome: "failed" });
+  });
+
   it("marks a stage without an event as not reached, never done", () => {
     const c = cycle({ state: "declined", leaseExpiresAt: null, updatedAt: new Date(T0 + 5000) });
     const w = buildWaterfall(c, [ev("triage", "decision", 5000)], T0 + 10_000);

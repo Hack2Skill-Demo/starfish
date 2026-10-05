@@ -22,6 +22,11 @@
 #   STARFISH_GITHUB_TOKEN  if set, stored as a new version of the starfish-github-token secret. Not
 #                        GITHUB_TOKEN: that name is the Actions workflow's own token, and many shells export a
 #                        personal one, neither of which should reach Secret Manager by accident
+#   STARFISH_SLACK_WEBHOOK_ONCALL  with DEPLOY_AGENT=1: the Slack incoming-webhook URL the agent posts "needs a human" to
+#                        (#17). The URL is the credential: stored over stdin as a version of the starfish-slack-oncall
+#                        secret, readable by the agent's account only, mounted on the agent job only, never printed.
+#                        Only a https://hooks.slack.com/services/... URL is accepted. Also set the UI's origin so the
+#                        message can link back: AGENT_EXTRA_ENV_VARS="STARFISH_UI_URL=https://<site>.web.app"
 #   BUDGET_USD           if set (with BILLING_ACCOUNT), create a budget that EMAILS billing admins at 50% and
 #                        90% of this monthly amount for PROJECT_ID. An alert, not a cap: nothing stops spending
 #   BILLING_ACCOUNT      the billing account id (0123AB-456CDE-789FGH), needed with BUDGET_USD
@@ -99,6 +104,7 @@ ENGINE_SA_NAME="${ENGINE_SA_NAME:-starfish-engine}"
 SCHEDULER_SA_NAME="${SCHEDULER_SA_NAME:-starfish-scheduler}"
 SCHEDULER_JOB_NAME="${SCHEDULER_JOB_NAME:-$JOB_NAME-tick}"
 GITHUB_SECRET="${GITHUB_SECRET:-starfish-github-token}"
+SLACK_SECRET="${SLACK_SECRET:-starfish-slack-oncall}"
 AGENT_JOB_NAME="${AGENT_JOB_NAME:-starfish-agent}"
 AGENT_SA_NAME="${AGENT_SA_NAME:-starfish-agent}"
 AGENT_SCHEDULER_JOB_NAME="${AGENT_SCHEDULER_JOB_NAME:-$AGENT_JOB_NAME-tick}"
@@ -409,6 +415,26 @@ if [ "$DEPLOY_AGENT" = "1" ]; then
   bind "$VERTEX_PROJECT_ID" "$AGENT_SA" roles/aiplatform.user
   retry gcloud secrets add-iam-policy-binding "$GITHUB_SECRET" --project="$PROJECT_ID" \
     --member="serviceAccount:$AGENT_SA" --role=roles/secretmanager.secretAccessor --quiet --format=none
+  # The Slack webhook (#17) has its OWN secret, read by the agent's account alone (the ingest job never posts anywhere).
+  # It exists only when a webhook is given: an empty secret would fail the deploy that mounts it.
+  SLACK_MOUNT=0
+  if [ -n "${STARFISH_SLACK_WEBHOOK_ONCALL:-}" ]; then
+    case "$STARFISH_SLACK_WEBHOOK_ONCALL" in
+      https://hooks.slack.com/services/*) ;;
+      *) die "STARFISH_SLACK_WEBHOOK_ONCALL is not a Slack incoming-webhook URL (https://hooks.slack.com/services/...)" ;;
+    esac
+    if ! exists gcloud secrets describe "$SLACK_SECRET" --project="$PROJECT_ID"; then
+      run gcloud secrets create "$SLACK_SECRET" --replication-policy=automatic --project="$PROJECT_ID"
+    fi
+    retry gcloud secrets add-iam-policy-binding "$SLACK_SECRET" --project="$PROJECT_ID" \
+      --member="serviceAccount:$AGENT_SA" --role=roles/secretmanager.secretAccessor --quiet --format=none
+    if [ "$DRY_RUN" = "1" ]; then
+      echo "+ printf %s <STARFISH_SLACK_WEBHOOK_ONCALL> | gcloud secrets versions add $SLACK_SECRET --data-file=- --project=$PROJECT_ID"
+    else
+      printf %s "$STARFISH_SLACK_WEBHOOK_ONCALL" | gcloud secrets versions add "$SLACK_SECRET" --data-file=- --project="$PROJECT_ID" --format=none
+    fi
+    SLACK_MOUNT=1
+  fi
   if [ "$VERIFY_ISOLATION" = "cloud-run-job" ]; then
     retry gcloud storage buckets add-iam-policy-binding "gs://$VERIFY_BUCKET" --project="$PROJECT_ID" \
       --member="serviceAccount:$AGENT_SA" --role=roles/storage.objectAdmin --quiet --format=none
@@ -451,9 +477,11 @@ if [ "$DEPLOY_AGENT" = "1" ]; then
     --max-retries=0 --task-timeout="$((3 * AGENT_WAIT_SECONDS + 600))s" --cpu=1 --memory=1Gi
     --update-env-vars="^@^$AGENT_ENV"
   )
-  if [ "$SECRET_VERSION" = "1" ]; then
-    AGENT_DEPLOY_ARGS+=(--update-secrets="STARFISH_GITHUB_TOKEN=$GITHUB_SECRET:latest")
-  fi
+  # One flag with a comma-separated list: a repeated --update-secrets would keep only the last.
+  AGENT_SECRETS=""
+  [ "$SECRET_VERSION" != "1" ] || AGENT_SECRETS="STARFISH_GITHUB_TOKEN=$GITHUB_SECRET:latest"
+  [ "$SLACK_MOUNT" != "1" ] || AGENT_SECRETS="${AGENT_SECRETS:+$AGENT_SECRETS,}STARFISH_SLACK_WEBHOOK_ONCALL=$SLACK_SECRET:latest"
+  [ -z "$AGENT_SECRETS" ] || AGENT_DEPLOY_ARGS+=(--update-secrets="$AGENT_SECRETS")
   run "${AGENT_DEPLOY_ARGS[@]}"
   retry gcloud run jobs add-iam-policy-binding "$AGENT_JOB_NAME" --region="$REGION" --project="$PROJECT_ID" \
     --member="serviceAccount:$SCHEDULER_SA" --role=roles/run.invoker --quiet --format=none

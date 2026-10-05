@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { loadChildProcessBasics, loadConfig, loadGithubToken, loadVerifyRunnerRequest } from "./config.js";
+import { loadChildProcessBasics, loadConfig, loadGithubToken, loadSlackOnCallWebhook, loadVerifyRunnerRequest } from "./config.js";
 
 // Env vars that loadConfig reads; cleared first so the developer's own .env/shell can't leak in.
 const KEYS = [
@@ -332,6 +332,40 @@ describe("loadConfig: where a missing index may be created", () => {
       vi.stubEnv("STARFISH_ADMIN_API_ORIGINS", bad);
       expect(() => loadConfig(), bad).toThrow(/STARFISH_ADMIN_API_ORIGINS/);
     }
+  });
+
+  it("reads the UI origin for Slack links: exact, https, empty by default", () => {
+    expect(loadConfig().uiBaseUrl).toBe("");
+    vi.stubEnv("STARFISH_UI_URL", "https://site.web.app/");
+    expect(loadConfig().uiBaseUrl).toBe("https://site.web.app");
+    for (const bad of ["site.web.app", "http://site.web.app", "https://site.web.app/app"]) {
+      vi.stubEnv("STARFISH_UI_URL", bad);
+      expect(() => loadConfig(), bad).toThrow(/STARFISH_UI_URL/);
+    }
+  });
+
+  it("reads the Slack webhook as a secret: only a Slack URL, and a bad one is refused without being echoed", () => {
+    expect(loadSlackOnCallWebhook()).toBeUndefined();
+    const good = "https://hooks.slack.com/services/T000AAAA/B000BBBB/" + "x".repeat(24);
+    vi.stubEnv("STARFISH_SLACK_WEBHOOK_ONCALL", `  ${good}  `);
+    expect(loadSlackOnCallWebhook()).toBe(good);
+    vi.stubEnv("STARFISH_SLACK_WEBHOOK_ONCALL", "http://127.0.0.1:9999/services/T000/B000/xxxx");
+    expect(loadSlackOnCallWebhook()).toContain("127.0.0.1");
+    for (const bad of ["https://evil.example/services/T000AAAA/B000BBBB/xxxxxxxx", "https://hooks.slack.com.evil.example/services/T000AAAA/B000BBBB/x", "http://example.com/services/T/B/x", "not a url"]) {
+      vi.stubEnv("STARFISH_SLACK_WEBHOOK_ONCALL", bad);
+      try {
+        loadSlackOnCallWebhook();
+        expect.unreachable(bad);
+      } catch (err) {
+        expect((err as Error).message).toMatch(/STARFISH_SLACK_WEBHOOK_ONCALL/);
+        expect((err as Error).message).not.toContain(bad);
+      }
+    }
+  });
+
+  it("does not put the Slack webhook in the config object", () => {
+    vi.stubEnv("STARFISH_SLACK_WEBHOOK_ONCALL", "https://hooks.slack.com/services/T000AAAA/B000BBBB/" + "x".repeat(24));
+    expect(JSON.stringify(loadConfig())).not.toContain("hooks.slack.com");
   });
 
   it("listens on PORT when Cloud Run sets it, and refuses nonsense", () => {

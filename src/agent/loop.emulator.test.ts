@@ -12,6 +12,7 @@ import { deleteApp, initializeApp } from "firebase-admin/app";
 import { getFirestore } from "firebase-admin/firestore";
 import type { Firestore } from "firebase-admin/firestore";
 import { runCycle, type LoopDeps, type LoopSubject, type PullRequestRequest } from "./loop.js";
+import type { NotifyRequest } from "../integrations/slack.js";
 import { acquireLease } from "./cycle.js";
 import { FIX_SYSTEM } from "./fixer.js";
 import { REVIEW_SYSTEM } from "./reviewer.js";
@@ -551,5 +552,121 @@ describe("runCycle: the pull request is opened once per cycle", () => {
     const again = await runCycle(d, { ...key, recurrence: 1 });
     expect(again).toMatchObject({ kind: "finished", state: "done" });
     expect(opened.map((o) => o.cycleId)).toEqual(["inc1_r0", "inc1_r1"]);
+  });
+});
+
+describe("runCycle: telling a person (#17)", () => {
+  const notifyDecision = { decision: "notify", reasoning: "The API is not enabled.", suspectedCause: "Translation API disabled" };
+  const summaryNotify = async () => (await cycleDoc()).summary?.notify;
+
+  it("tells a person once when no code change helps, recording pending and then sent", async () => {
+    const calls: NotifyRequest[] = [];
+    const notify = async (req: NotifyRequest) => (calls.push(req), { state: "sent" as const, attempts: 1 });
+    const r = await runCycle(deps(scripted({ triage: [notifyDecision] }), { notify }), key);
+
+    expect(r).toEqual({ kind: "finished", state: "waiting-human", outcome: "notify:model-notify" });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({ cycleId: "inc1_r0", incidentId: "inc1", functionName: "orders-createOrder", service: "orders", path: "notify", rule: "model-notify", occurrenceCount: 42 });
+    expect(calls[0]!.reason).toContain("The API is not enabled");
+    expect(await kinds()).toEqual(["cycle:started", "triage:decision", "notify:pending", "notify:sent"]);
+    expect(await summaryNotify()).toEqual({ state: "sent", attempts: 1 });
+  });
+
+  it("tells a person when a fix could not be finished: the fixer declines, the gate or the review will not pass", async () => {
+    const paths: Array<[string, ReturnType<typeof scripted>]> = [
+      ["the fixer declines", scripted({ triage: [act], fix: [{ rootCause: "No context.", patch: "", testAdded: false, risk: "", rejectedAlternatives: [] }] })],
+      ["the gate rejects twice", scripted({ triage: [act], fix: [fixOf(BAD_PATCH)] })],
+      ["the review blocks twice", scripted({ triage: [act], fix: [fixOf(GOOD_PATCH)], review: [broken] })],
+    ];
+    for (const [name, model] of paths) {
+      cfg = randomUUID().slice(0, 8);
+      const calls: NotifyRequest[] = [];
+      const notify = async (req: NotifyRequest) => (calls.push(req), { state: "sent" as const, attempts: 1 });
+      const r = await runCycle(deps(model, { notify }), key);
+      expect(r, name).toMatchObject({ kind: "finished", state: "waiting-human" });
+      expect(calls, name).toHaveLength(1);
+      expect(calls[0]!.path, name).toBe("human");
+    }
+  });
+
+  it("passes no count, not zero, when the stored incident has none", async () => {
+    const calls: NotifyRequest[] = [];
+    const notify = async (req: NotifyRequest) => (calls.push(req), { state: "sent" as const, attempts: 1 });
+    const unknown = { ...incident, occurrenceCount: undefined };
+    const load = async () => ({ subject: { incident: unknown, status: "new" as const }, files: [], sourceDir: src, baseRevision: "r" });
+    await runCycle(deps(scripted({ triage: [notifyDecision] }), { notify, load }), key);
+    expect(calls[0]!.occurrenceCount).toBeNull();
+  });
+
+  it("does not tell anyone about a cycle that opened a pull request, or one that declined", async () => {
+    const calls: NotifyRequest[] = [];
+    const notify = async (req: NotifyRequest) => (calls.push(req), { state: "sent" as const, attempts: 1 });
+    await runCycle(deps(scripted({ triage: [act], fix: [fixOf(GOOD_PATCH)], review: [held] }), { notify }), key);
+    cfg = randomUUID().slice(0, 8);
+    await runCycle(deps(scripted({ triage: [{ decision: "decline", reasoning: "Noise.", suspectedCause: "" }] }), { notify }), key);
+    expect(calls).toHaveLength(0);
+    expect((await kinds()).some((k) => k.startsWith("notify:"))).toBe(false);
+  });
+
+  it("records a failed delivery where a person can see it, and still finishes the cycle", async () => {
+    const notify = async () => ({ state: "failed" as const, attempts: 3, reason: "http-404:no_service" });
+    const r = await runCycle(deps(scripted({ triage: [notifyDecision] }), { notify }), key);
+    expect(r).toMatchObject({ kind: "finished", state: "waiting-human" });
+    expect(await summaryNotify()).toEqual({ state: "failed", attempts: 3, reason: "http-404:no_service" });
+    expect(await kinds()).toContain("notify:failed");
+  });
+
+  it("treats a notifier that throws as a failed delivery, not a lost cycle", async () => {
+    const notify = async (): Promise<never> => {
+      throw new Error(`boom ${SEEDED_SECRETS.github}`);
+    };
+    const r = await runCycle(deps(scripted({ triage: [notifyDecision] }), { notify }), key);
+    expect(r).toMatchObject({ kind: "finished", state: "waiting-human" });
+    expect(await summaryNotify()).toMatchObject({ state: "failed", reason: "notifier-error" });
+    expect(JSON.stringify(await events())).not.toContain(SEEDED_SECRETS.github);
+  });
+
+  it("sends nothing in a dry run, and the record says so", async () => {
+    const calls: NotifyRequest[] = [];
+    const notify = async (req: NotifyRequest) => (calls.push(req), { state: "sent" as const, attempts: 1 });
+    cfgOver = { dryRun: true };
+    await runCycle(deps(scripted({ triage: [notifyDecision] }), { notify }), key);
+    expect(calls).toHaveLength(0);
+    expect(await summaryNotify()).toEqual({ state: "dry-run" });
+  });
+
+  it("records no notify stage at all when nothing is configured to tell a person", async () => {
+    await runCycle(deps(scripted({ triage: [notifyDecision] })), key);
+    expect(await summaryNotify()).toBeUndefined();
+    expect((await kinds()).some((k) => k.startsWith("notify:"))).toBe(false);
+  });
+
+  it("does not send again for a delivery already recorded sent or failed, and sends again after a crash left it pending", async () => {
+    // A cycle that exists and is resumable: triage errors once, which releases the lease.
+    const calls: NotifyRequest[] = [];
+    const notify = async (req: NotifyRequest) => (calls.push(req), { state: "sent" as const, attempts: 1 });
+    const outcomes: Array<[unknown, number]> = [[{ state: "sent", attempts: 1 }, 0], [{ state: "failed", attempts: 3, reason: "http-500" }, 0], [{ state: "pending", attempts: 0 }, 1]];
+    for (const [prior, expectedCalls] of outcomes) {
+      cfg = randomUUID().slice(0, 8);
+      calls.length = 0;
+      expect(await runCycle(deps(scripted({ triage: [new Error("boom")] }), { notify }), key)).toMatchObject({ kind: "released" });
+      await db.collection(`cycles_${cfg}`).doc("inc1_r0").update({ "summary.notify": prior });
+      await runCycle(deps(scripted({ triage: [notifyDecision] }), { notify }), key);
+      expect(calls, JSON.stringify(prior)).toHaveLength(expectedCalls);
+    }
+  });
+
+  it("does not send once a person has resolved the incident in the meantime", async () => {
+    const calls: NotifyRequest[] = [];
+    const notify = async (req: NotifyRequest) => (calls.push(req), { state: "sent" as const, attempts: 1 });
+    const model = scripted({ triage: [notifyDecision] });
+    const ask = (async (...args: Parameters<AskJson>) => {
+      const answer = await model.ask(...args);
+      status = "resolved"; // resolved while the model was thinking
+      return answer;
+    }) as AskJson;
+    const r = await runCycle(deps(model, { notify, ask }), key);
+    expect(r).toMatchObject({ kind: "finished", state: "waiting-human" });
+    expect(calls).toHaveLength(0);
   });
 });
