@@ -131,6 +131,11 @@ export interface StarfishConfig {
   adminApiOrigins: string[];
   /** The port the admin API listens on. Cloud Run sets `PORT`. */
   adminApiPort: number;
+  /**
+   * The operator UI's origin, e.g. `https://my-site.web.app`, used to link a Slack message back to the incident and its
+   * run (src/integrations/slack.ts). Empty means a message carries no links. Same rules as the admin API's origins.
+   */
+  uiBaseUrl: string;
   /** The author and committer on the commit Starfish pushes. */
   githubCommitName: string;
   githubCommitEmail: string;
@@ -294,6 +299,7 @@ export function loadConfig(): StarfishConfig {
     indexAllowedTargets: validIndexTargets(parseList(process.env.STARFISH_INDEX_ALLOWED_TARGETS, ",") ?? []),
     adminApiOrigins: validOrigins(parseList(process.env.STARFISH_ADMIN_API_ORIGINS, ",") ?? []),
     adminApiPort: positiveNumber(process.env.PORT, 8080, "PORT"),
+    uiBaseUrl: validOrigins(parseList(process.env.STARFISH_UI_URL, ",") ?? [], "STARFISH_UI_URL")[0] ?? "",
     githubCommitName: (process.env.STARFISH_GITHUB_COMMIT_NAME ?? "").trim() || "Starfish",
     githubCommitEmail: (process.env.STARFISH_GITHUB_COMMIT_EMAIL ?? "").trim() || "starfish@users.noreply.github.com",
     usersCollection: process.env.STARFISH_USERS_COLLECTION || "starfish_users",
@@ -322,6 +328,23 @@ export function loadGithubToken(): string | undefined {
   return token === "" ? undefined : token;
 }
 
+/** Slack incoming webhooks have their own host; a test may point one at localhost over plain http. */
+const SLACK_WEBHOOK_RE = /^(https:\/\/hooks\.slack\.com\/services\/[A-Za-z0-9_/-]{10,200}|http:\/\/(localhost|127\.0\.0\.1)(:\d{1,5})?\/[A-Za-z0-9_/-]{0,200})$/;
+
+/**
+ * The Slack incoming-webhook URL the "needs a human" message is posted to, or undefined (src/integrations/slack.ts).
+ * The URL is the credential: anyone who has it can post to the channel. So, like the GitHub token, it is not a field
+ * of StarfishConfig, and a bad value is refused by NAME, never echoed. Mounted from Secret Manager on Cloud Run.
+ */
+export function loadSlackOnCallWebhook(): string | undefined {
+  const url = (process.env.STARFISH_SLACK_WEBHOOK_ONCALL ?? "").trim();
+  if (url === "") return undefined;
+  if (!SLACK_WEBHOOK_RE.test(url)) {
+    throw new Error("STARFISH_SLACK_WEBHOOK_ONCALL is not a Slack incoming-webhook URL (https://hooks.slack.com/services/...)");
+  }
+  return url;
+}
+
 /**
  * The request the agent hands the verify job (src/agent/verifyRunner.ts), or undefined. Read here because this is
  * the only file that reads the environment; the verifier job is given nothing else, no Starfish setting and no
@@ -347,17 +370,17 @@ function validIndexTargets(entries: string[]): string[] {
 }
 
 /** Exact web origins (`https://host[:port]`, or `http://localhost[:port]`), no path: one wrong entry would widen who may call. */
-function validOrigins(entries: string[]): string[] {
+function validOrigins(entries: string[], name = "STARFISH_ADMIN_API_ORIGINS"): string[] {
   return entries.map((entry) => {
     let u: URL;
     try {
       u = new URL(entry);
     } catch {
-      throw new Error(`STARFISH_ADMIN_API_ORIGINS entry "${entry}" is not an origin like https://my-site.web.app`);
+      throw new Error(`${name} entry "${entry}" is not an origin like https://my-site.web.app`);
     }
     const local = u.hostname === "localhost" || u.hostname === "127.0.0.1";
     if ((u.protocol !== "https:" && !(local && u.protocol === "http:")) || u.origin !== entry.replace(/\/$/, "") || u.username || u.password) {
-      throw new Error(`STARFISH_ADMIN_API_ORIGINS entry "${entry}" must be an exact https origin (no path, no credentials)`);
+      throw new Error(`${name} entry "${entry}" must be an exact https origin (no path, no credentials)`);
     }
     return u.origin;
   });

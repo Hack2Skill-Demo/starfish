@@ -44,6 +44,7 @@ import {
   type CycleState,
   type RunEvent,
 } from "./cycle.js";
+import type { DeliveryResult, NotifyRequest } from "../integrations/slack.js";
 import { proposeFix, type FixRequest, type SourceFile } from "./fixer.js";
 import { reviewPatch, type Attack, type ReviewVerdict } from "./reviewer.js";
 import { triageIncident, type AskJson, type TriageSubject } from "./triage.js";
@@ -92,6 +93,12 @@ export interface LoopDeps {
   verify?: (req: VerifyRequest) => Promise<VerifyResult>;
   /** Opens (or finds, by `cycleId`) the pull request. Absent means nothing can be opened. */
   openPullRequest?: (req: PullRequestRequest) => Promise<{ number: number; url: string }>;
+  /**
+   * Tells a person (Slack, src/integrations/slack.ts) that this cycle needs them. Absent means nobody is told. It
+   * never throws: a failed delivery is a result, recorded on the cycle (`summary.notify`) so it is visible. In a dry
+   * run nothing is sent and the record says so.
+   */
+  notify?: (req: NotifyRequest) => Promise<DeliveryResult>;
 }
 
 export type LoopResult =
@@ -145,6 +152,49 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
       return finish("declined", why, "decline");
     };
 
+    // A cycle that ends waiting for a person says so, once. Recorded before and after the send, so a crash between the
+    // two leaves `pending` and the next attempt posts again (at-least-once: a missed escalation is worse than a repeat),
+    // while a recorded `sent` or `failed` is never sent again.
+    const announce = async (loaded: LoopSubject, path: NotifyRequest["path"], rule: string, reason: string): Promise<void> => {
+      if (!deps.notify) return;
+      if (cfg.dryRun) {
+        await note({ stage: "notify", type: "dry-run", summary: "A person would be told here; nothing sent (dry run)", record: { state: "dry-run" } });
+        return;
+      }
+      const snap = await db.collection(cfg.cycleCollection).doc(id).get();
+      const prior = (snap.data()?.summary as { notify?: { state?: unknown } } | undefined)?.notify?.state;
+      if (prior === "sent" || prior === "failed") return;
+      if ((await stopReason()) !== null) return;
+      const renewed = await renewLease(db, cfg, id, owner, deps.now());
+      if (!renewed.ok) throw new LeaseLost();
+      await note({ stage: "notify", type: "pending", summary: "Telling a person", record: { state: "pending", attempts: 0 } });
+      const incident = loaded.subject.incident;
+      let result: DeliveryResult;
+      try {
+        result = await deps.notify({
+          cycleId: id,
+          incidentId: key.incidentId,
+          functionName: incident.functionName ?? "unknown function",
+          service: incident.service ?? "unknown",
+          errorType: incident.errorType ?? "unknown",
+          occurrenceCount: incident.occurrenceCount ?? null,
+          path,
+          rule,
+          reason,
+        });
+      } catch {
+        // The notifier promises not to throw; if it does anyway, that is a failed delivery and not a lost cycle.
+        result = { state: "failed", attempts: 1, reason: "notifier-error" };
+      }
+      await note({
+        stage: "notify",
+        type: result.state,
+        summary: result.state === "sent" ? "A person was told" : `A person could not be told: ${result.reason ?? "unknown"}`,
+        data: { attempts: result.attempts },
+        record: { state: result.state, attempts: result.attempts, ...(result.reason !== undefined && { reason: result.reason }) },
+      });
+    };
+
     let modelCalls = 0;
     const overBudget = async (): Promise<LoopResult | null> => {
       if (modelCalls < cfg.modelCallBudget) return null;
@@ -175,6 +225,7 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
       case "decline":
         return await finish("declined", triage.rule, "decline");
       case "notify":
+        await announce(loaded, "notify", triage.rule, triage.reason);
         return await finish("waiting-human", `notify:${triage.rule}`, "notify");
       case "defer":
       case "error":
@@ -199,7 +250,10 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
         record: { outcome: fix.outcome, rule: fix.rule, rootCause: fix.rootCause, testAdded: fix.testAdded ?? null, risk: fix.risk ?? null, revisions },
       });
       if (fix.outcome === "error") return await release(fix.rule);
-      if (fix.outcome === "declined" || fix.patch === undefined) return await finish("waiting-human", fix.rule, "human");
+      if (fix.outcome === "declined" || fix.patch === undefined) {
+        await announce(loaded, "human", fix.rule, fix.rootCause);
+        return await finish("waiting-human", fix.rule, "human");
+      }
 
       const verified = await (deps.verify ?? verifyPatch)({ cycleId: id, sourceDir: loaded.sourceDir, patch: fix.patch, baseRevision: loaded.baseRevision, config: cfg });
       await note({
@@ -223,6 +277,7 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
           feedback = { previousPatchSha256: verified.patchSha256, verifyOutput: verified.output || verified.reason };
           continue;
         }
+        await announce(loaded, "human", `verify-${verified.rule}`, verified.reason);
         return await finish("waiting-human", `verify-${verified.rule}`, "human");
       }
 
@@ -258,6 +313,7 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
             feedback = { previousPatchSha256: verified.patchSha256, verifyOutput: `A reviewer broke this patch:\n${broken.join("\n")}` };
             continue;
           }
+          await announce(loaded, "human", "review-blocked", "The adversarial review broke the patch, and the one revision did not fix it.");
           return await finish("waiting-human", "review-blocked", "human");
         }
         review = { verdict: reviewed.verdict, attacks: reviewed.attacks ?? [] };

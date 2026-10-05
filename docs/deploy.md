@@ -53,6 +53,15 @@ the value as a new version (over stdin, never printed or passed as an argument) 
 the job as `STARFISH_GITHUB_TOKEN`; without a version, Cloud Run would refuse the deploy, so it is
 not mounted.
 
+**Slack (#17).** With `DEPLOY_AGENT=1` and `STARFISH_SLACK_WEBHOOK_ONCALL=https://hooks.slack.com/services/...` set, the script stores the
+webhook as a version of its own secret, `starfish-slack-oncall` (over stdin, never printed; any other URL is refused, unechoed),
+lets only the **agent's** account read it, and mounts it on the **agent** job only, in the same `--update-secrets` flag as the
+GitHub token. Add `AGENT_EXTRA_ENV_VARS="STARFISH_UI_URL=https://<site>.web.app"` so the message can link back to the incident and its run.
+Without a webhook nothing Slack-shaped is created. The agent is a dry run by default and a dry run **sends nothing**: the cycle's
+record says `dry-run`. To post for real, turn dry run off (`STARFISH_DRY_RUN=false`), which also lets a configured GitHub client open pull requests.
+A failed delivery is recorded on the cycle (`summary.notify`: `failed`, the status and Slack's short error code, never the URL) and the cycle still
+finishes. Delivery is at-least-once: after a crash between the post and its record a resumed cycle posts again. Never run against real Slack.
+
 `loadGithubToken()` (`src/config.ts`) reads that variable, and the pull-request opener
 (`src/integrations/githubPr.ts`) is its only user. The opener is tested against a local git remote
 and a fake GitHub API, **not against real GitHub**, and the only job that calls it (the agent job, never
