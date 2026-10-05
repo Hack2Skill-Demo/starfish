@@ -131,8 +131,8 @@ demo runs.
   alternatives a fix rejected; the review's individual attacks are counted, not listed (#39 stays open).
 - **Overview:** a first version is built and is the page the app opens on: how many runs wait on a
   human, runs in progress, open incidents, regressions, errors per hour (from the incidents' hourly
-  buckets), what the agent did by path (each row opens the Runs list filtered to runs that ended that way), the latest runs and the engine's status. Every figure is a
-  count of stored records. It does **not** show a run "healed on its own" or merged (nothing records
+  buckets), key figures (pull requests opened and failed runs, each as "n of N finished runs"; median run length; untriaged open incidents; errors this hour against the hours before it), what the agent did by path (each row opens the Runs list filtered to runs that ended that way), the latest runs and the engine's status. Every figure is a
+  count or median of stored records, not an accuracy score (no run has been scored; see `scoreboard/FORMAT.md`). It does **not** show a run "healed on its own" or merged (nothing records
   one), the next scheduled run (the engine does not know its cadence), or run events as a feed
   (it lists the latest runs); on a real deployment the run counts are zero until a job runs the agent
   loop (#38 stays open).

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { countCycles, countIncidents, headline, hourlySeries } from "./overviewModel";
+import { countCycles, countIncidents, countUntriaged, errorRate, headline, hourlySeries, runKpis } from "./overviewModel";
 import type { IncidentRow } from "./incidents";
 import { parseCycle, type CycleRow } from "./runsModel";
 
@@ -101,5 +101,57 @@ describe("countIncidents", () => {
       incident({ status: "acknowledged", recurrenceCount: 1 }),
     ];
     expect(countIncidents(rows)).toEqual({ open: 3, regressions: 2 });
+  });
+});
+
+describe("runKpis", () => {
+  const run = (state: string, path: string | undefined, ms: number) =>
+    cycle({ state, ...(path && { path }), createdAt: ts(NOW - ms - 1000), updatedAt: ts(NOW - 1000) });
+
+  it("keeps the numerator and the denominator, and leaves running runs out of both", () => {
+    const k = runKpis([run("waiting-human", "pr", 10_000), run("declined", "decline", 20_000), run("failed", "failed", 30_000), run("running", undefined, 99_000)]);
+    expect(k.finished).toBe(3);
+    expect(k.pullRequests).toEqual({ count: 1, of: 3 });
+    expect(k.failed).toEqual({ count: 1, of: 3 });
+    expect(k.medianRunMs).toBe(20_000);
+  });
+
+  it("does not count a dry run's draft as a pull request", () => {
+    expect(runKpis([run("done", "draft", 5000)]).pullRequests).toEqual({ count: 0, of: 1 });
+  });
+
+  it("averages the middle two for an even count", () => {
+    expect(runKpis([run("done", "pr", 10_000), run("done", "pr", 20_000)]).medianRunMs).toBe(15_000);
+  });
+
+  it("has no median, and a zero denominator, for no finished runs", () => {
+    const k = runKpis([run("running", undefined, 1000)]);
+    expect(k.medianRunMs).toBeUndefined();
+    expect(k.pullRequests).toEqual({ count: 0, of: 0 });
+  });
+});
+
+describe("countUntriaged", () => {
+  it("counts open incidents still pending, not closed ones or ones with no triage state", () => {
+    expect(
+      countUntriaged([
+        incident({ triageState: "pending" }),
+        incident({ triageState: "pending", status: "recurred" }),
+        incident({ triageState: "pending", status: "resolved" }),
+        incident({ triageState: "declined" }),
+        incident(),
+      ])
+    ).toBe(2);
+  });
+});
+
+describe("errorRate", () => {
+  it("sets the current hour against the mean of the hours before it", () => {
+    const series = hourlySeries([incident({ occurrencesByHour: { [hourOf(NOW)]: 9, [hourOf(NOW - HOUR)]: 4, [hourOf(NOW - 2 * HOUR)]: 2 } })], NOW, 3);
+    expect(errorRate(series)).toEqual({ thisHour: 9, baseline: 3 });
+  });
+
+  it("is null when there is no earlier hour to compare with", () => {
+    expect(errorRate(hourlySeries([], NOW, 1))).toBeNull();
   });
 });
