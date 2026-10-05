@@ -35,6 +35,21 @@ describe("pathsFromStack", () => {
     expect(pathsFromStack("at f (/workspace/lib/orders/helpers.js:3:9)", REPO, [])).toEqual(["src/orders/helpers.ts"]);
   });
 
+  it("finds a package's source from a compiled frame whose build directory replaced it (Cloud Functions)", () => {
+    const repo = ["functions/src/orders/createOrder.ts", "functions/src/orders/listRecentOrders.ts", "functions/src/index.ts", "web/src/App.tsx"];
+    expect(pathsFromStack("at createOrder (/workspace/lib/orders/createOrder.js:42:11)", repo, [])).toEqual(["functions/src/orders/createOrder.ts"]);
+    // The same with source maps on: the frame already names a .ts under src/.
+    expect(pathsFromStack("at createOrder (/workspace/src/orders/createOrder.ts:42:11)", repo, [])).toEqual(["functions/src/orders/createOrder.ts"]);
+    // A directory alone is not enough: orders/ appears in several files, the file name must match too.
+    expect(pathsFromStack("at x (/workspace/lib/orders/other.js:1:1)", repo, [])).toEqual([]);
+  });
+
+  it("does not guess between two packages that both hold the same tail, nor from a bare file name", () => {
+    const repo = ["functions/src/orders/createOrder.ts", "admin/src/orders/createOrder.ts", "functions/src/index.ts"];
+    expect(pathsFromStack("at f (/workspace/lib/orders/createOrder.js:1:1)", repo, [])).toEqual([]);
+    expect(pathsFromStack("at f (/workspace/lib/index.js:1:1)", repo, [])).toEqual([]);
+  });
+
   it("prefers the longest of two repository paths one of which ends the other", () => {
     expect(pathsFromStack("at f (/app/src/index.ts:1:1)", ["index.ts", "src/index.ts"], [])).toEqual(["src/index.ts"]);
   });
