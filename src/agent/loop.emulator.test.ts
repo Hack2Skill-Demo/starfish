@@ -270,6 +270,32 @@ describe("runCycle: the run record on the cycle", () => {
     expect(Object.keys(doc.summary).sort()).toEqual(stages);
   });
 
+  it("keeps the counter-check triage judged on, the alternatives the fixer rejected and each attack the reviewer tried (#39)", async () => {
+    const model = scripted({
+      triage: [act],
+      fix: [fixOf(GOOD_PATCH, { rejectedAlternatives: ["Default couponCode to an empty string", "Turn on ignoreUndefinedProperties"] })],
+      review: [{ attacks: [{ attack: "Empty order", outcome: "held", detail: "Handled." }, { attack: "Coupon of 0", outcome: "flagged", detail: "Worth a test." }] }],
+    });
+    await runCycle(deps(model), key);
+    const doc = await cycleDoc();
+    expect(doc.summary.triage).toMatchObject({ counterCount: 42, counterWindow: "24h", counterCapped: false });
+    expect(doc.summary.triage.model).toEqual(expect.any(String));
+    expect(doc.summary.fix).toMatchObject({ alternative1: "Default couponCode to an empty string", alternative2: "Turn on ignoreUndefinedProperties" });
+    expect(doc.summary.fix.alternative3).toBeUndefined();
+    expect(doc.summary.review).toMatchObject({ attack1: "flagged: Coupon of 0 | Worth a test.", attack2: "held: Empty order | Handled." });
+  });
+
+  it("records a missing counter-check as missing, never as zero", async () => {
+    const missing = { ...incident, logCounterCheck: undefined };
+    const d = deps(scripted({}), { load: async () => ({ subject: { incident: missing, status: "new" }, files: [], sourceDir: src, baseRevision: "r" }) });
+    await runCycle(d, key);
+    const triage = (await cycleDoc()).summary.triage;
+    expect(triage.counterCount).toBeNull();
+    expect(triage.counterWindow).toBeUndefined();
+    // A gate decided, not the model: no model is named.
+    expect(triage.model).toBeUndefined();
+  });
+
   it("shows the final verify result when the first patch was rejected and the second passed", async () => {
     await runCycle(deps(scripted({ triage: [act], fix: [fixOf(BAD_PATCH), fixOf(GOOD_PATCH)], review: [held] })), key);
     const doc = await cycleDoc();

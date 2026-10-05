@@ -92,9 +92,49 @@ describe("buildEvidence", () => {
     expect(stage(e, "pr").fields.some((f) => f.label === "Link")).toBe(false);
   });
 
-  it("says the counter-check is not stored, rather than showing a number", () => {
-    const e = buildEvidence(row, null);
-    expect(stage(e, "counter-check")).toMatchObject({ status: "not-stored", fields: [] });
+  it("shows the recount triage judged on beside the store's count, with the filter to run it again", () => {
+    const e = buildEvidence(
+      row,
+      cycle({ triage: { decision: "act", rule: "model-act", reason: "r", counterCount: 9, counterWindow: "24h", counterCapped: false, counterFilter: 'severity>=ERROR' } })
+    );
+    const cc = stage(e, "counter-check");
+    expect(cc.status).toBe("recorded");
+    expect(cc.fields.map((f) => [f.label, f.value])).toEqual([
+      ["Raw-log recount", "9"],
+      ["Store's count (since first seen)", "12"],
+      ["Window", "24h"],
+      ["Filter counted", "severity>=ERROR"],
+    ]);
+    expect(cc.note).toBeUndefined();
+  });
+
+  it("says a capped recount is a lower bound, and a filter too long to keep was left out", () => {
+    const cc = stage(buildEvidence(row, cycle({ triage: { decision: "act", counterCount: 1000, counterWindow: "24h", counterCapped: true } })), "counter-check");
+    expect(cc.fields[0]).toMatchObject({ value: "at least 1000" });
+    expect(cc.note).toMatch(/too long/);
+  });
+
+  it("says a missing recount is missing, never zero", () => {
+    const cc = stage(buildEvidence(row, cycle({ triage: { decision: "defer", counterCount: null } })), "counter-check");
+    expect(cc).toMatchObject({ status: "recorded", fields: [] });
+    expect(cc.note).toMatch(/missing is not zero/);
+  });
+
+  it("does not show a number for a run recorded before the recount was kept, or before triage ran", () => {
+    expect(stage(buildEvidence(row, cycle({ triage: { decision: "act" } })), "counter-check")).toMatchObject({ status: "not-stored", fields: [] });
+    expect(stage(buildEvidence(row, null), "counter-check")).toMatchObject({ status: "not-reached", fields: [] });
+  });
+
+  it("lists the alternatives the fixer rejected and each attack the reviewer tried, in order", () => {
+    const e = buildEvidence(
+      row,
+      cycle({
+        fix: { outcome: "proposed", rule: "ok", rootCause: "x", alternative1: "Default to empty", alternative2: "Change the schema" },
+        review: { verdict: "approve-with-flags", attacks: 2, attack1: "held: Empty order | Handled.", attack2: "flagged: Zero | Add a test." },
+      })
+    );
+    expect(stage(e, "fix").fields.filter((f) => f.label.startsWith("Rejected")).map((f) => f.value)).toEqual(["Default to empty", "Change the schema"]);
+    expect(stage(e, "review").fields.filter((f) => /^Attack \d/.test(f.label)).map((f) => f.label)).toEqual(["Attack 1", "Attack 2"]);
   });
 
   it("shows regressions only when there were some", () => {

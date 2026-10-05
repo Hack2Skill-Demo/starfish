@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter, Route, Routes } from "react-router";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -75,8 +75,7 @@ describe("IncidentDetail page", () => {
     expect(mocks.getIncident).toHaveBeenCalledWith("inc-1", "demo");
     expect(mocks.readCycle).toHaveBeenCalledWith("inc-1_r0", "demo");
     await screen.findAllByText("Not reached");
-    for (const id of ["triage", "fix", "verify", "review", "pr"]) expect(stage(id).getAttribute("data-status")).toBe("not-reached");
-    expect(within(stage("counter-check") as HTMLElement).getByText("Not stored")).toBeInTheDocument();
+    for (const id of ["counter-check", "triage", "fix", "verify", "review", "pr"]) expect(stage(id).getAttribute("data-status")).toBe("not-reached");
   });
 
   it("draws this incident's own hourly occurrences, and nothing when it had none in the last day", async () => {

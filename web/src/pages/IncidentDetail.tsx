@@ -116,7 +116,7 @@ function Evidence({ row, cycle, runPending, runFailed }: { row: IncidentRow; cyc
 
       <ol aria-label="Evidence" className="space-y-3">
         {evidence.stages.map((stage, i) => (
-          <StageCard key={stage.id} stage={stage} index={i + 1} hidden={runUnknown && stage.id !== "detected" && stage.id !== "counter-check"} chart={stage.id === "detected" ? series : null} />
+          <StageCard key={stage.id} stage={stage} index={i + 1} hidden={runUnknown && stage.id !== "detected"} chart={stage.id === "detected" ? series : null} />
         ))}
       </ol>
     </>
