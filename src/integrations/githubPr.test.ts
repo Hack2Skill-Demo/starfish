@@ -14,7 +14,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import { loadChildProcessBasics } from "../config.js";
 import { SEEDED_SECRETS } from "../ingest/testSecrets.js";
 import type { PullRequestRequest } from "../agent/loop.js";
-import { GithubError, branchFor, createGithubClient, createPullRequestOpener, gitAuthEnv, pullRequestText, pushRefspec, type GithubPrConfig, type RunGit } from "./githubPr.js";
+import { GithubError, ISSUE_LABEL, branchFor, createGithubClient, createPullRequestOpener, gitAuthEnv, inert, issueText, pullRequestText, pushRefspec, type GithubPrConfig, type IssueRequest, type RunGit } from "./githubPr.js";
 
 const TOKEN = SEEDED_SECRETS.github!;
 const REPO = "acme/shop";
@@ -47,6 +47,8 @@ let api: {
   create: (n: number) => Reply;
   checks?: (commit: string) => Reply;
   annotations?: (id: string) => Reply;
+  issues?: () => Reply;
+  issueCreate?: () => Reply;
 };
 let listCalls: number;
 let createCalls: number;
@@ -103,6 +105,8 @@ beforeAll(async () => {
       if (req.method === "GET" && url.pathname === `/repos/${REPO}`) out = api.repo();
       else if (req.method === "GET" && url.pathname === `/repos/${REPO}/pulls`) out = api.list(++listCalls);
       else if (req.method === "POST" && url.pathname === `/repos/${REPO}/pulls`) out = api.create(++createCalls);
+      else if (req.method === "GET" && url.pathname === `/repos/${REPO}/issues` && api.issues) out = api.issues();
+      else if (req.method === "POST" && url.pathname === `/repos/${REPO}/issues` && api.issueCreate) out = api.issueCreate();
       else if (req.method === "GET" && url.pathname.startsWith(`/repos/${REPO}/commits/`) && url.pathname.endsWith("/check-runs") && api.checks) out = api.checks(url.pathname.split("/")[4]!);
       else if (req.method === "GET" && url.pathname.startsWith(`/repos/${REPO}/check-runs/`) && api.annotations) out = api.annotations(url.pathname.split("/")[4]!);
       else if (req.method === "DELETE" && url.pathname.startsWith(`/repos/${REPO}/git/refs/heads/`)) {
@@ -539,5 +543,175 @@ describe("createGithubClient: the CI-backed verify step", () => {
     expect(a[0]).toMatchObject({ path: "src/a.ts", line: 4, level: "failure" });
     expect(a[0]!.message.length).toBeLessThanOrEqual(400);
     await expect(client().annotations(0)).rejects.toMatchObject({ rule: "invalid-request" });
+  });
+});
+
+const issueRequest = (over: Partial<IssueRequest> = {}): IssueRequest => ({
+  cycleId: "inc1_r0",
+  incidentId: "inc1",
+  functionName: "orders-createOrder",
+  service: "orders",
+  errorType: "DatabaseError",
+  occurrenceCount: 42,
+  fingerprint: "ab12cd34ef56",
+  counterCheck: { window: "24h", count: 42, capped: false },
+  path: "act",
+  reason: "A defect in the order code.",
+  suspectedCause: "createOrder writes undefined",
+  uiBaseUrl: "https://starfish.example",
+  ...over,
+});
+const ISSUE = { number: 9, html_url: `https://github.com/${REPO}/issues/9` };
+const client = () => createGithubClient(cfg(), { token: TOKEN, env: loadChildProcessBasics(), tmpDir: join(root, "scratch") });
+
+describe("inert: free text from an incident or the model, in markdown GitHub will render", () => {
+  const hostile = "ping @everyone and @acme/oncall, see [the fix](https://evil.example/x) <img src=x onerror=1> https://evil.example/y";
+  it("cannot notify anyone, make a link, autolink a URL or pass HTML", () => {
+    const out = inert(hostile, 500);
+    expect(out).not.toMatch(/@[A-Za-z0-9_-]/);
+    expect(out).not.toMatch(/(?<!\\)\]\(/); // an escaped bracket is not a link
+    expect(out).not.toContain("<img");
+    expect(out).not.toContain("https://");
+    expect(out).toContain("everyone"); // still readable
+  });
+
+  it("is applied to every free-text line of the issue and of the pull request", () => {
+    const issue = issueText(issueRequest({ reason: hostile, suspectedCause: hostile })).body;
+    const pr = pullRequestText(request({ rootCause: hostile, risk: hostile, review: { verdict: "approve", attacks: [{ attack: hostile, outcome: "held", detail: hostile }] } })).body;
+    for (const [name, body] of [["issue", issue], ["pull request", pr]] as const) {
+      expect(body, name).not.toMatch(/@[A-Za-z0-9_-]/);
+      expect(body, name).not.toMatch(/(?<!\\)\[the fix\]/); // the one link here is the one the issue builds itself
+      expect(body, name).not.toContain("<img");
+      expect(body, name).not.toContain("https://evil.example");
+    }
+  });
+
+  it("redacts a credential before it changes any character a pattern needs", () => {
+    expect(inert(`token ${SEEDED_SECRETS.github} and ${SEEDED_SECRETS.slackHook}`, 500)).not.toMatch(/ghp_|hooks\.slack/);
+  });
+});
+
+describe("issueText", () => {
+  it("says what is failing, the evidence, what Starfish will do, and links back, and carries the cycle marker", () => {
+    const { title, body } = issueText(issueRequest());
+    expect(title).toBe("[Starfish] orders-createOrder: DatabaseError");
+    expect(body).toContain("`orders-createOrder` (service `orders`) is failing with `DatabaseError`, 42 times so far.");
+    expect(body).toContain("Fingerprint: `ab12cd34ef56`");
+    expect(body).toContain("42 error entries for this function over 24h");
+    expect(body).toContain("Suspected cause: createOrder writes undefined");
+    expect(body).toContain("open a pull request that references this issue");
+    expect(body).toContain("does not merge or deploy");
+    expect(body).toContain("[The incident in Starfish](https://starfish.example/incidents/inc1)");
+    expect(body).toContain("[The run](https://starfish.example/runs?run=inc1_r0)");
+    expect(body).toContain("<!-- starfish-cycle:inc1_r0 -->");
+  });
+
+  it("says no patch will be drafted for an incident no code change fixes", () => {
+    const { body } = issueText(issueRequest({ path: "notify" }));
+    expect(body).toContain("no patch will be drafted");
+    expect(body).not.toContain("open a pull request");
+  });
+
+  it("claims nothing it does not know: no count, no counter-check, no links without a UI origin", () => {
+    const { body } = issueText(issueRequest({ occurrenceCount: null, counterCheck: null, fingerprint: null, suspectedCause: null, uiBaseUrl: "" }));
+    expect(body).not.toMatch(/times so far/);
+    expect(body).toContain("counter-check: not available");
+    expect(body).not.toContain("Fingerprint");
+    expect(body).not.toContain("## Links");
+    expect(issueText(issueRequest({ counterCheck: { window: "24h", count: 200, capped: true } })).body).toContain("at least 200");
+  });
+
+  it("redacts and bounds everything from the incident, and cannot add a link of its own", () => {
+    const dirty = Object.values(SEEDED_SECRETS).join(" ");
+    const { title, body } = issueText(issueRequest({ functionName: dirty, service: dirty, errorType: dirty, reason: dirty + "\n```\n[click](https://evil.example)", suspectedCause: dirty, incidentId: "a/../b" }));
+    for (const [name, secret] of Object.entries(SEEDED_SECRETS)) {
+      const probe = secret.split("\n")[0]!;
+      expect(title, name).not.toContain(probe);
+      expect(body, name).not.toContain(probe);
+    }
+    expect(body.length).toBeLessThanOrEqual(12_000);
+    // the incident id is not a plain id, so no link to it is built
+    expect(body).not.toContain("/incidents/");
+  });
+});
+
+describe("pullRequestText: the issue", () => {
+  it("references the issue and closes it when there is one, and says nothing when there is not", () => {
+    expect(pullRequestText(request({ issueNumber: 9 })).body).toMatch(/- Issue: #9[\s\S]*Closes #9/);
+    expect(pullRequestText(request()).body).not.toMatch(/Closes|Issue: #/);
+    for (const bad of [0, -1, 1.5, Number.NaN]) expect(pullRequestText(request({ issueNumber: bad })).body, String(bad)).not.toContain("Closes");
+  });
+});
+
+describe("createGithubClient: the incident's issue", () => {
+  it("files one issue, with the starfish label, and touches nothing else", async () => {
+    api.issues = () => ({ status: 200, json: [] });
+    api.issueCreate = () => ({ status: 201, json: ISSUE });
+    const before = branches();
+    const r = await client().openIssue(issueRequest());
+    expect(r).toEqual({ number: 9, url: ISSUE.html_url });
+    expect(requests.map((q) => `${q.method} ${q.path.split("?")[0]}`)).toEqual([`GET /repos/${REPO}`, `GET /repos/${REPO}/issues`, `POST /repos/${REPO}/issues`]);
+    const create = requests.at(-1)!.body as { title: string; body: string; labels: string[] };
+    expect(create.labels).toEqual([ISSUE_LABEL]);
+    expect(create.body).toContain("<!-- starfish-cycle:inc1_r0 -->");
+    expect(branches()).toEqual(before); // no branch, no commit
+  });
+
+  it("lists the repository's issues, newest first, bounded, by label (not the lagging search index)", async () => {
+    api.issues = () => ({ status: 200, json: [] });
+    api.issueCreate = () => ({ status: 201, json: ISSUE });
+    await client().openIssue(issueRequest());
+    const list = requests.find((q) => q.method === "GET" && q.path.startsWith(`/repos/${REPO}/issues`))!;
+    expect(list.path).toContain("labels=starfish");
+    expect(list.path).toContain("state=all");
+    expect(list.path).toContain("per_page=100");
+    expect(requests.some((q) => q.path.startsWith("/search"))).toBe(false);
+  });
+
+  it("returns the issue this cycle already filed instead of filing another (a retry after a crash or a timeout)", async () => {
+    api.issues = () => ({ status: 200, json: [{ number: 3, html_url: `https://github.com/${REPO}/issues/3`, body: `earlier text\n\n${issueText(issueRequest()).body}` }] });
+    api.issueCreate = () => ({ status: 201, json: ISSUE });
+    const r = await client().openIssue(issueRequest());
+    expect(r).toEqual({ number: 3, url: `https://github.com/${REPO}/issues/3` });
+    expect(requests.some((q) => q.method === "POST")).toBe(false);
+  });
+
+  it("does not mistake another cycle's issue, or a pull request carrying the marker, for this one's", async () => {
+    api.issues = () => ({
+      status: 200,
+      json: [
+        { number: 4, html_url: "https://github.com/acme/shop/issues/4", body: "<!-- starfish-cycle:inc1_r1 -->" },
+        { number: 5, html_url: "https://github.com/acme/shop/pull/5", body: "<!-- starfish-cycle:inc1_r0 -->", pull_request: {} },
+        { number: 6, html_url: "https://github.com/acme/shop/issues/6", body: null },
+      ],
+    });
+    api.issueCreate = () => ({ status: 201, json: ISSUE });
+    expect((await client().openIssue(issueRequest())).number).toBe(9);
+    expect(requests.filter((q) => q.method === "POST")).toHaveLength(1);
+  });
+
+  it("refuses a cycle id that is not a plain id, and a different or archived repository, before writing", async () => {
+    api.issues = () => ({ status: 200, json: [] });
+    api.issueCreate = () => ({ status: 201, json: ISSUE });
+    await expect(client().openIssue(issueRequest({ cycleId: "a b" }))).rejects.toMatchObject({ rule: "invalid-request" });
+    api.repo = () => ({ status: 200, json: { full_name: "evil/other", archived: false } });
+    await expect(client().openIssue(issueRequest())).rejects.toMatchObject({ rule: "wrong-repository" });
+    api.repo = () => ({ status: 200, json: { full_name: REPO, archived: true } });
+    await expect(client().openIssue(issueRequest())).rejects.toMatchObject({ rule: "wrong-repository" });
+    expect(requests.some((q) => q.method === "POST")).toBe(false);
+  });
+
+  it("reports what GitHub says as a rule, with the token scrubbed out of anything it echoes", async () => {
+    api.issues = () => ({ status: 200, json: [] });
+    api.issueCreate = () => ({ status: 403, json: { message: `Resource not accessible by personal access token ${TOKEN}` } });
+    const err = await client().openIssue(issueRequest()).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(GithubError);
+    expect((err as GithubError).rule).toBe("forbidden");
+    expect((err as GithubError).message).not.toContain(TOKEN);
+    api.issues = () => ({ status: 200, json: { not: "a list" } });
+    await expect(client().openIssue(issueRequest())).rejects.toMatchObject({ rule: "unexpected-response" });
+    api.issues = () => ({ status: 200, json: [] });
+    api.issueCreate = () => ({ status: 201, json: { nothing: "useful" } });
+    await expect(client().openIssue(issueRequest())).rejects.toMatchObject({ rule: "unexpected-response" });
   });
 });

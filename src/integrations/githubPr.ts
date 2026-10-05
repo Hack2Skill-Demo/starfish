@@ -34,8 +34,10 @@
  * and never written into .git/config; every error is scrubbed of it before it leaves this file. A
  * child git gets only PATH and HOME besides that.
  *
- * Not built here: filing an issue for the incident, Slack, reconciling a later merge or CI result, and
- * the link back to the UI. Its only caller is the agent job (`pnpm agent`), a dry run by default.
+ * It also files the incident's GITHUB ISSUE (#17), one per cycle Starfish acts on or escalates, found again by a marker in
+ * its body so a retry after a crash or timeout reuses it instead of filing a second (`openIssue`, below).
+ *
+ * Not built here: reconciling a later merge or CI result. Its only caller is the agent job (`pnpm agent`), a dry run by default.
  */
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -45,6 +47,7 @@ import { join } from "node:path";
 import type { StarfishConfig } from "../config.js";
 import type { PullRequestRequest } from "../agent/loop.js";
 import { redactPii } from "../ingest/redact.js";
+import { incidentUrl, runUrl } from "./links.js";
 
 export type GithubPrConfig = Pick<
   StarfishConfig,
@@ -83,6 +86,31 @@ export interface PullRequestResult {
   number: number;
   url: string;
 }
+
+/** What the issue says about one incident. Built by the loop from stored, already-bounded fields. */
+export interface IssueRequest {
+  cycleId: string;
+  incidentId: string;
+  functionName: string;
+  service: string;
+  errorType: string;
+  /** null when the stored incident has no count: the issue then says nothing about how often. */
+  occurrenceCount: number | null;
+  fingerprint: string | null;
+  counterCheck: { window: string; count: number; capped: boolean } | null;
+  /** `act`: Starfish will draft a fix. `notify`: no code change helps and a person is told. */
+  path: "act" | "notify";
+  /** Triage's one-line reason, and what it suspects. Redacted and cut here. */
+  reason: string;
+  suspectedCause: string | null;
+  /** The operator UI's origin for links, or "". */
+  uiBaseUrl: string;
+}
+
+/** The label every Starfish issue carries, so they can be listed together and reconciled by cycle. */
+export const ISSUE_LABEL = "starfish";
+const ISSUE_MARKER_PREFIX = "starfish-cycle:";
+const MAX_ISSUE_SCAN = 100;
 
 /** Runs one git command. Injected in tests to watch what is run; the default is `execFile`, never a shell. */
 export type RunGit = (args: string[], opts: { cwd: string; env: NodeJS.ProcessEnv }) => Promise<string>;
@@ -168,6 +196,18 @@ const fence = (text: string) => text.replace(/`{3,}/g, "``");
 const clip = (text: string, max: number) => redactPii(String(text ?? "")).slice(0, max);
 const oneLine = (text: string, max: number) => clip(text, max).replace(/\s+/g, " ").trim();
 const code = (text: string, max: number) => oneLine(text, max).replace(/`/g, "");
+/**
+ * Free text from an incident or the model, made inert in markdown: GitHub would otherwise notify whoever an `@name` or
+ * `@org/team` names, render `[text](url)` as a link, autolink a bare URL and pass HTML through. The characters stay readable;
+ * a zero-width space or a backslash is all that changes. Used on every free-text line that is not inside a code span or fence.
+ */
+export const inert = (text: string, max: number): string =>
+  clip(text, max)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/[[\]]/g, "\\$&")
+    .replace(/@(?=[A-Za-z0-9_-])/g, "@\u200b")
+    .replace(/:\/\//g, ":\u200b//");
 
 /** The pull request's title and body. Redacted and bounded; fenced text cannot close its own fence. */
 export function pullRequestText(req: PullRequestRequest): { title: string; body: string } {
@@ -175,11 +215,11 @@ export function pullRequestText(req: PullRequestRequest): { title: string; body:
   const lines: string[] = [
     "## What",
     "",
-    clip(req.rootCause, 1500),
+    inert(req.rootCause, 1500),
     "",
     "## Risk",
     "",
-    clip(req.risk, 1000) || "None stated.",
+    inert(req.risk, 1000) || "None stated.",
     "",
     "## Verify gate",
     "",
@@ -197,7 +237,7 @@ export function pullRequestText(req: PullRequestRequest): { title: string; body:
   if (req.review) {
     lines.push(`Verdict: **${oneLine(req.review.verdict, 40)}**.`, "");
     for (const a of req.review.attacks.slice(0, MAX_ATTACKS_IN_BODY)) {
-      lines.push(`- **${oneLine(a.outcome, 20)}**: ${oneLine(a.attack, 200)}: ${oneLine(a.detail, 300)}`);
+      lines.push(`- **${oneLine(a.outcome, 20)}**: ${inert(a.attack, 200).replace(/\s+/g, " ").trim()}: ${inert(a.detail, 300).replace(/\s+/g, " ").trim()}`);
     }
     if (req.review.attacks.length > MAX_ATTACKS_IN_BODY) lines.push(`- … and ${req.review.attacks.length - MAX_ATTACKS_IN_BODY} more`);
   } else {
@@ -207,14 +247,56 @@ export function pullRequestText(req: PullRequestRequest): { title: string; body:
     "",
     "## Evidence",
     "",
+    ...(req.issueNumber !== undefined && Number.isInteger(req.issueNumber) && req.issueNumber > 0 ? [`- Issue: #${req.issueNumber}`] : []),
     `- Incident: \`${code(req.incidentId, 128)}\``,
     `- Run: \`${code(req.cycleId, 128)}\``,
     `- Base revision: \`${code(req.baseRevision, 40)}\``,
     `- Patch SHA-256: \`${code(req.patchSha256, 64)}\``,
     "",
     "Opened by Starfish. It does not merge or deploy: a person decides.",
+    ...(req.issueNumber !== undefined && Number.isInteger(req.issueNumber) && req.issueNumber > 0 ? ["", `Closes #${req.issueNumber}`] : []),
     ""
   );
+  return { title, body: lines.join("\n").slice(0, MAX_BODY) };
+}
+
+/** The marker that finds an issue again by cycle. HTML comment: invisible on GitHub, not part of any text we redact. */
+const issueMarker = (cycleId: string) => `<!-- ${ISSUE_MARKER_PREFIX}${cycleId} -->`;
+
+/** The issue's title and body. Redacted and bounded; incident text cannot close a fence or add a link. */
+export function issueText(req: IssueRequest): { title: string; body: string } {
+  const title = `[Starfish] ${oneLine(req.functionName, 60) || "unknown function"}: ${oneLine(req.errorType, 40) || "error"}`;
+  const lines: string[] = [
+    "## What is failing",
+    "",
+    `\`${code(req.functionName, 120)}\` (service \`${code(req.service, 60)}\`) is failing with \`${code(req.errorType, 60)}\`${
+      req.occurrenceCount === null ? "" : `, ${req.occurrenceCount} times so far`
+    }.`,
+    "",
+    inert(req.reason, 1000) || "No reason recorded.",
+    "",
+    "## Evidence",
+    "",
+    ...(req.fingerprint ? [`- Fingerprint: \`${code(req.fingerprint, 64)}\``] : []),
+    req.counterCheck
+      ? `- Independent log counter-check: ${req.counterCheck.capped ? "at least " : ""}${req.counterCheck.count} error entries for this function over ${oneLine(req.counterCheck.window, 20)}.`
+      : "- Independent log counter-check: not available.",
+    ...(req.suspectedCause ? [`- Suspected cause: ${inert(req.suspectedCause, 400).replace(/\s+/g, " ").trim()}`] : []),
+    "",
+    "## What Starfish will do",
+    "",
+    req.path === "act"
+      ? "Draft a minimal fix, check it with this repository's own tests, have it adversarially reviewed, and open a pull request that references this issue. Starfish does not merge or deploy: a person decides."
+      : "Nothing in the code can fix this, so no patch will be drafted. A person is told, here and in Slack; the step they need to take is above.",
+  ];
+  const incident = incidentUrl(req.uiBaseUrl, req.incidentId);
+  const run = runUrl(req.uiBaseUrl, req.cycleId);
+  if (incident || run) {
+    lines.push("", "## Links", "");
+    if (incident) lines.push(`- [The incident in Starfish](${incident})`);
+    if (run) lines.push(`- [The run](${run})`);
+  }
+  lines.push("", `Run: \`${code(req.cycleId, 128)}\``, "", issueMarker(req.cycleId), "");
   return { title, body: lines.join("\n").slice(0, MAX_BODY) };
 }
 
@@ -247,6 +329,12 @@ export interface CheckAnnotation {
 
 export interface GithubClient {
   openPullRequest: (req: PullRequestRequest) => Promise<PullRequestResult>;
+  /**
+   * File the incident's issue, or return the one this cycle already filed (found by the marker in its body among the
+   * newest issues carrying the `starfish` label, so a retry after a crash or a timeout does not file a second).
+   * Writes only an issue and its label; it never touches a branch, a pull request or any file.
+   */
+  openIssue: (req: IssueRequest) => Promise<PullRequestResult>;
   /**
    * Push the patch as one commit on `starfish/<cycleId>` on top of the base revision and return that commit. A branch
    * this cycle left that is exactly this change is reused; one that differs is DELETED and rebuilt (the verify step
@@ -501,5 +589,30 @@ export function createGithubClient(cfg: GithubPrConfig, deps: GithubPrDeps): Git
     throw failure(created.status, created.headers, created.json);
   }
 
-  return { openPullRequest, pushPatchBranch, deleteBranch, listCheckRuns, annotations };
+  async function openIssue(req: IssueRequest): Promise<PullRequestResult> {
+    if (!CYCLE_RE.test(req.cycleId)) throw new GithubError("invalid-request", "The cycle id is not a plain id, so it cannot name an issue.");
+    await checkTarget();
+    const marker = issueMarker(req.cycleId);
+
+    // Reconcile first: the repository's own issue list (not the search index, which lags) holds what an earlier call filed.
+    const found = await call("GET", `/repos/${cfg.githubRepo}/issues?labels=${ISSUE_LABEL}&state=all&sort=created&direction=desc&per_page=${MAX_ISSUE_SCAN}`);
+    if (found.status !== 200) throw failure(found.status, found.headers, found.json);
+    if (!Array.isArray(found.json)) throw new GithubError("unexpected-response", "GitHub's list of issues was not a list");
+    for (const item of found.json) {
+      const i = item as { body?: unknown; pull_request?: unknown };
+      if (i.pull_request === undefined && typeof i.body === "string" && i.body.includes(marker)) {
+        const existing = asPr(item);
+        if (existing) return existing;
+      }
+    }
+
+    const { title, body } = issueText(req);
+    const created = await call("POST", `/repos/${cfg.githubRepo}/issues`, { title, body, labels: [ISSUE_LABEL] });
+    if (created.status !== 201) throw failure(created.status, created.headers, created.json);
+    const issue = asPr(created.json);
+    if (!issue) throw new GithubError("unexpected-response", "GitHub created an issue but did not say which.");
+    return issue;
+  }
+
+  return { openPullRequest, openIssue, pushPatchBranch, deleteBranch, listCheckRuns, annotations };
 }

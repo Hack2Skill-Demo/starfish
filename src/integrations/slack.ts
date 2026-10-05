@@ -28,6 +28,7 @@
  * real Slack: tested over local HTTP against a fake webhook.
  */
 import { redactPii } from "../ingest/redact.js";
+import { incidentUrl, runUrl, safeHttpsUrl } from "./links.js";
 
 /** What the message is about. Built by the loop from the cycle and the stored incident, never from raw logs. */
 export interface NotifyRequest {
@@ -44,6 +45,8 @@ export interface NotifyRequest {
   rule: string;
   /** One sentence for a person: why this needs them. Redacted and cut here. */
   reason: string;
+  /** The incident's GitHub issue (#17), when one was filed: a third link on the message. */
+  issueUrl?: string;
 }
 
 export interface DeliveryResult {
@@ -71,7 +74,6 @@ const BACKOFF_MS = [500, 2_000];
 /** Slack's limit on one text field is 3000 characters; stay well inside it. */
 const MAX_FIELD = 300;
 const MAX_REASON = 600;
-const PLAIN_ID = /^[A-Za-z0-9_-]{1,128}$/;
 
 const clip = (text: string, max: number): string => {
   const clean = redactPii(String(text)).replace(/\s+/g, " ").trim();
@@ -105,15 +107,12 @@ export function buildNeedsHumanMessage(req: NotifyRequest, uiBaseUrl: string): S
       ],
     },
   ];
-  if (uiBaseUrl !== "" && PLAIN_ID.test(req.incidentId) && PLAIN_ID.test(req.cycleId)) {
-    blocks.push({
-      type: "actions",
-      elements: [
-        { type: "button", text: plain("Open the incident"), url: `${uiBaseUrl}/incidents/${req.incidentId}` },
-        { type: "button", text: plain("Watch the run"), url: `${uiBaseUrl}/runs?run=${req.cycleId}` },
-      ],
-    });
-  }
+  const links = [
+    { label: "Open the incident", url: incidentUrl(uiBaseUrl, req.incidentId) },
+    { label: "Watch the run", url: runUrl(uiBaseUrl, req.cycleId) },
+    { label: "Open the issue", url: safeHttpsUrl(req.issueUrl) },
+  ].filter((l): l is { label: string; url: string } => l.url !== null);
+  if (links.length > 0) blocks.push({ type: "actions", elements: links.map((l) => ({ type: "button", text: plain(l.label), url: l.url })) });
   return { text: headline, mrkdwn: false, blocks };
 }
 
