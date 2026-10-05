@@ -52,7 +52,7 @@ Where it currently holds, and where it doesn't:
 | Services Starfish never ingests (its own) | ✅ config (`STARFISH_EXCLUDED_SERVICES`, default `starfish`), applied at query time and at parse time; environment-only on purpose, because it guards against a feedback loop and is not an operational preference. Set it to the name Starfish is actually deployed under; nothing is deployed yet (#6, #32) |
 | Log source resource types | ⚠️ config, but attribution reads only `function_name` / `service_name`, so only Cloud Functions and Cloud Run work |
 | Framework-noise suppression list | ✅ config, callable GET-probe noise by default |
-| Deployment: project, region, schedule, the watched and Gemini projects, the environment label | ✅ environment variables of `scripts/deploy-gcp.sh`; no file is edited. Written, **not yet run against a real project** (#6). `.github/workflows/deploy.yml` runs the same script by hand-dispatch with Workload Identity Federation and repository variables, no stored key; written and pinned by a test, **never run** (#75) |
+| Deployment: project, region, schedule, the watched and Gemini projects, the environment label | ✅ environment variables of `scripts/deploy-gcp.sh`; no file is edited. Run once, on the demo project (2026-10-05): the ingest job, its schedule, the database and rules deployed and a scheduled run succeeded (#6). The agent job (`DEPLOY_AGENT=1`) has not run. `.github/workflows/deploy.yml` runs the same script by hand-dispatch with Workload Identity Federation and repository variables, no stored key; written and pinned by a test, **never run** (#75) |
 | Incident store | ❌ assumes Firestore |
 | Verify-gate command, timeout and excluded paths | ⚠️ environment only (`STARFISH_VERIFY_COMMAND`, `STARFISH_VERIFY_TIMEOUT_SECONDS`, `STARFISH_PATCH_EXCLUDED_PATHS`); `src/agent/verifyGate.ts` reads them; in the isolated deployment only the verify job runs it (written, never run) |
 
@@ -209,7 +209,7 @@ apparent over-engineering is scar tissue from real incidents, and the tests in
   run (same windows, checkpoint and last-run record, and two together converge), behind an admin check
   made from the operator record and an audit entry written before the run. **Not built:** the endpoint
   or Settings action that calls it, and the short schedule for recording the demo, which is the `SCHEDULE` of
-  the deploy script (#6), not yet deployed; a setting nothing reads would be a control that does nothing
+  the deploy script (#6; the ingest job has been deployed once, to the demo project, and `scripts/ingest-cadence.sh` changes the tick); a setting nothing reads would be a control that does nothing
 - a fingerprint ignores what varies per occurrence (ids, paths, timestamps, counts) but not
   what makes a bug distinct (status codes, quoted property names), and treats a function's
   first- and second-generation spellings as one
@@ -373,7 +373,7 @@ To deploy to a project, follow [`docs/setup.md`](docs/setup.md): a read-only pre
 (`scripts/preflight-gcp.sh`), the ingest job and its schedule (`scripts/deploy-gcp.sh`), the first
 admin (`pnpm grant-operator`), an end-to-end smoke test (`scripts/smoke-gcp.sh`), and the UI on its
 own Hosting site (`scripts/deploy-web.sh`). Each script takes `DRY_RUN=1`. All of it is written and
-tested against stubs and the emulators; **none has run against a real project yet**. What the deploy
+tested against stubs and the emulators. On 2026-10-05 the preflight, the ingest deploy, `grant-operator` and the web deploy ran once against the demo project and worked, after two fixes (#103, #104); **the smoke test and the agent job have not run**. What the deploy
 creates and the identities: [`docs/deploy.md`](docs/deploy.md).
 
 Requires Node 22+ and a GCP project with the Vertex AI API enabled. Starfish keeps its
