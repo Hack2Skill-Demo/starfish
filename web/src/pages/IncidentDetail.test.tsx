@@ -4,6 +4,7 @@ import { MemoryRouter, Route, Routes } from "react-router";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { IncidentRow } from "../lib/incidents";
 import { parseCycle } from "../lib/runsModel";
+import { Ctx, type StarfishAuthCtx } from "../auth/authCore";
 
 const mocks = vi.hoisted(() => ({
   getIncident: vi.fn(),
@@ -36,15 +37,27 @@ const ts = (ms: number) => ({ toDate: () => new Date(ms) });
 const cycle = (summary: Record<string, unknown>) =>
   parseCycle("inc-1_r0", { incidentId: "inc-1", environment: "demo", state: "waiting-human", createdAt: ts(0), updatedAt: ts(1000), summary })!;
 
+const guestCtx: StarfishAuthCtx = {
+  user: null,
+  roles: [],
+  role: null,
+  loading: false,
+  signOut: async () => {},
+  guest: true,
+  enterAsGuest: async () => false,
+};
+
 function renderPage(id = "inc-1") {
   return render(
-    <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
-      <MemoryRouter initialEntries={[`/incidents/${id}`]}>
-        <Routes>
-          <Route path="/incidents/:id" element={<IncidentDetail />} />
-        </Routes>
-      </MemoryRouter>
-    </QueryClientProvider>
+    <Ctx.Provider value={guestCtx}>
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <MemoryRouter initialEntries={[`/incidents/${id}`]}>
+          <Routes>
+            <Route path="/incidents/:id" element={<IncidentDetail />} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>
+    </Ctx.Provider>
   );
 }
 const stage = (id: string) => document.querySelector(`[data-stage="${id}"]`)!;

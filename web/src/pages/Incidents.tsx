@@ -32,6 +32,7 @@ import {
 import { EmptyState } from "../components/ui/EmptyState";
 import PageMeta from "../components/PageMeta";
 import { EngineStatus } from "../components/EngineStatus";
+import { RunIngestButton } from "../components/AdminActions";
 import { toast } from "../components/ui/toast";
 import { useAuth } from "../auth/authCore";
 import { asFilterValue } from "../lib/urlFilters";
@@ -221,6 +222,7 @@ export default function Incidents() {
               <RefreshCw className={`h-4 w-4 ${isFetching ? "animate-spin" : ""}`} />
               Refresh
             </button>
+            <RunIngestButton />
           </div>
         </div>
 

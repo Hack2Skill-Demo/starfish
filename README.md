@@ -203,11 +203,11 @@ apparent over-engineering is scar tissue from real incidents, and the tests in
   (`starfish_audit`, admin-readable, engine-written), so a retire racing an occurrence loses none
   (`retire.emulator.test.ts`). Admin is checked from the operator record, not from anything the caller
   passes. The admin API (`src/adminApi.ts`, a Cloud Run service, `DEPLOY_ADMIN_API=1`) is the endpoint the demo's reset script
-  calls: built, tested with stubs and over local HTTP, **never deployed or run**, and with no button in the UI yet. **Not built:** the fast-revert watch (#9) it is meant to disarm; `retired` is the flag that watch must
+  calls: built, tested with stubs and over local HTTP, **never deployed or run**. The UI has the two controls for admins (`Retire` on an incident, `Run ingest now` on Incidents), shown only when the site is built with `VITE_STARFISH_ADMIN_API_URL`; unit-tested with stubs, never clicked against a real service. **Not built:** the fast-revert watch (#9) it is meant to disarm; `retired` is the flag that watch must
   honour
 - ingest can be run on demand by an admin (`src/ingest/trigger.ts`): the **same** `runIngest` as a scheduled
   run (same windows, checkpoint and last-run record, and two together converge), behind an admin check
-  made from the operator record and an audit entry written before the run. The admin API (see above) is the endpoint that calls it: never deployed, and no Settings button yet. The short schedule for recording the demo is the `SCHEDULE` of
+  made from the operator record and an audit entry written before the run. The admin API (see above) is the endpoint that calls it: never deployed; the Incidents page has a "Run ingest now" button for admins when the site knows the admin API's URL (built, never run against a real service). The short schedule for recording the demo is the `SCHEDULE` of
   the deploy script (#6; the ingest job has been deployed once, to the demo project, and `scripts/ingest-cadence.sh` changes the tick); a setting nothing reads would be a control that does nothing
 - a fingerprint ignores what varies per occurrence (ids, paths, timestamps, counts) but not
   what makes a bug distinct (status codes, quoted property names), and treats a function's
