@@ -52,6 +52,7 @@ SCHEDULE='*/5 * * * *' BUDGET_USD=20 BILLING_ACCOUNT=0123AB-456CDE-789FGH script
 
 # 3. The first admin. Creates the account without a password and prints a link for them to choose one.
 pnpm grant-operator --project $PROJECT_ID --email you@example.com --role admin --create
+# No link (or no email): `--link` on an existing account prints a fresh one to open in a browser.
 
 # 4. Prove the ingest works end to end: plants one error, waits ~7 minutes, runs the job, checks.
 SMOKE_ACTOR_UID=<admin uid> scripts/smoke-gcp.sh

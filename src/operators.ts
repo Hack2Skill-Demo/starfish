@@ -35,7 +35,7 @@ export interface GrantResult {
   uid: string;
   /** The account did not exist and was created (without a password). */
   created: boolean;
-  /** Present only for a created account: the link the person opens to choose a password. */
+  /** Present for a created account, or when a link was asked for: the link the person opens to choose a password. */
   passwordResetLink?: string;
 }
 
@@ -47,7 +47,7 @@ export async function grantOperator(
     db: Pick<Firestore, "collection">;
     usersCollection: string;
   },
-  request: { email: string; roles: OperatorRole[]; createAccount: boolean }
+  request: { email: string; roles: OperatorRole[]; createAccount: boolean; resetLink?: boolean }
 ): Promise<GrantResult> {
   const email = request.email.trim();
   if (!EMAIL_RE.test(email)) throw new Error("not an email address");
@@ -83,6 +83,6 @@ export async function grantOperator(
   return {
     uid,
     created,
-    ...(created && { passwordResetLink: await deps.auth.generatePasswordResetLink(email) }),
+    ...((created || request.resetLink === true) && { passwordResetLink: await deps.auth.generatePasswordResetLink(email) }),
   };
 }
