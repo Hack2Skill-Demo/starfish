@@ -58,6 +58,28 @@ describe("fingerprint", () => {
   });
 });
 
+describe("detectErrorType: a missing composite index (#11)", () => {
+  const url = "https://console.firebase.google.com/v1/r/project/demo-shop/firestore/indexes?create_composite=Ckxwcm9qZWN0cy9kZW1v";
+  const grpc = `9 FAILED_PRECONDITION: The query requires an index. You can create it here: ${url}`;
+
+  it("is its own class when the failed precondition carries Google's create-index URL", () => {
+    expect(detectErrorType(grpc)).toBe("MissingIndexError");
+    expect(detectErrorType("orders query failed", { errorCode: "failed-precondition", errorDetail: grpc })).toBe("MissingIndexError");
+    // The URL in the cause, kept apart from the title, still counts.
+    expect(detectErrorType("listRecentOrders failed", { errorDetail: grpc })).toBe("MissingIndexError");
+  });
+
+  it("needs both the code and the URL: words alone are a keyword guess", () => {
+    expect(detectErrorType("9 FAILED_PRECONDITION: The query requires an index.")).not.toBe("MissingIndexError");
+    expect(detectErrorType(`see ${url}`, { errorCode: "not-found" })).toBe("NotFoundError");
+    expect(detectErrorType("precondition", { errorCode: "failed-precondition" })).toBe("ValidationError");
+  });
+
+  it("still yields to a class the source asserted", () => {
+    expect(detectErrorType(grpc, { sourceErrorClass: "timeout" })).toBe("TimeoutError");
+  });
+});
+
 describe("detectErrorType preference order", () => {
   const msg = "firestore write failed";
 
