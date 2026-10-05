@@ -123,6 +123,14 @@ export interface StarfishConfig {
    * even if listed.
    */
   indexAllowedTargets: string[];
+  /**
+   * Browser origins allowed to call the admin API (src/adminApi.ts) from another site: the operator UI's
+   * origin, e.g. `https://my-site.web.app`. Empty by default: no browser may. Each entry is an exact origin
+   * (https, or http only for localhost); a typo throws at startup instead of widening who may call.
+   */
+  adminApiOrigins: string[];
+  /** The port the admin API listens on. Cloud Run sets `PORT`. */
+  adminApiPort: number;
   /** The author and committer on the commit Starfish pushes. */
   githubCommitName: string;
   githubCommitEmail: string;
@@ -284,6 +292,8 @@ export function loadConfig(): StarfishConfig {
     githubApiUrl: (process.env.STARFISH_GITHUB_API_URL ?? "").trim() || "https://api.github.com",
     githubRemoteUrl: (process.env.STARFISH_GITHUB_REMOTE_URL ?? "").trim(),
     indexAllowedTargets: validIndexTargets(parseList(process.env.STARFISH_INDEX_ALLOWED_TARGETS, ",") ?? []),
+    adminApiOrigins: validOrigins(parseList(process.env.STARFISH_ADMIN_API_ORIGINS, ",") ?? []),
+    adminApiPort: positiveNumber(process.env.PORT, 8080, "PORT"),
     githubCommitName: (process.env.STARFISH_GITHUB_COMMIT_NAME ?? "").trim() || "Starfish",
     githubCommitEmail: (process.env.STARFISH_GITHUB_COMMIT_EMAIL ?? "").trim() || "starfish@users.noreply.github.com",
     usersCollection: process.env.STARFISH_USERS_COLLECTION || "starfish_users",
@@ -334,6 +344,23 @@ export function loadChildProcessBasics(): { PATH?: string; HOME?: string } {
 function validIndexTargets(entries: string[]): string[] {
   parseAllowedTargets(entries);
   return entries;
+}
+
+/** Exact web origins (`https://host[:port]`, or `http://localhost[:port]`), no path: one wrong entry would widen who may call. */
+function validOrigins(entries: string[]): string[] {
+  return entries.map((entry) => {
+    let u: URL;
+    try {
+      u = new URL(entry);
+    } catch {
+      throw new Error(`STARFISH_ADMIN_API_ORIGINS entry "${entry}" is not an origin like https://my-site.web.app`);
+    }
+    const local = u.hostname === "localhost" || u.hostname === "127.0.0.1";
+    if ((u.protocol !== "https:" && !(local && u.protocol === "http:")) || u.origin !== entry.replace(/\/$/, "") || u.username || u.password) {
+      throw new Error(`STARFISH_ADMIN_API_ORIGINS entry "${entry}" must be an exact https origin (no path, no credentials)`);
+    }
+    return u.origin;
+  });
 }
 
 /** A number above zero, or the default when unset. A window of zero or negative length would never advance. */

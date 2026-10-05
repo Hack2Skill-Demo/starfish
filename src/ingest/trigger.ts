@@ -9,8 +9,8 @@
  * from the operator record (adminAuth.ts), and an audit entry written BEFORE the run so a trigger is on
  * record even if the run fails or never finishes.
  *
- * This is the function behind the trigger. The endpoint or Settings action that calls it does not exist
- * (it needs the deploy path, #6): whoever builds it must authenticate the person and pass their uid.
+ * This is the function behind the trigger. The admin API (src/adminApi.ts) is the endpoint that calls it, and
+ * whoever calls it must authenticate the person and pass their uid; no Settings action does yet.
  * The short schedule is not here either: the schedule lives in Cloud Scheduler, and a setting that
  * nothing reads would be a control that does nothing.
  */

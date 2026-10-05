@@ -37,6 +37,55 @@ describe("scripts/deploy-gcp.sh", () => {
     expect(r.out).toContain("PROJECT_ID is required");
   });
 
+  describe("DEPLOY_ADMIN_API (#63, #65)", () => {
+    const admin = { ...dry, DEPLOY_ADMIN_API: "1", ADMIN_API_ORIGINS: "https://site.web.app" };
+
+    it("deploys nothing of it by default", () => {
+      const r = deploy(dry);
+      expect(r.out).not.toContain("starfish-admin");
+      expect(r.out).not.toContain("--allow-unauthenticated");
+    });
+
+    it("deploys a public service from the ingest job's image, as the engine's own account, with no new role", () => {
+      const r = deploy(admin);
+      expect(r.status).toBe(0);
+      const line = r.out.split("\n").find((l) => l.includes("gcloud run deploy starfish-admin")) ?? "";
+      expect(line).toContain("--image=<the ingest job's image>");
+      expect(line).not.toContain("--source");
+      expect(line).toContain("--service-account=starfish-engine@star-proj.iam.gserviceaccount.com");
+      expect(line).toContain("--args=node,--import,tsx,src/adminApiCli.ts");
+      expect(line).toContain("--allow-unauthenticated");
+      expect(line).toContain("--max-instances=2");
+      expect(line).toContain("STARFISH_ADMIN_API_ORIGINS=https://site.web.app");
+      // The same grants as without it: the service gets nothing the engine's account did not already have.
+      const grants = (out) => out.split("\n").filter((l) => l.includes("add-iam-policy-binding")).length;
+      expect(grants(r.out)).toBe(grants(deploy(dry).out));
+    });
+
+    it("keeps the service's own errors out of ingest, in the job and the agent", () => {
+      expect(deploy(admin).out).toContain("STARFISH_EXCLUDED_SERVICES=starfish,starfish-ingest,starfish-admin");
+      const withAgent = deploy({ ...admin, DEPLOY_AGENT: "1", AGENT_REPO: "o/r", VERIFY_CHECKS: "verify", STARFISH_GITHUB_TOKEN: "x" });
+      expect(withAgent.out).toContain("starfish,starfish-ingest,starfish-agent,starfish-admin");
+      expect(deploy({ ...admin, ADMIN_SERVICE_NAME: "ops-admin" }).out).toContain("starfish,starfish-ingest,ops-admin");
+    });
+
+    it("warns when an explicit exclusion list leaves the service out, and not when it covers it", () => {
+      const missing = deploy({ ...admin, EXTRA_ENV_VARS: "STARFISH_EXCLUDED_SERVICES=starfish,starfish-ingest" });
+      expect(missing.out).toContain("without starfish-admin");
+      expect(deploy({ ...admin, EXTRA_ENV_VARS: "STARFISH_EXCLUDED_SERVICES=starfish,starfish-admin" }).out).not.toContain("without");
+      expect(deploy({ ...admin, EXTRA_ENV_VARS: "STARFISH_EXCLUDED_SERVICES=starfish,starfish-*" }).out).not.toContain("without");
+    });
+
+    it("refuses a service name or an origin list that is not what it says", () => {
+      expect(deploy({ ...admin, ADMIN_SERVICE_NAME: "Bad_Name" }).status).not.toBe(0);
+      for (const bad of ["https://a b", "https://a'b", "https://a@b"]) {
+        const r = deploy({ ...admin, ADMIN_API_ORIGINS: bad });
+        expect(r.status, bad).not.toBe(0);
+        expect(r.out).toContain("ADMIN_API_ORIGINS is a comma-separated list");
+      }
+    });
+  });
+
   it("refuses an env list with an empty entry instead of letting gcloud say \"Invalid flag value []\"", () => {
     for (const bad of ["@STARFISH_X=1", "STARFISH_X=1@", "A=1@@B=2"]) {
       const r = deploy({ ...dry, EXTRA_ENV_VARS: bad });

@@ -14,7 +14,7 @@
  * split.
  *
  * Admin only, checked HERE from the operator record (the same `roles` firestore.rules reads), not from
- * anything the caller passes: whoever builds the endpoint or admin action that calls this must still
+ * anything the caller passes: whoever calls this (the admin API, src/adminApi.ts) must still
  * authenticate the person and hand over their uid, but cannot widen what that uid may do.
  *
  * `retired` is the flag the fast-revert watch (#9) must honour. That watch does not exist yet, so there is
