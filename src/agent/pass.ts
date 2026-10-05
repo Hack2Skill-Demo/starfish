@@ -83,6 +83,35 @@ function spellings(path: string): string[] {
   return out;
 }
 
+/** Directories that hold compiled output or sources: not part of what makes two paths the same file. */
+const BUILD_DIRS = new Set(["src", "lib", "dist", "build", "out"]);
+const CODE_EXT = /\.[cm]?[jt]sx?$/;
+
+/**
+ * The repository file whose path and a frame's path share the longest tail once build directories are ignored, when
+ * that tail has at least two segments (a directory and a file) and exactly one file has it. This is what finds
+ * `functions/src/orders/createOrder.ts` from a Cloud Functions frame `/workspace/lib/orders/createOrder.js`: the
+ * repository keeps its code under a package directory and the build drops it. Never a bare file name, never a tie.
+ */
+function tailMatch(candidate: string, files: readonly string[]): string | undefined {
+  if (!CODE_EXT.test(candidate)) return undefined;
+  const segs = (p: string): string[] => p.replace(CODE_EXT, "").split("/").filter((x) => x !== "" && !BUILD_DIRS.has(x));
+  const want = segs(candidate);
+  let best = 0;
+  let hits: string[] = [];
+  for (const f of files) {
+    if (!CODE_EXT.test(f)) continue;
+    const have = segs(f);
+    let k = 0;
+    while (k < have.length && k < want.length && have[have.length - 1 - k] === want[want.length - 1 - k]) k++;
+    if (k > best) {
+      best = k;
+      hits = [f];
+    } else if (k === best && k > 0) hits.push(f);
+  }
+  return best >= 2 && hits.length === 1 ? hits[0] : undefined;
+}
+
 /**
  * Repository files a stack trace points at, top frame first, deduplicated, at most `max`. A frame's path is
  * matched against the repository's own file list, never read from disk by name: a path in a log is untrusted
@@ -110,6 +139,7 @@ export function pathsFromStack(stack: string | undefined, repoFiles: readonly st
         });
         if (loose.length === 1) hit = loose[0];
       }
+      if (hit === undefined) hit = tailMatch(candidate, files);
       if (hit !== undefined) {
         if (!seen.has(hit)) {
           seen.add(hit);

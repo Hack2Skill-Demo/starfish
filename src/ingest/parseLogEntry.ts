@@ -50,11 +50,25 @@ export type LogSource = Pick<StarfishConfig, "logResourceTypes" | "ignoredMessag
   excludedServices?: readonly string[];
 };
 
-/** True when `name` is one of `excluded`, compared on the canonical spelling. */
+/**
+ * A prefix entry: `control-*` names every service that starts with `control-`. Only a trailing `*` counts, and the
+ * prefix must not be empty, so one stray `*` cannot exclude everything.
+ */
+function prefixOf(entry: string): string | undefined {
+  const e = entry.trim();
+  if (!e.endsWith("*")) return undefined;
+  const prefix = canonicalFunctionName(e.replace(/\*+$/, ""));
+  return prefix === "" ? undefined : prefix;
+}
+
+/** True when `name` is one of `excluded` (or starts with a `prefix-*` entry), compared on the canonical spelling. */
 export function isExcludedService(name: string | undefined, excluded: readonly string[]): boolean {
   if (!name || excluded.length === 0) return false;
   const canonical = canonicalFunctionName(name);
-  return excluded.some((e) => canonicalFunctionName(e) === canonical);
+  return excluded.some((e) => {
+    const prefix = prefixOf(e);
+    return prefix !== undefined ? canonical.startsWith(prefix) : canonicalFunctionName(e) === canonical;
+  });
 }
 
 /**
@@ -207,6 +221,15 @@ export function buildLogFilter(source: LogSource, since: Date, functionName?: st
     );
   }
   for (const name of source.excludedServices ?? []) {
+    const prefix = prefixOf(name);
+    if (prefix !== undefined) {
+      // A regular expression (RE2, case-insensitive) on both labels; `-` and `_` are one spelling, as everywhere else.
+      const safePrefix = prefix.replace(/[^A-Za-z0-9_-]/g, "");
+      if (!safePrefix) continue;
+      const re = quote(`(?i)^${safePrefix.replace(/[-_]/g, "[-_]")}`);
+      clauses.push(`NOT resource.labels.function_name=~${re}`, `NOT resource.labels.service_name=~${re}`);
+      continue;
+    }
     // Both spellings on both labels: a first-generation function_name keeps the id as deployed, a
     // service_name is canonical. The charset reduction keeps the literal safe, like `functionName` above.
     const safe = name.replace(/[^A-Za-z0-9_-]/g, "");

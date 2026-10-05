@@ -69,8 +69,9 @@ protection rule or a ruleset on the repository, including who may bypass it.
 The engine's job logs under `cloud_run_job`; the default log resource types are `cloud_function` and
 `cloud_run_revision`. So with the defaults Starfish does not ingest its own failures. As a second guard,
 the deploy sets `STARFISH_EXCLUDED_SERVICES=starfish,<job name>` on the job (#32: matched on the exact
-name, not a prefix), so adding `cloud_run_job` to `STARFISH_LOG_RESOURCE_TYPES` later still would not make
-the engine read itself. An explicit `STARFISH_EXCLUDED_SERVICES` in `EXTRA_ENV_VARS` replaces it.
+name, not a prefix; a trailing `*` in the list does exclude a prefix, such as the demo app's `control-*`), so adding `cloud_run_job` to `STARFISH_LOG_RESOURCE_TYPES` later still would not make
+the engine read itself. An explicit `STARFISH_EXCLUDED_SERVICES` in `EXTRA_ENV_VARS` replaces it, so keep the defaults in it: for the demo app,
+`EXTRA_ENV_VARS='@STARFISH_EXCLUDED_SERVICES=starfish,starfish-ingest,starfish-agent,traffic-*,control-*,stub-*'`.
 
 ## After the first deploy
 

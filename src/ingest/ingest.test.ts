@@ -309,6 +309,28 @@ describe("self-exclusion (#32)", () => {
     }
   });
 
+  it("excludes by prefix with a trailing *, on the canonical spelling, and not by a bare or inner *", () => {
+    const ex = ["control-*", "Stub_*"];
+    expect(isExcludedService("control-triggerFault", ex)).toBe(true);
+    expect(isExcludedService("CONTROL_reset", ex)).toBe(true);
+    expect(isExcludedService("stub-mail", ex)).toBe(true);
+    expect(isExcludedService("orders-createOrder", ex)).toBe(false);
+    expect(isExcludedService("controller", ex)).toBe(false); // the prefix is control-, not control
+    expect(isExcludedService("orders-createOrder", ["*"])).toBe(false); // one stray * excludes nothing
+    expect(isExcludedService("a*b", ["a*b"])).toBe(true); // an inner * is part of a literal name, not a pattern
+    expect(isExcludedService("axxb", ["a*b"])).toBe(false);
+  });
+
+  it("excludes a prefix at query time with an anchored, case-insensitive pattern, safe against a hostile entry", () => {
+    const f = buildLogFilter({ logResourceTypes: ["x"], ignoredMessages: [], excludedServices: ["control-*", 'a" OR severity>=DEBUG*'] }, new Date(0));
+    expect(f).toContain('NOT resource.labels.function_name=~"(?i)^control[-_]"');
+    expect(f).toContain('NOT resource.labels.service_name=~"(?i)^control[-_]"');
+    expect(f).not.toContain("severity>=DEBUG");
+    expect(f).toContain('=~"(?i)^aorseveritydebug"');
+    // A prefix of nothing but characters the filter drops adds no clause (and so excludes nothing).
+    expect(buildLogFilter({ logResourceTypes: ["x"], ignoredMessages: [], excludedServices: ['"*'] }, new Date(0))).not.toContain("=~");
+  });
+
   it("adds no exclusion clause when none is configured, and keeps a hostile name inside its literal", () => {
     expect(buildLogFilter({ logResourceTypes: ["x"], ignoredMessages: [] }, new Date(0))).not.toContain("NOT resource.labels");
     const f = buildLogFilter({ logResourceTypes: ["x"], ignoredMessages: [], excludedServices: ['a" OR severity>=DEBUG OR "b'] }, new Date(0));
