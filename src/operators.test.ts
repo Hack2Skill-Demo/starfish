@@ -33,6 +33,7 @@ function fakes(existing: Record<string, string> = {}) {
   };
   const db = {
     collection: (name: string) => ({
+      limit: () => ({ get: () => Promise.resolve({}) }),
       doc: (id: string) => ({
         set: (data: unknown) => {
           written[`${name}/${id}`] = data;
@@ -87,6 +88,21 @@ describe("grantOperator", () => {
       )
     ).rejects.toThrow("quota");
     expect(f.createdEmails).toEqual([]);
+  });
+
+  it("creates no account when the operator store cannot be read (a wrong project, or nothing deployed there)", async () => {
+    const f = fakes();
+    const unreadable = {
+      collection: () => ({ limit: () => ({ get: () => Promise.reject(Object.assign(new Error("5 NOT_FOUND: "), { code: 5 })) }) }),
+    };
+    await expect(
+      grantOperator(
+        { auth: f.auth as never, db: unreadable as never, usersCollection: "starfish_users" },
+        { email: "new@example.com", roles: ["admin"], createAccount: true }
+      )
+    ).rejects.toThrow(/cannot read the operator store \(starfish_users\); no account was created: 5 NOT_FOUND/);
+    expect(f.createdEmails).toEqual([]);
+    expect(f.written).toEqual({});
   });
 
   it("refuses something that is not an email, before touching Auth", async () => {

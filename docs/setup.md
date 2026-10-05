@@ -38,7 +38,9 @@ pnpm dlx firebase-tools@14 login               # for the web deploy
 pnpm install
 
 export PROJECT_ID=my-demo-project              # the scripts read this
-export GOOGLE_CLOUD_PROJECT=$PROJECT_ID        # the engine's own CLIs (grant-operator, status) read this
+export GOOGLE_CLOUD_PROJECT=$PROJECT_ID        # the engine's own CLIs (grant-operator, status) read this. Cloud Shell sets it to
+                                               # whatever project the shell is on, and a shell can change project: export both
+                                               # again in every new shell, and check `gcloud config get project`
 export STARFISH_ENV=demo                       # both read this: the label stamped on incidents
 
 # 1. Read-only: is everything in place? Fix any FAIL line before going on.
@@ -49,7 +51,7 @@ DRY_RUN=1 scripts/deploy-gcp.sh                # read the plan first
 SCHEDULE='*/5 * * * *' BUDGET_USD=20 BILLING_ACCOUNT=0123AB-456CDE-789FGH scripts/deploy-gcp.sh
 
 # 3. The first admin. Creates the account without a password and prints a link for them to choose one.
-pnpm grant-operator --email you@example.com --role admin --create
+pnpm grant-operator --project $PROJECT_ID --email you@example.com --role admin --create
 
 # 4. Prove the ingest works end to end: plants one error, waits ~7 minutes, runs the job, checks.
 SMOKE_ACTOR_UID=<admin uid> scripts/smoke-gcp.sh

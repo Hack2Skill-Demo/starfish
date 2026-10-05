@@ -52,6 +52,18 @@ export async function grantOperator(
   const email = request.email.trim();
   if (!EMAIL_RE.test(email)) throw new Error("not an email address");
 
+  // Before any account is created: a wrong project (or a store that was never deployed) must fail here, not after an
+  // Auth user has already been made in the wrong place. A read of the collection is enough; Firestore says NOT_FOUND
+  // for a database that does not exist.
+  try {
+    await deps.db.collection(deps.usersCollection).limit(1).get();
+  } catch (err) {
+    throw new Error(
+      `cannot read the operator store (${deps.usersCollection}); no account was created: ${err instanceof Error ? err.message : String(err)}`,
+      { cause: err }
+    );
+  }
+
   let created = false;
   let uid: string;
   try {
