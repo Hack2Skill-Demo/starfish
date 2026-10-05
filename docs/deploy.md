@@ -358,6 +358,27 @@ DRY_RUN=1 DEPLOY_AGENT=1 AGENT_REPO=owner/name VERIFY_ISOLATION=cloud-run-job VE
   PROJECT_ID=my-project scripts/deploy-gcp.sh
 ```
 
+## Recording the demo: a shorter tick, and a run now (#65)
+
+`scripts/ingest-cadence.sh` changes the Scheduler job's cron and puts it back; it holds no state between calls, so
+`restore` takes the schedule you deployed with (`NORMAL_SCHEDULE`, default the deploy script's hourly).
+
+```bash
+PROJECT_ID=my-project scripts/ingest-cadence.sh status      # the current schedule, and the lag if one is set on the job
+PROJECT_ID=my-project scripts/ingest-cadence.sh recording   # tick every minute
+PROJECT_ID=my-project NORMAL_SCHEDULE='0 * * * *' scripts/ingest-cadence.sh restore
+PROJECT_ID=my-project scripts/ingest-cadence.sh now         # one run of the job right now (two together converge)
+```
+
+**A one-minute tick does not by itself make a fault show up in about a minute.** A window ends
+`STARFISH_INGEST_LAG_MINUTES` (default 5) behind real time, because Cloud Logging indexes entries late and a window
+is read once. A fault reaches the store after about *lag + tick*. `RECORDING_LAG_MINUTES` / `NORMAL_LAG_MINUTES` set the
+lag on the job for the recording and put it back, but a lag shorter than the indexing delay can lose an occurrence for
+good, so try it on a rehearsal first. Left unset, the lag is not touched.
+
+Written and tested with a dry run only; never run against a real project. `now` is not the admin-only, audited
+trigger #65 asks for: anyone with `roles/run.developer` on the job can run it.
+
 ## What is most likely to go wrong the first time
 
 None of this has run against a real project. The likely first failures, and what they mean:
@@ -375,7 +396,7 @@ None of this has run against a real project. The likely first failures, and what
   workflow above (never run).
 - **An alert when ingestion stops.** The UI shows it; nothing pages anyone (an item on #6).
 - **An authenticated "run now" endpoint.** `src/ingest/trigger.ts` is the function; nothing serves
-  it. For recording a demo, a short `SCHEDULE` or `gcloud run jobs execute` does the job.
+  it. For recording a demo, see [the cadence script](#recording-the-demo-a-shorter-tick-and-a-run-now-65).
 - **The agent has never run on a real project.** The agent job deploys with `DEPLOY_AGENT=1`, verified by the target's
   CI or by a separate credential-less job ([above](#the-agent-and-where-its-tests-run-74)); `in-process` verification is
   not a sandbox and is for a machine with nothing to protect.
