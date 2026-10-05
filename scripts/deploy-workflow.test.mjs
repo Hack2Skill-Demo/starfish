@@ -1,5 +1,5 @@
 // .github/workflows/deploy.yml can't be run from a test, so this pins the properties that make it safe
-// to run (#75): triggered by hand only, keyless, nothing deployment-specific in the file, and every
+// to run (#75): triggered by hand or by a push to main that a person has switched on, keyless, nothing deployment-specific in the file, and every
 // third-party action pinned to a commit. It reads the YAML as text on purpose: no parser dependency.
 import { readdirSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
@@ -13,10 +13,18 @@ const script = readFileSync(new URL("./deploy-gcp.sh", import.meta.url), "utf8")
 const code = (text) => text.split("\n").filter((l) => !l.trim().startsWith("#")).join("\n");
 
 describe(".github/workflows/deploy.yml", () => {
-  it("is started by hand and by nothing else", () => {
+  it("is started by hand, or by a push to main, which does nothing until deploy-on-merge is switched on", () => {
     const on = code(deploy).match(/^on:\n((?: {2,}.*\n|\n)+)/m)?.[1] ?? "";
     expect(on).toMatch(/^ {2}workflow_dispatch:/m);
-    expect(on.match(/^ {2}[a-z_]+:/gm)).toHaveLength(1);
+    expect(on.match(/^ {2}[a-z_]+:/gm)).toEqual(["  push:", "  workflow_dispatch:"]);
+    // Only main, only files that change what the engine runs, and never a test file.
+    expect(on).toMatch(/^ {4}branches: \[main\]$/m);
+    expect(on).toContain("'src/**'");
+    expect(on).toContain("'!src/**/*.test.ts'");
+    expect(on).toContain("'scripts/deploy-gcp.sh'");
+    expect(on).not.toContain("pull_request");
+    // The push is gated by a repository variable a person sets; a hand-started run is not.
+    expect(code(deploy)).toMatch(/^ {4}if: github\.event_name == 'workflow_dispatch' \|\| vars\.STARFISH_DEPLOY_ON_MERGE == 'true'$/m);
   });
 
   it("authenticates keylessly, and hands the script no GitHub token", () => {
@@ -64,10 +72,16 @@ describe(".github/workflows/deploy-web.yml", () => {
   const web = read("deploy-web.yml");
   const webScript = readFileSync(new URL("./deploy-web.sh", import.meta.url), "utf8");
 
-  it("is started by hand and by nothing else", () => {
+  it("is started by hand, or by a push to main, which does nothing until deploy-on-merge is switched on", () => {
     const on = code(web).match(/^on:\n((?: {2,}.*\n|\n)+)/m)?.[1] ?? "";
     expect(on).toMatch(/^ {2}workflow_dispatch:/m);
-    expect(on.match(/^ {2}[a-z_]+:/gm)).toHaveLength(1);
+    expect(on.match(/^ {2}[a-z_]+:/gm)).toEqual(["  push:", "  workflow_dispatch:"]);
+    expect(on).toMatch(/^ {4}branches: \[main\]$/m);
+    expect(on).toContain("'web/**'");
+    expect(on).toContain("'!web/**/*.test.ts'");
+    expect(on).toContain("'src/settingsSchema.ts'");
+    expect(on).not.toContain("pull_request");
+    expect(code(web)).toMatch(/^ {4}if: github\.event_name == 'workflow_dispatch' \|\| vars\.STARFISH_DEPLOY_ON_MERGE == 'true'$/m);
   });
 
   it("authenticates keylessly in the protected environment, asks for the OIDC token on one job, and uses no secret", () => {

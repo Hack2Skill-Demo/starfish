@@ -4,8 +4,11 @@ name: Deploy engine
 # the engine (#75). One-time Google Cloud and GitHub setup: docs/deploy.md ("Deploy from GitHub Actions").
 #
 # Decisions, on purpose:
-#   - workflow_dispatch ONLY. A merge to main cannot change what is running by itself, and every
-#     run spends a Cloud Build. Whether to deploy on merge is a trust choice for a person, not a default.
+#   - Started by hand (workflow_dispatch), and, when a person turns it on, by a push to main that changes
+#     what the engine runs (the paths below). Deploy-on-merge is OFF until the repository variable
+#     STARFISH_DEPLOY_ON_MERGE is `true`: a merge cannot change what is running by itself, and each run
+#     spends a Cloud Build. Whoever can merge to main then changes what runs; the `deploy` environment's
+#     required reviewers (below) are the way to keep a person in that loop.
 #   - The job runs in the `deploy` environment. The Workload Identity provider only accepts tokens
 #     minted for that environment (docs/deploy.md), so the environment's protection rules (required
 #     reviewers, deployment branches limited to main) are the gate, not a convention.
@@ -16,6 +19,20 @@ name: Deploy engine
 #     the existing Secret Manager version and mount alone.
 #   - Everything deployment-specific is a repository variable; this file names none.
 on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - '!src/**/*.test.ts'
+      - 'Dockerfile'
+      - 'docker-entrypoint.sh'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - 'firestore.rules'
+      - 'firestore.indexes.json'
+      - 'firebase.json'
+      - 'scripts/deploy-gcp.sh'
+      - '.github/workflows/deploy.yml'
   workflow_dispatch:
     inputs:
       dry_run:
@@ -41,6 +58,8 @@ permissions:
 
 jobs:
   deploy:
+    # A hand-started run always goes ahead; a push only when deploy-on-merge has been turned on.
+    if: github.event_name == 'workflow_dispatch' || vars.STARFISH_DEPLOY_ON_MERGE == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment: deploy

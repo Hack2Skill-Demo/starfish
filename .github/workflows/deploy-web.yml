@@ -5,7 +5,10 @@ name: Deploy web UI
 # docs/deploy.md ("Deploy the web UI from GitHub Actions").
 #
 # Decisions, on purpose (the same as the engine's; neither is made here beyond following #75):
-#   - workflow_dispatch ONLY. A merge to main cannot change what judges see by itself.
+#   - Started by hand (workflow_dispatch), and, when a person turns it on, by a push to main that changes
+#     the UI (the paths below). Off until the repository variable STARFISH_DEPLOY_ON_MERGE is `true`:
+#     with it on, whoever can merge to main changes what judges see. The `deploy` environment's required
+#     reviewers keep a person in that loop.
 #   - The job runs in the `deploy` environment, the one the Workload Identity provider accepts
 #     (docs/deploy.md), so that environment's protection rules are the gate. Do not rename it.
 #   - No service-account key and no GitHub secret: the job swaps its OIDC token for short-lived credentials,
@@ -14,6 +17,16 @@ name: Deploy web UI
 #   - The environment label the page shows is STARFISH_ENV (it must be `demo` for the public page to show its
 #     data to guests). Anonymous sign-in is NOT turned on here: it is project-wide, a decision for a person.
 on:
+  push:
+    branches: [main]
+    paths:
+      - 'web/**'
+      - '!web/**/*.test.ts'
+      - '!web/**/*.test.tsx'
+      - 'src/settingsSchema.ts'
+      - 'firebase.json'
+      - 'scripts/deploy-web.sh'
+      - '.github/workflows/deploy-web.yml'
   workflow_dispatch:
     inputs:
       dry_run:
@@ -31,6 +44,8 @@ permissions:
 
 jobs:
   deploy:
+    # A hand-started run always goes ahead; a push only when deploy-on-merge has been turned on.
+    if: github.event_name == 'workflow_dispatch' || vars.STARFISH_DEPLOY_ON_MERGE == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment: deploy

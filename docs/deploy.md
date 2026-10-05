@@ -104,15 +104,23 @@ there is **no service-account key** and **no GitHub secret**. The script is neve
 
 **Decisions made (both can be changed by a person; neither is a code change in the engine):**
 
-- **Trigger: `workflow_dispatch` only.** A merge to `main` cannot change what is running by itself, and each
-  run spends a Cloud Build. Deploy-on-merge is a trust choice about how far Starfish's own deploy is
-  automated; it is not made here.
+- **Trigger: by hand, and on merge only when a person turns that on.** The workflow also runs on a push to
+  `main` that changes what the engine runs (`src/` outside tests, the Dockerfile, the lockfile, the rules, the
+  deploy script), but only when the repository variable `STARFISH_DEPLOY_ON_MERGE` is `true`; unset, a merge
+  changes nothing. Each run spends a Cloud Build. With it on, whoever can merge to `main` changes what is
+  running: add required reviewers to the `deploy` environment to keep a person in that loop. The web UI
+  workflow works the same way for `web/`.
 - **Approval: a GitHub environment named `deploy`.** The job runs in it, and the Workload Identity provider
   below accepts only tokens minted for that environment, so its protection rules are the real gate. Add
   **required reviewers** for a manual approval, and **limit deployment branches to `main`**: without that,
   anyone who can push a branch can edit `deploy.yml` there and dispatch it.
 
 ### One-time setup
+
+**One command, from Cloud Shell, as an owner of the project:**
+`PROJECT_ID=my-project REPO=owner/name scripts/setup-github-deploy.sh` (`DRY_RUN=1` prints the plan). It does
+everything in the block below except the GitHub side, which it prints for you: the `deploy` environment and the
+repository variables. Dry-run tested; never run against a real project. The block below is the same thing by hand.
 
 Run these as someone with rights to create a pool and a service account on the project. `OWNER/REPO` is this
 repository; `PROJECT_ID` is the project Starfish deploys into.
@@ -169,9 +177,10 @@ deployment branch rule above.
 there, see "The build is denied" below.
 
 > **`projectIamAdmin` is the powerful one.** A principal that can set IAM policy can grant itself anything.
-> Limit it to the three roles the script grants with an IAM condition on the deployer's own binding:
-> `api.getAttribute('iam.googleapis.com/modifiedGrantsByRole', []).hasOnly(['roles/logging.viewer','roles/datastore.user','roles/aiplatform.user'])`.
-> The script's own grants stay inside that list, but this has not been tried: the script reads and writes
+> Limit it to the four roles the script grants (the engine's three, and `roles/run.builder` for the build account) with an IAM condition on the deployer's own binding:
+> `api.getAttribute('iam.googleapis.com/modifiedGrantsByRole', []).hasOnly(['roles/logging.viewer','roles/datastore.user','roles/aiplatform.user','roles/run.builder'])`.
+> `scripts/setup-github-deploy.sh` applies this condition. The script's own grants stay inside that list (a test
+> checks that every project-level role `deploy-gcp.sh` binds is in it), but this has not been tried: the script reads and writes
 > the whole policy, and a conditioned `getIamPolicy` may need adjusting. Until you have checked it, treat the
 > deployer as highly privileged, which is a further reason for the `deploy` environment's gate.
 
@@ -213,8 +222,8 @@ deployer has any project role.
 
 `.github/workflows/deploy-web.yml` runs `scripts/deploy-web.sh`, unchanged: **Actions → Deploy web UI → Run
 workflow**. It uses the same Workload Identity pool, provider, `starfish-deployer` account and `deploy`
-environment as the engine deploy above, so there is nothing new to set up in the pool; it is `workflow_dispatch`
-only, keyless, uses no GitHub secret, and has the same decisions on trigger and approval (follow whatever you
+environment as the engine deploy above, so there is nothing new to set up in the pool; it runs by hand, or on a push to `main` that
+changes `web/` when `STARFISH_DEPLOY_ON_MERGE` is `true`; keyless, uses no GitHub secret, and has the same decisions on trigger and approval (follow whatever you
 chose for the engine). Unlike the engine deploy it runs `pnpm install --frozen-lockfile` first, because it builds the UI.
 
 > **Status: written and pinned by a test (`scripts/deploy-workflow.test.mjs`), never run, and the script itself
