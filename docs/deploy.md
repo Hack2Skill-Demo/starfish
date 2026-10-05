@@ -383,9 +383,11 @@ trigger #65 asks for: anyone with `roles/run.developer` on the job can run it.
 
 None of this has run against a real project. The likely first failures, and what they mean:
 
-- **The build is denied** (permission denied for the default compute service account). Newer projects
-  need that account to hold `roles/cloudbuild.builds.builder` for source deploys. The script does
-  not grant it, because that widens a shared account; grant it yourself if you accept that.
+- **The build is denied** ("Build failed because the default service account is missing required IAM permissions", seen
+  on a first run). `gcloud run jobs deploy --source` builds as the Compute Engine default account, which a newer
+  project does not let read the uploaded source. The script grants it `roles/run.builder` (the Cloud Run Builder role)
+  before the deploy; name another account with `BUILD_SERVICE_ACCOUNT`. If it still fails, the account may also need
+  `roles/cloudbuild.builds.builder`: grant it yourself if you accept that on a shared account.
 - **The job cannot read or write Firestore.** The `datastore.user` grant carries an IAM condition on
   the database resource name. If a call is refused, check that condition first.
 - **The first deploy takes minutes**: it creates the Artifact Registry repository and builds the image.

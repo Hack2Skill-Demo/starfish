@@ -69,6 +69,22 @@ describe("scripts/deploy-gcp.sh", () => {
     expect(r.out).toContain("Dry run: nothing was changed.");
   });
 
+  it("lets the account Cloud Run builds as read the source, before the job is deployed (first-run build denial)", () => {
+    const r = deploy(dry);
+    const grant = r.out.split("\n").find((l) => l.includes("--role=roles/run.builder")) ?? "";
+    expect(grant).toContain("add-iam-policy-binding star-proj");
+    expect(grant).toContain("--member=serviceAccount:<project-number>-compute@developer.gserviceaccount.com");
+    expect(r.out.indexOf("roles/run.builder")).toBeLessThan(r.out.indexOf("gcloud run jobs deploy starfish-ingest"));
+    // Nothing else is granted to that shared account.
+    expect(r.out.split("\n").filter((l) => l.includes("compute@developer"))).toHaveLength(1);
+  });
+
+  it("grants the build role to the account it is told to build as", () => {
+    const r = deploy({ ...dry, BUILD_SERVICE_ACCOUNT: "builder@star-proj.iam.gserviceaccount.com" });
+    expect(r.out).toContain("--member=serviceAccount:builder@star-proj.iam.gserviceaccount.com --role=roles/run.builder");
+    expect(r.out).not.toContain("compute@developer");
+  });
+
   it("scopes each grant to the project it applies to", () => {
     const r = deploy({ ...dry, WATCHED_PROJECT_ID: "app-proj", VERTEX_PROJECT_ID: "ai-proj" });
     const engine = "serviceAccount:starfish-engine@star-proj.iam.gserviceaccount.com";
