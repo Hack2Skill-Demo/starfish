@@ -3,6 +3,10 @@ version: 2
 # Minor/patch bumps are grouped into one PR per
 # group and auto-merged on green by .github/workflows/dependabot-automerge.yml;
 # majors open individually for a deliberate review.
+#
+# `labels: []`: Dependabot only applies labels that already exist in the repo, and
+# a missing one makes it post a config-error comment on every PR it opens. Nothing
+# reads labels (the auto-merge workflow keys off the PR author), so none are set.
 
 updates:
   - package-ecosystem: "npm"
@@ -11,8 +15,7 @@ updates:
       interval: "weekly"
       day: "monday"
     open-pull-requests-limit: 10
-    labels:
-      - "dependencies"
+    labels: []
     groups:
       production-deps:
         dependency-type: "production"
@@ -33,6 +36,4 @@ updates:
       interval: "weekly"
       day: "monday"
     open-pull-requests-limit: 5
-    labels:
-      - "dependencies"
-      - "github-actions"
+    labels: []
