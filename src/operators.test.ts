@@ -57,6 +57,16 @@ describe("grantOperator", () => {
     expect(f.createdEmails).toEqual([]);
   });
 
+  it("hands back a password link for an existing account only when asked", async () => {
+    const f = fakes({ "a@example.com": "uid-1" });
+    const deps = { auth: f.auth as never, db: f.db as never, usersCollection: "starfish_users" };
+    const asked = await grantOperator(deps, { email: "a@example.com", roles: ["admin"], createAccount: false, resetLink: true });
+    expect(asked).toEqual({ uid: "uid-1", created: false, passwordResetLink: "https://reset.example/a@example.com" });
+    const plain = await grantOperator(deps, { email: "a@example.com", roles: ["admin"], createAccount: false });
+    expect(plain.passwordResetLink).toBeUndefined();
+    expect(f.createdEmails).toEqual([]);
+  });
+
   it("does not create an account unless asked", async () => {
     const f = fakes();
     await expect(

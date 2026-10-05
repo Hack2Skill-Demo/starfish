@@ -1,6 +1,7 @@
 /**
  * `pnpm grant-operator --project <id> --email you@example.com --role admin [--create]`
  *
+ * `--link` also prints a link to choose a password, for an account that exists (email can be slow or blocked).
  * Gives a person access to the operator UI (src/operators.ts). Run it once after the first deploy to
  * make the first admin. It writes Starfish's store and reads Firebase Auth, so it needs credentials
  * for the project (`gcloud auth application-default login`), or the emulators for a local try.
@@ -18,12 +19,13 @@ const { values } = parseArgs({
     email: { type: "string" },
     role: { type: "string", default: "admin" },
     create: { type: "boolean", default: false },
+    link: { type: "boolean", default: false },
   },
   allowPositionals: false,
 });
 
 if (values.email === undefined || values.project === undefined) {
-  console.error("usage: pnpm grant-operator --project <id> --email <address> [--role admin|operator[,..]] [--create]");
+  console.error("usage: pnpm grant-operator --project <id> --email <address> [--role admin|operator[,..]] [--create] [--link]");
   process.exit(2);
 }
 
@@ -43,13 +45,13 @@ initializeApp({ projectId: config.projectId });
 try {
   const result = await grantOperator(
     { auth: getAuth(), db: getFirestore(config.databaseId), usersCollection: config.usersCollection },
-    { email: values.email, roles: parseRoles(values.role), createAccount: values.create }
+    { email: values.email, roles: parseRoles(values.role), createAccount: values.create, resetLink: values.link }
   );
   console.log(
     `${values.email} is now ${values.role} in ${config.projectId} (${config.databaseId}/${config.usersCollection}/${result.uid})`
   );
   if (result.passwordResetLink !== undefined) {
-    console.log(`account created without a password. Send them this link to choose one:\n${result.passwordResetLink}`);
+    console.log(`a link to choose a password (open it in a browser; it works once):\n${result.passwordResetLink}`);
   }
 } catch (err) {
   console.error(`grant-operator: ${err instanceof Error ? err.message : String(err)}`);
