@@ -5,8 +5,7 @@ the few steps only a person with the console can do.
 
 > **Status: run once, on the demo project (2026-10-05); most of it worked.** The preflight, the ingest deploy (job, Scheduler,
 > database and rules), `grant-operator` and the web deploy ran against `hack2skill-demo`, after two fixes the first run found (the
-> build account's role, #103; `grant-operator` following the shell's project, #104). **The smoke test and the agent job have not
-> run.** Every script below is tested against stubs of `gcloud` and `firebase`
+> build account's role, #103; `grant-operator` following the shell's project, #104). The smoke test then passed: a planted error was read into the store and retired. **The agent job has not run.** Every script below is tested against stubs of `gcloud` and `firebase`
 > (so the plan, the order and the refusals are pinned; the web deploy is tested against a stub of `pnpm`), and the two CLIs (`grant-operator`, `status`)
 > were run end to end against the Firebase emulators. Expect
 > to fix one or two things on the first pass of the parts that have not run; [`deploy.md`](deploy.md) lists the likely ones.
@@ -74,7 +73,7 @@ The smoke test writes one real incident named `starfish-smoke` into the store an
 so it holds even where the logs are not quiet. It then **retires** it with `SMOKE_ACTOR_UID` (the uid of an admin
 operator you granted with `pnpm grant-operator`; required), audited, and reads the retirement back. A retired
 incident is in no list. If cleanup fails the script says which incident document to delete in the Firestore console
-and exits non-zero. Written and dry-run tested; never run against a real project (#6).
+and exits non-zero. Dry-run tested, and run once against the demo project (2026-10-05), where it passed (#6).
 
 **Redeploying later without a local `gcloud`:** the Deploy engine workflow (`.github/workflows/deploy.yml`, Actions → Deploy engine → Run workflow) runs step 2 from GitHub Actions with no stored key. Use it once the one-time Workload Identity setup is done (a console step, in [`deploy.md`](deploy.md#deploy-from-github-actions-75); the workflow is written and pinned by a test, never run). Until then, or for the very first deploy, run `scripts/deploy-gcp.sh` by hand as above. The web UI has its own workflow, Deploy web UI (`.github/workflows/deploy-web.yml`, [`deploy.md`](deploy.md#deploy-the-web-ui-from-github-actions-92); written and never run, and whether the Firebase CLI accepts its credentials is unverified); step 5 below stays the dependable path.
 

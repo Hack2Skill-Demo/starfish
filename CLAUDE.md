@@ -43,7 +43,7 @@ pnpm spike            # the Gemini fix-quality spike (needs .env + Vertex access
 pnpm ingest           # one ingest run: next window(s) of the watched project's logs → the store
 PROJECT_ID=<p> scripts/deploy-gcp.sh   # Cloud Run job + Scheduler + Secret Manager; DRY_RUN=1 prints the plan (docs/deploy.md)
 # The whole setup, in order (docs/setup.md): scripts/preflight-gcp.sh → deploy-gcp.sh → pnpm grant-operator →
-# scripts/smoke-gcp.sh → scripts/deploy-web.sh. pnpm status: is the deployed engine alive? Run once on the demo project (2026-10-05) except the smoke test and the agent job.
+# scripts/smoke-gcp.sh → scripts/deploy-web.sh. pnpm status: is the deployed engine alive? Run once on the demo project (2026-10-05), the smoke test included, except the agent job.
 scripts/ingest-cadence.sh status|recording|restore|now   # the ingest's tick for recording the demo, and a run now (#65); DRY_RUN=1 prints
 pnpm scoreboard       # scoreboard/RESULTS.md from recorded runs (#10; format in scoreboard/FORMAT.md; no run recorded yet)
 pnpm scrub            # dry-run: how many stored incidents still hold a credential/email (--apply to rewrite)

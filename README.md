@@ -373,7 +373,7 @@ To deploy to a project, follow [`docs/setup.md`](docs/setup.md): a read-only pre
 (`scripts/preflight-gcp.sh`), the ingest job and its schedule (`scripts/deploy-gcp.sh`), the first
 admin (`pnpm grant-operator`), an end-to-end smoke test (`scripts/smoke-gcp.sh`), and the UI on its
 own Hosting site (`scripts/deploy-web.sh`). Each script takes `DRY_RUN=1`. All of it is written and
-tested against stubs and the emulators. On 2026-10-05 the preflight, the ingest deploy, `grant-operator` and the web deploy ran once against the demo project and worked, after two fixes (#103, #104); **the smoke test and the agent job have not run**. What the deploy
+tested against stubs and the emulators. On 2026-10-05 the preflight, the ingest deploy, `grant-operator`, the web deploy and the smoke test (a planted error read into the store by the deployed ingest, then retired) ran once against the demo project and worked, after two fixes (#103, #104); **the agent job has not run**. What the deploy
 creates and the identities: [`docs/deploy.md`](docs/deploy.md).
 
 Requires Node 22+ and a GCP project with the Vertex AI API enabled. Starfish keeps its
