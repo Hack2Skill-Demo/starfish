@@ -42,11 +42,13 @@ const db = getFirestore(config.databaseId);
 
 const runSnap = await db.collection(config.runCollection).doc(LAST_RUN_DOC).get();
 
-// One aggregate count per status: bounded however many incidents there are.
+// One aggregate count per status: bounded however many incidents there are. A retired incident is in no list in the UI
+// (src/ingest/retire.ts), so it is taken out of the count here too: two aggregates per status, total minus retired.
 const counts: Record<string, number> = {};
 for (const status of INCIDENT_STATUSES) {
   const q = db.collection(config.incidentCollection).where("environment", "==", config.environment).where("status", "==", status);
-  counts[status] = (await q.count().get()).data().count;
+  const [all, retired] = await Promise.all([q.count().get(), q.where("retired", "==", true).count().get()]);
+  counts[status] = Math.max(0, all.data().count - retired.data().count);
 }
 
 const run = parseRunRecord(runSnap.data());
