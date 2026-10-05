@@ -71,7 +71,8 @@ The engine's job logs under `cloud_run_job`; the default log resource types are 
 the deploy sets `STARFISH_EXCLUDED_SERVICES=starfish,<job name>` on the job (#32: matched on the exact
 name, not a prefix; a trailing `*` in the list does exclude a prefix, such as the demo app's `control-*`), so adding `cloud_run_job` to `STARFISH_LOG_RESOURCE_TYPES` later still would not make
 the engine read itself. An explicit `STARFISH_EXCLUDED_SERVICES` in `EXTRA_ENV_VARS` replaces it, so keep the defaults in it: for the demo app,
-`EXTRA_ENV_VARS='@STARFISH_EXCLUDED_SERVICES=starfish,starfish-ingest,starfish-agent,traffic-*,control-*,stub-*'`.
+`EXTRA_ENV_VARS='STARFISH_EXCLUDED_SERVICES=starfish,starfish-ingest,starfish-agent,traffic-*,control-*,stub-*'` (the entries
+are separated by `@`, which the script adds: no leading or trailing `@`).
 
 ## After the first deploy
 
