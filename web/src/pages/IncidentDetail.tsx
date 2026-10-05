@@ -2,13 +2,14 @@
  * IncidentDetail — the evidence behind one incident, stage by stage: what was detected, and what the
  * agent recorded about triage, the fix, the verify gate, the review and the pull request. Everything
  * comes from stored records (web/src/lib/evidence.ts); a stage with no record says "not reached"
- * rather than showing a result. Read-only: guests on the demo may open it, and it has no actions.
+ * rather than showing a result. Read-only for guests and operators; an admin also gets Retire (admin API, #63).
  */
 import { useQuery } from "@tanstack/react-query";
 import { Link, useParams } from "react-router";
 import { ArrowLeft, Check, CircleDashed, ExternalLink, Minus } from "lucide-react";
 import PageMeta from "../components/PageMeta";
 import { Badge, type BadgeTone } from "../components/ui/Badge";
+import { RetireControl } from "../components/AdminActions";
 import { HourlyBars } from "../components/HourlyBars";
 import { hourlySeries } from "../lib/overviewModel";
 import { formatDateTime } from "../lib/formatters";
@@ -86,6 +87,9 @@ function Evidence({ row, cycle, runPending, runFailed }: { row: IncidentRow; cyc
       <div>
         <h1 className="text-xl font-semibold text-gray-900 dark:text-white">{row.functionName}</h1>
         <p className="mt-1 text-sm text-gray-700 dark:text-gray-300">{row.errorMessage}</p>
+        <div className="mt-2">
+          <RetireControl incidentId={row.id} />
+        </div>
         {evidence.cycleId && (
           <p className="mt-1 text-xs text-gray-600 dark:text-gray-400">
             From run{" "}

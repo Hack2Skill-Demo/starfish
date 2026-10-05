@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { FIREBASE_INIT_PATH, bootstrapWebConfig, resolveFirebaseConfig, webConfig } from "./config";
+import { FIREBASE_INIT_PATH, bootstrapWebConfig, normalizeAdminApiUrl, resolveFirebaseConfig, webConfig } from "./config";
 
 const full = {
   VITE_FIREBASE_API_KEY: "k",
@@ -140,3 +140,18 @@ describe("bootstrapWebConfig: the engine's run record", () => {
   });
 });
 
+
+describe("normalizeAdminApiUrl", () => {
+  it("keeps an https URL without its trailing slash", () => {
+    expect(normalizeAdminApiUrl("https://starfish-admin-abc-uc.a.run.app/")).toBe("https://starfish-admin-abc-uc.a.run.app");
+  });
+  it("allows http only on localhost", () => {
+    expect(normalizeAdminApiUrl("http://localhost:8080")).toBe("http://localhost:8080");
+    expect(normalizeAdminApiUrl("http://example.com")).toBe("");
+  });
+  it("shows nothing for a missing, malformed or credentialed value", () => {
+    for (const bad of [undefined, "", "not a url", "ftp://x.example", "https://u:p@x.example", "https://x.example/?a=1"]) {
+      expect(normalizeAdminApiUrl(bad)).toBe("");
+    }
+  });
+});

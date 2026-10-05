@@ -117,6 +117,11 @@ export interface WebConfig {
    * about three times the schedule's interval: the engine does not know its own cadence.
    */
   engineStaleMinutes: number;
+  /**
+   * Base URL of the admin API (src/adminApi.ts): "Run ingest now" and "Retire". Empty when none is
+   * configured, and then the UI shows neither control. Must be https, or http on localhost.
+   */
+  adminApiUrl: string;
   /** Label for the environment the incidents come from. */
   environment: string;
   /** Region the watched Cloud Functions deploy to, for Cloud Logging links. */
@@ -129,6 +134,21 @@ export interface WebConfig {
 function positiveMinutes(raw: string | undefined, fallback: number): number {
   const n = Number(raw);
   return raw !== undefined && raw !== "" && Number.isFinite(n) && n > 0 ? n : fallback;
+}
+
+/** A usable admin API base URL without its trailing slash, or "" (a bad value only hides the controls, it never blocks startup). */
+export function normalizeAdminApiUrl(raw: string | undefined): string {
+  if (!raw) return "";
+  let url: URL;
+  try {
+    url = new URL(raw.trim());
+  } catch {
+    return "";
+  }
+  const local = url.hostname === "localhost" || url.hostname === "127.0.0.1";
+  if (url.protocol !== "https:" && !(url.protocol === "http:" && local)) return "";
+  if (url.username || url.password || url.search || url.hash) return "";
+  return `${url.origin}${url.pathname.replace(/\/+$/, "")}`;
 }
 
 let cached: WebConfig | undefined;
@@ -152,10 +172,11 @@ export function bootstrapWebConfig(
         databaseId: env.VITE_STARFISH_DATABASE_ID || "starfish",
         incidentCollection: env.VITE_STARFISH_INCIDENT_COLLECTION || "incidents",
         usersCollection: env.VITE_STARFISH_USERS_COLLECTION || "starfish_users",
-    settingsCollection: env.VITE_STARFISH_SETTINGS_COLLECTION || "starfish_settings",
+        settingsCollection: env.VITE_STARFISH_SETTINGS_COLLECTION || "starfish_settings",
         runCollection: env.VITE_STARFISH_RUN_COLLECTION || "starfish_runs",
         cycleCollection: env.VITE_STARFISH_CYCLE_COLLECTION || "starfish_cycles",
         engineStaleMinutes: positiveMinutes(env.VITE_STARFISH_STALE_MINUTES, 90),
+        adminApiUrl: normalizeAdminApiUrl(env.VITE_STARFISH_ADMIN_API_URL),
         environment: env.VITE_STARFISH_ENV || "dev",
         functionsRegion: env.VITE_FUNCTIONS_REGION || "us-central1",
         useEmulators: env.VITE_USE_EMULATORS === "1",

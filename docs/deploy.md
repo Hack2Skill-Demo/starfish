@@ -393,8 +393,15 @@ cannot be the gate), capped at two instances, with no rate limit beyond that. An
 services will refuse the deploy line. Its name is added to `STARFISH_EXCLUDED_SERVICES` so its own errors are never ingested; an
 explicit list in `EXTRA_ENV_VARS` replaces that default, and the script warns if it leaves the service out.
 
+**The buttons.** The web UI shows an admin "Run ingest now" on the Incidents page and "Retire" on an incident, only when the site is
+built with `VITE_STARFISH_ADMIN_API_URL=<the service URL>` (a bad or non-https value shows nothing). They send the signed-in admin's
+ID token; the server re-checks the role, so hiding them from others is a courtesy and not the gate. A finished run reports the
+engine's own counts, a failed one says it failed. Order: deploy the service with `ADMIN_API_ORIGINS` set to the site, read its URL
+(`gcloud run services describe starfish-admin --project <p> --region <r> --format='value(status.url)'`), then redeploy the site
+with that URL: `VITE_STARFISH_ADMIN_API_URL=<url> PROJECT_ID=<p> scripts/deploy-web.sh`.
+
 > **Status: written; tested with stubs for every rule and over a real local HTTP server; the deploy plan is pinned by a dry
-> run. Never deployed, and the real token check against Firebase Auth has never run.** No button in the UI calls it yet.
+> run. Never deployed, and the real token check against Firebase Auth has never run.**
 
 ## Recording the demo: a shorter tick, and a run now (#65)
 
@@ -435,8 +442,8 @@ The ingest path ran once on a real project (the demo project, 2026-10-05); the s
 - **The web UI** deploys to Hosting with `scripts/deploy-web.sh`, from a terminal or from the Deploy web UI
   workflow above (never run).
 - **An alert when ingestion stops.** The UI shows it; nothing pages anyone (an item on #6).
-- **The admin API has never been deployed.** It exists ([above](#the-admin-api-run-ingest-now-and-retire-an-incident-63-65)) with no button in the
-  UI yet. Without it, for recording a demo, see [the cadence script](#recording-the-demo-a-shorter-tick-and-a-run-now-65).
+- **The admin API has never been deployed.** It exists ([above](#the-admin-api-run-ingest-now-and-retire-an-incident-63-65)) and the UI has
+  its two buttons, which appear only once the site is built with the service's URL. Without it, for recording a demo, see [the cadence script](#recording-the-demo-a-shorter-tick-and-a-run-now-65).
 - **The agent has never run on a real project.** The agent job deploys with `DEPLOY_AGENT=1`, verified by the target's
   CI or by a separate credential-less job ([above](#the-agent-and-where-its-tests-run-74)); `in-process` verification is
   not a sandbox and is for a machine with nothing to protect.
