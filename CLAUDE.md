@@ -45,6 +45,7 @@ PROJECT_ID=<p> scripts/deploy-gcp.sh   # Cloud Run job + Scheduler + Secret Mana
 # The whole setup, in order (docs/setup.md): scripts/preflight-gcp.sh → deploy-gcp.sh → pnpm grant-operator →
 # scripts/smoke-gcp.sh → scripts/deploy-web.sh. pnpm status: is the deployed engine alive? All unrun against a real project.
 scripts/ingest-cadence.sh status|recording|restore|now   # the ingest's tick for recording the demo, and a run now (#65); DRY_RUN=1 prints
+pnpm scoreboard       # scoreboard/RESULTS.md from recorded runs (#10; format in scoreboard/FORMAT.md; no run recorded yet)
 pnpm scrub            # dry-run: how many stored incidents still hold a credential/email (--apply to rewrite)
 bash .claude/hooks/git-branch-guard.test.sh        # hook suites
 bash .claude/hooks/pre-push-review-guard.test.sh
@@ -147,6 +148,8 @@ src/
                    kill switch, one shared revision, call budget, dry run by default. Run by `pnpm agent`
   agent/pass.ts    one pass over the store: candidate selection, stack trace → repo files, bounded driver
   agent/assemble.ts  one incident's inputs: shallow clone at a pinned revision, counter-check, samples, files the trace names
+  scoreboard/      the results format (strict parser), the metrics (ratios keep numerator and denominator; an error or timeout counts
+                   against the agent; each path apart) and the Markdown table: `pnpm scoreboard`. Judges recorded runs; runs nothing
   agentCli.ts      `pnpm agent`: one pass. Dry run by default; refuses to start until STARFISH_VERIFY_ISOLATION is set
                    (`in-process` is not a sandbox; `github-actions` = the target's own CI judges a pushed starfish/<cycle>
                    branch, the demo's choice; `cloud-run-job` hands the source + patch to a separate job whose service

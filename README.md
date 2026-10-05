@@ -344,6 +344,7 @@ src/
   config.ts          every deployment-specific value lives here, and only here
   vertex.ts          Vertex AI client
   spike.ts           the fix-quality spike
+  scoreboard/        the results format and aggregation behind `pnpm scoreboard` (no run recorded yet: see scoreboard/FORMAT.md)
   ingest/            logs -> classified, deduped incidents + counter-check
   agent/             triage, fixer, verify gate, reviewer, cycle state and the loop: run by the agent job (`pnpm agent`), deployable and never run
 web/                 operator UI: sign-in, incidents, settings
@@ -365,6 +366,7 @@ pnpm test:emulator      # firestore.rules + store concurrency on the emulator (n
 pnpm -C web dev         # operator UI on :5177 (copy web/.env.example to web/.env)
 pnpm dev:emulated       # the UI against seeded local emulators, no GCP project needed
 pnpm spike              # fix-quality spike (needs Vertex AI access)
+pnpm scoreboard         # scoreboard/RESULTS.md from scoreboard/results/*.json; says so and writes nothing with no runs
 ```
 
 To deploy to a project, follow [`docs/setup.md`](docs/setup.md): a read-only preflight
