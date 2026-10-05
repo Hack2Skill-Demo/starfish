@@ -1,5 +1,5 @@
 /**
- * StarfishLogo — the Starfish mark (a pale star on a coral disc) and lockup.
+ * StarfishLogo — the Starfish mark (a pale starfish on a coral disc) and lockup.
  * The disc stays brand coral everywhere; `tone="dark"` switches the wordmark to
  * a light colour for dark surfaces.
  */
@@ -8,7 +8,8 @@ type Tone = "light" | "dark";
 const CORAL = "#f25c2f"; // brand-500
 const SHELL = "#fff4ef"; // brand-50
 const INK = "#18181b"; // gray-900
-const STAR = "M50 18 58.8 38.4 80.4 40.1 64 54.4 69 75.6 50 64.2 31 75.6 36 54.4 19.6 40.1 41.2 38.4Z";
+const STARFISH =
+  "M46.4 22.8Q50 14 53.6 22.8L57.7 32.9Q59.4 37.1 63.7 37.4L74.2 38.4Q83.3 39.2 76.4 45.2L68.5 52.1Q65.2 54.9 66.3 59.3L68.9 69.9Q71.2 79.1 63.1 74.1L53.8 68.4Q50 66 46.4 68.1L37.6 73.1Q30 77.5 31.8 68.9L33.9 59Q34.8 54.9 31.5 52.1L23.6 45.2Q16.7 39.2 25.8 38.4L36.3 37.4Q40.6 37.1 42.3 32.9Z";
 
 export function StarfishLogo({
   variant = "mark",
@@ -34,7 +35,10 @@ export function StarfishLogo({
     >
       {!decorative && <title>{title}</title>}
       <circle cx="50" cy="50" r="48" fill={CORAL} />
-      <path d={STAR} fill={SHELL} />
+      <path d={STARFISH} fill={SHELL} />
+      <circle cx="47" cy="45" r="2" fill={CORAL} opacity="0.65" />
+      <circle cx="54" cy="49" r="1.6" fill={CORAL} opacity="0.65" />
+      <circle cx="48" cy="55" r="1.4" fill={CORAL} opacity="0.65" />
     </svg>
   );
   if (variant === "mark") return mark;
