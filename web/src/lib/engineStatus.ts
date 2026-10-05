@@ -21,6 +21,10 @@ export interface LastRun {
   problems: string[];
   /** A code or error name; never a message. */
   error?: string;
+  /** When the run began. */
+  startedAt?: Date;
+  /** How often a run is started, from the engine's schedule; absent when the engine could not tell. */
+  intervalMinutes?: number;
 }
 
 const num = (v: unknown): number => (typeof v === "number" && Number.isFinite(v) ? v : 0);
@@ -31,6 +35,7 @@ export async function readLastRun(db: Firestore, runCollection: string): Promise
   if (!snap.exists()) return null;
   const d = snap.data();
   const finished = (d.finishedAt as { toDate?: () => Date } | undefined)?.toDate?.();
+  const started = (d.startedAt as { toDate?: () => Date } | undefined)?.toDate?.();
   const outcome = d.outcome;
   if (!finished || Number.isNaN(finished.getTime())) return null;
   if (outcome !== "ok" && outcome !== "failed" && outcome !== "idle") return null;
@@ -49,7 +54,18 @@ export async function readLastRun(db: Firestore, runCollection: string): Promise
     },
     problems: Array.isArray(d.problems) ? d.problems.filter((p): p is string => typeof p === "string") : [],
     ...(typeof d.error === "string" && { error: d.error }),
+    ...(started && !Number.isNaN(started.getTime()) && { startedAt: started }),
+    ...(typeof d.intervalMinutes === "number" && Number.isFinite(d.intervalMinutes) && d.intervalMinutes > 0 && { intervalMinutes: d.intervalMinutes }),
   };
+}
+
+/**
+ * When the next run is expected: the last run's start plus the schedule's interval (#38). `null` when the engine
+ * did not say how often it runs. An estimate: the scheduler fires on the clock, not exactly an interval after a start.
+ */
+export function nextRunAt(run: Pick<LastRun, "startedAt" | "intervalMinutes"> | null): Date | null {
+  if (!run?.startedAt || run.intervalMinutes === undefined) return null;
+  return new Date(run.startedAt.getTime() + run.intervalMinutes * 60_000);
 }
 
 export type EngineState = "ok" | "failed" | "stale" | "capped" | "never";

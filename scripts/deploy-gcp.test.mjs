@@ -178,6 +178,8 @@ describe("scripts/deploy-gcp.sh", () => {
     });
     expect(r.out).toContain("--schedule=*/5 * * * *");
     expect(r.out).toContain("STARFISH_ENV=demo");
+    // The job is told its own schedule, so the UI can say when the next run is expected (#38).
+    expect(r.out).toContain("@STARFISH_INGEST_SCHEDULE=*/5 * * * *");
     // "@" separates settings, so a comma inside one value survives.
     expect(r.out).toContain("STARFISH_SERVICE_PATTERNS=a:b,c:d@STARFISH_LOOKBACK_HOURS=6");
     expect(r.out).toContain("--update-env-vars=^@^");

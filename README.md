@@ -122,7 +122,7 @@ demo runs.
   as in progress. **The agent job that would fill it is deployable (`DEPLOY_AGENT=1`) and has never run, so on a real
   deployment the page is empty;** it is exercised against the emulator with seeded data. The header shows the path, the
   triage rule, progress (steps recorded) and the engine's last run. The GitHub-issue and Slack steps appear when a run
-  recorded them. Not built: the next scheduled run, the index, deploy, phone and recovery steps (the
+  recorded them. Not built: the index, deploy, phone and recovery steps (the
   loop has no code for them), and the four MVP cases observed end to end (#33 stays open).
 - **Incident evidence:** a first version is built: `/incidents/:id`, linked from the incidents table
   and from the Runs page, shows what was detected and, from the agent's run record, the triage,
@@ -136,7 +136,7 @@ demo runs.
   human, runs in progress, open incidents, regressions, errors per hour (from the incidents' hourly
   buckets), key figures (pull requests opened and failed runs, each as "n of N finished runs"; median run length; untriaged open incidents; errors this hour against the hours before it), what the agent did by path (each row opens the Runs list filtered to runs that ended that way), the latest runs and the engine's status. Every figure is a
   count or median of stored records, not an accuracy score (no run has been scored; see `scoreboard/FORMAT.md`). It does **not** show a run "healed on its own" or merged (nothing records
-  one), the next scheduled run (the engine does not know its cadence), or run events as a feed
+  one), or run events as a feed
   (it lists the latest runs); on a real deployment the run counts are zero until a job runs the agent
   loop (#38 stays open).
 - **Slack messages and GitHub issue/PR bodies:** what Starfish posts elsewhere.
