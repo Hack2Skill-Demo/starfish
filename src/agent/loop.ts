@@ -44,6 +44,7 @@ import {
   type CycleState,
   type RunEvent,
 } from "./cycle.js";
+import type { IssueRequest } from "../integrations/githubPr.js";
 import type { DeliveryResult, NotifyRequest } from "../integrations/slack.js";
 import { proposeFix, type FixRequest, type SourceFile } from "./fixer.js";
 import { reviewPatch, type Attack, type ReviewVerdict } from "./reviewer.js";
@@ -70,12 +71,14 @@ export interface PullRequestRequest {
   rootCause: string;
   risk: string;
   verify: Pick<VerifyResult, "status" | "rule" | "changedFiles" | "output">;
+  /** The incident's GitHub issue, when one was filed (#17): the pull request then says it closes it. */
+  issueNumber?: number;
   review?: { verdict: ReviewVerdict; attacks: Attack[] };
 }
 
 export interface LoopDeps {
   db: Firestore;
-  config: Pick<StarfishConfig, "dryRun" | "reviewRequired" | "modelCallBudget"> & CycleConfig & VerifyConfig;
+  config: Pick<StarfishConfig, "dryRun" | "reviewRequired" | "modelCallBudget" | "uiBaseUrl"> & CycleConfig & VerifyConfig;
   /** This worker's identity, for the lease. */
   owner: string;
   now: () => Date;
@@ -93,6 +96,12 @@ export interface LoopDeps {
   verify?: (req: VerifyRequest) => Promise<VerifyResult>;
   /** Opens (or finds, by `cycleId`) the pull request. Absent means nothing can be opened. */
   openPullRequest?: (req: PullRequestRequest) => Promise<{ number: number; url: string }>;
+  /**
+   * Files (or finds, by `cycleId`) the incident's GitHub issue (#17). Absent means none is filed. A failure is recorded
+   * on the cycle and the cycle goes on: the issue is the incident's history, not a step the fix depends on. In a dry run
+   * nothing is filed and the record says so.
+   */
+  openIssue?: (req: IssueRequest) => Promise<{ number: number; url: string }>;
   /**
    * Tells a person (Slack, src/integrations/slack.ts) that this cycle needs them. Absent means nobody is told. It
    * never throws: a failed delivery is a result, recorded on the cycle (`summary.notify`) so it is visible. In a dry
@@ -152,6 +161,56 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
       return finish("declined", why, "decline");
     };
 
+    // The incident's GitHub issue: one per cycle Starfish acts on or escalates, none for a declined one. Recorded on the
+    // cycle (`summary.issue`) so a resumed attempt reuses it, and so a failure is visible and not silent.
+    let issue: { number: number; url: string } | undefined;
+    const fileIssue = async (loaded: LoopSubject, path: IssueRequest["path"], reason: string, suspectedCause: string | undefined): Promise<void> => {
+      if (!deps.openIssue) return;
+      const snap = await db.collection(cfg.cycleCollection).doc(id).get();
+      const prior = (snap.data()?.summary as { issue?: { state?: unknown; number?: unknown; url?: unknown } } | undefined)?.issue;
+      if (prior?.state === "opened" && typeof prior.number === "number" && typeof prior.url === "string") {
+        issue = { number: prior.number, url: prior.url };
+        return;
+      }
+      if (cfg.dryRun) {
+        await note({ stage: "issue", type: "dry-run", summary: "An issue would be filed here; nothing filed (dry run)", record: { state: "dry-run" } });
+        return;
+      }
+      const renewed = await renewLease(db, cfg, id, owner, deps.now());
+      if (!renewed.ok) throw new LeaseLost();
+      const incident = loaded.subject.incident;
+      const counter = incident.logCounterCheck;
+      let filed: { number: number; url: string };
+      try {
+        filed = await deps.openIssue({
+          cycleId: id,
+          incidentId: key.incidentId,
+          functionName: incident.functionName ?? "unknown function",
+          service: incident.service ?? "unknown",
+          errorType: incident.errorType ?? "unknown",
+          occurrenceCount: incident.occurrenceCount ?? null,
+          fingerprint: incident.fingerprint ?? null,
+          counterCheck: counter ? { window: counter.window, count: counter.count, capped: counter.capped === true } : null,
+          path,
+          reason,
+          suspectedCause: suspectedCause ?? null,
+          uiBaseUrl: cfg.uiBaseUrl,
+        });
+      } catch (err) {
+        const rule = typeof (err as { rule?: unknown })?.rule === "string" ? (err as { rule: string }).rule : "error";
+        await note({ stage: "issue", type: "failed", summary: `The issue could not be filed: ${rule}`, record: { state: "failed", reason: rule } });
+        return;
+      }
+      issue = filed;
+      await note({
+        stage: "issue",
+        type: "opened",
+        summary: `Issue #${filed.number} filed`,
+        data: { number: filed.number },
+        record: { state: "opened", number: filed.number, url: filed.url },
+      });
+    };
+
     // A cycle that ends waiting for a person says so, once. Recorded before and after the send, so a crash between the
     // two leaves `pending` and the next attempt posts again (at-least-once: a missed escalation is worse than a repeat),
     // while a recorded `sent` or `failed` is never sent again.
@@ -181,6 +240,7 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
           path,
           rule,
           reason,
+          ...(issue && { issueUrl: issue.url }),
         });
       } catch {
         // The notifier promises not to throw; if it does anyway, that is a failed delivery and not a lost cycle.
@@ -220,6 +280,10 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
       data: { decision: triage.decision, rule: triage.rule },
       record: { decision: triage.decision, rule: triage.rule, reason: triage.reason, suspectedCause: triage.suspectedCause ?? null },
     });
+    // An issue for every incident Starfish acts on or escalates; a declined, skipped or deferred one gets none.
+    if (triage.decision === "act" || triage.decision === "notify") {
+      await fileIssue(loaded, triage.decision, triage.reason, triage.suspectedCause);
+    }
     switch (triage.decision) {
       case "skip":
       case "decline":
@@ -344,6 +408,7 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
         rootCause: fix.rootCause,
         risk: fix.risk ?? "",
         verify: { status: verified.status, rule: verified.rule, changedFiles: verified.changedFiles, output: verified.output },
+        ...(issue && { issueNumber: issue.number }),
         ...(review && { review }),
       });
       await note({

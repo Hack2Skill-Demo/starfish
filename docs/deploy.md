@@ -68,6 +68,15 @@ and a fake GitHub API, **not against real GitHub**, and the only job that calls 
 deployed) is a dry run, so the secret is still plumbing. The deploy script does not set `STARFISH_GITHUB_REPO`; without it the
 opener cannot be built.
 
+**The incident's issue (#17).** For every incident the agent acts on or escalates (not a declined one) it files one GitHub issue in
+`STARFISH_GITHUB_REPO`, labelled `starfish`, with what is failing, the evidence (fingerprint, the independent counter-check, the suspected
+cause), what Starfish will do, and links to the incident and the run (with `STARFISH_UI_URL`). The token therefore needs **Issues: read and
+write** as well as contents and pull requests. A retry after a crash or timeout finds the issue it already filed (a marker in its body, among the
+newest `starfish`-labelled issues in the repository's own list, not the search index, which lags) and files no second. A pull request the cycle
+opens says `Closes #N`; the Slack message links the issue. A failure to file is recorded on the cycle (`summary.issue`: `failed`, GitHub's rule)
+and the cycle goes on, because the issue is the incident's history and not a step the fix depends on. A dry run files nothing and says so.
+Tested against a fake GitHub API over local HTTP; never run against real GitHub.
+
 Starfish pushes only to branches named `starfish/<id>` and the engine checks that, but a GitHub App's
 permission cannot be limited to a branch prefix. If "Starfish can write only its own branches" is to be
 a guarantee and not a convention, protect the base branch and restrict who may push, with a branch

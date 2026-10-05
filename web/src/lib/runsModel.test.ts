@@ -99,6 +99,8 @@ describe("buildWaterfall", () => {
     const withIt = buildWaterfall(c, [ev("triage", "decision", 5000), ev("notify", "failed", 8000)], T0 + 10_000);
     const step = withIt.steps.find((s) => s.stage === "notify");
     expect(step).toMatchObject({ title: "Tell a person", status: "done", outcome: "failed" });
+    const issue = buildWaterfall(c, [ev("triage", "decision", 5000), ev("issue", "opened", 6000)], T0 + 10_000).steps.find((s) => s.stage === "issue");
+    expect(issue).toMatchObject({ title: "GitHub issue", status: "done", outcome: "opened" });
   });
 
   it("marks a stage without an event as not reached, never done", () => {

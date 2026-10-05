@@ -34,6 +34,14 @@ describe("buildNeedsHumanMessage", () => {
     expect(text).not.toMatch(/failed \d+ times/);
   });
 
+  it("adds a link to the incident's GitHub issue, only when it is a plain https URL", () => {
+    const withIssue = JSON.stringify(buildNeedsHumanMessage({ ...req, issueUrl: "https://github.com/acme/shop/issues/9" }, ""));
+    expect(withIssue).toContain("https://github.com/acme/shop/issues/9");
+    for (const bad of ["javascript:alert(1)", "http://github.com/acme/shop/issues/9", "https://u:p@github.com/x", "not a url"]) {
+      expect(JSON.stringify(buildNeedsHumanMessage({ ...req, issueUrl: bad }, "")), bad).not.toContain("Open the issue");
+    }
+  });
+
   it("tells a notify cycle from one where a fix was tried", () => {
     expect(buildNeedsHumanMessage(req, UI).text).toContain("No code change helps");
     expect(buildNeedsHumanMessage({ ...req, path: "human" }, UI).text).toContain("tried a fix");
@@ -41,7 +49,11 @@ describe("buildNeedsHumanMessage", () => {
 
   it("has no links without a UI origin, or for an id that is not a plain id", () => {
     expect(JSON.stringify(buildNeedsHumanMessage(req, ""))).not.toContain("http");
-    expect(JSON.stringify(buildNeedsHumanMessage({ ...req, incidentId: "a/../b" }, UI))).not.toContain("http");
+    // each link is judged on its own id: a bad incident id costs only the incident link
+    const onlyRun = JSON.stringify(buildNeedsHumanMessage({ ...req, incidentId: "a/../b" }, UI));
+    expect(onlyRun).not.toContain("/incidents/");
+    expect(onlyRun).toContain("/runs?run=inc1_r0");
+    expect(JSON.stringify(buildNeedsHumanMessage({ ...req, incidentId: "a/../b", cycleId: "x y" }, UI))).not.toContain("http");
   });
 
   it("redacts credentials in every dynamic field", () => {
