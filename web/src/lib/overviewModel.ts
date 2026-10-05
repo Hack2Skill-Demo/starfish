@@ -88,3 +88,63 @@ export function countIncidents(rows: readonly IncidentRow[]): IncidentCounts {
   }
   return { open, regressions };
 }
+
+/** A ratio that keeps both of its numbers: a percentage alone hides how small the sample is. */
+export interface Ratio {
+  count: number;
+  of: number;
+}
+
+export interface RunKpis {
+  /** Runs no worker is still on: every state but `running`. The denominator of the two ratios below. */
+  finished: number;
+  /** Finished runs that opened a pull request. A dry run drafts a fix and opens nothing, so it is not one. */
+  pullRequests: Ratio;
+  /** Finished runs that failed, including the ones that timed out. */
+  failed: Ratio;
+  /**
+   * Median of (last write - start) over finished runs, in ms; undefined when there are none. A cycle's last
+   * write is its last event or its release, so for a run waiting on a human this is when the agent stopped.
+   */
+  medianRunMs?: number;
+}
+
+export function runKpis(cycles: readonly CycleRow[]): RunKpis {
+  const finished = cycles.filter((c) => c.state !== "running");
+  const durations = finished.map((c) => c.updatedAt.getTime() - c.createdAt.getTime()).filter((ms) => ms >= 0);
+  return {
+    finished: finished.length,
+    pullRequests: { count: finished.filter((c) => c.path === "pr").length, of: finished.length },
+    failed: { count: finished.filter((c) => c.state === "failed").length, of: finished.length },
+    ...(durations.length > 0 && { medianRunMs: median(durations) }),
+  };
+}
+
+function median(values: readonly number[]): number {
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 1 ? sorted[mid]! : (sorted[mid - 1]! + sorted[mid]!) / 2;
+}
+
+/**
+ * Open incidents the agent has not decided on yet (`triageState` "pending"). A row with no triage state at
+ * all is not counted: the engine always writes one, so a missing field is a record we cannot judge.
+ */
+export function countUntriaged(rows: readonly IncidentRow[]): number {
+  return rows.filter((r) => OPEN.has(r.status) && r.triageState === "pending").length;
+}
+
+export interface ErrorRate {
+  /** Occurrences in the current, still-running hour. */
+  thisHour: number;
+  /** Mean per hour over the full hours before it in the window. */
+  baseline: number;
+}
+
+/** The current hour against the hours before it, from `hourlySeries` (oldest first, current hour last). */
+export function errorRate(series: readonly HourBucket[]): ErrorRate | null {
+  if (series.length < 2) return null;
+  const current = series[series.length - 1]!;
+  const before = series.slice(0, -1);
+  return { thisHour: current.count, baseline: before.reduce((sum, b) => sum + b.count, 0) / before.length };
+}

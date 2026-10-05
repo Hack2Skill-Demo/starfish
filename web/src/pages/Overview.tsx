@@ -6,6 +6,10 @@
  * Not here, because nothing records it yet: a run "healed on its own", the next scheduled run, and
  * anything about merges or deploys. The agent job has never run on a real project, so on a real
  * deployment the run counts are zero until it does, and the page says so.
+ *
+ * The key figures keep their denominators ("3 of 12", never a bare percentage) and read "–" when there is
+ * nothing to divide by. They are counts and medians of stored records, not accuracy: no run has been scored
+ * against a corpus yet (see scoreboard/FORMAT.md).
  */
 import { useEffect, useState } from "react";
 import { Link } from "react-router";
@@ -17,8 +21,8 @@ import { EngineStatus } from "../components/EngineStatus";
 import { formatRelativeTime } from "../lib/formatters";
 import { listIncidents } from "../lib/incidents";
 import { subscribeCycles } from "../lib/runs";
-import { PATH_LABELS, runStatus, type CycleRow } from "../lib/runsModel";
-import { countCycles, countIncidents, headline, hourlySeries } from "../lib/overviewModel";
+import { PATH_LABELS, formatDuration, runStatus, type CycleRow } from "../lib/runsModel";
+import { countCycles, countIncidents, countUntriaged, errorRate, headline, hourlySeries, runKpis, type Ratio } from "../lib/overviewModel";
 import { useEnvironment } from "../lib/useSettings";
 
 const WINDOW_HOURS = 24;
@@ -62,6 +66,8 @@ export default function Overview() {
   const counts = cycles ? countCycles(cycles, now) : null;
   const incidentCounts = incidents.data ? countIncidents(incidents.data.rows) : null;
   const series = incidents.data ? hourlySeries(incidents.data.rows, now, WINDOW_HOURS) : null;
+  const kpis = cycles ? runKpis(cycles) : null;
+  const rate = series ? errorRate(series) : null;
   const total = series ? series.reduce((sum, b) => sum + b.count, 0) : 0;
   const peak = series ? Math.max(...series.map((b) => b.count), 0) : 0;
 
@@ -81,6 +87,38 @@ export default function Overview() {
         <Tile label="Runs in progress" value={counts?.inProgress} to="/runs" note={counts && counts.stalled > 0 ? `${counts.stalled} with no worker` : "a worker holds them now"} />
         <Tile label="Open incidents" value={incidentCounts?.open} to="/incidents" note={`last ${WINDOW_HOURS} hours`} />
         <Tile label="Regressions" value={incidentCounts?.regressions} to="/incidents" note="open, came back after a fix" />
+      </section>
+      <section aria-label="Key figures" className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+        <Kpi
+          label="Pull requests opened"
+          value={kpis ? ratioText(kpis.pullRequests) : undefined}
+          note={kpis && kpis.finished === 0 ? "no finished runs yet" : "of finished runs"}
+          to="/runs?path=pr"
+        />
+        <Kpi
+          label="Failed runs"
+          value={kpis ? ratioText(kpis.failed) : undefined}
+          note={kpis && kpis.finished === 0 ? "no finished runs yet" : "of finished runs, timeouts included"}
+          to="/runs?path=failed"
+        />
+        <Kpi
+          label="Median run length"
+          value={kpis ? (kpis.medianRunMs === undefined ? "–" : formatDuration(kpis.medianRunMs)) : undefined}
+          note={kpis && kpis.medianRunMs !== undefined ? `over ${kpis.finished} finished runs` : "no finished runs yet"}
+          to="/runs"
+        />
+        <Kpi
+          label="Untriaged incidents"
+          value={incidentCounts && incidents.data ? countUntriaged(incidents.data.rows).toLocaleString() : undefined}
+          note={`open, no agent decision yet, last ${WINDOW_HOURS} hours`}
+          to="/incidents"
+        />
+        <Kpi
+          label="Errors this hour"
+          value={rate ? rate.thisHour.toLocaleString() : undefined}
+          note={rate ? `previous ${WINDOW_HOURS - 1} hours: ${rate.baseline.toFixed(1)} per hour` : "no incident data"}
+          to="/incidents"
+        />
       </section>
       {capped && <p className="text-xs text-gray-600 dark:text-gray-400">Run counts cover the most recently updated runs only; older ones are not counted.</p>}
 
@@ -170,6 +208,22 @@ function Tile({ label, value, to, note }: { label: string; value: number | undef
       <p className="text-sm text-gray-700 dark:text-gray-300">{label}</p>
       <p className="mt-1 text-2xl font-semibold text-gray-900 dark:text-white" data-testid={`tile-${label}`}>
         {value === undefined ? "…" : value.toLocaleString()}
+      </p>
+      <p className="mt-1 text-xs text-gray-600 dark:text-gray-400">{note}</p>
+    </Link>
+  );
+}
+
+function ratioText({ count, of }: Ratio): string {
+  return of === 0 ? "–" : `${count} of ${of}`;
+}
+
+function Kpi({ label, value, note, to }: { label: string; value: string | undefined; note: string; to: string }) {
+  return (
+    <Link to={to} className="rounded-lg border border-gray-200 bg-white p-4 hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-800 dark:hover:bg-gray-700">
+      <p className="text-sm text-gray-700 dark:text-gray-300">{label}</p>
+      <p className="mt-1 text-2xl font-semibold text-gray-900 dark:text-white" data-testid={`kpi-${label}`}>
+        {value ?? "…"}
       </p>
       <p className="mt-1 text-xs text-gray-600 dark:text-gray-400">{note}</p>
     </Link>

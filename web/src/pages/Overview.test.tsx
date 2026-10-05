@@ -1,4 +1,4 @@
-import { act, render, screen, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -86,6 +86,24 @@ describe("Overview page", () => {
     expect(within(did).getByRole("link", { name: /Pull request opened/ })).toHaveAttribute("href", "/runs?path=pr");
     expect(within(did).getByText("Declined: no fix attempted")).toBeInTheDocument();
     expect(within(did).getByText("Not finished")).toBeInTheDocument();
+  });
+
+  it("shows key figures that keep their denominators, and dashes when there is nothing to divide", async () => {
+    const hour = String(Math.floor(now / 3_600_000));
+    mocks.listIncidents.mockResolvedValue({
+      rows: [incident({ triageState: "pending", occurrencesByHour: { [hour]: 5 } }), incident({ id: "i2", triageState: "declined" })],
+      capped: false,
+    });
+    renderPage();
+    expect(screen.getByTestId("kpi-Pull requests opened")).toHaveTextContent("…");
+    act(() => mocks.cyclesCb!([], false));
+    expect(screen.getByTestId("kpi-Pull requests opened")).toHaveTextContent("–");
+    expect(screen.getByTestId("kpi-Median run length")).toHaveTextContent("–");
+    act(() => mocks.cyclesCb!([cycle("a", { state: "waiting-human", path: "pr" }), cycle("b", { state: "failed", path: "failed" })], false));
+    expect(screen.getByTestId("kpi-Pull requests opened")).toHaveTextContent("1 of 2");
+    expect(screen.getByTestId("kpi-Failed runs")).toHaveTextContent("1 of 2");
+    await waitFor(() => expect(screen.getByTestId("kpi-Untriaged incidents")).toHaveTextContent("1"));
+    expect(screen.getByTestId("kpi-Errors this hour")).toHaveTextContent("5");
   });
 
   it("links the latest runs to their pages", () => {
