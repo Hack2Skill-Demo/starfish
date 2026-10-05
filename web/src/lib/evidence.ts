@@ -4,8 +4,11 @@
  * src/agent/loop.ts). Pure: it reads nothing. A stage without a record is "not reached" and carries
  * no result, so the page can never show a placeholder as if it were evidence.
  *
- * Not stored today, and said so on the page rather than faked: the independent log recount (the
- * engine does not keep it with the incident), and the patch text (only its SHA-256 is recorded).
+ * The independent log recount comes from the triage record (`counter*` keys, kept with the decision
+ * it informed). The fixer's rejected alternatives and each review attack are numbered keys
+ * (`alternative1`..., `attack1`...), since the record holds flat values only.
+ *
+ * Not stored, and said so on the page rather than faked: the patch text (only its SHA-256 is recorded).
  */
 import type { IncidentRow } from "./incidents";
 import { safeUrl, type CycleRow } from "./runsModel";
@@ -63,6 +66,46 @@ function fieldsFrom(record: Record<string, string | number | boolean | null> | u
 
 const NOT_REACHED = "Not reached: the agent has not recorded this step.";
 
+/** `prefix1`, `prefix2`... in order, as fields labelled "<label> 1", "<label> 2"...; stops at the first gap. */
+function numberedFields(record: Record<string, string | number | boolean | null> | undefined, prefix: string, label: string): EvidenceField[] {
+  const out: EvidenceField[] = [];
+  for (let i = 1; record && i <= 20; i++) {
+    const value = show(record[`${prefix}${i}`]);
+    if (value === undefined) break;
+    out.push({ label: `${label} ${i}`, value });
+  }
+  return out;
+}
+
+/** The recount triage judged on, from its record. Missing (`counterCount: null`) is said to be missing, never zero. */
+function counterCheckStage(triage: Record<string, string | number | boolean | null> | undefined, storeCount: number, noRun: boolean): EvidenceStage {
+  const base = { id: "counter-check" as const, title: "Counter-check" };
+  if (!triage) return { ...base, status: "not-reached", note: noRun ? "Not reached: no agent run is recorded for this incident." : NOT_REACHED, fields: [] };
+  if (!("counterCount" in triage)) {
+    return { ...base, status: "not-stored", note: "Not stored: this run was recorded before the engine kept its recount.", fields: [] };
+  }
+  if (triage.counterCount === null) {
+    return { ...base, status: "recorded", note: "Missing: the independent recount was not available, so triage waited for it (missing is not zero).", fields: [] };
+  }
+  const capped = triage.counterCapped === true;
+  const fields: EvidenceField[] = [
+    { label: "Raw-log recount", value: `${capped ? "at least " : ""}${String(triage.counterCount)}` },
+    // Side by side, as the issue asks; not the same window: the store counts every occurrence since first seen.
+    { label: "Store's count (since first seen)", value: String(storeCount) },
+    ...fieldsFrom(triage, [
+      ["counterWindow", "Window"],
+      ["counterCheckedAt", "Checked at"],
+      ["counterFilter", "Filter counted", true],
+    ]),
+  ];
+  return {
+    ...base,
+    status: "recorded",
+    ...(!("counterFilter" in triage) && { note: "The filter was too long to store whole, so it is left out rather than cut." }),
+    fields,
+  };
+}
+
 export function buildEvidence(row: IncidentRow, cycle: CycleRow | null): Evidence {
   const rec = cycle?.summary ?? {};
   const noRun = cycle === null;
@@ -91,29 +134,27 @@ export function buildEvidence(row: IncidentRow, cycle: CycleRow | null): Evidenc
         ...(row.recurrenceCount > 0 ? [{ label: "Regressions", value: String(row.recurrenceCount) }] : []),
       ].filter((f) => f.value !== ""),
     },
-    {
-      id: "counter-check",
-      title: "Counter-check",
-      status: "not-stored",
-      note: "Not stored: the engine recounts the raw logs, but does not keep the result with the incident yet.",
-      fields: [],
-    },
+    counterCheckStage(rec.triage, row.occurrenceCount, noRun),
     later("triage", "Triage", [
       ["decision", "Decision"],
       ["rule", "Rule", true],
       ["reason", "Reason"],
       ["suspectedCause", "Suspected cause"],
+      ["model", "Model", true],
     ]),
-    {
-      ...later("fix", "Fix draft", [
+    later(
+      "fix",
+      "Fix draft",
+      [
         ["outcome", "Outcome"],
         ["rule", "Rule", true],
         ["rootCause", "Root cause"],
         ["testAdded", "Test added"],
         ["risk", "Risk"],
         ["revisions", "Revisions"],
-      ]),
-    },
+      ],
+      numberedFields(rec.fix, "alternative", "Rejected alternative")
+    ),
     later("verify", "Verify gate", [
       ["status", "Result"],
       ["rule", "Rule", true],
@@ -123,15 +164,20 @@ export function buildEvidence(row: IncidentRow, cycle: CycleRow | null): Evidenc
       ["baseRevision", "Tested against", true],
       ["patchSha256", "Patch SHA-256", true],
     ]),
-    later("review", "Adversarial review", [
-      ["verdict", "Verdict"],
-      ["rule", "Rule", true],
-      ["attacks", "Attacks tried"],
-      ["held", "Held"],
-      ["flagged", "Flagged"],
-      ["broken", "Broken"],
-      ["patchSha256", "Patch SHA-256", true],
-    ]),
+    later(
+      "review",
+      "Adversarial review",
+      [
+        ["verdict", "Verdict"],
+        ["rule", "Rule", true],
+        ["attacks", "Attacks tried"],
+        ["held", "Held"],
+        ["flagged", "Flagged"],
+        ["broken", "Broken"],
+        ["patchSha256", "Patch SHA-256", true],
+      ],
+      numberedFields(rec.review, "attack", "Attack")
+    ),
     later(
       "pr",
       "Pull request",

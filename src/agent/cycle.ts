@@ -41,6 +41,11 @@ export interface CycleKey {
 const ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
 const MAX_SUMMARY = 300;
 const MAX_VALUE = 300;
+/**
+ * Keys whose value is worth more than MAX_VALUE whole. The counter-check's filter (#39) is shown so a person can run
+ * it again; with the excluded-service clauses it is usually longer than 300, and a cut filter counts something else.
+ */
+export const LONG_VALUE_KEYS: Readonly<Record<string, number>> = { counterFilter: 2000 };
 const MAX_DATA_KEYS = 20;
 const MAX_OUTCOME = 200;
 const DATA_KEY_RE = /^[A-Za-z0-9_.-]{1,40}$/;
@@ -186,7 +191,7 @@ function sanitizeFlat(input: Record<string, unknown> | undefined): Flat {
   for (const [k, v] of Object.entries(input ?? {})) {
     if (Object.keys(out).length >= MAX_DATA_KEYS) break;
     if (!DATA_KEY_RE.test(k) || isSensitiveKey(k)) continue;
-    if (typeof v === "string") out[k] = clip(v, MAX_VALUE);
+    if (typeof v === "string") out[k] = clip(v, LONG_VALUE_KEYS[k] ?? MAX_VALUE);
     else if (typeof v === "number" && Number.isFinite(v)) out[k] = v;
     else if (typeof v === "boolean" || v === null) out[k] = v;
   }

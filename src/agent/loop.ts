@@ -30,7 +30,7 @@
  */
 import type { Firestore } from "firebase-admin/firestore";
 import type { StarfishConfig } from "../config.js";
-import type { IncidentStatus } from "../types.js";
+import type { IncidentStatus, LogCounterCheck } from "../types.js";
 import { OPEN_INCIDENT_STATUSES } from "../types.js";
 import {
   acquireLease,
@@ -39,6 +39,7 @@ import {
   releaseLease,
   renewLease,
   type CycleConfig,
+  LONG_VALUE_KEYS,
   type CycleKey,
   type CyclePath,
   type CycleState,
@@ -78,7 +79,7 @@ export interface PullRequestRequest {
 
 export interface LoopDeps {
   db: Firestore;
-  config: Pick<StarfishConfig, "dryRun" | "reviewRequired" | "modelCallBudget" | "uiBaseUrl"> & CycleConfig & VerifyConfig;
+  config: Pick<StarfishConfig, "dryRun" | "reviewRequired" | "modelCallBudget" | "uiBaseUrl" | "model"> & CycleConfig & VerifyConfig;
   /** This worker's identity, for the lease. */
   owner: string;
   now: () => Date;
@@ -120,6 +121,37 @@ export type LoopResult =
 class LeaseLost extends Error {}
 
 const MAX_REVISIONS = 1;
+
+/** How many rejected alternatives and review attacks the run record keeps (each value is bounded by cycle.ts). */
+export const MAX_RECORDED_ALTERNATIVES = 5;
+export const MAX_RECORDED_ATTACKS = 10;
+/** A counter-check filter longer than its record value (cycle.ts) is left out rather than cut: a cut filter would count something else. */
+const MAX_RECORDED_FILTER = LONG_VALUE_KEYS.counterFilter ?? 0;
+
+/** `alternative1`, `alternative2`...: the run record holds flat values only, so a list is numbered keys. */
+function numbered(prefix: string, items: readonly string[], max: number): Record<string, string> {
+  const out: Record<string, string> = {};
+  items.slice(0, max).forEach((item, i) => {
+    out[`${prefix}${i + 1}`] = item;
+  });
+  return out;
+}
+
+/**
+ * The independent log recount triage judged on, kept with its decision (#39): the count, its window, whether
+ * counting stopped at the cap, when it ran, and the exact filter so a person can run it again. A missing
+ * check is recorded as missing (`counterCount: null`), never as zero.
+ */
+export function counterCheckRecord(check: LogCounterCheck | undefined): Record<string, string | number | boolean | null> {
+  if (!check || !Number.isFinite(check.count)) return { counterCount: null };
+  return {
+    counterCount: check.count,
+    counterWindow: check.window,
+    counterCapped: check.capped === true,
+    ...(check.checkedAt !== undefined && { counterCheckedAt: check.checkedAt }),
+    ...(check.filter !== undefined && check.filter.length <= MAX_RECORDED_FILTER && { counterFilter: check.filter }),
+  };
+}
 
 export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResult> {
   const { db, config: cfg, owner } = deps;
@@ -278,7 +310,15 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
       type: "decision",
       summary: triage.reason,
       data: { decision: triage.decision, rule: triage.rule },
-      record: { decision: triage.decision, rule: triage.rule, reason: triage.reason, suspectedCause: triage.suspectedCause ?? null },
+      record: {
+        decision: triage.decision,
+        rule: triage.rule,
+        reason: triage.reason,
+        suspectedCause: triage.suspectedCause ?? null,
+        // The configured model, only when the decision was the model's: a gate (missing or zero recount) asked none.
+        ...(triage.rule.startsWith("model-") && { model: cfg.model }),
+        ...counterCheckRecord(loaded.subject.incident.logCounterCheck),
+      },
     });
     // An issue for every incident Starfish acts on or escalates; a declined, skipped or deferred one gets none.
     if (triage.decision === "act" || triage.decision === "notify") {
@@ -311,7 +351,15 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
         type: fix.outcome,
         summary: fix.rootCause,
         data: { rule: fix.rule, testAdded: fix.testAdded ?? null },
-        record: { outcome: fix.outcome, rule: fix.rule, rootCause: fix.rootCause, testAdded: fix.testAdded ?? null, risk: fix.risk ?? null, revisions },
+        record: {
+          outcome: fix.outcome,
+          rule: fix.rule,
+          rootCause: fix.rootCause,
+          testAdded: fix.testAdded ?? null,
+          risk: fix.risk ?? null,
+          revisions,
+          ...numbered("alternative", fix.rejectedAlternatives ?? [], MAX_RECORDED_ALTERNATIVES),
+        },
       });
       if (fix.outcome === "error") return await release(fix.rule);
       if (fix.outcome === "declined" || fix.patch === undefined) {
@@ -367,6 +415,11 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
             flagged: reviewed.attacks?.filter((a) => a.outcome === "flagged").length ?? 0,
             broken: reviewed.attacks?.filter((a) => a.outcome === "broken").length ?? 0,
             patchSha256: verified.patchSha256,
+            ...numbered(
+              "attack",
+              (reviewed.attacks ?? []).map((a) => `${a.outcome}: ${a.attack} | ${a.detail}`),
+              MAX_RECORDED_ATTACKS
+            ),
           },
         });
         if (reviewed.verdict === undefined) return await release(reviewed.rule);
