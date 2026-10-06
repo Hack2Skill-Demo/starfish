@@ -92,6 +92,18 @@ const FIELDS: Record<
     placeholder: "6",
     hint: "The most model calls one cycle may make (triage, each fix attempt, each review), 1 to 50. A spend cap per incident.",
   },
+  model: {
+    label: "Gemini model",
+    multiline: false,
+    placeholder: "gemini-3.1-pro-preview",
+    hint: "The Vertex AI model id the agent loop asks for triage, fix drafting and review. It must be available in the region below. The job that runs it has never run on a real project.",
+  },
+  location: {
+    label: "Vertex AI region",
+    multiline: false,
+    placeholder: "us-central1",
+    hint: "Where those model calls go: a GCP region such as us-central1, or global. The Vertex project stays the engine's own setting.",
+  },
 };
 
 const INPUT =

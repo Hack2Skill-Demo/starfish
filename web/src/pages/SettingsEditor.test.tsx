@@ -55,7 +55,7 @@ describe("SettingsEditor", () => {
     expect(field("Environment label").value).toBe("prod");
     expect(field("Environment label").disabled).toBe(false);
     expect(field("Watched project").disabled).toBe(true);
-    expect(screen.getAllByText("Using the engine's default.")).toHaveLength(8);
+    expect(screen.getAllByText("Using the engine's default.")).toHaveLength(10);
     expect(screen.getByText("Revision 2")).toBeInTheDocument();
   });
 
@@ -103,6 +103,35 @@ describe("SettingsEditor", () => {
       automationEnabled: false,
       modelCallBudget: 9,
     });
+  });
+
+  it("edits the Gemini model and Vertex AI region (#7)", async () => {
+    renderEditor();
+    await screen.findByText("Runtime settings");
+    expect(field("Gemini model").disabled).toBe(true);
+    await override("Gemini model");
+    await userEvent.type(field("Gemini model"), "gemini-2.5-flash");
+    await override("Vertex AI region");
+    await userEvent.type(field("Vertex AI region"), "europe-west4");
+    await userEvent.click(screen.getByRole("button", { name: "Save settings" }));
+
+    await waitFor(() => expect(mocks.saveSettings).toHaveBeenCalledTimes(1));
+    expect(mocks.saveSettings.mock.calls[0]![3]).toEqual({
+      environment: "prod",
+      model: "gemini-2.5-flash",
+      location: "europe-west4",
+    });
+  });
+
+  it("refuses a region that isn't one without saving", async () => {
+    renderEditor();
+    await screen.findByText("Runtime settings");
+    await override("Vertex AI region");
+    await userEvent.type(field("Vertex AI region"), "us-central1.example.com");
+    await userEvent.click(screen.getByRole("button", { name: "Save settings" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("location:");
+    expect(mocks.saveSettings).not.toHaveBeenCalled();
   });
 
   it("refuses an out-of-range budget without saving", async () => {

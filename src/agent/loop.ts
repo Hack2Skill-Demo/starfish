@@ -91,7 +91,11 @@ export interface LoopDeps {
   /** This worker's identity, for the lease. */
   owner: string;
   now: () => Date;
-  ask?: AskJson;
+  /**
+   * The model client, bound to the same snapshot as `config` (`createAskJson` in vertex.ts). Required, so a cycle
+   * can't fall back to the environment's model and region and record `config.model` for a call it didn't make (#7).
+   */
+  ask: AskJson;
   load: (incidentId: string) => Promise<LoopSubject | null>;
   /** The incident's status right now, read fresh. null if it is gone. */
   incidentStatus: (incidentId: string) => Promise<IncidentStatus | null>;

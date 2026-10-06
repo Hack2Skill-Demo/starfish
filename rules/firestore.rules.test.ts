@@ -410,6 +410,13 @@ describe("runtime settings", () => {
       ["a model call budget above fifty", { modelCallBudget: 51 }],
       ["a fractional model call budget", { modelCallBudget: 2.5 }],
       ["a model call budget that is a string", { modelCallBudget: "6" }],
+      ["a model id with capitals", { model: "Gemini-Pro" }],
+      ["a model id that is a resource path", { model: "publishers/google/models/gemini" }],
+      ["a model id longer than 64 characters", { model: "g".repeat(65) }],
+      ["a model id that isn't a string", { model: 3 }],
+      ["a region that isn't a GCP region", { location: "us-central1.evil.example" }],
+      ["a region with no number", { location: "us-central" }],
+      ["a region that isn't a string", { location: true }],
       ["someone else's name on the change", { updatedBy: "op1" }],
       ["a backdated change", { updatedAt: Timestamp.fromMillis(0) }],
       ["a revision that isn't an integer", { revision: 1.5 }],
@@ -437,6 +444,16 @@ describe("runtime settings", () => {
         settings: { dryRun: false, reviewRequired: false, automationEnabled: false, modelCallBudget: 50 },
       });
       await assertSucceeds(save("admin1", { ...settings, dryRun: true, modelCallBudget: 1 }));
+    });
+
+    it("accepts a model and region, and the engine agrees (#7)", async () => {
+      await assertSucceeds(save("admin1", { ...settings, model: "gemini-3.1-pro-preview", location: "europe-west4" }));
+      expect(validateSettings(await stored())).toMatchObject({
+        ok: true,
+        settings: { model: "gemini-3.1-pro-preview", location: "europe-west4" },
+      });
+      await assertSucceeds(save("admin1", { ...settings, model: "g", location: "global" }));
+      expect(validateSettings(await stored())).toMatchObject({ ok: true, settings: { model: "g", location: "global" } });
     });
 
     it("a document the rules accept is one the engine accepts", async () => {

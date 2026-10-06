@@ -21,7 +21,7 @@ import { initializeApp } from "firebase-admin/app";
 import { getFirestore } from "firebase-admin/firestore";
 import { loadChildProcessBasics, loadConfig, loadGithubToken, loadSlackOnCallWebhook } from "./config.js";
 import { RuntimeConfigLoader } from "./runtimeSettings.js";
-import { askJson } from "./vertex.js";
+import { createAskJson } from "./vertex.js";
 import { redactPii } from "./ingest/redact.js";
 import { makeAutomationSwitch } from "./agent/automationSwitch.js";
 import { createGitCheckout, createLoader } from "./agent/assemble.js";
@@ -103,7 +103,8 @@ const deps = {
   config: cfg,
   owner,
   now: () => new Date(),
-  ask: askJson,
+  // The model and region of this pass's snapshot: an admin's override on Settings reaches the call (#7).
+  ask: createAskJson(cfg),
   load: loader.load,
   incidentStatus: async (id: string): Promise<IncidentStatus | null> => {
     const snap = await db.collection(cfg.incidentCollection).doc(id).get();

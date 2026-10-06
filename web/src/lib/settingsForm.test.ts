@@ -66,6 +66,28 @@ describe("pipeline switches", () => {
   });
 });
 
+describe("the Gemini model and region (#7)", () => {
+  it("round-trips a stored model and region, trimming what was typed", () => {
+    const form = formFromStored({ version: 1, model: "gemini-3.1-pro-preview", location: "global" });
+    expect(form.model).toEqual({ override: true, text: "gemini-3.1-pro-preview" });
+    expect(form.location).toEqual({ override: true, text: "global" });
+    expect(
+      settingsFromForm(withField({ model: { override: true, text: " gemini-x " }, location: { override: true, text: "europe-west4 " } }))
+    ).toEqual({ ok: true, settings: { model: "gemini-x", location: "europe-west4" } });
+  });
+
+  it("refuses an empty or malformed model or region with the engine's own validator", () => {
+    for (const text of ["", "Gemini", "a/b"]) {
+      const result = settingsFromForm(withField({ model: { override: true, text } }));
+      expect(!result.ok && result.problems.map((p) => p.split(":")[0])).toEqual(["model"]);
+    }
+    for (const text of ["", "us central1", "us-central1.example.com"]) {
+      const result = settingsFromForm(withField({ location: { override: true, text } }));
+      expect(!result.ok && result.problems.map((p) => p.split(":")[0])).toEqual(["location"]);
+    }
+  });
+});
+
 describe("settingsFromForm", () => {
   it("returns no settings for a form left entirely on its defaults", () => {
     expect(settingsFromForm(defaults)).toEqual({ ok: true, settings: {} });
