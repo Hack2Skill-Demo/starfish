@@ -500,13 +500,23 @@ DRY_RUN=1 DEPLOY_AGENT=1 AGENT_REPO=owner/name VERIFY_ISOLATION=cloud-run-job VE
 (`ADMIN_SA_NAME`; #146): a public service shares an identity with nothing else. That account holds what one ingest run and a
 retire need, `logging.viewer` on the watched project and `datastore.user` conditioned to Starfish's database, and nothing more:
 no Gemini (ingest makes no model call), no secret but Twilio's when they are given (#37: the phone escalation's webhooks and opt-in routes, `POST /twilio/*` and `POST /api/oncall/people/<id>/send-code|confirm`, all a 404 without them). Two
-actions, both admin-only, both audited, both the functions that already existed (`triggerIngest`, `retireIncident`):
+actions, both admin-only, both audited, both the functions that already existed (`triggerIngest`, `retireIncident`); with Twilio
+mounted, the two opt-in routes too, admin-only and audited the same way (`sendConfirmationCode`, `confirmNumber`, #172):
 
 | Call | What it does |
 |---|---|
 | `POST /api/ingest/run` | one ingest run, the same `runIngest` a tick runs; the answer is the run's counts. One at a time per instance (a second is a 409) |
 | `POST /api/incidents/<id>/retire` with `{"reason": "..."}` | closes the incident for good and frees its fingerprint, so the demo's reset can replay a fault |
+| `POST /api/oncall/people/<id>/send-code` | texts a six-digit code to that person's pending number (#37); at most one a minute |
+| `POST /api/oncall/people/<id>/confirm` with `{"code": "123456"}` | marks the number confirmed when the code matches; five wrong tries end it |
 | `GET /healthz` | `{ok:true}`, no token |
+
+The audit trail is `starfish_audit` (`STARFISH_AUDIT_COLLECTION`): admin-readable, engine-written. An ingest run or a retire an
+admin made is recorded before the run or in the retire's own transaction (a refused one is not). The opt-in routes record every
+attempt by an admin, refusals included (too soon, wrong code, too many tries, escalation off); a caller who is not an
+admin is refused and not recorded, so a guest cannot fill the audit collection: who, which person, the outcome
+and when, never the number or the code. A send-code's entry commits before the text is sent, and if it cannot be written nothing
+is sent.
 
 **Who may call.** The caller sends `Authorization: Bearer <Firebase ID token>`. The token is checked (signature, expiry, and
 not revoked: a disabled account is refused at once), and

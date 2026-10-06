@@ -202,7 +202,8 @@ src/
   agent/verifyGate.ts  stage 3: apply a patch in a scratch copy, judge the tree that results, run the
                    configured command with a scrubbed env. Not a sandbox; run by `pnpm agent` (deployable, never run)
   adminApi.ts      the admin API's rules (#63, #65): a Firebase ID token -> uid, admin from the operator record on every call, `POST /api/ingest/run`
-                   and `POST /api/incidents/<id>/retire`, one 401, bounded body, CORS allowlist, one ingest at a time. `adminApiServer.ts` is its HTTP
+                   and `POST /api/incidents/<id>/retire` (with Twilio, the on-call opt-in `send-code`/`confirm`, every admin's attempt audited
+                   without the number or the code, #172), one 401, bounded body, CORS allowlist, one ingest at a time. `adminApiServer.ts` is its HTTP
                    shell, `adminApiCli.ts` the Cloud Run service (`DEPLOY_ADMIN_API=1`): written and tested, never deployed
   operators.ts     grant a person an operator record (the first admin; `pnpm grant-operator --project <id>`, which refuses if the shell's project differs and reads the store before creating an account); the closed collection can't be written from the UI
   status.ts        judges the engine's last_run record (`pnpm status`): the same verdicts as the UI's engine line
