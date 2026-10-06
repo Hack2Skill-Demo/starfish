@@ -231,6 +231,23 @@ describe("runIngest on the emulator", () => {
     expect(await lastRun()).toMatchObject({ outcome: "ok", capped: true, totals: { entriesProcessed: 20000 } });
   });
 
+  it("records the Monitoring signal's counts, and a window whose read failed as unavailable, never as zero (#19)", async () => {
+    let n = 0;
+    await runIngest(db, loader(), now, {
+      aggregate: async () => ({
+        ...emptyResult,
+        monitoring: n++ === 0
+          ? { observations: 2, annotated: 1, monitoringOnly: 1, unavailable: false }
+          : { observations: 0, annotated: 0, monitoringOnly: 0, unavailable: true },
+      }),
+    });
+    expect((await lastRun())?.monitoring).toEqual({ observations: 2, annotated: 1, monitoringOnly: 1, unavailableWindows: 3 });
+
+    // Off: nothing is recorded about it.
+    await runIngest(db, loader(), new Date(now.getTime() + HOUR), { aggregate: async () => emptyResult });
+    expect((await lastRun())?.monitoring).toBeUndefined();
+  });
+
   it("a run that only narrowed its window is not idle, and the next run replays the narrowed window", async () => {
     config = { ...config, defaultLookbackHours: 2 };
     const seen: { id: string; start: number; end: number }[] = [];

@@ -1,5 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import type { Firestore } from "firebase-admin/firestore";
+import type { MonitoringObservation, MonitoringReader } from "./monitoring.js";
+import type { IncidentInput } from "./store.js";
 
 const entries: unknown[] = [];
 const logging = { projects: [] as unknown[], filters: [] as string[], orders: [] as string[] };
@@ -17,7 +19,7 @@ vi.mock("@google-cloud/logging", () => ({
 }));
 
 const { SEEDED_SECRETS } = await import("./testSecrets.js");
-const { aggregateErrors, MAX_ENTRIES_PER_RUN } = await import("./aggregate.js");
+const { aggregateErrors, correlateMonitoring, MAX_ENTRIES_PER_RUN } = await import("./aggregate.js");
 const { windowOf } = await import("./window.js");
 const { testConfig } = await import("../testConfig.js");
 
@@ -163,5 +165,181 @@ describe("aggregateErrors", () => {
       expect(result.narrowedTo).toBeUndefined();
       expect(created).toHaveLength(1);
     });
+  });
+});
+
+describe("aggregateErrors: the Cloud Monitoring signal (#19)", () => {
+  const monitored = testConfig({ projectId: "p", watchedProjectId: "watched-app-1", monitoringEnabled: true });
+  const failures = (name: string, count: number) => ({
+    resource: { labels: { service_name: name } },
+    points: [{ interval: { startTime: window.start.toISOString(), endTime: window.end.toISOString() }, value: { int64Value: String(count) } }],
+  });
+  /** Answers the Cloud Run signal with `series` and the gen1 one with nothing. */
+  function reader(series: unknown[]) {
+    const calls: string[] = [];
+    const r: MonitoringReader = {
+      listTimeSeries: async (req) => {
+        calls.push(req.filter);
+        return { series: req.filter.includes("run.googleapis.com") ? (series as never[]) : [] };
+      },
+    };
+    return { reader: r, calls };
+  }
+
+  it("is off by default: Monitoring is never read", async () => {
+    entries.splice(0, entries.length);
+    const { reader: r, calls } = reader([failures("checkout", 9)]);
+    const { db, created } = fakeDb();
+    const result = await aggregateErrors(db, config, window, { monitoring: r });
+    expect(calls).toHaveLength(0);
+    expect(created).toHaveLength(0);
+    expect(result.monitoring).toBeUndefined();
+  });
+
+  it("opens a Monitoring-only incident for a failed invocation that wrote no ERROR log", async () => {
+    entries.splice(0, entries.length);
+    const { reader: r } = reader([failures("checkout", 9)]);
+    const { db, created } = fakeDb();
+
+    const result = await aggregateErrors(db, monitored, window, { monitoring: r });
+
+    expect(result).toMatchObject({
+      entriesProcessed: 0,
+      incidentsCreated: 1,
+      monitoring: { observations: 1, annotated: 0, monitoringOnly: 1, unavailable: false },
+    });
+    expect(created).toHaveLength(1);
+    const doc = created[0]!;
+    expect(doc).toMatchObject({
+      functionName: "checkout",
+      service: "platform",
+      errorType: "UnloggedFailure",
+      signalSource: "monitoring",
+      occurrenceCount: 9,
+      monitoringCount: 9,
+      sourceProjectId: "watched-app-1",
+      status: "new",
+    });
+    expect(String(doc.fingerprint)).toMatch(/^mon-[0-9a-f]{16}$/);
+    expect(doc.lastMonitoring).toEqual([
+      expect.objectContaining({
+        source: "cloud-monitoring",
+        metricType: "run.googleapis.com/request_count",
+        resourceType: "cloud_run_revision",
+        projectId: "watched-app-1",
+        failureCount: 9,
+      }),
+    ]);
+    const obs = (doc.lastMonitoring as { windowStart: { toDate(): Date }; windowEnd: { toDate(): Date } }[])[0]!;
+    expect(obs.windowStart.toDate()).toEqual(window.start);
+    expect(obs.windowEnd.toDate()).toEqual(window.end);
+  });
+
+  it("annotates the log incident when the same function also logged in the window: one incident, not two", async () => {
+    entries.splice(0, entries.length, entry("lookup failed"), entry("lookup failed"));
+    const { reader: r } = reader([failures("lookup", 5)]);
+    const { db, created } = fakeDb();
+
+    const result = await aggregateErrors(db, monitored, window, { monitoring: r });
+
+    expect(result.incidentsCreated).toBe(1);
+    expect(result.monitoring).toMatchObject({ observations: 1, annotated: 1, monitoringOnly: 0 });
+    expect(created).toHaveLength(1);
+    expect(created[0]).toMatchObject({ errorMessage: "lookup failed", occurrenceCount: 2, monitoringCount: 5 });
+    expect(created[0]!.signalSource).toBeUndefined();
+    expect(String(created[0]!.fingerprint)).toMatch(/^[0-9a-f]{16}$/);
+  });
+
+  it("keeps a log incident and another function's Monitoring-only failures apart", async () => {
+    entries.splice(0, entries.length, entry("lookup failed"));
+    const { reader: r } = reader([failures("lookup", 1), failures("checkout", 4)]);
+    const { db, created } = fakeDb();
+
+    await aggregateErrors(db, monitored, window, { monitoring: r });
+
+    expect(created.map((c) => [c.functionName, c.signalSource ?? "log", c.monitoringCount])).toEqual([
+      ["lookup", "log", 1],
+      ["checkout", "monitoring", 4],
+    ]);
+  });
+
+  it("an unavailable Monitoring API is recorded as unavailable: log incidents are still written, nothing reads as zero", async () => {
+    entries.splice(0, entries.length, entry("lookup failed"));
+    const failing: MonitoringReader = { listTimeSeries: () => Promise.reject(new Error("PERMISSION_DENIED")) };
+    const { db, created } = fakeDb();
+
+    const result = await aggregateErrors(db, monitored, window, { monitoring: failing });
+
+    expect(result.monitoring).toEqual({ observations: 0, annotated: 0, monitoringOnly: 0, unavailable: true });
+    expect(created).toHaveLength(1);
+    expect(created[0]!.monitoringCount).toBeUndefined();
+    expect(created[0]!.lastMonitoring).toBeUndefined();
+  });
+
+  it("does not read Monitoring for a capped read it narrows: the narrowed window reads it once", async () => {
+    const t0 = window.start.getTime() + 60_000;
+    entries.splice(
+      0,
+      entries.length,
+      ...Array.from({ length: MAX_ENTRIES_PER_RUN }, (_, i) => ({
+        metadata: { timestamp: new Date(t0 + i * 1000), resource: { labels: { function_name: "lookup" } } },
+        data: "x",
+      }))
+    );
+    const { reader: r, calls } = reader([failures("checkout", 9)]);
+    const { db, created } = fakeDb();
+    const result = await aggregateErrors(db, monitored, window, { monitoring: r });
+    expect(result.narrowedTo).toBeDefined();
+    expect(calls).toHaveLength(0);
+    expect(created).toHaveLength(0);
+  });
+});
+
+describe("correlateMonitoring", () => {
+  const obs = (functionName: string, failureCount: number): MonitoringObservation => ({
+    source: "cloud-monitoring",
+    metricType: "run.googleapis.com/request_count",
+    resourceType: "cloud_run_revision",
+    projectId: "watched-app-1",
+    functionName,
+    windowStart: window.start,
+    windowEnd: window.end,
+    failureCount,
+    capped: false,
+    firstAt: window.start,
+    lastAt: window.end,
+    description: "Cloud Monitoring counted 5xx responses",
+  });
+  const logInput = (functionName: string, errorMessage: string): IncidentInput => ({
+    functionName,
+    service: null,
+    environment: "prod",
+    errorType: "UnknownError",
+    errorMessage,
+    occurrenceCount: 1,
+    firstOccurredAt: window.start,
+    lastOccurredAt: window.end,
+    windowId: window.id,
+  });
+
+  it("matches on the canonical spelling and annotates every log input of the function", () => {
+    const inputs = [logInput("sync_orders", "a"), logInput("sync_orders", "b"), logInput("other", "c")];
+    const { monitoringOnly, annotated } = correlateMonitoring(inputs, [obs("sync-orders", 3)], config, window.id);
+    expect(monitoringOnly).toEqual([]);
+    expect(annotated).toBe(2);
+    expect(inputs.map((i) => i.monitoring?.length ?? 0)).toEqual([1, 1, 0]);
+  });
+
+  it("gives a Monitoring-only input a fixed message, the window id and the monitoring namespace", () => {
+    const { monitoringOnly } = correlateMonitoring([], [obs("checkout", 2)], config, window.id);
+    expect(monitoringOnly).toEqual([
+      expect.objectContaining({
+        functionName: "checkout",
+        errorMessage: "Cloud Monitoring counted 5xx responses",
+        occurrenceCount: 2,
+        signalSource: "monitoring",
+        windowId: window.id,
+      }),
+    ]);
   });
 });

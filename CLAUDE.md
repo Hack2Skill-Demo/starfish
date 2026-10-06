@@ -136,6 +136,9 @@ src/
     retire         admin closes an incident for good and frees its fingerprint (key removed, audited);
                    store.ts treats a retired incident as absent, so the next occurrence is a new one
     counterCheck   independent raw-log recount + redacted samples
+    monitoring     Cloud Monitoring failure counts per function (#19): injectable reader, REST adapter, bounded,
+                   null when unavailable (never zero); aggregate annotates a function's log incidents in the window
+                   or opens a Monitoring-only one (fingerprint `mon-…`). Off by default, never run against real Monitoring
     aggregate      reads one window of logs and folds it into the store (each upsert carries
                    the window id, so a replayed window counts once)
     window         (start, end] windows: pure planning; ids come from the boundaries

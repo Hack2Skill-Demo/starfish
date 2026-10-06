@@ -53,6 +53,7 @@ Where it currently holds, and where it doesn't:
 | Services Starfish never ingests (its own) | ✅ config (`STARFISH_EXCLUDED_SERVICES`, default `starfish`), applied at query time and at parse time; environment-only on purpose, because it guards against a feedback loop and is not an operational preference. Set it to the name Starfish is actually deployed under; nothing is deployed yet (#6, #32) |
 | Log source resource types | ⚠️ config, but attribution reads only `function_name` / `service_name`, so only Cloud Functions and Cloud Run work |
 | Framework-noise suppression list | ✅ config, callable GET-probe noise by default |
+| Cloud Monitoring failure signal (#19) | ⚠️ environment only (`STARFISH_MONITORING_ENABLED`, default off; `STARFISH_MONITORING_RESOURCE_TYPES` picks among the two built-in metrics, `cloud_run_revision` and `cloud_function`; `STARFISH_MONITORING_MAX_SERIES`, default 500); another metric needs code. Never run against real Monitoring |
 | Deployment: project, region, schedule, the watched and Gemini projects, the environment label | ✅ environment variables of `scripts/deploy-gcp.sh`; no file is edited. Run once, on the demo project (2026-10-05): the ingest job, its schedule, the database and rules deployed and a scheduled run succeeded (#6). The agent job (`DEPLOY_AGENT=1`) has not run. `.github/workflows/deploy.yml` runs the same script by hand-dispatch with Workload Identity Federation and repository variables, no stored key; written and pinned by a test, **never run** (#75) |
 | Incident store | ❌ assumes Firestore |
 | Verify-gate command, timeout and excluded paths | ⚠️ environment only (`STARFISH_VERIFY_COMMAND`, `STARFISH_VERIFY_TIMEOUT_SECONDS`, `STARFISH_PATCH_EXCLUDED_PATHS`); `src/agent/verifyGate.ts` reads them; in the isolated deployment only the verify job runs it (written, never run) |
@@ -65,8 +66,24 @@ Ingestion reads Cloud Logging only. The production pipeline this ingest is adapt
 Firebase **gen2** (Cloud Run) functions can fail without emitting an ERROR-severity log at
 all: a log-only reader then reports "no errors" while Cloud Monitoring still counts the
 failed invocations. The fix there was a second, Monitoring-derived source feeding the same
-store. Starfish does not have that yet, so until it does, a clean ingest run means *no
-logged errors*, not *no errors*.
+store.
+
+Starfish now has that second source (#19), **built, tested against fakes only, off by default, and
+never run against real Cloud Monitoring** (`STARFISH_MONITORING_ENABLED=false`). Turned on, each ingest
+window also reads the watched project's failure metrics (`src/ingest/monitoring.ts`): 5xx responses
+from `run.googleapis.com/request_count` (Cloud Run, gen2 functions) and non-ok executions from
+`cloudfunctions.googleapis.com/function/execution_count` (gen1), one bounded count per function, each
+with its metric, resource type, project and observation window. A function that also logged an
+ERROR in that window has its log incidents annotated (`monitoringCount`); one that did not gets a
+**Monitoring-only incident** (`signalSource: monitoring`), fingerprinted in a namespace of its own so it
+never merges with a log-derived one. A Monitoring read that fails is recorded as unavailable
+(`last_run.monitoring.unavailableWindows`), never as zero failures, and that window is not re-read.
+Triage never declines a Monitoring-only incident because its log counter-check is zero, and never lets
+one become `act` without cause evidence on the incident (a cause or a stack trace, which a count of
+failures does not carry): it goes to a human (`notify`) instead. Enabling it needs
+`roles/monitoring.viewer` on the watched project, which `scripts/deploy-gcp.sh` does not grant yet, and
+the UI does not show the Monitoring fields yet. With it off, which is every deployment today, a clean
+ingest run still means *no logged errors*, not *no errors*.
 
 ## How it works
 
@@ -170,7 +187,7 @@ is tested; "deployed" would mean it has run in a real project, and **nothing has
 | Secret Manager | the GitHub token the pull-request step uses | secret, access grant and mount are in the deploy script, and `loadGithubToken()` reads it; the opener is built and tested against a local git remote and a fake API, **not against real GitHub**; its only caller is the agent job (a dry run, never run) |
 | Firebase Hosting | the operator UI, on its own site (not the project's default one) | `scripts/deploy-web.sh` and the Hosting config written; not deployed |
 | Cloud Build, Artifact Registry | build the image (`gcloud run jobs deploy --source`; one build per job) | in the deploy script; not deployed |
-| Cloud Monitoring | a second signal beside logs (see the blind spot above) | planned |
+| Cloud Monitoring | a second signal beside logs (see the blind spot above) | built and tested against fakes; off by default (`STARFISH_MONITORING_ENABLED`); never run against real Cloud Monitoring, and the deploy script does not grant its role |
 
 ## Status
 
@@ -258,7 +275,8 @@ in a run yet; the triage stage below consumes what it produces.
 The first stage of the half that acts exists as a **tested contract** and nothing more: triage
 (`src/agent/triage.ts`) decides act / notify / decline for one incident. It skips an incident
 that isn't open, defers when the counter-check is missing (missing is not zero), declines a
-counter-check of zero without asking the model, validates the model's answer locally and
+counter-check of zero without asking the model (except a Monitoring-only incident, whose zero is
+expected; and that one is turned from act to notify when it carries no cause evidence), validates the model's answer locally and
 fails closed, and redacts and bounds both what the model is shown and what it returns. It is
 tested with a stubbed model; the agent job (`pnpm agent`, deployable with `DEPLOY_AGENT=1`, never run) runs it and takes the counter-check itself,
 and it is not on Google's Agent Development Kit yet.

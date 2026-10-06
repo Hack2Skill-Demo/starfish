@@ -72,6 +72,13 @@ describe("toIncident", () => {
     const i = toIncident("a", { environment: "demo", functionName: "f", errorMessage: "boom", httpStatus: 500, lastOccurredAt: ts("2026-10-04T12:00:00Z"), stackTrace: "", junk: 1 });
     expect(i).toEqual({ id: "a", environment: "demo", functionName: "f", message: "boom", httpStatus: 500, lastOccurredAt: "2026-10-04T12:00:00.000Z" });
   });
+
+  it("carries a Monitoring-only source and the Monitoring count, which triage's evidence rules read (#19)", () => {
+    expect(toIncident("a", { environment: "demo", signalSource: "monitoring", monitoringCount: 7 })).toMatchObject({ signalSource: "monitoring", monitoringCount: 7 });
+    const log = toIncident("b", { environment: "demo", signalSource: "other", monitoringCount: "7" });
+    expect(log.signalSource).toBeUndefined();
+    expect(log.monitoringCount).toBeUndefined();
+  });
 });
 
 function fakeDb(docs: Record<string, Record<string, unknown>>) {

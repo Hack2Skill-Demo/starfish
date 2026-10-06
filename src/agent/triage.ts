@@ -16,6 +16,14 @@
  * the function, so there is nothing to fix, and a model that is shown an incident and asked
  * "urgent?" tends to say yes. Every result names the rule that produced it, for the UI.
  *
+ * A Monitoring-only incident (#19: Cloud Monitoring counted failed invocations of a function that
+ * logged no ERROR) is the exception to that rule, both ways:
+ *   - it is never declined because the counter-check is zero: a zero log count is what it IS, not a
+ *     sign the failures stopped, so it goes to the model like any other incident;
+ *   - it is never `act` without cause evidence on the incident (an underlying cause or a stack
+ *     trace): a count of failures says that something broke, not where, so there is nothing for a
+ *     fixer to aim at. A model's `act` is turned into `notify`, so a human looks instead.
+ *
  * Everything shown to the model is redacted and bounded, and everything the model returns is
  * checked here and redacted again before it is stored, because it is shown to people (guests,
  * on the public demo) and a model can echo what it was shown.
@@ -39,7 +47,8 @@ export type TriageRule =
   | "model-notify"
   | "model-decline"
   | "model-call-failed"
-  | "model-output-invalid";
+  | "model-output-invalid"
+  | "monitoring-only-no-cause";
 
 export interface TriageResult {
   decision: TriageDecision;
@@ -84,6 +93,10 @@ Read the counter-check for what it is: every ERROR-severity log entry for the wh
 window, counted straight from Cloud Logging. The occurrence count is for this one incident, over its
 lifetime, so the two will rarely be equal and that alone means nothing.
 
+An incident whose source is "Cloud Monitoring only" was opened from a count of failed invocations
+with no ERROR log entry behind it: its counter-check reads zero by construction, and it carries no
+message or stack from the code. Judge it on the count, the function and the environment.
+
 Declining is a valid and often correct answer. Opening a change that was not needed costs the team
 review time they do not have.`;
 
@@ -109,7 +122,11 @@ export function renderForTriage(subject: TriageSubject): string {
     `errorType: ${clip(i.errorType, 100)}`,
     ...(i.errorCode ? [`errorCode: ${clip(i.errorCode, 100)}`] : []),
     ...(i.httpStatus != null ? [`httpStatus: ${Number(i.httpStatus)}`] : []),
+    ...(i.signalSource === "monitoring"
+      ? ["source: Cloud Monitoring only (failed invocations counted with no ERROR log entry; the log counter-check is zero by construction)"]
+      : []),
     `occurrences (lifetime of this incident): ${Number(i.occurrenceCount ?? 0)}`,
+    ...(Number.isFinite(i.monitoringCount) ? [`failed invocations counted by Cloud Monitoring: ${Number(i.monitoringCount)}`] : []),
     `first seen: ${clip(i.firstOccurredAt, 40)}`,
     `last seen: ${clip(i.lastOccurredAt, 40)}`,
     counterCheckLine(i),
@@ -158,6 +175,16 @@ function parseModelAnswer(raw: unknown): { decision: ModelDecision; reasoning: s
   };
 }
 
+/**
+ * Cause evidence on the incident itself: an underlying cause or a stack trace, the things a fix can be
+ * aimed at. A Monitoring-only incident has neither by construction (there was no log entry to read
+ * them from); samples are not counted, because they are the function's ERROR logs, which belong to
+ * other incidents.
+ */
+export function hasCauseEvidence(incident: Incident): boolean {
+  return Boolean(incident.errorDetail?.trim() || incident.stackTrace?.trim());
+}
+
 /** Never throws: a failure is a result, because an unrecorded failure would look like a decision not to act. */
 export async function triageIncident(subject: TriageSubject, ask: AskJson = askJson): Promise<TriageResult> {
   if (!(OPEN_INCIDENT_STATUSES as readonly string[]).includes(subject.status)) {
@@ -172,7 +199,8 @@ export async function triageIncident(subject: TriageSubject, ask: AskJson = askJ
       "The independent log counter-check is not available, so the evidence is missing (not zero). Try again later."
     );
   }
-  if (check.count === 0) {
+  const monitoringOnly = subject.incident.signalSource === "monitoring";
+  if (check.count === 0 && !monitoringOnly) {
     return result(
       "decline",
       "counter-check-zero",
@@ -191,6 +219,14 @@ export async function triageIncident(subject: TriageSubject, ask: AskJson = askJ
   const answer = parseModelAnswer(raw);
   if (!answer) {
     return result("error", "model-output-invalid", "The model's answer was not in the expected shape, so nothing was acted on.");
+  }
+  if (answer.decision === "act" && monitoringOnly && !hasCauseEvidence(subject.incident)) {
+    return result(
+      "notify",
+      "monitoring-only-no-cause",
+      `Cloud Monitoring counted failed invocations with no ERROR log behind them, so there is no cause evidence for a code fix: a human should look. The model's reasoning: ${answer.reasoning}`,
+      answer.suspectedCause
+    );
   }
   return result(answer.decision, `model-${answer.decision}`, answer.reasoning, answer.decision === "decline" ? undefined : answer.suspectedCause);
 }

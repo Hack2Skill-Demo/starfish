@@ -245,7 +245,55 @@ export interface StarfishConfig {
    * application faults. Excluded at query time and again at parse time.
    */
   ignoredMessages: string[];
+  /**
+   * Read a Cloud Monitoring failure signal beside the logs (#19): failed invocations that wrote no
+   * ERROR log. Off by default: built and tested against fakes only, never run against real Cloud
+   * Monitoring. On, each ingest window also reads `monitoringSignals` for the watched project.
+   */
+  monitoringEnabled: boolean;
+  /** Which Monitoring metrics count as failures (`DEFAULT_MONITORING_SIGNALS`, chosen by resource type). */
+  monitoringSignals: MonitoringSignalDef[];
+  /** The most time series one window's Monitoring read takes, across all signals: a burst never reads unbounded. */
+  monitoringMaxSeries: number;
 }
+
+/**
+ * One Cloud Monitoring metric that counts failed invocations, and how to read a function out of it.
+ * The metric and label names are Google's, not a deployment's; which of them a deployment reads is
+ * chosen by `STARFISH_MONITORING_RESOURCE_TYPES`.
+ */
+export interface MonitoringSignalDef {
+  /** The monitored resource type, e.g. `cloud_run_revision`. */
+  resourceType: string;
+  metricType: string;
+  /** A Monitoring filter clause that keeps only the failures (ANDed with the metric and resource type). */
+  failureFilter: string;
+  /** The resource label naming the function or service (`resource.labels.<this>`). */
+  functionLabel: string;
+  /** Plain words for what was counted: the Monitoring-only incident's message. Fixed text, never data. */
+  description: string;
+}
+
+/**
+ * Gen2 functions and Cloud Run report requests with a response code class; gen1 functions report
+ * executions with a status. Both are DELTA counters. Never run against real Cloud Monitoring.
+ */
+export const DEFAULT_MONITORING_SIGNALS: readonly MonitoringSignalDef[] = [
+  {
+    resourceType: "cloud_run_revision",
+    metricType: "run.googleapis.com/request_count",
+    failureFilter: 'metric.labels.response_code_class = "5xx"',
+    functionLabel: "service_name",
+    description: "Cloud Monitoring counted 5xx responses (run.googleapis.com/request_count) with no ERROR log entry",
+  },
+  {
+    resourceType: "cloud_function",
+    metricType: "cloudfunctions.googleapis.com/function/execution_count",
+    failureFilter: 'metric.labels.status != "ok"',
+    functionLabel: "function_name",
+    description: "Cloud Monitoring counted failed executions (cloudfunctions.googleapis.com/function/execution_count) with no ERROR log entry",
+  },
+];
 
 /** Starfish's own service name: never ingested (see `excludedServices`). */
 export const DEFAULT_EXCLUDED_SERVICES = ["starfish"];
@@ -390,7 +438,36 @@ export function loadConfig(): StarfishConfig {
     ),
     ignoredMessages:
       parseList(process.env.STARFISH_IGNORED_MESSAGES, "|") ?? DEFAULT_IGNORED_MESSAGES,
+    ...monitoringSettings(),
+    monitoringMaxSeries: positiveNumber(process.env.STARFISH_MONITORING_MAX_SERIES, 500, "STARFISH_MONITORING_MAX_SERIES"),
   };
+}
+
+/**
+ * The switch and the signals. On with no signal is refused at startup: a read of nothing would answer
+ * "no failures", a zero that was never measured.
+ */
+function monitoringSettings(): Pick<StarfishConfig, "monitoringEnabled" | "monitoringSignals"> {
+  const monitoringEnabled = parseBoolean(process.env.STARFISH_MONITORING_ENABLED, false, "STARFISH_MONITORING_ENABLED");
+  const monitoringSignals = parseMonitoringSignals(process.env.STARFISH_MONITORING_RESOURCE_TYPES);
+  if (monitoringEnabled && monitoringSignals.length === 0) {
+    throw new Error("STARFISH_MONITORING_ENABLED is on but STARFISH_MONITORING_RESOURCE_TYPES lists none: unset it for the defaults");
+  }
+  return { monitoringEnabled, monitoringSignals };
+}
+
+/** The built-in signals for the listed resource types (all of them when unset). An unknown type is refused at startup. */
+function parseMonitoringSignals(raw: string | undefined): MonitoringSignalDef[] {
+  const types = parseList(raw, ",");
+  if (types === undefined) return DEFAULT_MONITORING_SIGNALS.map((s) => ({ ...s }));
+  return types.map((t) => {
+    const def = DEFAULT_MONITORING_SIGNALS.find((s) => s.resourceType === t);
+    if (!def) {
+      const known = DEFAULT_MONITORING_SIGNALS.map((s) => s.resourceType).join(", ");
+      throw new Error(`STARFISH_MONITORING_RESOURCE_TYPES lists "${t}"; known: ${known}`);
+    }
+    return { ...def };
+  });
 }
 
 /**

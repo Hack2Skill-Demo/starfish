@@ -214,3 +214,81 @@ describe("what the model is shown", () => {
     expect(calls[0]!.system).not.toContain(hostile);
   });
 });
+
+describe("triageIncident: a Monitoring-only incident (#19)", () => {
+  const monitoringOnly = (over: Partial<Incident> = {}) =>
+    incident({
+      functionName: "checkout",
+      errorType: "UnloggedFailure",
+      message: "Cloud Monitoring counted 5xx responses (run.googleapis.com/request_count) with no ERROR log entry",
+      signalSource: "monitoring",
+      monitoringCount: 37,
+      occurrenceCount: 37,
+      logCounterCheck: { window: "24h", count: 0 },
+      ...over,
+    });
+  const notify = { decision: "notify", reasoning: "Checkout is failing for users.", suspectedCause: null };
+
+  it("is not declined because the counter-check is zero: the model is asked", async () => {
+    const { ask, calls } = stub(notify);
+    const r = await triageIncident({ incident: monitoringOnly(), status: "new" }, ask);
+    expect(r).toMatchObject({ decision: "notify", rule: "model-notify" });
+    expect(calls).toHaveLength(1);
+  });
+
+  it("a LOG incident with a zero counter-check is still declined without the model", async () => {
+    const { ask, calls } = stub(act);
+    const r = await triageIncident(
+      { incident: incident({ logCounterCheck: { window: "24h", count: 0 }, monitoringCount: 5 }), status: "new" },
+      ask
+    );
+    expect(r).toMatchObject({ decision: "decline", rule: "counter-check-zero" });
+    expect(calls).toHaveLength(0);
+  });
+
+  it("turns a model's act into notify: a count of failures is not cause evidence", async () => {
+    const { ask } = stub(act);
+    const r = await triageIncident({ incident: monitoringOnly(), status: "new" }, ask);
+    expect(r.decision).toBe("notify");
+    expect(r.rule).toBe("monitoring-only-no-cause");
+    expect(r.reason).toContain("no cause evidence");
+  });
+
+  it("is never act even when its counter-check finds the function's logged errors", async () => {
+    const { ask } = stub(act);
+    const r = await triageIncident(
+      { incident: monitoringOnly({ logCounterCheck: { window: "24h", count: 12 } }), status: "new" },
+      ask
+    );
+    expect(r).toMatchObject({ decision: "notify", rule: "monitoring-only-no-cause" });
+  });
+
+  it("can act when the incident itself carries a cause", async () => {
+    const { ask } = stub(act);
+    const r = await triageIncident(
+      { incident: monitoringOnly({ stackTrace: "Error: x\n    at handler (src/checkout.ts:10:3)" }), status: "new" },
+      ask
+    );
+    expect(r).toMatchObject({ decision: "act", rule: "model-act" });
+  });
+
+  it("may still be declined by the model on other grounds", async () => {
+    const { ask } = stub({ decision: "decline", reasoning: "Two failures in a day, none since.", suspectedCause: null });
+    const r = await triageIncident({ incident: monitoringOnly({ monitoringCount: 2 }), status: "new" }, ask);
+    expect(r).toMatchObject({ decision: "decline", rule: "model-decline" });
+  });
+
+  it("still defers when the counter-check is missing", async () => {
+    const { ask, calls } = stub(act);
+    const r = await triageIncident({ incident: monitoringOnly({ logCounterCheck: undefined }), status: "new" }, ask);
+    expect(r).toMatchObject({ decision: "defer", rule: "counter-check-missing" });
+    expect(calls).toHaveLength(0);
+  });
+
+  it("tells the model the source and the Monitoring count", () => {
+    const text = renderForTriage({ incident: monitoringOnly(), status: "new" });
+    expect(text).toContain("source: Cloud Monitoring only");
+    expect(text).toContain("failed invocations counted by Cloud Monitoring: 37");
+    expect(renderForTriage({ incident: incident(), status: "new" })).not.toContain("Cloud Monitoring");
+  });
+});
