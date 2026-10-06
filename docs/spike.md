@@ -36,9 +36,34 @@ pnpm spike
 For each fixture it prints the triage verdict, the proposed patch (when triage says urgent),
 and the ground truth side by side, plus whether triage agreed with reality.
 
+## Running a patch, not reading it (#4)
+
+A `fix-quality` fixture may carry a `checkout` (`src/types.ts`): the pre-fix source as a directory, the files the model
+is shown in full, the target's own verify command, and a private evaluator (a directory outside the source plus a
+command). For such a fixture the spike, through the verify gate (`src/scoreboard/evaluate.ts`):
+
+1. runs the evaluator on a disposable copy of the unpatched source, and refuses the fixture unless it **fails** there
+   (the defect reproduces);
+2. applies the model's diff exactly as given (`git apply`; nothing is repaired by hand), and requires the target's command
+   **and** the evaluator to pass. A patch that touches an evaluator file is refused.
+
+An empty patch on a fix case, a diff that does not apply, a timeout or a failing command is a FAIL, and makes
+`pnpm spike` exit 1; so does a patch on a `declines-correctly` fixture. Each check prints its status, rule, exit code and
+the patch hash. A fixture with no checkout prints `NOT CHECKED`: a plausible diff is not a pass. Running a model's patch
+is running code in this process, so the patch check needs `STARFISH_VERIFY_ISOLATION=in-process`, said on purpose;
+without it the check is `NOT RUN` and fails.
+
+**Built, and tested only through its parts with synthetic data; never run against Vertex.** The two fixtures in
+`fixtures/incidents/` have no checkout, so today the spike still checks no patch. What #4 still needs, and only a person
+with Vertex access can do: grow the fixtures to at least 5 `fix-quality` (each with a checkout whose source is recovered
+from history, as below) and 3 `declines-correctly`; commit the code-fix class, fixture ids and decision rule before the
+first scored run; run `pnpm spike`; and record the raw outcomes and a go/no-go here. No such run has happened, and this
+page reports no result.
+
 ## Reading the results
 
-Triage agreement is scored automatically. **Patch quality is not** — read it yourself and ask:
+Triage agreement is scored automatically, and so is a patch with a checkout (above). **Patch quality beyond passing is
+not** — read it yourself and ask:
 
 - Does it identify the same root cause a human did?
 - Is it minimal, or did it refactor things nobody asked it to touch?

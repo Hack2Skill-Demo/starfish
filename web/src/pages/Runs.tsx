@@ -23,6 +23,7 @@ import {
   PATH_LABELS,
   buildWaterfall,
   formatDuration,
+  prStateView,
   progressText,
   runStatus,
   safeUrl,
@@ -202,6 +203,7 @@ function RunDetail({ cycle, environment, now }: { cycle: CycleRow; environment: 
   const status = runStatus(cycle, now);
   const rule = triageRule(cycle);
   const prUrl = safeUrl(cycle.summary.pr?.url);
+  const prNow = prStateView(cycle, now);
   const water = useMemo(() => (events ? buildWaterfall(cycle, events, now) : null), [cycle, events, now]);
 
   return (
@@ -229,6 +231,17 @@ function RunDetail({ cycle, environment, now }: { cycle: CycleRow; environment: 
             <>
               <dt className="text-gray-600 dark:text-gray-400">Outcome</dt>
               <dd>{cycle.outcome}</dd>
+            </>
+          )}
+          {prNow && (
+            <>
+              <dt className="text-gray-600 dark:text-gray-400">Pull request now</dt>
+              <dd>
+                <Badge tone={prNow.tone}>{prNow.text}</Badge>
+                {prNow.checkedAt && (
+                  <span className="ml-2 text-xs text-gray-600 dark:text-gray-400">read from GitHub {formatRelativeTime(prNow.checkedAt, "never", now)}</span>
+                )}
+              </dd>
             </>
           )}
           {water && (

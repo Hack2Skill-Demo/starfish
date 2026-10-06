@@ -73,6 +73,27 @@ export interface StarfishConfig {
   /** The most cycles one agent pass starts. */
   maxCyclesPerPass: number;
   /**
+   * The most opened pull requests one agent pass reads back from GitHub (#17, src/agent/reconcile.ts): their state
+   * (open, closed, merged) and the `verifyChecks` runs on their head, recorded on the cycle as `summary.prState`.
+   */
+  maxPrChecksPerPass: number;
+  /**
+   * The most cycles the agent starts in one UTC day in this environment, counted across passes (the spend cap of #5/#7):
+   * a cycle created, or a declined one reconsidered, that day counts once. When it is reached a pass starts nothing,
+   * not even a resume, until the next UTC day.
+   */
+  maxCyclesPerDay: number;
+  /**
+   * Reconsidering a declined incident (#8). A decline is settled until new evidence arrives: an operator asks for a
+   * retriage, the occurrences grow by `reconsiderBurstOccurrences` since the decision, or the incident's structural cause
+   * changes (an error code, name or HTTP status appears or changes, or a detail or stack trace becomes available).
+   * The automatic triggers wait `reconsiderCooldownMinutes` after the decision; an operator's request does not. Either
+   * way a cycle is reconsidered at most `reconsiderMaxPerDay` times in 24 hours.
+   */
+  reconsiderCooldownMinutes: number;
+  reconsiderMaxPerDay: number;
+  reconsiderBurstOccurrences: number;
+  /**
    * Paths a proposed patch may never touch: the built-in `DEFAULT_PATCH_EXCLUDED_PATHS` (CI, secrets, the package
    * manifest and lockfiles, common test, type-check and lint configs) plus whatever the deployment lists, which
    * should name any other file that defines the verify command or the tests that judge it. A trailing `/` is a directory; `*` and `**` are globs; a
@@ -320,6 +341,11 @@ export function loadConfig(): StarfishConfig {
     verifyBucket: (process.env.STARFISH_VERIFY_BUCKET ?? "").trim(),
     verifyJobRegion: (process.env.STARFISH_VERIFY_JOB_REGION ?? "").trim() || process.env.GOOGLE_CLOUD_LOCATION || "us-central1",
     maxCyclesPerPass: positiveNumber(process.env.STARFISH_MAX_CYCLES_PER_PASS, 3, "STARFISH_MAX_CYCLES_PER_PASS"),
+    maxPrChecksPerPass: positiveNumber(process.env.STARFISH_MAX_PR_CHECKS_PER_PASS, 10, "STARFISH_MAX_PR_CHECKS_PER_PASS"),
+    maxCyclesPerDay: positiveNumber(process.env.STARFISH_MAX_CYCLES_PER_DAY, 30, "STARFISH_MAX_CYCLES_PER_DAY"),
+    reconsiderCooldownMinutes: positiveNumber(process.env.STARFISH_RECONSIDER_COOLDOWN_MINUTES, 30, "STARFISH_RECONSIDER_COOLDOWN_MINUTES"),
+    reconsiderMaxPerDay: positiveNumber(process.env.STARFISH_RECONSIDER_MAX_PER_DAY, 3, "STARFISH_RECONSIDER_MAX_PER_DAY"),
+    reconsiderBurstOccurrences: positiveNumber(process.env.STARFISH_RECONSIDER_BURST_OCCURRENCES, 20, "STARFISH_RECONSIDER_BURST_OCCURRENCES"),
     patchExcludedPaths: [
       ...DEFAULT_PATCH_EXCLUDED_PATHS,
       ...(parseList(process.env.STARFISH_PATCH_EXCLUDED_PATHS, ",") ?? []),
@@ -386,10 +412,23 @@ const SLACK_WEBHOOK_RE = /^(https:\/\/hooks\.slack\.com\/services\/[A-Za-z0-9_/-
  * of StarfishConfig, and a bad value is refused by NAME, never echoed. Mounted from Secret Manager on Cloud Run.
  */
 export function loadSlackOnCallWebhook(): string | undefined {
-  const url = (process.env.STARFISH_SLACK_WEBHOOK_ONCALL ?? "").trim();
+  return slackWebhook("STARFISH_SLACK_WEBHOOK_ONCALL");
+}
+
+/**
+ * The Slack incoming-webhook URL the "new incident" message is posted to (the design's `#ops-alerts`), or undefined.
+ * Optional and separate from the on-call one: another channel, another credential. Same rules as the on-call one.
+ */
+export function loadSlackAlertsWebhook(): string | undefined {
+  return slackWebhook("STARFISH_SLACK_WEBHOOK_ALERTS");
+}
+
+/** A Slack incoming-webhook URL from `name`, or undefined. A bad value is refused by NAME, never echoed. */
+function slackWebhook(name: "STARFISH_SLACK_WEBHOOK_ONCALL" | "STARFISH_SLACK_WEBHOOK_ALERTS"): string | undefined {
+  const url = (process.env[name] ?? "").trim();
   if (url === "") return undefined;
   if (!SLACK_WEBHOOK_RE.test(url)) {
-    throw new Error("STARFISH_SLACK_WEBHOOK_ONCALL is not a Slack incoming-webhook URL (https://hooks.slack.com/services/...)");
+    throw new Error(`${name} is not a Slack incoming-webhook URL (https://hooks.slack.com/services/...)`);
   }
   return url;
 }
@@ -418,6 +457,30 @@ export function loadChildProcessBasics(): { PATH?: string; HOME?: string } {
  */
 export function loadVerifyCommandBasics(): { PATH?: string; LANG: string } {
   return { PATH: process.env.PATH, LANG: process.env.LANG ?? "C.UTF-8" };
+}
+
+/** Where the replay harness (`pnpm replay`, src/scoreboard/replay.ts, #10) reads its corpus and writes its results. */
+export interface ReplayConfig {
+  /** The corpus directory: a `manifest.json` and the files it names. */
+  corpusDir: string;
+  /** Where the results file is written: the directory `pnpm scoreboard` reads. */
+  resultsDir: string;
+  /** The longest one case may take before it is recorded as a timeout (a timeout counts against the agent). */
+  caseTimeoutSeconds: number;
+}
+
+/**
+ * The replay harness's own settings. Separate from `loadConfig()` because they are about the evaluation, not the
+ * deployment; the model, the verify timeout, the excluded paths and the budgets come from `loadConfig()` as for
+ * the agent, so a replay measures the configuration the agent would run with.
+ */
+export function loadReplayConfig(): ReplayConfig {
+  loadDotEnv();
+  return {
+    corpusDir: (process.env.STARFISH_REPLAY_CORPUS ?? "").trim() || "scoreboard/corpus",
+    resultsDir: (process.env.STARFISH_REPLAY_RESULTS_DIR ?? "").trim() || "scoreboard/results",
+    caseTimeoutSeconds: positiveNumber(process.env.STARFISH_REPLAY_CASE_TIMEOUT_SECONDS, 1800, "STARFISH_REPLAY_CASE_TIMEOUT_SECONDS"),
+  };
 }
 
 /** True when the Firestore Admin SDK is pointed at the emulator (FIRESTORE_EMULATOR_HOST), for CLIs that say so. */

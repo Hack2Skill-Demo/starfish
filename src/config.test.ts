@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { loadChildProcessBasics, loadConfig, loadGithubToken, loadSlackOnCallWebhook, loadVerifyCommandBasics, loadVerifyRunnerRequest, usingFirestoreEmulator } from "./config.js";
+import { loadChildProcessBasics, loadConfig, loadGithubToken, loadReplayConfig, loadSlackAlertsWebhook, loadSlackOnCallWebhook, loadVerifyCommandBasics, loadVerifyRunnerRequest, usingFirestoreEmulator } from "./config.js";
 
 // Env vars that loadConfig reads; cleared first so the developer's own .env/shell can't leak in.
 const KEYS = [
@@ -288,6 +288,14 @@ describe("loadConfig: the agent entrypoint's guards", () => {
     vi.stubEnv("STARFISH_MAX_CYCLES_PER_PASS", "0");
     expect(() => loadConfig()).toThrow("STARFISH_MAX_CYCLES_PER_PASS");
   });
+  it("reads ten pull requests a pass by default, and refuses a cap of zero", () => {
+    vi.stubEnv("STARFISH_MAX_PR_CHECKS_PER_PASS", "");
+    expect(loadConfig().maxPrChecksPerPass).toBe(10);
+    vi.stubEnv("STARFISH_MAX_PR_CHECKS_PER_PASS", "4");
+    expect(loadConfig().maxPrChecksPerPass).toBe(4);
+    vi.stubEnv("STARFISH_MAX_PR_CHECKS_PER_PASS", "0");
+    expect(() => loadConfig()).toThrow("STARFISH_MAX_PR_CHECKS_PER_PASS");
+  });
 });
 
 describe("loadConfig: the isolated verify job", () => {
@@ -341,6 +349,22 @@ describe("loadVerifyRunnerRequest", () => {
   });
 });
 
+describe("loadReplayConfig", () => {
+  afterEach(() => vi.unstubAllEnvs());
+  it("defaults to the committed corpus and results directories, and refuses a timeout that is not above zero", () => {
+    vi.stubEnv("STARFISH_REPLAY_CORPUS", "");
+    vi.stubEnv("STARFISH_REPLAY_RESULTS_DIR", "");
+    vi.stubEnv("STARFISH_REPLAY_CASE_TIMEOUT_SECONDS", "");
+    expect(loadReplayConfig()).toEqual({ corpusDir: "scoreboard/corpus", resultsDir: "scoreboard/results", caseTimeoutSeconds: 1800 });
+    vi.stubEnv("STARFISH_REPLAY_CORPUS", "/c");
+    vi.stubEnv("STARFISH_REPLAY_RESULTS_DIR", "/r");
+    vi.stubEnv("STARFISH_REPLAY_CASE_TIMEOUT_SECONDS", "60");
+    expect(loadReplayConfig()).toEqual({ corpusDir: "/c", resultsDir: "/r", caseTimeoutSeconds: 60 });
+    vi.stubEnv("STARFISH_REPLAY_CASE_TIMEOUT_SECONDS", "0");
+    expect(() => loadReplayConfig()).toThrow(/STARFISH_REPLAY_CASE_TIMEOUT_SECONDS/);
+  });
+});
+
 describe("loadConfig: where a missing index may be created", () => {
   beforeEach(() => {
     vi.stubEnv("STARFISH_INDEX_ALLOWED_TARGETS", "");
@@ -391,8 +415,28 @@ describe("loadConfig: where a missing index may be created", () => {
     }
   });
 
+  it("reads the #ops-alerts webhook under its own name, by the same rules, and independently of the on-call one", () => {
+    vi.stubEnv("STARFISH_SLACK_WEBHOOK_ONCALL", "");
+    vi.stubEnv("STARFISH_SLACK_WEBHOOK_ALERTS", "");
+    expect(loadSlackAlertsWebhook()).toBeUndefined();
+    const good = "https://hooks.slack.com/services/T000AAAA/B000CCCC/" + "y".repeat(24);
+    vi.stubEnv("STARFISH_SLACK_WEBHOOK_ALERTS", good);
+    expect(loadSlackAlertsWebhook()).toBe(good);
+    expect(loadSlackOnCallWebhook()).toBeUndefined();
+    const bad = "https://evil.example/services/T000AAAA/B000BBBB/secretvalue";
+    vi.stubEnv("STARFISH_SLACK_WEBHOOK_ALERTS", bad);
+    try {
+      loadSlackAlertsWebhook();
+      expect.unreachable(bad);
+    } catch (err) {
+      expect((err as Error).message).toMatch(/STARFISH_SLACK_WEBHOOK_ALERTS/);
+      expect((err as Error).message).not.toContain("secretvalue");
+    }
+  });
+
   it("does not put the Slack webhook in the config object", () => {
     vi.stubEnv("STARFISH_SLACK_WEBHOOK_ONCALL", "https://hooks.slack.com/services/T000AAAA/B000BBBB/" + "x".repeat(24));
+    vi.stubEnv("STARFISH_SLACK_WEBHOOK_ALERTS", "https://hooks.slack.com/services/T000AAAA/B000CCCC/" + "y".repeat(24));
     expect(JSON.stringify(loadConfig())).not.toContain("hooks.slack.com");
   });
 

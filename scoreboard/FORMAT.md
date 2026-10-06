@@ -4,8 +4,9 @@
 recorded yet, so there is no results table and Starfish quotes no accuracy number anywhere.** The numbers in the README,
 the deck and the video must come from `RESULTS.md` only.
 
-A runner (the demo's scenario runner, or a replay harness) writes one file per run. Nothing in this repository runs the
-agent over a corpus yet; this is the format and the aggregation that will judge it.
+A runner writes one file per run. The replay harness (`pnpm replay`, below) is built and writes this format; it has been
+run only by its tests, with a stub model over a synthetic corpus, so **no run has been recorded and no corpus of real
+cases exists yet**. The demo's scenario runner is not built.
 
 ```json
 {
@@ -53,8 +54,46 @@ agent over a corpus yet; this is the format and the aggregation that will judge 
 
 Every ratio is shown as passed/of. Below 30 cases a ratio is called a small sample.
 
+## The replay harness (`pnpm replay`)
+
+`src/scoreboard/replay.ts` runs the agent's own stage functions (triage, fixer, verify gate, reviewer) in the loop's
+order, with its one shared revision and its model-call budget, over the corpus in `STARFISH_REPLAY_CORPUS`, and writes
+`<STARFISH_REPLAY_RESULTS_DIR>/<runId>.json` after checking it with the same parser `pnpm scoreboard` uses. It never
+overwrites a recorded run. It does not run what needs the store (lease, run events, issues, Slack, the pull request): a
+replay is always a dry run, so **`openedPr` in a replay means the cycle reached the pull-request step**, where a live run
+would open one. Nothing is opened.
+
+A corpus is a directory with a `manifest.json` (the format is in `src/scoreboard/corpus.ts`): per case its id, split,
+path, expected triage, the incident (with its counter-check), the repository snapshot, the files the fixer and reviewer
+are shown, the target's own verify command, and a **private evaluator** (a directory outside the snapshot plus a
+command). The fixer and the reviewer are shown only the listed snapshot files; the evaluator's files are laid over a
+disposable copy only after the model has answered, and a patch that touches one is refused. A `bad-patch` case adds a
+planted patch and the fixer's claimed cause; the reviewer reviews it whatever `STARFISH_REVIEW_REQUIRED` says.
+
+- `fixPassed` is the private evaluator's verdict on the patch that reached the pull-request step, applied as given by
+  the verify gate. A patch the agent would not ship (failed verify or review twice, budget spent, unfit) is `false`; a
+  fixer that declined leaves it out.
+- Before any model call (`pnpm replay --check-corpus` runs the same checks alone): a held-out case must still hash to
+  its frozen `caseHash` (`pnpm replay --hash` prints it; the hash covers the entry and every file it names); every
+  code-fix evaluator must **fail** on the unpatched snapshot; every planted patch must pass the target's gate and fail
+  its evaluator. A corpus that fails any check is not run.
+- A model failure or an unusable review is `error`; a case over `STARFISH_REPLAY_CASE_TIMEOUT_SECONDS` is `timeout`
+  (work it started is not killed; the gate's own timeout bounds a command). `latencyMs` is wall time per case. Cost is
+  not recorded: the model client reports no usage. `index` cases are refused: the index heal is not run by the harness.
+- `configuration.syntheticCorpus` comes from the manifest's required `synthetic` flag. A synthetic run is not a result.
+- Not a sandbox: the corpus's commands and the model's patches run in this process, so a scored run requires
+  `STARFISH_VERIFY_ISOLATION=in-process`. The evaluator boundary is about what the model is *shown*; code a patch adds
+  runs as this user and could read the machine's files, the evaluators included. Replay a private corpus only where that
+  is acceptable.
+
+`fixtures/replay-synthetic/` is a tiny **synthetic** corpus (one code fix, one decline, one notify, one planted bad patch)
+that the harness's tests run over with a stub model. It exists to test the harness; it is not evidence about Gemini.
+
 ## Not here yet
 
-The private evaluator tests and reference fixes stay out of this repository (the evaluator boundary of #8), so a
-public file holds only outcomes. Per-class eligibility criteria for auto-merge (#9), BugsJS and the optional corpus
-expansion, and the replay harness that produces these files are not built.
+- The corpus: the four frozen MVP cases of #5, the held-out cases, and the planted bad patch over real (public or
+  synthetic) incidents, with their evaluators kept out of this repository where they are private (the evaluator boundary
+  of #8). Building it, freezing its hashes and running `pnpm replay` against Vertex is work for a person with access.
+- A recorded run, and with it any number.
+- Per-class eligibility criteria for auto-merge (#9), BugsJS and the optional corpus expansion, cost per case, and
+  detection-to-PR measured end to end.

@@ -522,4 +522,37 @@ describe("scripts/deploy-gcp.sh: the agent's Slack webhook (#17)", () => {
     expect(r.out).toContain("is not a Slack incoming-webhook URL");
     expect(r.out).not.toContain("secretvalue");
   });
+
+  const ALERTS = "https://hooks.slack.com/services/T000AAAA/B000CCCC/" + "y".repeat(24);
+
+  it("stores the optional #ops-alerts webhook in a second secret of its own, for the agent's account only, never printed", () => {
+    const r = deploy({ ...agent, STARFISH_SLACK_WEBHOOK_ALERTS: ALERTS });
+    expect(r.status).toBe(0);
+    expect(r.out).not.toContain(ALERTS);
+    expect(r.out).toContain("gcloud secrets create starfish-slack-alerts");
+    expect(r.out).toContain("<STARFISH_SLACK_WEBHOOK_ALERTS> | gcloud secrets versions add starfish-slack-alerts --data-file=-");
+    const bindings = r.out.split("\n").filter((l) => l.includes("add-iam-policy-binding starfish-slack-alerts"));
+    expect(bindings).toHaveLength(1);
+    expect(bindings[0]).toContain("--member=serviceAccount:starfish-agent@star-proj.iam.gserviceaccount.com");
+    // the on-call secret is untouched when only the alerts webhook is given
+    expect(r.out).not.toContain("starfish-slack-oncall");
+  });
+
+  it("mounts both on the agent job only, in ONE secrets flag, and neither on the ingest", () => {
+    const r = deploy({ ...agent, STARFISH_SLACK_WEBHOOK_ONCALL: HOOK, STARFISH_SLACK_WEBHOOK_ALERTS: ALERTS });
+    const agentDeploy = r.out.split("\n").find((l) => l.includes("gcloud run jobs deploy starfish-agent")) ?? "";
+    const ingestDeploy = r.out.split("\n").find((l) => l.includes("gcloud run jobs deploy starfish-ingest")) ?? "";
+    expect(agentDeploy).toContain(
+      "--update-secrets=STARFISH_GITHUB_TOKEN=starfish-github-token:latest,STARFISH_SLACK_WEBHOOK_ONCALL=starfish-slack-oncall:latest,STARFISH_SLACK_WEBHOOK_ALERTS=starfish-slack-alerts:latest"
+    );
+    expect(agentDeploy.match(/--update-secrets/g)).toHaveLength(1);
+    expect(ingestDeploy).not.toContain("SLACK");
+  });
+
+  it("refuses an alerts value that is not a Slack webhook, by name, without echoing it", () => {
+    const r = deploy({ ...agent, STARFISH_SLACK_WEBHOOK_ALERTS: "https://evil.example/services/T/B/alertsecret" });
+    expect(r.status).not.toBe(0);
+    expect(r.out).toContain("STARFISH_SLACK_WEBHOOK_ALERTS is not a Slack incoming-webhook URL");
+    expect(r.out).not.toContain("alertsecret");
+  });
 });

@@ -148,6 +148,36 @@ describe("runAgentPass", () => {
     expect(run).toHaveBeenCalledTimes(3);
   });
 
+  it("stops at the daily cap: selects only what is left of it, and records where the day stood (#5)", async () => {
+    const select = vi.fn(async (limit: number) => cands(limit));
+    const run = vi.fn(async () => finished);
+    const s = await runAgentPass(deps({ select, run, maxCycles: 3, daily: { cap: 30, startedToday: async () => 29 } }));
+    expect(select).toHaveBeenCalledWith(1);
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(s.daily).toEqual({ cap: 30, startedBefore: 29 });
+    expect(s.skipped).toBeUndefined();
+  });
+
+  it("starts nothing, and selects nothing, once the daily cap is reached", async () => {
+    const select = vi.fn(async (limit: number) => cands(limit));
+    const run = vi.fn(async () => finished);
+    for (const started of [30, 31]) {
+      const s = await runAgentPass(deps({ select, run, daily: { cap: 30, startedToday: async () => started } }));
+      expect(s).toEqual({ considered: 0, ran: 0, results: [], errors: [], aborted: false, skipped: "daily-cap", daily: { cap: 30, startedBefore: started } });
+    }
+    expect(select).not.toHaveBeenCalled();
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it("asks the daily count only after the kill switch, and lets a failed count propagate rather than run uncapped", async () => {
+    const startedToday = vi.fn(async () => 0);
+    await runAgentPass(deps({ automationEnabled: async () => false, daily: { cap: 30, startedToday } }));
+    expect(startedToday).not.toHaveBeenCalled();
+    const run = vi.fn(async () => finished);
+    await expect(runAgentPass(deps({ run, daily: { cap: 30, startedToday: () => Promise.reject(new Error("no store")) } }))).rejects.toThrow("no store");
+    expect(run).not.toHaveBeenCalled();
+  });
+
   it("asks for no more than it may run", async () => {
     const select = vi.fn(async (limit: number) => cands(limit));
     await runAgentPass(deps({ select, maxCycles: 2 }));

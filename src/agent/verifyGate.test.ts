@@ -8,7 +8,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { MAX_CHANGED_FILES, MAX_OUTPUT_CHARS, MAX_PATCH_BYTES, isExcludedPath, verifyPatch, type VerifyConfig } from "./verifyGate.js";
+import { MAX_CHANGED_FILES, MAX_OUTPUT_CHARS, MAX_PATCH_BYTES, isExcludedPath, runUnpatched, verifyPatch, type VerifyConfig } from "./verifyGate.js";
 import { parseRunnerResult } from "./verifyProtocol.js";
 import { DEFAULT_PATCH_EXCLUDED_PATHS } from "../config.js";
 import { SEEDED_SECRETS } from "../ingest/testSecrets.js";
@@ -417,5 +417,22 @@ describe("verifyPatch: runAs", () => {
   it("does nothing different when runAs is absent", async () => {
     const patch = diffOf({ "greeting.txt": "hello new\n" });
     expect(await verifyPatch({ sourceDir: src, patch, config: cfg() })).toMatchObject({ status: "passed" });
+  });
+});
+
+describe("runUnpatched (the before half of a before/after check)", () => {
+  it("runs the command on a scratch copy of the checkout as it is, and reports its exit", async () => {
+    expect(await runUnpatched({ sourceDir: src, config: cfg() })).toMatchObject({ status: "failed", rule: "command-failed", exitCode: 1, changedFiles: [] });
+    expect(await runUnpatched({ sourceDir: src, config: cfg({ verifyCommand: "grep -q old greeting.txt" }) })).toMatchObject({ status: "passed", exitCode: 0 });
+  });
+
+  it("never touches the checkout it was given", async () => {
+    await runUnpatched({ sourceDir: src, config: cfg({ verifyCommand: "echo changed > greeting.txt" }) });
+    expect(readFileSync(join(src, "greeting.txt"), "utf8")).toBe("hello old\n");
+  });
+
+  it("refuses with no command, and times out like the gate", async () => {
+    expect(await runUnpatched({ sourceDir: src, config: cfg({ verifyCommand: " " }) })).toMatchObject({ status: "rejected", rule: "no-verify-command" });
+    expect(await runUnpatched({ sourceDir: src, config: cfg({ verifyCommand: "sleep 5", verifyTimeoutSeconds: 0.3 }) })).toMatchObject({ status: "timeout", rule: "command-timeout" });
   });
 });

@@ -1,7 +1,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
-import { buildNeedsHumanMessage, createSlackNotifier, deliverToSlack, slackEscape, type NotifyRequest } from "./slack.js";
+import { buildNeedsHumanMessage, buildNewIncidentMessage, createSlackAlerter, createSlackNotifier, deliverToSlack, slackEscape, type AlertRequest, type NotifyRequest } from "./slack.js";
 import { SEEDED_SECRETS } from "../ingest/testSecrets.js";
 
 const req: NotifyRequest = {
@@ -91,6 +91,52 @@ describe("buildNeedsHumanMessage", () => {
   });
 });
 
+describe("buildNewIncidentMessage (#ops-alerts)", () => {
+  const alert: AlertRequest = {
+    cycleId: "inc1_r0",
+    incidentId: "inc1",
+    functionName: "orders-create",
+    service: "orders",
+    errorType: "TypeError",
+    occurrenceCount: 12,
+    path: "act",
+    reason: "A null customer reaches the total.",
+  };
+
+  it("says what is new, what Starfish will do next, and links to the incident, the run and the issue", () => {
+    const m = buildNewIncidentMessage({ ...alert, issueUrl: "https://github.com/acme/shop/issues/9" }, UI);
+    const text = JSON.stringify(m);
+    expect(m.text).toContain("New incident: orders-create (TypeError)");
+    expect(m.text).toContain("drafting a fix");
+    expect(text).toContain("failed 12 times");
+    expect(text).toContain("A null customer reaches the total.");
+    const clickable = (m.blocks as Array<{ elements?: Array<{ url?: string }> }>).flatMap((b) => (b.elements ?? []).map((e) => e.url));
+    expect(clickable).toEqual(["https://starfish.example/incidents/inc1", "https://starfish.example/runs?run=inc1_r0", "https://github.com/acme/shop/issues/9"]);
+  });
+
+  it("tells an escalated incident from one Starfish acts on, and never says zero times for an unknown count", () => {
+    const m = buildNewIncidentMessage({ ...alert, path: "notify", occurrenceCount: null }, UI);
+    expect(m.text).toContain("No code change helps");
+    expect(JSON.stringify(m)).not.toMatch(/failed \d+ times/);
+  });
+
+  it("is plain text, escaped in the top-level text, bounded and redacted", () => {
+    const dirty = `<!channel> <@U1> ${Object.values(SEEDED_SECRETS).join(" ")} `.repeat(20);
+    const m = buildNewIncidentMessage({ ...alert, functionName: "<!here> a&b", reason: dirty, service: dirty }, UI);
+    expect(m.mrkdwn).toBe(false);
+    expect(m.text).not.toMatch(/[<>]/);
+    expect(m.text).toContain("&lt;!here&gt; a&amp;b");
+    const text = JSON.stringify(m);
+    for (const [name, secret] of Object.entries(SEEDED_SECRETS)) expect(text, name).not.toContain(secret.split("\n")[0]!);
+    for (const b of m.blocks as Array<{ text?: { type: string; text: string } }>) {
+      if (b.text) {
+        expect(b.text.type).toBe("plain_text");
+        expect(b.text.text.length).toBeLessThan(1000);
+      }
+    }
+  });
+});
+
 describe("slackEscape", () => {
   it("escapes & first, so an escape is not escaped twice", () => {
     expect(slackEscape("<&>")).toBe("&lt;&amp;&gt;");
@@ -133,6 +179,13 @@ describe("delivery against a fake webhook", () => {
     expect(result).toEqual({ state: "sent", attempts: 1 });
     expect(hook.received).toHaveLength(1);
     expect(JSON.parse(hook.received[0]!).text).toContain("invoices-renderPdf");
+  });
+
+  it("posts the new-incident message through the alerter, to its own webhook", async () => {
+    const hook = await webhook([{ status: 200, body: "ok" }]);
+    const result = await createSlackAlerter({ webhookUrl: hook.url, uiBaseUrl: UI, sleep })({ ...req, path: "act", reason: "x" });
+    expect(result).toEqual({ state: "sent", attempts: 1 });
+    expect(JSON.parse(hook.received[0]!).text).toContain("New incident: invoices-renderPdf");
   });
 
   it("retries a 5xx and then succeeds", async () => {

@@ -1,0 +1,13 @@
+{
+  "id": "synthetic-order-total",
+  "environment": "synthetic",
+  "functionName": "checkout-placeOrder",
+  "service": "checkout",
+  "errorType": "ValidationError",
+  "occurrenceCount": 37,
+  "firstOccurredAt": "2026-10-01T08:00:00.000Z",
+  "lastOccurredAt": "2026-10-01T09:30:00.000Z",
+  "logCounterCheck": { "window": "24h", "count": 37 },
+  "message": "SYNTHETIC: charged total does not match the cart total (payment provider rejected amount)",
+  "stackTrace": "Error: charged total does not match the cart total\n    at orderTotal (src/total.mjs:5:3)"
+}

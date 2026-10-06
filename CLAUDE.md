@@ -47,6 +47,7 @@ PROJECT_ID=<p> scripts/deploy-gcp.sh   # Cloud Run job + Scheduler + Secret Mana
 scripts/setup-github-deploy.sh   # one-time: lets GitHub Actions deploy with no key (WIF); deploy-on-merge is then a repo variable (docs/deploy.md); never run
 scripts/ingest-cadence.sh status|recording|restore|now   # the ingest's tick for recording the demo, and a run now (#65); DRY_RUN=1 prints
 pnpm scoreboard       # scoreboard/RESULTS.md from recorded runs (#10; format in scoreboard/FORMAT.md; no run recorded yet)
+pnpm replay           # replay the agent's stages over a corpus into a results file (#10); --check-corpus checks the cases without a model; needs Vertex for a real run, none recorded
 pnpm scrub            # dry-run: how many stored incidents still hold a credential/email (--apply to rewrite)
 pnpm seed-demo        # dry-run: the synthetic, badged demo history (#12); --apply/--remove need --project, refuses unless STARFISH_ENV=demo
 bash .claude/hooks/git-branch-guard.test.sh        # hook suites
@@ -148,10 +149,18 @@ src/
                    (redacted) and the cycle's run record (summary.<stage>, path); infrastructure errors throw, logical refusals are returned. Run by `pnpm agent` (deployable, never run)
   agent/loop.ts    one cycle: lease -> triage -> fix -> verify -> review -> PR (interface); rechecks status +
                    kill switch, one shared revision, call budget, dry run by default. Run by `pnpm agent`
-  agent/pass.ts    one pass over the store: candidate selection, stack trace → repo files, bounded driver
+  agent/pass.ts    one pass over the store: candidate selection, stack trace → repo files, bounded driver; the daily
+                   cycle cap (`STARFISH_MAX_CYCLES_PER_DAY`, a count of cycles started that UTC day)
+  agent/reconcile.ts  after the pass (#17): polls a bounded number of opened PRs (state + named checks on the head), records
+                   `summary.prState` via cycle.ts `recordPrState` (no lease; never changes the cycle's state; newest read wins;
+                   merged is final; never marks an incident healed). Fake GitHub + emulator tested, never run against real GitHub
+  agent/reconsider.ts  when a DECLINED cycle is triaged again (#8): an operator's `retriageRequestedAt`, a burst, or a new
+                   structural cause since the recorded decision; cooldown + cap per 24 h; never over ignored/resolved.
+                   cycle.ts reopens the same cycle in the lease transaction, so still one issue and one PR per recurrence
   agent/assemble.ts  one incident's inputs: shallow clone at a pinned revision, counter-check, samples, files the trace names
   scoreboard/      the results format (strict parser), the metrics (ratios keep numerator and denominator; an error or timeout counts
-                   against the agent; each path apart) and the Markdown table: `pnpm scoreboard`. Judges recorded runs; runs nothing
+                   against the agent; each path apart) and the Markdown table: `pnpm scoreboard`. `replay.ts`/`corpus.ts` (`pnpm replay`) run
+                   the loop's own stages over a frozen corpus with hidden evaluators and write a results file; no real run recorded
   agentCli.ts      `pnpm agent`: one pass. Dry run by default; refuses to start until STARFISH_VERIFY_ISOLATION is set
                    (`in-process` is not a sandbox; `github-actions` = the target's own CI judges a pushed starfish/<cycle>
                    branch, the demo's choice; `cloud-run-job` hands the source + patch to a separate job whose service
@@ -184,10 +193,12 @@ src/
                    infra failures throw. `firestoreAdmin.ts` is its REST adapter. Tested with fakes; called by nothing, never run
   integrations/slack.ts  Slack delivery (#17): one "needs a human" message through an incoming webhook, from redacted plain-text
                    fields; bounded retries, a failed delivery is a recorded result (`summary.notify`), a dry run sends nothing; the webhook
-                   (a secret, `loadSlackOnCallWebhook`) never appears in a result. Run by `pnpm agent`; never run against real Slack
+                   (a secret, `loadSlackOnCallWebhook`) never appears in a result. Also the optional #ops-alerts "new incident"
+                   message (`loadSlackAlertsWebhook`, `summary.alert`). Run by `pnpm agent`; never run against real Slack
   integrations/githubPr.ts  the pull-request opener (#17): idempotent by cycle id, pushes only
                    starfish/<id>, never merges, token only in git's environment. Also files the incident's issue
-                   (`openIssue`: idempotent by a marker, label `starfish`, a failure recorded on the cycle). Never run against real
+                   (`openIssue`: idempotent by a marker, label `starfish`, a failure recorded on the cycle), and reads one of its PRs
+                   back (`readPullRequest`: refuses one not from starfish/<cycle> in the repo). Never run against real
                    GitHub; run by `pnpm agent` (deployable, never run)
   integrations/links.ts  links from Slack and issues back to the UI, built from the configured origin and a plain id
   runtimeSettings.ts  the settings document an admin edits: validated, applied over the

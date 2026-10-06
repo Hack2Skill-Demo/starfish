@@ -30,6 +30,8 @@
 #                        secret, readable by the agent's account only, mounted on the agent job only, never printed.
 #                        Only a https://hooks.slack.com/services/... URL is accepted. Also set the UI's origin so the
 #                        message can link back: AGENT_EXTRA_ENV_VARS="STARFISH_UI_URL=https://<site>.web.app"
+#   STARFISH_SLACK_WEBHOOK_ALERTS  with DEPLOY_AGENT=1, optional: the #ops-alerts webhook for the "new incident" message
+#                        (#17). Handled exactly like the on-call one, in its own secret starfish-slack-alerts.
 #   BUDGET_USD           if set (with BILLING_ACCOUNT), create a budget that EMAILS billing admins at 50% and
 #                        90% of this monthly amount for PROJECT_ID. An alert, not a cap: nothing stops spending
 #   BILLING_ACCOUNT      the billing account id (0123AB-456CDE-789FGH), needed with BUDGET_USD
@@ -111,6 +113,7 @@ SCHEDULER_SA_NAME="${SCHEDULER_SA_NAME:-starfish-scheduler}"
 SCHEDULER_JOB_NAME="${SCHEDULER_JOB_NAME:-$JOB_NAME-tick}"
 GITHUB_SECRET="${GITHUB_SECRET:-starfish-github-token}"
 SLACK_SECRET="${SLACK_SECRET:-starfish-slack-oncall}"
+SLACK_ALERTS_SECRET="${SLACK_ALERTS_SECRET:-starfish-slack-alerts}"
 AGENT_JOB_NAME="${AGENT_JOB_NAME:-starfish-agent}"
 AGENT_SA_NAME="${AGENT_SA_NAME:-starfish-agent}"
 AGENT_SCHEDULER_JOB_NAME="${AGENT_SCHEDULER_JOB_NAME:-$AGENT_JOB_NAME-tick}"
@@ -520,25 +523,35 @@ if [ "$DEPLOY_AGENT" = "1" ]; then
   bind "$VERTEX_PROJECT_ID" "$AGENT_SA" roles/aiplatform.user
   retry gcloud secrets add-iam-policy-binding "$GITHUB_SECRET" --project="$PROJECT_ID" \
     --member="serviceAccount:$AGENT_SA" --role=roles/secretmanager.secretAccessor --quiet --format=none
-  # The Slack webhook (#17) has its OWN secret, read by the agent's account alone (the ingest job never posts anywhere).
-  # It exists only when a webhook is given: an empty secret would fail the deploy that mounts it.
-  SLACK_MOUNT=0
-  if [ -n "${STARFISH_SLACK_WEBHOOK_ONCALL:-}" ]; then
-    case "$STARFISH_SLACK_WEBHOOK_ONCALL" in
+  # Each Slack webhook (#17) has its OWN secret, read by the agent's account alone (the ingest job never posts anywhere):
+  # the on-call one ("needs a human") and the optional #ops-alerts one ("new incident"). A secret exists only when its
+  # webhook is given: an empty secret would fail the deploy that mounts it. The value goes over stdin, never printed.
+  store_slack_webhook() { # <env var name> <secret name>
+    local name="$1" secret="$2" value="${!1:-}"
+    case "$value" in
       https://hooks.slack.com/services/*) ;;
-      *) die "STARFISH_SLACK_WEBHOOK_ONCALL is not a Slack incoming-webhook URL (https://hooks.slack.com/services/...)" ;;
+      *) die "$name is not a Slack incoming-webhook URL (https://hooks.slack.com/services/...)" ;;
     esac
-    if ! exists gcloud secrets describe "$SLACK_SECRET" --project="$PROJECT_ID"; then
-      run gcloud secrets create "$SLACK_SECRET" --replication-policy=automatic --project="$PROJECT_ID"
+    if ! exists gcloud secrets describe "$secret" --project="$PROJECT_ID"; then
+      run gcloud secrets create "$secret" --replication-policy=automatic --project="$PROJECT_ID"
     fi
-    retry gcloud secrets add-iam-policy-binding "$SLACK_SECRET" --project="$PROJECT_ID" \
+    retry gcloud secrets add-iam-policy-binding "$secret" --project="$PROJECT_ID" \
       --member="serviceAccount:$AGENT_SA" --role=roles/secretmanager.secretAccessor --quiet --format=none
     if [ "$DRY_RUN" = "1" ]; then
-      echo "+ printf %s <STARFISH_SLACK_WEBHOOK_ONCALL> | gcloud secrets versions add $SLACK_SECRET --data-file=- --project=$PROJECT_ID"
+      echo "+ printf %s <$name> | gcloud secrets versions add $secret --data-file=- --project=$PROJECT_ID"
     else
-      printf %s "$STARFISH_SLACK_WEBHOOK_ONCALL" | gcloud secrets versions add "$SLACK_SECRET" --data-file=- --project="$PROJECT_ID" --format=none
+      printf %s "$value" | gcloud secrets versions add "$secret" --data-file=- --project="$PROJECT_ID" --format=none
     fi
+  }
+  SLACK_MOUNT=0
+  if [ -n "${STARFISH_SLACK_WEBHOOK_ONCALL:-}" ]; then
+    store_slack_webhook STARFISH_SLACK_WEBHOOK_ONCALL "$SLACK_SECRET"
     SLACK_MOUNT=1
+  fi
+  SLACK_ALERTS_MOUNT=0
+  if [ -n "${STARFISH_SLACK_WEBHOOK_ALERTS:-}" ]; then
+    store_slack_webhook STARFISH_SLACK_WEBHOOK_ALERTS "$SLACK_ALERTS_SECRET"
+    SLACK_ALERTS_MOUNT=1
   fi
   if [ "$VERIFY_ISOLATION" = "cloud-run-job" ]; then
     retry gcloud storage buckets add-iam-policy-binding "gs://$VERIFY_BUCKET" --project="$PROJECT_ID" \
@@ -568,6 +581,7 @@ if [ "$DEPLOY_AGENT" = "1" ]; then
     echo "  ($GITHUB_SECRET has no version yet: not mounted. Re-run with STARFISH_GITHUB_TOKEN set to add one.)"
   fi
   [ "$SLACK_MOUNT" != "1" ] || AGENT_SECRETS="${AGENT_SECRETS:+$AGENT_SECRETS,}STARFISH_SLACK_WEBHOOK_ONCALL=$SLACK_SECRET:latest"
+  [ "$SLACK_ALERTS_MOUNT" != "1" ] || AGENT_SECRETS="${AGENT_SECRETS:+$AGENT_SECRETS,}STARFISH_SLACK_WEBHOOK_ALERTS=$SLACK_ALERTS_SECRET:latest"
   [ -z "$AGENT_SECRETS" ] || AGENT_DEPLOY_ARGS+=(--update-secrets="$AGENT_SECRETS")
   run "${AGENT_DEPLOY_ARGS[@]}"
   retry gcloud run jobs add-iam-policy-binding "$AGENT_JOB_NAME" --region="$REGION" --project="$PROJECT_ID" \

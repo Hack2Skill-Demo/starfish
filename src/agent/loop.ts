@@ -51,14 +51,16 @@ import {
   type CycleKey,
   type CyclePath,
   type CycleState,
+  type DeclineDecision,
   type RunEvent,
 } from "./cycle.js";
 import type { IssueRequest } from "../integrations/githubPr.js";
-import type { DeliveryResult, NotifyRequest } from "../integrations/slack.js";
+import type { AlertRequest, DeliveryResult, NotifyRequest } from "../integrations/slack.js";
 import { proposeFix, type FixRequest, type FixRule, type SourceFile } from "./fixer.js";
 import { reviewPatch, type Attack, type ReviewVerdict } from "./reviewer.js";
 import { triageIncident, type AskJson, type TriageSubject } from "./triage.js";
 import { verifyPatch, type VerifyConfig, type VerifyRequest, type VerifyResult } from "./verifyGate.js";
+import { causeClass, type ReconsiderPolicy } from "./reconsider.js";
 
 /** Everything about the incident the stages need, assembled by the caller (it owns the repo checkout). */
 export interface LoopSubject {
@@ -127,6 +129,17 @@ export interface LoopDeps {
    * run nothing is sent and the record says so.
    */
   notify?: (req: NotifyRequest) => Promise<DeliveryResult>;
+  /**
+   * Posts the "new incident" message (the `#ops-alerts` channel, src/integrations/slack.ts) once for a cycle Starfish
+   * acts on or escalates. Absent means no such channel. Never throws; recorded like `notify` (`summary.alert`); in a
+   * dry run nothing is sent and the record says so.
+   */
+  alert?: (req: AlertRequest) => Promise<DeliveryResult>;
+  /**
+   * Reconsider a declined cycle when new evidence arrived since its decision (#8, reconsider.ts): the lease acquire
+   * reopens it in its own transaction. Absent: a declined cycle stays closed.
+   */
+  reconsider?: ReconsiderPolicy;
 }
 
 export type LoopResult =
@@ -138,10 +151,17 @@ export type LoopResult =
 /** Thrown inside the loop when a fenced write is refused; turned into `lease-lost` at the top. */
 class LeaseLost extends Error {}
 
-const MAX_REVISIONS = 1;
+/** How many revisions one cycle may make, shared between a failed verify and a blocking review. */
+export const MAX_REVISIONS = 1;
+
+const RECONSIDER_SUMMARY = {
+  operator: "an operator asked for a retriage",
+  burst: "the occurrences grew past the burst threshold since the decline",
+  cause: "the incident's structural cause changed since the decline",
+} as const;
 
 /** Fixer errors that are the model's patch, not a failed call: retrying would most likely repeat them (#137). */
-const UNFIT_PATCH_RULES: ReadonlySet<FixRule> = new Set<FixRule>(["patch-malformed", "patch-too-large", "patch-contains-secret-shape"]);
+export const UNFIT_PATCH_RULES: ReadonlySet<FixRule> = new Set<FixRule>(["patch-malformed", "patch-too-large", "patch-contains-secret-shape"]);
 
 /** How many rejected alternatives and review attacks the run record keeps (each value is bounded by cycle.ts). */
 export const MAX_RECORDED_ALTERNATIVES = 5;
@@ -210,7 +230,7 @@ function leaseKeeper(renew: () => Promise<boolean>, now: () => number, everyMs: 
 
 export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResult> {
   const { db, config: cfg, owner } = deps;
-  const lease = await acquireLease(db, cfg, key, owner, deps.now());
+  const lease = await acquireLease(db, cfg, key, owner, deps.now(), deps.reconsider ? { reconsider: { ...deps.reconsider, incidentCollection: cfg.incidentCollection } } : {});
   if (!lease.acquired) {
     // This call is the one that just gave the cycle up (a later one sees it closed): tell a person, once (#137).
     if (lease.reason === "deadline-passed" || lease.reason === "retries-exhausted") await announceGivenUp(deps, key, lease.reason);
@@ -222,8 +242,8 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
     const r = await recordEvent(db, cfg, id, owner, deps.now(), event);
     if (!r.ok) throw new LeaseLost();
   };
-  const finish = async (state: Exclude<CycleState, "running">, outcome: string, path?: CyclePath): Promise<LoopResult> => {
-    const r = await finishCycle(db, cfg, id, owner, deps.now(), state, outcome, path);
+  const finish = async (state: Exclude<CycleState, "running">, outcome: string, path?: CyclePath, decision?: DeclineDecision): Promise<LoopResult> => {
+    const r = await finishCycle(db, cfg, id, owner, deps.now(), state, outcome, path, decision);
     if (!r.ok) throw new LeaseLost();
     return { kind: "finished", state, outcome };
   };
@@ -243,7 +263,14 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
   );
 
   try {
-    await note({ stage: "cycle", type: "started", summary: `Attempt ${lease.attempt}${lease.resumed ? " (resumed)" : ""}`, data: { attempt: lease.attempt, resumed: lease.resumed } });
+    await note({
+      stage: "cycle",
+      type: lease.reconsidered ? "reconsidered" : "started",
+      summary: lease.reconsidered
+        ? `Declined earlier; triaged again: ${RECONSIDER_SUMMARY[lease.reconsidered]}`
+        : `Attempt ${lease.attempt}${lease.resumed ? " (resumed)" : ""}`,
+      data: { attempt: lease.attempt, resumed: lease.resumed, ...(lease.reconsidered && { trigger: lease.reconsidered }) },
+    });
 
     // A pull request already opened for this cycle ends it (#134): an attempt resumed after the open succeeded but its
     // record or the finish did not must not redo the pipeline (the CI verifier would rebuild the PR's own branch).
@@ -331,44 +358,68 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
     // A cycle that ends waiting for a person says so, once. Recorded before and after the send, so a crash between the
     // two leaves `pending` and the next attempt posts again (at-least-once: a missed escalation is worse than a repeat),
     // while a recorded `sent` or `failed` is never sent again.
-    const announce = async (loaded: LoopSubject, path: NotifyRequest["path"], rule: string, reason: string): Promise<void> => {
-      if (!deps.notify) return;
+    // The same pattern serves the `#ops-alerts` "new incident" message (`summary.alert`).
+    const deliverOnce = async (
+      stage: "notify" | "alert",
+      words: { dryRun: string; pending: string; sent: string; failed: string },
+      send: () => Promise<DeliveryResult>
+    ): Promise<void> => {
       if (cfg.dryRun) {
-        await note({ stage: "notify", type: "dry-run", summary: "A person would be told here; nothing sent (dry run)", record: { state: "dry-run" } });
+        await note({ stage, type: "dry-run", summary: words.dryRun, record: { state: "dry-run" } });
         return;
       }
       const snap = await db.collection(cfg.cycleCollection).doc(id).get();
-      const prior = (snap.data()?.summary as { notify?: { state?: unknown } } | undefined)?.notify?.state;
+      const prior = (snap.data()?.summary as Record<string, { state?: unknown } | undefined> | undefined)?.[stage]?.state;
       if (prior === "sent" || prior === "failed") return;
       if ((await stopReason()) !== null) return;
       await renew();
-      await note({ stage: "notify", type: "pending", summary: "Telling a person", record: { state: "pending", attempts: 0 } });
-      const incident = loaded.subject.incident;
+      await note({ stage, type: "pending", summary: words.pending, record: { state: "pending", attempts: 0 } });
       let result: DeliveryResult;
       try {
-        result = await deps.notify({
-          cycleId: id,
-          incidentId: key.incidentId,
-          functionName: incident.functionName ?? "unknown function",
-          service: incident.service ?? "unknown",
-          errorType: incident.errorType ?? "unknown",
-          occurrenceCount: incident.occurrenceCount ?? null,
-          path,
-          rule,
-          reason,
-          ...(issue && { issueUrl: issue.url }),
-        });
+        result = await send();
       } catch {
-        // The notifier promises not to throw; if it does anyway, that is a failed delivery and not a lost cycle.
+        // The sender promises not to throw; if it does anyway, that is a failed delivery and not a lost cycle.
         result = { state: "failed", attempts: 1, reason: "notifier-error" };
       }
       await note({
-        stage: "notify",
+        stage,
         type: result.state,
-        summary: result.state === "sent" ? "A person was told" : `A person could not be told: ${result.reason ?? "unknown"}`,
+        summary: result.state === "sent" ? words.sent : `${words.failed}: ${result.reason ?? "unknown"}`,
         data: { attempts: result.attempts },
         record: { state: result.state, attempts: result.attempts, ...(result.reason !== undefined && { reason: result.reason }) },
       });
+    };
+    const about = (loaded: LoopSubject) => {
+      const incident = loaded.subject.incident;
+      return {
+        cycleId: id,
+        incidentId: key.incidentId,
+        functionName: incident.functionName ?? "unknown function",
+        service: incident.service ?? "unknown",
+        errorType: incident.errorType ?? "unknown",
+        occurrenceCount: incident.occurrenceCount ?? null,
+        ...(issue && { issueUrl: issue.url }),
+      };
+    };
+    const announce = async (loaded: LoopSubject, path: NotifyRequest["path"], rule: string, reason: string): Promise<void> => {
+      const notify = deps.notify;
+      if (!notify) return;
+      await deliverOnce(
+        "notify",
+        { dryRun: "A person would be told here; nothing sent (dry run)", pending: "Telling a person", sent: "A person was told", failed: "A person could not be told" },
+        () => notify({ ...about(loaded), path, rule, reason })
+      );
+    };
+    // The `#ops-alerts` "new incident" message: once for every cycle Starfish acts on or escalates, after its issue is
+    // filed so the message can link to it. A declined incident gets none, as it gets no issue.
+    const alertTeam = async (loaded: LoopSubject, path: AlertRequest["path"], reason: string): Promise<void> => {
+      const alert = deps.alert;
+      if (!alert) return;
+      await deliverOnce(
+        "alert",
+        { dryRun: "The team would be alerted here; nothing sent (dry run)", pending: "Alerting the team", sent: "The team was alerted", failed: "The team could not be alerted" },
+        () => alert({ ...about(loaded), path, reason })
+      );
     };
 
     let modelCalls = 0;
@@ -407,11 +458,25 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
     // An issue for every incident Starfish acts on or escalates; a declined, skipped or deferred one gets none.
     if (triage.decision === "act" || triage.decision === "notify") {
       await fileIssue(loaded, triage.decision, triage.reason, triage.suspectedCause);
+      await alertTeam(loaded, triage.decision, triage.reason);
     }
     switch (triage.decision) {
       case "skip":
-      case "decline":
-        return await finish("declined", triage.rule, "decline");
+      case "decline": {
+        // What this decline saw, kept so a later pass can tell new evidence from the same logs read again (#8).
+        const incident = loaded.subject.incident;
+        const counter = incident.logCounterCheck;
+        return await finish("declined", triage.rule, "decline", {
+          rule: triage.rule,
+          reason: triage.reason,
+          suspectedCause: triage.suspectedCause ?? null,
+          occurrenceCount: typeof incident.occurrenceCount === "number" ? incident.occurrenceCount : null,
+          counterCount: counter && Number.isFinite(counter.count) ? counter.count : null,
+          counterWindow: counter?.window ?? null,
+          errorType: incident.errorType ?? null,
+          causeClass: causeClass(incident),
+        });
+      }
       case "notify":
         await announce(loaded, "notify", triage.rule, triage.reason);
         return await finish("waiting-human", `notify:${triage.rule}`, "notify");

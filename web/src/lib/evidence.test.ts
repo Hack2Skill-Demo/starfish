@@ -147,3 +147,30 @@ describe("buildEvidence", () => {
     expect(currentCycleId({ id: "inc-1", recurrenceCount: 3 })).toBe("inc-1_r3");
   });
 });
+
+describe("buildEvidence: the pull request afterwards (#17)", () => {
+  const NOW = Date.UTC(2026, 9, 6, 12, 0, 0);
+  const opened = { opened: true, number: 42, url: "https://github.com/o/r/pull/42" };
+
+  it("says a PR never read back was not checked, rather than guessing it is still open", () => {
+    const e = buildEvidence(row, cycle({ pr: opened }), NOW);
+    expect(stage(e, "pr").fields.find((f) => f.label === "State now")?.value).toBe("Not checked since it was opened");
+    expect(stage(e, "pr").fields.some((f) => f.label === "Read from GitHub")).toBe(false);
+  });
+
+  it("shows the state as last read, when, and on which commit, and that a merge is not a heal", () => {
+    const prState = { state: "merged", mergedAt: new Date(NOW - 2 * 3600_000).toISOString(), checks: "passed", headSha: "c".repeat(40), checkedAt: new Date(NOW - 60_000).toISOString() };
+    const e = buildEvidence(row, cycle({ pr: opened, prState }), NOW);
+    const pr = stage(e, "pr");
+    expect(pr.fields.find((f) => f.label === "State now")?.value).toBe("merged 2h ago · checks passed");
+    expect(pr.fields.find((f) => f.label === "Read from GitHub")?.value).toBe(prState.checkedAt);
+    expect(pr.fields.find((f) => f.label === "Head commit")).toMatchObject({ value: "c".repeat(40), mono: true });
+    expect(pr.note).toContain("not proof the incident is healed");
+  });
+
+  it("adds nothing for a cycle that opened no pull request", () => {
+    const e = buildEvidence(row, cycle({ pr: { opened: false, reason: "dry-run" } }), NOW);
+    expect(stage(e, "pr").fields.some((f) => f.label === "State now")).toBe(false);
+    expect(stage(e, "pr").note).toBeUndefined();
+  });
+});

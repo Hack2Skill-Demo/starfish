@@ -280,16 +280,8 @@ export async function verifyPatch(req: VerifyRequest): Promise<VerifyResult> {
 
   const scratch = await mkdtemp(join(tmpdir(), "starfish-verify-"));
   try {
-    const tree = join(scratch, "tree");
-    const home = join(scratch, "home");
-    try {
-      await mkdir(join(home, "tmp"), { recursive: true });
-      await cp(req.sourceDir, tree, {
-        recursive: true,
-        verbatimSymlinks: true,
-        filter: (src) => !COPY_SKIP.has(src.split("/").pop() ?? ""),
-      });
-    } catch {
+    const { tree, home } = scratchPaths(scratch);
+    if (!(await copyToScratch(req.sourceDir, scratch))) {
       return done("rejected", "setup-failed", "The checkout could not be copied to a scratch directory.");
     }
 
@@ -336,18 +328,67 @@ export async function verifyPatch(req: VerifyRequest): Promise<VerifyResult> {
       const handed = await run("chown", ["-R", `${req.runAs.uid}:${req.runAs.gid}`, scratch], { cwd: scratch, env, timeoutMs: 60_000 });
       if (handed.code !== 0) return done("rejected", "setup-failed", "The scratch copy could not be handed to the unprivileged user.", { changedFiles });
     }
-    const ran = await run("sh", ["-c", req.config.verifyCommand], {
-      cwd: tree,
-      env,
-      timeoutMs: req.config.verifyTimeoutSeconds * 1000,
-      ...(req.runAs && { runAs: req.runAs }),
+    return await runCommand(tree, env, req, (status, rule, reason, extra) => done(status, rule, reason, { changedFiles, ...extra }));
+  } finally {
+    await rm(scratch, { recursive: true, force: true });
+  }
+}
+
+type Done = (status: VerifyStatus, rule: VerifyRule, reason: string, extra?: Partial<VerifyResult>) => VerifyResult;
+
+const scratchPaths = (scratch: string) => ({ tree: join(scratch, "tree"), home: join(scratch, "home") });
+
+/** Copies the checkout to `<scratch>/tree` without `.git` and `node_modules`, and makes a scratch home. False on failure. */
+async function copyToScratch(sourceDir: string, scratch: string): Promise<boolean> {
+  const { tree, home } = scratchPaths(scratch);
+  try {
+    await mkdir(join(home, "tmp"), { recursive: true });
+    await cp(sourceDir, tree, {
+      recursive: true,
+      verbatimSymlinks: true,
+      filter: (src) => !COPY_SKIP.has(src.split("/").pop() ?? ""),
     });
-    const output = tail(ran.output);
-    if (ran.timedOut) {
-      return done("timeout", "command-timeout", `The verify command did not finish in ${req.config.verifyTimeoutSeconds} seconds.`, { changedFiles, output });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Runs the configured command in `tree`. Exit 0 is the only pass. */
+async function runCommand(tree: string, env: NodeJS.ProcessEnv, req: Pick<VerifyRequest, "config" | "runAs">, done: Done): Promise<VerifyResult> {
+  const ran = await run("sh", ["-c", req.config.verifyCommand], {
+    cwd: tree,
+    env,
+    timeoutMs: req.config.verifyTimeoutSeconds * 1000,
+    ...(req.runAs && { runAs: req.runAs }),
+  });
+  const output = tail(ran.output);
+  if (ran.timedOut) {
+    return done("timeout", "command-timeout", `The verify command did not finish in ${req.config.verifyTimeoutSeconds} seconds.`, { output });
+  }
+  if (ran.code === 0) return done("passed", "command-passed", "The verify command passed.", { output, exitCode: 0 });
+  return done("failed", "command-failed", `The verify command failed (exit ${ran.code ?? "none"}).`, { output, exitCode: ran.code });
+}
+
+/**
+ * The configured command on the checkout exactly as it is, with no patch: the "before" half of a before/after check
+ * (#4, #10). The same scratch copy, scrubbed environment, timeout and bounded output as `verifyPatch`; only the patch
+ * is missing, so `patchSha256` is the hash of the empty patch. The replay harness (src/scoreboard/evaluate.ts) uses it
+ * to prove a case's defect reproduces before any patch, so a fix is never credited for a test that never failed. Not a
+ * sandbox, as above.
+ */
+export async function runUnpatched(req: Pick<VerifyRequest, "sourceDir" | "baseRevision" | "config" | "extraEnv">): Promise<VerifyResult> {
+  const started = Date.now();
+  const base = { patchSha256: createHash("sha256").update("").digest("hex"), ...(req.baseRevision !== undefined && { baseRevision: req.baseRevision }) };
+  const done: Done = (status, rule, reason, extra = {}) => ({ ...base, status, rule, reason, changedFiles: [], output: "", durationMs: Date.now() - started, ...extra });
+  if (!req.config.verifyCommand.trim()) return done("rejected", "no-verify-command", "No command is configured, so nothing was checked.");
+  const scratch = await mkdtemp(join(tmpdir(), "starfish-verify-"));
+  try {
+    if (!(await copyToScratch(req.sourceDir, scratch))) {
+      return done("rejected", "setup-failed", "The checkout could not be copied to a scratch directory.");
     }
-    if (ran.code === 0) return done("passed", "command-passed", "The verify command passed.", { changedFiles, output, exitCode: 0 });
-    return done("failed", "command-failed", `The verify command failed (exit ${ran.code ?? "none"}).`, { changedFiles, output, exitCode: ran.code });
+    const { tree, home } = scratchPaths(scratch);
+    return await runCommand(tree, scrubbedEnv(home, req.extraEnv ?? {}), req, done);
   } finally {
     await rm(scratch, { recursive: true, force: true });
   }

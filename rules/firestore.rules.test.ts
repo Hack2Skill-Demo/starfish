@@ -179,6 +179,55 @@ describe("incidents: triage writes", () => {
   });
 });
 
+describe("incidents: retriage requests (#8)", () => {
+  const retriage = (db: ReturnType<typeof as>, uid: string, extra: Record<string, unknown> = {}) =>
+    updateDoc(doc(db, "incidents/i1"), { retriageRequestedAt: serverTimestamp(), retriageRequestedBy: uid, ...extra });
+
+  it("an operator or an admin asks for a retriage of an open incident, naming themselves, at the server's time", async () => {
+    await assertSucceeds(retriage(as("op1"), "op1"));
+    await assertSucceeds(retriage(as("admin1"), "admin1"));
+    for (const status of ["acknowledged", "logged", "recurred"]) {
+      await seedStatus(status);
+      await assertSucceeds(retriage(as("op1"), "op1"));
+    }
+  });
+
+  it("never on a closed incident: a request cannot reopen what an operator resolved or ignored", async () => {
+    for (const status of ["resolved", "ignored"]) {
+      await seedStatus(status);
+      await assertFails(retriage(as("op1"), "op1"));
+    }
+  });
+
+  it("never on a retired incident", async () => {
+    await env.withSecurityRulesDisabled((ctx) =>
+      setDoc(doc(ctx.firestore(), "incidents/i1"), { functionName: "mailDrainer", status: "new", retired: true, updatedAt: Timestamp.now() })
+    );
+    await assertFails(retriage(as("op1"), "op1"));
+  });
+
+  it("can't backdate or forward-date the request, or attribute it to someone else", async () => {
+    await assertFails(retriage(as("op1"), "op1", { retriageRequestedAt: Timestamp.fromMillis(0) }));
+    await assertFails(retriage(as("op1"), "op1", { retriageRequestedAt: Timestamp.fromMillis(Date.now() + 3_600_000) }));
+    await assertFails(retriage(as("op1"), "admin1"));
+    await assertFails(updateDoc(doc(as("op1"), "incidents/i1"), { retriageRequestedAt: serverTimestamp() })); // nobody named
+  });
+
+  it("carries nothing else: no status, no evidence, no engine field", async () => {
+    await assertFails(retriage(as("op1"), "op1", { status: "acknowledged", updatedAt: serverTimestamp(), statusChangedBy: "op1" }));
+    await assertFails(retriage(as("op1"), "op1", { occurrenceCount: 0 }));
+    await assertFails(retriage(as("op1"), "op1", { updatedAt: serverTimestamp() }));
+    await assertFails(retriage(as("op1"), "op1", { triageState: "pending" }));
+  });
+
+  it("guests, role-less users and strangers can't ask", async () => {
+    await assertFails(retriage(as("nobody"), "nobody"));
+    await assertFails(retriage(as("stranger"), "stranger"));
+    await assertFails(retriage(env.authenticatedContext("guest1", { firebase: { sign_in_provider: "anonymous" } }).firestore(), "guest1"));
+    await assertFails(retriage(anon(), "x"));
+  });
+});
+
 describe("everything else", () => {
   it("is closed", async () => {
     await assertFails(getDoc(doc(as("admin1"), "config/anything")));

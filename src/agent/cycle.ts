@@ -15,6 +15,12 @@
  *            checks the lease inside the same transaction, so a worker whose lease was taken over
  *            cannot record, or finish, anything). Contiguous sequence numbers, never rewritten.
  *            Everything in an event is redacted and bounded: guests read events on the demo.
+ *   decline  a cycle declined by triage keeps its `decision` (when, the rule, the evidence it saw). With a
+ *            reconsideration policy, `acquireLease` REOPENS a declined cycle when new evidence arrived since
+ *            (reconsider.ts), in the same transaction that takes the lease: the same cycle id, so still one
+ *            issue and one pull request per recurrence, the events appended after the earlier ones, the earlier
+ *            decision moved to `history`, and a fresh deadline and attempt count for the new consideration.
+ *   startDays the UTC days the cycle was started or reopened on: what the daily cycle cap counts (pass.ts).
  *
  * Logical refusals (lease held elsewhere, lease lost, cycle closed) are returned as reasons.
  * Infrastructure failures throw, deliberately: a worker that cannot reach the store must not go
@@ -22,10 +28,11 @@
  *
  * Run by the agent job (`pnpm agent`).
  */
-import { Timestamp } from "firebase-admin/firestore";
+import { FieldValue, Timestamp } from "firebase-admin/firestore";
 import type { DocumentReference, Firestore } from "firebase-admin/firestore";
 import type { StarfishConfig } from "../config.js";
 import { isSensitiveKey, redactPii } from "../ingest/redact.js";
+import { MAX_DECISION_HISTORY, reconsiderTrigger, recentReconsiderations, utcDay, type ReconsiderPolicy, type ReconsiderTrigger } from "./reconsider.js";
 
 export type CycleConfig = Pick<StarfishConfig, "cycleCollection" | "leaseSeconds" | "cycleDeadlineMinutes" | "maxCycleAttempts">;
 
@@ -60,7 +67,7 @@ export function cycleId(key: CycleKey): string | null {
 }
 
 export type AcquireResult =
-  | { acquired: true; cycleId: string; attempt: number; resumed: boolean; leaseExpiresAt: Date }
+  | { acquired: true; cycleId: string; attempt: number; resumed: boolean; leaseExpiresAt: Date; reconsidered?: ReconsiderTrigger }
   | { acquired: false; reason: "invalid-key" | "held" | "closed" | "waiting-human" | "deadline-passed" | "retries-exhausted" };
 
 const ms = (value: unknown): number | undefined => {
@@ -77,11 +84,18 @@ function leaseEnd(cfg: CycleConfig, now: Date, deadlineMs: number): number {
   return Math.min(now.getTime() + cfg.leaseSeconds * 1000, deadlineMs);
 }
 
-/** Take (or resume, or renew) the lease on the cycle for `key`. */
-export async function acquireLease(db: Firestore, cfg: CycleConfig, key: CycleKey, owner: string, now: Date): Promise<AcquireResult> {
+export interface AcquireOptions {
+  /** Reopen a declined cycle when new evidence arrived since its decision (reconsider.ts). Absent: a decline is closed. */
+  reconsider?: ReconsiderPolicy & { incidentCollection: string };
+}
+
+/** Take (or resume, or renew) the lease on the cycle for `key`; with `opts.reconsider`, reopen a declined one that qualifies. */
+export async function acquireLease(db: Firestore, cfg: CycleConfig, key: CycleKey, owner: string, now: Date, opts: AcquireOptions = {}): Promise<AcquireResult> {
   const id = cycleId(key);
   if (id === null) return { acquired: false, reason: "invalid-key" };
   const ref = cycleRef(db, cfg, id);
+  const reconsider = opts.reconsider;
+  const incidentRef = reconsider && db.collection(reconsider.incidentCollection).doc(key.incidentId);
 
   return db.runTransaction(async (tx): Promise<AcquireResult> => {
     const snap = await tx.get(ref);
@@ -99,6 +113,7 @@ export async function acquireLease(db: Firestore, cfg: CycleConfig, key: CycleKe
         leaseExpiresAt: Timestamp.fromMillis(expires),
         deadlineAt: Timestamp.fromMillis(deadlineMs),
         eventCount: 0,
+        startDays: [utcDay(now)],
         createdAt: Timestamp.fromDate(now),
         updatedAt: Timestamp.fromDate(now),
       });
@@ -107,6 +122,44 @@ export async function acquireLease(db: Firestore, cfg: CycleConfig, key: CycleKe
 
     const d = snap.data() as Record<string, unknown>;
     const state = d.state as CycleState;
+    if (state === "declined" && reconsider && incidentRef) {
+      // Read in this transaction (and only for a declined cycle, so an ordinary acquire never holds the incident that
+      // ingest writes): a concurrent operator ignore, or a second worker, cannot both pass the check and reopen.
+      const incidentSnap = await tx.get(incidentRef);
+      const trigger = reconsiderTrigger(d, incidentSnap.data(), reconsider, now);
+      if (trigger !== null) {
+        const deadlineMs = now.getTime() + cfg.cycleDeadlineMinutes * MS_PER_MINUTE;
+        const expires = leaseEnd(cfg, now, deadlineMs);
+        const history = Array.isArray(d.history) ? (d.history as unknown[]) : [];
+        const previous = { ...(typeof d.decision === "object" && d.decision !== null ? (d.decision as Record<string, unknown>) : {}), outcome: d.outcome ?? null };
+        tx.update(ref, {
+          state: "running",
+          attempts: 1,
+          owner,
+          leaseExpiresAt: Timestamp.fromMillis(expires),
+          deadlineAt: Timestamp.fromMillis(deadlineMs),
+          resumeUncounted: false,
+          reconsideredBecause: trigger,
+          reconsiderCount: Number(d.reconsiderCount ?? 0) + 1,
+          reconsideredAt: [...recentReconsiderations(d, now).map((t) => Timestamp.fromMillis(t)), Timestamp.fromDate(now)],
+          history: [...history, previous].slice(-MAX_DECISION_HISTORY),
+          startDays: FieldValue.arrayUnion(utcDay(now)),
+          // The earlier consideration's result goes; its events and its decision (in `history`) stay. The issue and the
+          // pull request stay: they are the recurrence's, and keeping them is what stops a second of either.
+          decision: FieldValue.delete(),
+          outcome: FieldValue.delete(),
+          path: FieldValue.delete(),
+          releasedBecause: FieldValue.delete(),
+          "summary.triage": FieldValue.delete(),
+          "summary.fix": FieldValue.delete(),
+          "summary.verify": FieldValue.delete(),
+          "summary.review": FieldValue.delete(),
+          "summary.notify": FieldValue.delete(),
+          updatedAt: Timestamp.fromDate(now),
+        });
+        return { acquired: true, cycleId: id, attempt: 1, resumed: false, leaseExpiresAt: new Date(expires), reconsidered: trigger };
+      }
+    }
     if (state !== "running") {
       return { acquired: false, reason: state === "waiting-human" ? "waiting-human" : "closed" };
     }
@@ -278,7 +331,6 @@ export async function releaseLease(
   });
 }
 
-/** End the owner's hold on the cycle: it is finished, or resting until a person acts. */
 /**
  * Which way a finished cycle went, for whoever reads the record (the scenario runner, Live runs, the
  * scoreboard): declined, a person to be told, a patch drafted but nothing opened (dry run), a pull
@@ -286,6 +338,16 @@ export async function releaseLease(
  */
 export type CyclePath = "decline" | "notify" | "draft" | "pr" | "human" | "failed";
 
+/**
+ * What a decline was decided on (#8), kept on the cycle as `decision` so a later pass can tell new evidence from the
+ * same logs read again (reconsider.ts): when, the rule, a short redacted reason, the suspected cause, the occurrences
+ * and the independent recount it saw (with that recount's window), and the incident's structural cause class
+ * (`causeClass`; not named `...Key`, because the redactor drops a key that ends in "key"). Redacted and bounded like
+ * the run record.
+ */
+export type DeclineDecision = Record<string, string | number | boolean | null>;
+
+/** End the owner's hold on the cycle: it is finished, or resting until a person acts. */
 export async function finishCycle(
   db: Firestore,
   cfg: CycleConfig,
@@ -294,7 +356,8 @@ export async function finishCycle(
   now: Date,
   state: Exclude<CycleState, "running">,
   outcome: string,
-  path?: CyclePath
+  path?: CyclePath,
+  decision?: DeclineDecision
 ): Promise<FenceResult> {
   const ref = cycleRef(db, cfg, id);
   return db.runTransaction(async (tx) => {
@@ -306,10 +369,80 @@ export async function finishCycle(
       state,
       outcome: clip(outcome, MAX_OUTCOME),
       ...(path && { path }),
+      ...(decision && { decision: { ...sanitizeFlat(decision), at: Timestamp.fromDate(now) } }),
       owner: null,
       leaseExpiresAt: null,
       updatedAt: Timestamp.fromDate(now),
     });
     return { ok: true } as const;
+  });
+}
+
+/**
+ * What the pull request a finished cycle opened looks like on GitHub now (#17, src/agent/reconcile.ts). Flat, so it is
+ * stored as the run record's `summary.prState` beside the stages. `checkedAt` is when GitHub was read, and orders
+ * observations: the newest one read wins, whatever order the writes land in.
+ */
+export interface PrStateRecord {
+  number: number;
+  state: "open" | "closed" | "merged";
+  mergedAt: string | null;
+  closedAt: string | null;
+  headSha: string;
+  /** The named required checks on `headSha`: all passed, one failed, some still running or not reported, or none named. */
+  checks: "passed" | "failed" | "pending" | "missing" | "not-configured";
+  checksPassed: number;
+  checksRequired: number;
+  /** The names of the checks that failed, comma-separated, when any did. */
+  failedChecks?: string;
+  checkedAt: string;
+}
+
+export type PrStateWrite =
+  | { ok: true; applied: true }
+  | { ok: true; applied: false; reason: "stale" | "merged-is-final" }
+  | { ok: false; reason: "no-such-cycle" | "not-a-pr-cycle" | "invalid" };
+
+const PR_STATES: readonly string[] = ["open", "closed", "merged"];
+const CHECK_STATES: readonly string[] = ["passed", "failed", "pending", "missing", "not-configured"];
+const isoMs = (v: unknown): number | null => (typeof v === "string" && Number.isFinite(Date.parse(v)) ? Date.parse(v) : null);
+
+/**
+ * Record a pull request's later state on its finished cycle. The cycle's own state, path, outcome and `updatedAt` are
+ * never changed (it is done: what happens to the PR afterwards is a fact about the PR, not a new outcome of the cycle),
+ * and the incident is never touched: a merged PR is not proof that the incident is healed.
+ *
+ * A finished cycle has no lease, so this is not fenced by one; it is safe without it because it writes only
+ * `summary.prState`, in a transaction, and only to a cycle that is `done` and recorded opening THIS pull request.
+ * Two readers racing, or a slow one landing late, cannot move it backwards:
+ *   - an observation read no later than the one recorded is ignored (`stale`; a duplicate is one of these);
+ *   - a merge is final: nothing read afterwards makes a merged PR open or closed again (`merged-is-final`).
+ */
+export async function recordPrState(db: Firestore, cfg: CycleConfig, id: string, observed: PrStateRecord): Promise<PrStateWrite> {
+  if (
+    !ID_RE.test(id) ||
+    !Number.isInteger(observed.number) ||
+    observed.number < 1 ||
+    !PR_STATES.includes(observed.state) ||
+    !CHECK_STATES.includes(observed.checks) ||
+    !/^[0-9a-f]{40}$/.test(observed.headSha) ||
+    isoMs(observed.checkedAt) === null
+  ) {
+    return { ok: false, reason: "invalid" };
+  }
+  const record = sanitizeFlat({ ...observed });
+  const ref = cycleRef(db, cfg, id);
+  return db.runTransaction(async (tx): Promise<PrStateWrite> => {
+    const snap = await tx.get(ref);
+    if (!snap.exists) return { ok: false, reason: "no-such-cycle" };
+    const d = snap.data() as Record<string, unknown>;
+    const summary = (d.summary ?? {}) as { pr?: { opened?: unknown; number?: unknown }; prState?: { state?: unknown; checkedAt?: unknown } };
+    if (d.state !== "done" || summary.pr?.opened !== true || summary.pr.number !== observed.number) return { ok: false, reason: "not-a-pr-cycle" };
+    const prior = summary.prState;
+    const priorAt = isoMs(prior?.checkedAt);
+    if (priorAt !== null && isoMs(observed.checkedAt)! <= priorAt) return { ok: true, applied: false, reason: "stale" };
+    if (prior?.state === "merged" && observed.state !== "merged") return { ok: true, applied: false, reason: "merged-is-final" };
+    tx.update(ref, { "summary.prState": record });
+    return { ok: true, applied: true };
   });
 }

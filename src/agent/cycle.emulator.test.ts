@@ -8,8 +8,12 @@ import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { deleteApp, initializeApp } from "firebase-admin/app";
 import { getFirestore } from "firebase-admin/firestore";
 import type { Firestore } from "firebase-admin/firestore";
-import { acquireLease, cycleId, finishCycle, recordEvent, releaseLease, renewLease, sanitizeEvent, type CycleConfig, type CycleKey } from "./cycle.js";
+import { acquireLease, cycleId, finishCycle, recordEvent, recordPrState, releaseLease, renewLease, sanitizeEvent, type CycleConfig, type CycleKey, type PrStateRecord } from "./cycle.js";
 import { SEEDED_SECRETS } from "../ingest/testSecrets.js";
+import { causeClass } from "./reconsider.js";
+
+/** The structural cause class of the test incident below, which carries no error class, code or trace. */
+const CAUSE = causeClass({});
 
 if (!process.env.FIRESTORE_EMULATOR_HOST) {
   throw new Error("cycle.emulator.test.ts needs the Firestore emulator: run `pnpm test:emulator`");
@@ -311,5 +315,193 @@ describe("sanitizeEvent", () => {
     expect(clean.data).not.toHaveProperty("n");
     expect(String(clean.data.big).length).toBeLessThanOrEqual(300);
     expect(Object.keys(clean.data).length).toBeLessThanOrEqual(20);
+  });
+});
+
+describe("recordPrState: a finished cycle's pull request, read back later (#17)", () => {
+  const SHA = "b".repeat(40);
+  const obs = (over: Partial<PrStateRecord> = {}): PrStateRecord => ({
+    number: 7,
+    state: "open",
+    mergedAt: null,
+    closedAt: null,
+    headSha: SHA,
+    checks: "pending",
+    checksPassed: 0,
+    checksRequired: 1,
+    checkedAt: at(100).toISOString(),
+    ...over,
+  });
+  /** A cycle that opened PR #7 and finished. */
+  const prCycle = async () => {
+    const r = await acquireLease(db, cfg, key, "a", t0);
+    if (!r.acquired) throw new Error("no lease");
+    await recordEvent(db, cfg, r.cycleId, "a", at(1), { stage: "pr", type: "opened", summary: "opened", record: { opened: true, number: 7, url: "https://github.com/acme/shop/pull/7" } });
+    await finishCycle(db, cfg, r.cycleId, "a", at(2), "done", "pr-opened", "pr");
+    return r.cycleId;
+  };
+
+  it("records the state on the run record and changes nothing else about the cycle", async () => {
+    const id = await prCycle();
+    const before = await cycle();
+    expect(await recordPrState(db, cfg, id, obs({ checks: "failed", failedChecks: "verify" }))).toEqual({ ok: true, applied: true });
+    const after = await cycle();
+    expect(after.summary.prState).toEqual(obs({ checks: "failed", failedChecks: "verify" }));
+    for (const k of ["state", "outcome", "path", "owner", "attempts", "eventCount"]) expect(after[k], k).toEqual(before[k]);
+    expect(after.updatedAt.toMillis()).toBe(before.updatedAt.toMillis());
+    expect(after.summary.pr).toEqual(before.summary.pr);
+    expect(await events()).toHaveLength(1);
+  });
+
+  it("ignores an observation no newer than the recorded one: a duplicate, or a slow reader landing late", async () => {
+    const id = await prCycle();
+    await recordPrState(db, cfg, id, obs({ state: "closed", checkedAt: at(200).toISOString() }));
+    expect(await recordPrState(db, cfg, id, obs({ state: "closed", checkedAt: at(200).toISOString() }))).toEqual({ ok: true, applied: false, reason: "stale" });
+    expect(await recordPrState(db, cfg, id, obs({ state: "open", checkedAt: at(150).toISOString() }))).toEqual({ ok: true, applied: false, reason: "stale" });
+    expect((await cycle()).summary.prState.state).toBe("closed");
+    // A closed PR may really be reopened: a newer read says so.
+    expect(await recordPrState(db, cfg, id, obs({ state: "open", checkedAt: at(300).toISOString() }))).toEqual({ ok: true, applied: true });
+  });
+
+  it("never takes a merged pull request back to open or closed, but keeps updating its checks", async () => {
+    const id = await prCycle();
+    await recordPrState(db, cfg, id, obs({ state: "merged", mergedAt: at(150).toISOString(), checkedAt: at(200).toISOString() }));
+    expect(await recordPrState(db, cfg, id, obs({ state: "open", checkedAt: at(300).toISOString() }))).toEqual({ ok: true, applied: false, reason: "merged-is-final" });
+    const later = obs({ state: "merged", mergedAt: at(150).toISOString(), checks: "passed", checksPassed: 1, checkedAt: at(400).toISOString() });
+    expect(await recordPrState(db, cfg, id, later)).toEqual({ ok: true, applied: true });
+    expect((await cycle()).summary.prState).toMatchObject({ state: "merged", checks: "passed" });
+  });
+
+  it("lands the newest of many concurrent observations, whatever order the writes commit in", async () => {
+    const id = await prCycle();
+    const seen = [
+      obs({ checkedAt: at(110).toISOString() }),
+      obs({ state: "merged", mergedAt: at(100).toISOString(), checkedAt: at(130).toISOString() }),
+      obs({ state: "closed", checkedAt: at(120).toISOString() }),
+    ];
+    await Promise.all([...seen, ...seen].map((o) => recordPrState(db, cfg, id, o)));
+    expect((await cycle()).summary.prState).toMatchObject({ state: "merged", checkedAt: at(130).toISOString() });
+  });
+
+  it("writes only to a done cycle that recorded opening THIS pull request", async () => {
+    expect(await recordPrState(db, cfg, "inc1_r0", obs())).toEqual({ ok: false, reason: "no-such-cycle" });
+    const r = await acquireLease(db, cfg, key, "a", t0);
+    expect(await recordPrState(db, cfg, "inc1_r0", obs())).toEqual({ ok: false, reason: "not-a-pr-cycle" }); // still running
+    if (r.acquired) await finishCycle(db, cfg, r.cycleId, "a", at(1), "waiting-human", "dry-run", "draft");
+    expect(await recordPrState(db, cfg, "inc1_r0", obs())).toEqual({ ok: false, reason: "not-a-pr-cycle" }); // opened none
+    expect((await cycle()).summary).toBeUndefined();
+  });
+
+  it("refuses another PR's number and a malformed observation, writing nothing", async () => {
+    const id = await prCycle();
+    expect(await recordPrState(db, cfg, id, obs({ number: 8 }))).toEqual({ ok: false, reason: "not-a-pr-cycle" });
+    for (const bad of [obs({ headSha: "nope" }), obs({ checkedAt: "yesterday" }), obs({ state: "healed" as never }), obs({ number: 0 })]) {
+      expect(await recordPrState(db, cfg, id, bad), JSON.stringify(bad)).toEqual({ ok: false, reason: "invalid" });
+    }
+    expect(await recordPrState(db, cfg, "a/b", obs())).toEqual({ ok: false, reason: "invalid" });
+    expect((await cycle()).summary.prState).toBeUndefined();
+  });
+});
+
+describe("reconsidering a declined cycle (#8)", () => {
+  const incidents = () => `${cfg.cycleCollection}_incidents`;
+  const policy = () => ({ incidentCollection: incidents(), reconsiderCooldownMinutes: 30, reconsiderMaxPerDay: 3, reconsiderBurstOccurrences: 20 });
+  const setIncident = (data: Record<string, unknown>) =>
+    db.collection(incidents()).doc(key.incidentId).set({ environment: "demo", status: "new", occurrenceCount: 5, ...data });
+  const mins = (m: number) => at(m * 60);
+
+  /** A cycle declined at t0 + 1 s on 5 occurrences, with an issue already recorded on it. */
+  async function declineAtStart() {
+    await setIncident({});
+    const r = await acquireLease(db, cfg, key, "a", t0);
+    if (!r.acquired) throw new Error("setup");
+    await recordEvent(db, cfg, r.cycleId, "a", t0, { stage: "triage", type: "decision", summary: "transient", record: { decision: "decline" } });
+    await recordEvent(db, cfg, r.cycleId, "a", t0, { stage: "issue", type: "opened", summary: "Issue #7 filed", record: { state: "opened", number: 7, url: "https://x/7" } });
+    await finishCycle(db, cfg, r.cycleId, "a", at(1), "declined", "model-decline", "decline", {
+      rule: "model-decline",
+      reason: "one-off",
+      occurrenceCount: 5,
+      counterCount: 5,
+      counterWindow: "1h",
+      causeClass: CAUSE,
+    });
+  }
+
+  it("keeps what the decline was decided on: when, the rule, the evidence and its window", async () => {
+    await declineAtStart();
+    const c = await cycle();
+    expect(c.decision).toMatchObject({ rule: "model-decline", reason: "one-off", occurrenceCount: 5, counterCount: 5, counterWindow: "1h", causeClass: CAUSE });
+    expect(c.decision.at.toMillis()).toBe(at(1).getTime());
+  });
+
+  it("without a policy, or without new evidence, a decline stays closed", async () => {
+    await declineAtStart();
+    expect(await acquireLease(db, cfg, key, "b", mins(60))).toEqual({ acquired: false, reason: "closed" });
+    expect(await acquireLease(db, cfg, key, "b", mins(60), { reconsider: policy() })).toEqual({ acquired: false, reason: "closed" });
+  });
+
+  it("reopens the SAME cycle on a burst after the cooldown: fresh deadline and attempts, history kept, issue kept", async () => {
+    await declineAtStart();
+    await setIncident({ occurrenceCount: 40 });
+    expect(await acquireLease(db, cfg, key, "b", mins(10), { reconsider: policy() })).toEqual({ acquired: false, reason: "closed" }); // cooldown
+    const r = await acquireLease(db, cfg, key, "b", mins(31), { reconsider: policy() });
+    expect(r).toMatchObject({ acquired: true, cycleId: "inc1_r0", attempt: 1, resumed: false, reconsidered: "burst" });
+    const c = await cycle();
+    expect(c).toMatchObject({ state: "running", owner: "b", attempts: 1, reconsiderCount: 1, reconsideredBecause: "burst", eventCount: 2 });
+    expect(c.deadlineAt.toMillis()).toBe(mins(31 + 60).getTime());
+    expect(c.decision).toBeUndefined();
+    expect(c.outcome).toBeUndefined();
+    expect(c.history).toHaveLength(1);
+    expect(c.history[0]).toMatchObject({ rule: "model-decline", occurrenceCount: 5, outcome: "model-decline" });
+    expect(c.summary.issue).toMatchObject({ number: 7 }); // one issue per recurrence, still
+    expect(c.summary.triage).toBeUndefined(); // the earlier decision is in history and the events, not shown as current
+    expect(c.startDays).toEqual(["2026-10-04"]);
+    // The events go on after the earlier ones.
+    if (r.acquired) expect((await recordEvent(db, cfg, r.cycleId, "b", mins(32), ev("again"))).seq).toBe(3);
+  });
+
+  it("an operator's request reopens it within the cooldown; a request older than the decision does not", async () => {
+    await declineAtStart();
+    await setIncident({ retriageRequestedAt: t0 });
+    expect(await acquireLease(db, cfg, key, "b", mins(2), { reconsider: policy() })).toEqual({ acquired: false, reason: "closed" });
+    await setIncident({ retriageRequestedAt: mins(1) });
+    expect(await acquireLease(db, cfg, key, "b", mins(2), { reconsider: policy() })).toMatchObject({ acquired: true, reconsidered: "operator" });
+  });
+
+  it("only one of many concurrent reconsiderations gets it", async () => {
+    await declineAtStart();
+    await setIncident({ retriageRequestedAt: mins(1) });
+    const results = await Promise.all(Array.from({ length: 6 }, (_, i) => acquireLease(db, cfg, key, `w${i}`, mins(2), { reconsider: policy() })));
+    expect(results.filter((r) => r.acquired)).toHaveLength(1);
+    expect(results.filter((r) => !r.acquired).every((r) => !r.acquired && r.reason === "held")).toBe(true);
+    expect((await cycle()).reconsiderCount).toBe(1);
+  });
+
+  it("never reopens over an operator's ignore", async () => {
+    await declineAtStart();
+    await setIncident({ status: "ignored", occurrenceCount: 500, retriageRequestedAt: mins(1) });
+    expect(await acquireLease(db, cfg, key, "b", mins(40), { reconsider: policy() })).toEqual({ acquired: false, reason: "closed" });
+    expect((await cycle()).state).toBe("declined");
+  });
+
+  it("is capped per 24 hours: the fourth reconsideration in a day is refused", async () => {
+    await declineAtStart();
+    let count = 5;
+    let t = 1;
+    for (let i = 0; i < 3; i++) {
+      t += 31;
+      count += 20;
+      await setIncident({ occurrenceCount: count });
+      const r = await acquireLease(db, cfg, key, `w${i}`, mins(t), { reconsider: policy() });
+      expect(r).toMatchObject({ acquired: true, reconsidered: "burst" });
+      if (r.acquired) await finishCycle(db, cfg, r.cycleId, `w${i}`, mins(t), "declined", "model-decline", "decline", { rule: "model-decline", occurrenceCount: count, causeClass: CAUSE });
+    }
+    t += 31;
+    await setIncident({ occurrenceCount: count + 100, retriageRequestedAt: mins(t - 1) });
+    expect(await acquireLease(db, cfg, key, "late", mins(t), { reconsider: policy() })).toEqual({ acquired: false, reason: "closed" });
+    expect((await cycle()).history).toHaveLength(3);
+    // A day after the first reconsideration there is room again.
+    expect(await acquireLease(db, cfg, key, "next-day", mins(33 + 24 * 60), { reconsider: policy() })).toMatchObject({ acquired: true });
+    expect((await cycle()).startDays).toEqual(["2026-10-04", "2026-10-05"]);
   });
 });

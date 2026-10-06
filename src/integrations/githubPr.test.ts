@@ -49,6 +49,7 @@ let api: {
   annotations?: (id: string) => Reply;
   issues?: () => Reply;
   issueCreate?: () => Reply;
+  pull?: (n: string) => Reply;
 };
 let listCalls: number;
 let createCalls: number;
@@ -105,6 +106,7 @@ beforeAll(async () => {
       if (req.method === "GET" && url.pathname === `/repos/${REPO}`) out = api.repo();
       else if (req.method === "GET" && url.pathname === `/repos/${REPO}/pulls`) out = api.list(++listCalls);
       else if (req.method === "POST" && url.pathname === `/repos/${REPO}/pulls`) out = api.create(++createCalls);
+      else if (req.method === "GET" && url.pathname.startsWith(`/repos/${REPO}/pulls/`) && api.pull) out = api.pull(url.pathname.split("/")[4]!);
       else if (req.method === "GET" && url.pathname === `/repos/${REPO}/issues` && api.issues) out = api.issues();
       else if (req.method === "POST" && url.pathname === `/repos/${REPO}/issues` && api.issueCreate) out = api.issueCreate();
       else if (req.method === "GET" && url.pathname.startsWith(`/repos/${REPO}/commits/`) && url.pathname.endsWith("/check-runs") && api.checks) out = api.checks(url.pathname.split("/")[4]!);
@@ -821,5 +823,67 @@ describe("createGithubClient: the incident's issue", () => {
     api.issues = () => ({ status: 200, json: [] });
     api.issueCreate = () => ({ status: 201, json: { nothing: "useful" } });
     await expect(client().openIssue(issueRequest())).rejects.toMatchObject({ rule: "unexpected-response" });
+  });
+});
+
+describe("createGithubClient: reading a pull request back (#17)", () => {
+  const SHA = "a".repeat(40);
+  const pull = (over: Record<string, unknown> = {}) => ({
+    number: 7,
+    state: "open",
+    merged: false,
+    merged_at: null,
+    closed_at: null,
+    head: { ref: "starfish/inc1_r0", sha: SHA, repo: { full_name: REPO } },
+    base: { ref: "main", repo: { full_name: REPO } },
+    ...over,
+  });
+
+  it("reads open, closed and merged, with the head commit, using GETs only", async () => {
+    api.pull = () => ({ status: 200, json: pull() });
+    expect(await client().readPullRequest("inc1_r0", 7)).toEqual({ number: 7, state: "open", mergedAt: null, closedAt: null, headSha: SHA });
+    api.pull = () => ({ status: 200, json: pull({ state: "closed", closed_at: "2026-10-06T10:00:00Z" }) });
+    expect(await client().readPullRequest("inc1_r0", 7)).toMatchObject({ state: "closed", closedAt: "2026-10-06T10:00:00.000Z", mergedAt: null });
+    api.pull = () => ({ status: 200, json: pull({ state: "closed", merged: true, merged_at: "2026-10-06T11:00:00Z", closed_at: "2026-10-06T11:00:00Z" }) });
+    expect(await client().readPullRequest("inc1_r0", 7)).toMatchObject({ state: "merged", mergedAt: "2026-10-06T11:00:00.000Z" });
+    expect(requests.every((r) => r.method === "GET" && r.path === `/repos/${REPO}/pulls/7`)).toBe(true);
+  });
+
+  it("refuses a pull request that is not this cycle's: another branch, a fork's branch, another repository", async () => {
+    for (const bad of [
+      pull({ head: { ref: "starfish/other_r0", sha: SHA, repo: { full_name: REPO } } }),
+      pull({ head: { ref: "starfish/inc1_r0", sha: SHA, repo: { full_name: "evil/shop" } } }),
+      pull({ base: { ref: "main", repo: { full_name: "evil/shop" } } }),
+      pull({ number: 8 }),
+      null,
+    ]) {
+      api.pull = () => ({ status: 200, json: bad });
+      await expect(client().readPullRequest("inc1_r0", 7), JSON.stringify(bad)).rejects.toBeInstanceOf(GithubError);
+    }
+  });
+
+  it("refuses an answer it cannot read, and a bad id or number before asking", async () => {
+    for (const bad of [pull({ head: { ref: "starfish/inc1_r0", sha: "nope", repo: { full_name: REPO } } }), pull({ state: "weird" })]) {
+      api.pull = () => ({ status: 200, json: bad });
+      await expect(client().readPullRequest("inc1_r0", 7)).rejects.toMatchObject({ rule: "unexpected-response" });
+    }
+    requests = [];
+    await expect(client().readPullRequest("../main", 7)).rejects.toMatchObject({ rule: "invalid-request" });
+    await expect(client().readPullRequest("inc1_r0", 0)).rejects.toMatchObject({ rule: "invalid-request" });
+    expect(requests).toHaveLength(0);
+  });
+
+  it("says what the API said: an expired token, a rate limit, a PR that is gone; never the token", async () => {
+    const cases: Array<[Reply, string]> = [
+      [{ status: 401, json: { message: `Bad credentials ${TOKEN}` } }, "unauthorized"],
+      [{ status: 403, json: { message: "API rate limit exceeded" }, headers: { "x-ratelimit-remaining": "0" } }, "rate-limited"],
+      [{ status: 404, json: { message: "Not Found" } }, "not-found"],
+    ];
+    for (const [reply, rule] of cases) {
+      api.pull = () => reply;
+      const err = (await client().readPullRequest("inc1_r0", 7).catch((e: unknown) => e)) as GithubError;
+      expect(err.rule).toBe(rule);
+      expect(err.message).not.toContain(TOKEN);
+    }
   });
 });

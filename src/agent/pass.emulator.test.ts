@@ -7,7 +7,7 @@ import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { deleteApp, initializeApp } from "firebase-admin/app";
 import { Timestamp, getFirestore } from "firebase-admin/firestore";
 import type { Firestore } from "firebase-admin/firestore";
-import { selectCandidates, type PassConfig } from "./pass.js";
+import { countCyclesStartedToday, selectCandidates, type PassConfig } from "./pass.js";
 
 if (!process.env.FIRESTORE_EMULATOR_HOST) {
   throw new Error("pass.emulator.test.ts needs the Firestore emulator: run `pnpm test:emulator`");
@@ -92,5 +92,35 @@ describe("selectCandidates", () => {
 
   it("returns nothing for an empty store", async () => {
     expect(await selectCandidates(db, cfg, 5)).toEqual([]);
+  });
+
+  it("with a reconsideration policy, picks a declined cycle only when new evidence arrived since its decision (#8)", async () => {
+    const policy = { reconsiderCooldownMinutes: 30, reconsiderMaxPerDay: 3, reconsiderBurstOccurrences: 20 };
+    const declinedOn = (id: string, decision: Record<string, unknown>) =>
+      db.collection(cfg.cycleCollection).doc(`${id}_r0`).set({ incidentId: id, environment: "demo", recurrence: 0, state: "declined", updatedAt: ts(60), decision: { at: ts(60), ...decision } });
+    await incident("burst", { occurrenceCount: 50 });
+    await declinedOn("burst", { occurrenceCount: 5 });
+    await incident("same", { occurrenceCount: 6 });
+    await declinedOn("same", { occurrenceCount: 5 });
+    await incident("asked", { occurrenceCount: 5, retriageRequestedAt: ts(1) });
+    await declinedOn("asked", { occurrenceCount: 5 });
+    const picked = await selectCandidates(db, cfg, 10, { reconsider: policy });
+    expect(picked.map((c) => `${c.incidentId}:${c.reconsider}`).sort()).toEqual(["asked:operator", "burst:burst"]);
+    // Without the policy a decline stays settled.
+    expect(await selectCandidates(db, cfg, 10)).toEqual([]);
+  });
+});
+
+describe("countCyclesStartedToday", () => {
+  it("counts this environment's cycles started on the UTC day, each once", async () => {
+    const now = new Date("2026-10-06T10:00:00Z");
+    const put = (id: string, environment: string, startDays: string[]) => db.collection(cfg.cycleCollection).doc(id).set({ environment, startDays, state: "done" });
+    await put("a_r0", "demo", ["2026-10-06"]);
+    await put("b_r0", "demo", ["2026-10-05", "2026-10-06"]);
+    await put("c_r0", "demo", ["2026-10-05"]);
+    await put("d_r0", "prod", ["2026-10-06"]);
+    await db.collection(cfg.cycleCollection).doc("legacy_r0").set({ environment: "demo", state: "done" });
+    expect(await countCyclesStartedToday(db, cfg, now)).toBe(2);
+    expect(await countCyclesStartedToday(db, cfg, new Date("2026-10-07T00:00:00Z"))).toBe(0);
   });
 });
