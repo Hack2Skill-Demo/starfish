@@ -513,7 +513,8 @@ mounted, the two opt-in routes too, admin-only and audited the same way (`sendCo
 
 The audit trail is `starfish_audit` (`STARFISH_AUDIT_COLLECTION`): admin-readable, engine-written. An ingest run or a retire an
 admin made is recorded before the run or in the retire's own transaction (a refused one is not). The opt-in routes record every
-attempt, refusals included (not an admin, too soon, wrong code, too many tries, escalation off): who, which person, the outcome
+attempt by an admin, refusals included (too soon, wrong code, too many tries, escalation off); a caller who is not an
+admin is refused and not recorded, so a guest cannot fill the audit collection: who, which person, the outcome
 and when, never the number or the code. A send-code's entry commits before the text is sent, and if it cannot be written nothing
 is sent.
 

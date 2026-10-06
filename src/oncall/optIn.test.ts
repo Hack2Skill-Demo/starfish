@@ -13,7 +13,9 @@ function fakeDb(opts: { createFails?: boolean } = {}) {
   const runTransaction = vi.fn(() => Promise.reject(new Error("audit write refused")));
   const db = {
     collection: (collection: string) => ({
-      doc: () => ({
+      doc: (id?: string) => ({
+        // The operator records: admin1 is an admin, anyone else has no role.
+        get: () => Promise.resolve({ exists: id === "admin1", get: (field: string) => (field === "roles" && id === "admin1" ? ["admin"] : undefined), data: () => (id === "admin1" ? { roles: ["admin"] } : undefined) }),
         create: (data: unknown) => {
           if (opts.createFails) return Promise.reject(new Error("audit write refused"));
           created.push({ collection, data });
@@ -66,6 +68,16 @@ describe("refusals decided before the transaction", () => {
     const { db, created } = fakeDb();
     expect(await confirmNumber(db, cfg, "p0", "424242", "", T0)).toEqual({ ok: false, reason: "invalid-id" });
     expect(created).toHaveLength(0);
+  });
+
+  it("records nothing for a caller who is not an admin, so a guest cannot fill the audit collection", async () => {
+    const { db, created, runTransaction } = fakeDb();
+    const { twilio, sendSms } = fakeTwilio();
+    expect(await sendConfirmationCode(db, cfg, twilio, "p0", "guest1", T0, () => "424242")).toEqual({ ok: false, reason: "not-admin" });
+    expect(await confirmNumber(db, cfg, "p0", "424242", "guest1", T0)).toEqual({ ok: false, reason: "not-admin" });
+    expect(created).toHaveLength(0);
+    expect(runTransaction).not.toHaveBeenCalled();
+    expect(sendSms).not.toHaveBeenCalled();
   });
 
   it("throws when the refusal cannot be recorded", async () => {

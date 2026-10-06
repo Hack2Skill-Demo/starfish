@@ -27,7 +27,7 @@ import { createHash, randomInt, timingSafeEqual } from "node:crypto";
 import { FieldValue, Timestamp } from "firebase-admin/firestore";
 import type { DocumentReference, Firestore } from "firebase-admin/firestore";
 import type { StarfishConfig } from "../config.js";
-import { hasAdminRole, isValidUid } from "../adminAuth.js";
+import { hasAdminRole, isAdmin, isValidUid } from "../adminAuth.js";
 import { parsePerson } from "../oncallSchema.js";
 import type { TwilioClient } from "./twilio.js";
 
@@ -63,6 +63,13 @@ export function optInAuditEntry(action: OptInAction, actorUid: string, personId:
   return { action, actorUid, ...(ID_RE.test(personId) && { personId }), outcome, at: Timestamp.fromDate(now) };
 }
 
+/**
+ * Only an admin's attempts are audited: anyone signed in (an anonymous guest too) can call the admin API, and recording
+ * their refusals would let them write the audit collection at will. "Run ingest now" and "Retire" record no refusal
+ * of a non-admin either. The transaction checks the role again, fresh; a role revoked in between is still recorded.
+ */
+const isAdminNow = (db: Firestore, cfg: OptInConfig, actorUid: string): Promise<boolean> => isAdmin(db, cfg.usersCollection, actorUid);
+
 /** A refusal decided before any transaction, recorded on its own. A failed write throws. */
 async function refuse<R extends OptInOutcome>(audit: DocumentReference, entry: (o: OptInOutcome) => object, reason: R): Promise<{ ok: false; reason: R }> {
   await audit.create(entry(reason));
@@ -82,6 +89,7 @@ export async function sendConfirmationCode(
   makeCode: () => string = () => String(randomInt(0, 1_000_000)).padStart(6, "0")
 ): Promise<SendCodeResult> {
   if (!isValidUid(actorUid)) return { ok: false, reason: "invalid-id" };
+  if (!(await isAdminNow(db, cfg, actorUid))) return { ok: false, reason: "not-admin" };
   const audit = db.collection(cfg.auditCollection).doc();
   const entry = (outcome: OptInOutcome) => optInAuditEntry("oncall-send-code", actorUid, personId, outcome, now);
   if (!ID_RE.test(personId)) return refuse(audit, entry, "invalid-id");
@@ -129,6 +137,7 @@ export async function sendConfirmationCode(
 
 export async function confirmNumber(db: Firestore, cfg: OptInConfig, personId: string, code: string, actorUid: string, now: Date): Promise<ConfirmResult> {
   if (!isValidUid(actorUid)) return { ok: false, reason: "invalid-id" };
+  if (!(await isAdminNow(db, cfg, actorUid))) return { ok: false, reason: "not-admin" };
   const audit = db.collection(cfg.auditCollection).doc();
   const entry = (outcome: OptInOutcome) => optInAuditEntry("oncall-confirm", actorUid, personId, outcome, now);
   if (!ID_RE.test(personId) || !/^\d{6}$/.test(code)) return refuse(audit, entry, "invalid-id");

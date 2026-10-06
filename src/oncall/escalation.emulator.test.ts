@@ -262,13 +262,14 @@ describe("opt-in", () => {
       outcomes.push(expected);
     };
     await run("off", () => send("p0", "admin1", T0, { ...cfg, phoneEscalation: false }));
-    await run("not-admin", () => send("p0", "op1", T0));
+    // A non-admin is refused and NOT recorded (optIn.ts, isAdminNow): no entry expected.
+    expect(await send("p0", "op1", T0)).toEqual({ ok: false, reason: "not-admin" });
     await run("no-such-person", () => send("nobody", "admin1", T0));
     await run("no-code", () => confirm("p0", "424242", "admin1", T0));
     await run("sent", () => send("p0", "admin1", T0));
     await run("too-soon", () => send("p0", "admin1", at(0.5)));
     await run("wrong-code", () => confirm("p0", "111111", "admin1", T0));
-    await run("not-admin", () => confirm("p0", "424242", "op1", T0));
+    expect(await confirm("p0", "424242", "op1", T0)).toEqual({ ok: false, reason: "not-admin" });
     await run("expired", () => confirm("p0", "424242", "admin1", at(11)));
     await run("confirmed", () => confirm("p0", "424242", "admin1", T0));
     await run("already-confirmed", () => confirm("p0", "424242", "admin1", T0));
