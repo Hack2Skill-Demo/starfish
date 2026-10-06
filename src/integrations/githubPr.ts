@@ -70,7 +70,11 @@ export type GithubRule =
   | "patch-does-not-apply"
   | "branch-conflict"
   | "git-failed"
-  | "unexpected-response";
+  | "unexpected-response"
+  | "head-changed"
+  | "not-mergeable"
+  | "intervening-changes"
+  | "revert-not-possible";
 
 /** Thrown for anything that stopped the pull request. Never carries the token. */
 export class GithubError extends Error {
@@ -87,6 +91,11 @@ export class GithubError extends Error {
 export interface PullRequestResult {
   number: number;
   url: string;
+  /**
+   * The head commit, only when THIS call built (or reconciled, tree and parent checked) the branch from the verified
+   * patch. A pull request merely found for the branch has none: nothing proves what its head holds (#9).
+   */
+  headSha?: string;
 }
 
 /** What the issue says about one incident. Built by the loop from stored, already-bounded fields. */
@@ -107,7 +116,15 @@ export interface IssueRequest {
   suspectedCause: string | null;
   /** The operator UI's origin for links, or "". */
   uiBaseUrl: string;
+  /** Auto-merge is on for this repository (#9): the issue then says Starfish may merge the fix itself. */
+  autoMerge?: boolean;
 }
+
+/** What the pull request and the issue say about merging: the truth for this repository (#9). */
+const MERGE_LINE = {
+  off: "It does not merge or deploy: a person decides.",
+  on: "Auto-merge is on for this repository: Starfish merges the fix itself only if every gate passes, and posts the evidence on the pull request first; otherwise a person decides. It never deploys.",
+} as const;
 
 /** The label every Starfish issue carries, so they can be listed together and reconciled by cycle. */
 export const ISSUE_LABEL = "starfish";
@@ -138,6 +155,10 @@ const MAX_BODY = 12_000;
 const MAX_OUTPUT_IN_BODY = 3_000;
 const MAX_ATTACKS_IN_BODY = 20;
 const MAX_FILES_IN_BODY = 50;
+/** How much of the base branch's history a revert looks through for the merge commit and any later change. */
+const REVERT_HISTORY = 200;
+/** GitHub's compare returns at most 300 files; a list that long may be cut, so it is refused rather than trusted. */
+const MAX_COMPARE_FILES = 300;
 
 export const defaultRunGit: RunGit = (args, { cwd, env }) =>
   new Promise((resolve, reject) => {
@@ -335,7 +356,7 @@ export function pullRequestText(req: PullRequestRequest): { title: string; body:
     `- Base revision: \`${code(req.baseRevision, 40)}\``,
     `- Patch SHA-256: \`${code(req.patchSha256, 64)}\``,
     "",
-    "Opened by Starfish. It does not merge or deploy: a person decides.",
+    `Opened by Starfish. ${req.autoMerge === true ? MERGE_LINE.on : MERGE_LINE.off}`,
     ...(req.issueNumber !== undefined && Number.isInteger(req.issueNumber) && req.issueNumber > 0 ? ["", `Closes #${req.issueNumber}`] : []),
     "",
   ];
@@ -426,7 +447,7 @@ export function issueText(req: IssueRequest): { title: string; body: string } {
     "## What Starfish will do",
     "",
     req.path === "act"
-      ? "Draft a minimal fix, check it with this repository's own tests, have it adversarially reviewed, and open a pull request that references this issue. Starfish does not merge or deploy: a person decides."
+      ? `Draft a minimal fix, check it with this repository's own tests, have it adversarially reviewed, and open a pull request that references this issue. ${req.autoMerge === true ? MERGE_LINE.on : "Starfish does not merge or deploy: a person decides."}`
       : "Nothing in the code can fix this, so no patch will be drafted. A person is told, here and in Slack; the step they need to take is above.",
   ];
   const incident = incidentUrl(req.uiBaseUrl, req.incidentId);
@@ -475,6 +496,20 @@ export interface PullRequestState {
   closedAt: string | null;
   /** The full commit id of the PR's head: the check runs that matter are on it. */
   headSha: string;
+  /** The commit a merge made on the base branch (GitHub's `merge_commit_sha`), when merged. */
+  mergeCommitSha?: string;
+}
+
+/** What a revert of Starfish's own merge says (#9, src/agent/fastRevert.ts). Redacted and bounded here. */
+export interface RevertRequest {
+  /** The cycle whose merge is reverted: the revert's branch is `starfish/revert-<cycleId>`. */
+  cycleId: string;
+  /** The commit Starfish's merge made on the base branch. */
+  mergeSha: string;
+  /** Why: one or two sentences, from stored fields. */
+  reason: string;
+  /** The pull request that was merged. */
+  mergedPr: number;
 }
 
 export interface GithubClient {
@@ -506,6 +541,26 @@ export interface GithubClient {
   findPullRequest: (cycleId: string) => Promise<PullRequestResult | null>;
   listCheckRuns: (commit: string) => Promise<CheckRun[]>;
   annotations: (checkRunId: number) => Promise<CheckAnnotation[]>;
+  /**
+   * Squash-merge ONE pull request Starfish opened from `starfish/<cycleId>` (#9), only while its head is exactly `sha`:
+   * the head is read back first, and GitHub is also given `sha`, so a head that changed at any point refuses. Returns
+   * the commit the merge made. Called only by the auto-merge and fast-revert steps, after every gate passed.
+   */
+  mergePullRequest: (cycleId: string, number: number, sha: string, message: { title: string; body: string }) => Promise<{ sha: string }>;
+  /** Post one comment on a pull request Starfish opened from `starfish/<cycleId>` (the merge evidence). */
+  commentOnPullRequest: (cycleId: string, number: number, body: string) => Promise<void>;
+  /**
+   * The files changed on the base branch since `revision` (GitHub's compare), so a fix verified on an older base is not
+   * merged over a later change to the same file. Throws when GitHub cannot list them all (more than it returns at once).
+   */
+  filesChangedSince: (revision: string) => Promise<string[]>;
+  /**
+   * Open (or find) the pull request that reverts Starfish's own merge commit, on `starfish/revert-<cycleId>`. Refuses
+   * (`intervening-changes`) when a later commit on the base branch touched any file the merge touched: a revert must
+   * never overwrite someone else's change blindly. Refuses (`revert-not-possible`) when the merge commit is not in the
+   * base branch's recent history or does not revert cleanly.
+   */
+  openRevertPullRequest: (req: RevertRequest) => Promise<Required<PullRequestResult>>;
 }
 
 export function createGithubClient(cfg: GithubPrConfig, deps: GithubPrDeps): GithubClient {
@@ -526,7 +581,7 @@ export function createGithubClient(cfg: GithubPrConfig, deps: GithubPrDeps): Git
   /** Anything about to leave this file: the token and its encodings removed, then the usual redaction. */
   const scrub = (text: string) => redactPii(text.split(deps.token).join("[token]").split(basic).join("[token]"));
 
-  async function call(method: "GET" | "POST" | "DELETE", path: string, body?: unknown): Promise<{ status: number; json: unknown; headers: Headers }> {
+  async function call(method: "GET" | "POST" | "PUT" | "DELETE", path: string, body?: unknown): Promise<{ status: number; json: unknown; headers: Headers }> {
     let res: Response;
     try {
       res = await doFetch(`${api}${path}`, {
@@ -740,14 +795,14 @@ export function createGithubClient(cfg: GithubPrConfig, deps: GithubPrDeps): Git
     const existing = await findExisting(branch);
     if (existing) return existing;
 
-    await buildAndPush(req, branch);
+    const headSha = await buildAndPush(req, branch);
 
     const { title, body } = pullRequestText(req);
     const created = await call("POST", `/repos/${cfg.githubRepo}/pulls`, { title, head: branch, base: cfg.githubBaseBranch, body, maintainer_can_modify: false });
     if (created.status === 201) {
       const pr = asPr(created.json);
       if (!pr) throw new GithubError("unexpected-response", "GitHub created a pull request but did not say which.");
-      return pr;
+      return /^[0-9a-f]{40}$/.test(headSha) ? { ...pr, headSha } : pr;
     }
     if (created.status === 422) {
       // Most likely a worker racing this one opened it first: the branch's pull request is the answer.
@@ -769,6 +824,7 @@ export function createGithubClient(cfg: GithubPrConfig, deps: GithubPrDeps): Git
       merged?: unknown;
       merged_at?: unknown;
       closed_at?: unknown;
+      merge_commit_sha?: unknown;
       head?: { ref?: unknown; sha?: unknown; repo?: { full_name?: unknown } | null } | null;
       base?: { repo?: { full_name?: unknown } | null } | null;
     } | null;
@@ -788,7 +844,137 @@ export function createGithubClient(cfg: GithubPrConfig, deps: GithubPrDeps): Git
     const merged = mergedAt !== null || j.merged === true;
     const state = merged ? "merged" : j.state === "open" ? "open" : j.state === "closed" ? "closed" : null;
     if (state === null) throw new GithubError("unexpected-response", "GitHub gave the pull request no state.");
-    return { number, state, mergedAt, closedAt: iso(j.closed_at), headSha };
+    const mergeCommitSha = state === "merged" && typeof j.merge_commit_sha === "string" && /^[0-9a-f]{40}$/.test(j.merge_commit_sha) ? j.merge_commit_sha : undefined;
+    return { number, state, mergedAt, closedAt: iso(j.closed_at), headSha, ...(mergeCommitSha && { mergeCommitSha }) };
+  }
+
+  async function mergePullRequest(cycleId: string, number: number, sha: string, message: { title: string; body: string }): Promise<{ sha: string }> {
+    if (!/^[0-9a-f]{40}$/.test(sha)) throw new GithubError("invalid-request", "A merge names the exact head commit.");
+    const pr = await readPullRequest(cycleId, number);
+    if (pr.state !== "open") throw new GithubError("not-mergeable", `Pull request #${number} is ${pr.state}; nothing was merged.`);
+    if (pr.headSha !== sha) throw new GithubError("head-changed", `Pull request #${number} has a new head since it was verified; nothing was merged.`);
+    const r = await call("PUT", `/repos/${cfg.githubRepo}/pulls/${number}/merge`, {
+      merge_method: "squash",
+      sha,
+      commit_title: plainLine(message.title, 100) || `Starfish: merge #${number}`,
+      commit_message: noUrl(noRefs(clip(message.body, 2000))),
+    });
+    if (r.status === 200) {
+      const j = r.json as { merged?: unknown; sha?: unknown } | null;
+      if (j?.merged !== true || typeof j.sha !== "string" || !/^[0-9a-f]{40}$/.test(j.sha)) {
+        throw new GithubError("unexpected-response", "GitHub did not confirm the merge and its commit.");
+      }
+      return { sha: j.sha };
+    }
+    if (r.status === 409) throw new GithubError("head-changed", `Pull request #${number} has a new head; nothing was merged.`, 409);
+    if (r.status === 405) throw new GithubError("not-mergeable", `GitHub would not merge #${number} (required checks, reviews or conflicts).`, 405);
+    throw failure(r.status, r.headers, r.json);
+  }
+
+  async function filesChangedSince(revision: string): Promise<string[]> {
+    if (!/^[0-9a-f]{40}$/.test(revision)) throw new GithubError("invalid-request", "A comparison starts at a full commit id.");
+    const r = await call("GET", `/repos/${cfg.githubRepo}/compare/${revision}...${encodeURIComponent(cfg.githubBaseBranch)}?per_page=${MAX_COMPARE_FILES}`);
+    if (r.status !== 200) throw failure(r.status, r.headers, r.json);
+    const j = r.json as { ahead_by?: unknown; total_commits?: unknown; files?: unknown } | null;
+    if (j?.ahead_by === 0) return [];
+    if (!Array.isArray(j?.files)) throw new GithubError("unexpected-response", "GitHub's comparison listed no files.");
+    if (j.files.length >= MAX_COMPARE_FILES) throw new GithubError("unexpected-response", "Too many files changed on the base branch to check them all.");
+    const out: string[] = [];
+    for (const f of j.files as { filename?: unknown; previous_filename?: unknown }[]) {
+      if (typeof f.filename === "string") out.push(f.filename);
+      if (typeof f.previous_filename === "string") out.push(f.previous_filename);
+    }
+    return out;
+  }
+
+  async function commentOnPullRequest(cycleId: string, number: number, body: string): Promise<void> {
+    await readPullRequest(cycleId, number); // refuses a pull request that is not this cycle's
+    const r = await call("POST", `/repos/${cfg.githubRepo}/issues/${number}/comments`, { body: body.slice(0, MAX_BODY) });
+    if (r.status !== 201) throw failure(r.status, r.headers, r.json);
+  }
+
+  async function openRevertPullRequest(req: RevertRequest): Promise<Required<PullRequestResult>> {
+    if (!CYCLE_RE.test(req.cycleId)) throw new GithubError("invalid-request", "The cycle id is not a plain id.");
+    const revertId = `revert-${req.cycleId}`;
+    const branch = branchFor(revertId);
+    if (branch === null) throw new GithubError("invalid-request", "The cycle id is too long to name a revert branch.");
+    if (!/^[0-9a-f]{40}$/.test(req.mergeSha)) throw new GithubError("invalid-request", "A revert names the full merge commit.");
+    if (!Number.isInteger(req.mergedPr) || req.mergedPr < 1) throw new GithubError("invalid-request", "A revert names the merged pull request.");
+    await checkTarget();
+    const existing = await findExisting(branch);
+    if (existing) return { ...existing, headSha: (await readPullRequest(revertId, existing.number)).headSha };
+
+    const dir = await mkdtemp(join(deps.tmpDir ?? tmpdir(), "starfish-revert-"));
+    const env = {
+      ...gitAuthEnv(remote, deps.token, deps.env, cfg.githubApiUrl),
+      GIT_AUTHOR_NAME: cfg.githubCommitName,
+      GIT_AUTHOR_EMAIL: cfg.githubCommitEmail,
+      GIT_COMMITTER_NAME: cfg.githubCommitName,
+      GIT_COMMITTER_EMAIL: cfg.githubCommitEmail,
+    };
+    const git = async (args: string[]) => {
+      try {
+        return await runGit(args, { cwd: dir, env });
+      } catch (err) {
+        throw new GithubError("git-failed", scrub(err instanceof Error ? err.message : String(err)));
+      }
+    };
+    let headSha: string;
+    try {
+      await git(["init", "--quiet"]);
+      await git(["remote", "add", "origin", remote]);
+      await git(["fetch", "--quiet", `--depth=${REVERT_HISTORY}`, "origin", `refs/heads/${cfg.githubBaseBranch}`]);
+      const tip = (await git(["rev-parse", "FETCH_HEAD"])).trim();
+      const onBase = await git(["merge-base", "--is-ancestor", req.mergeSha, tip]).then(
+        () => true,
+        () => false
+      );
+      if (!onBase) throw new GithubError("revert-not-possible", "The merge commit is not in the base branch's recent history; nothing was reverted.");
+      const parents = (await git(["rev-list", "--parents", "-n", "1", req.mergeSha])).trim().split(/\s+/);
+      // A squash merge has one parent. Anything else (a merge commit, a shallow boundary) is not reverted blindly.
+      if (parents.length !== 2) throw new GithubError("revert-not-possible", "The merge commit is not a single-parent commit; nothing was reverted.");
+      const touched = (await git(["diff-tree", "--no-commit-id", "--name-only", "-r", req.mergeSha])).split("\n").filter((f) => f !== "");
+      if (touched.length === 0) throw new GithubError("revert-not-possible", "The merge commit changed no file.");
+      const later = (await git(["rev-list", `${req.mergeSha}..${tip}`, "--", ...touched])).trim();
+      if (later !== "") throw new GithubError("intervening-changes", "A later commit on the base branch changed a file the merge changed; nothing was reverted.");
+      await git(["checkout", "--quiet", "--detach", tip]);
+      try {
+        await git(["revert", "--no-edit", "--no-gpg-sign", req.mergeSha]);
+      } catch {
+        throw new GithubError("revert-not-possible", "The merge does not revert cleanly; nothing was reverted.");
+      }
+      await git(["push", "--quiet", "origin", pushRefspec(branch)]);
+      headSha = (await git(["rev-parse", "HEAD"])).trim();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+
+    const title = `Starfish: revert its merge of #${req.mergedPr}`;
+    const body = [
+      "## Why",
+      "",
+      inert(req.reason, 1000),
+      "",
+      "## What",
+      "",
+      `Reverts \`${code(req.mergeSha, 40)}\`, the commit Starfish's own merge of #${req.mergedPr} made. No later commit on the base branch touched the files it changed.`,
+      "",
+      `Run: \`${code(req.cycleId, 128)}\``,
+      "",
+      "Opened by Starfish's fast-revert. It merges this once the required checks pass. Starfish never reverts a revert, and it does not deploy: the repository's own CI/CD does.",
+      "",
+    ].join("\n");
+    const created = await call("POST", `/repos/${cfg.githubRepo}/pulls`, { title, head: branch, base: cfg.githubBaseBranch, body, maintainer_can_modify: false });
+    if (created.status === 201) {
+      const pr = asPr(created.json);
+      if (!pr) throw new GithubError("unexpected-response", "GitHub created a pull request but did not say which.");
+      return { ...pr, headSha };
+    }
+    if (created.status === 422) {
+      const raced = await findExisting(branch);
+      if (raced) return { ...raced, headSha: (await readPullRequest(revertId, raced.number)).headSha };
+    }
+    throw failure(created.status, created.headers, created.json);
   }
 
   async function openIssue(req: IssueRequest): Promise<PullRequestResult> {
@@ -816,5 +1002,18 @@ export function createGithubClient(cfg: GithubPrConfig, deps: GithubPrDeps): Git
     return issue;
   }
 
-  return { openPullRequest, readPullRequest, openIssue, pushPatchBranch, deleteBranch, findPullRequest, listCheckRuns, annotations };
+  return {
+    openPullRequest,
+    readPullRequest,
+    openIssue,
+    pushPatchBranch,
+    deleteBranch,
+    findPullRequest,
+    listCheckRuns,
+    annotations,
+    mergePullRequest,
+    commentOnPullRequest,
+    filesChangedSince,
+    openRevertPullRequest,
+  };
 }

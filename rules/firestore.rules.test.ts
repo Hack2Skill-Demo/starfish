@@ -455,6 +455,9 @@ describe("runtime settings", () => {
       ["a dry run switch that isn't a boolean", { dryRun: "false" }],
       ["a review switch that isn't a boolean", { reviewRequired: 0 }],
       ["a kill switch that isn't a boolean", { automationEnabled: "off" }],
+      ["an auto-merge switch that isn't a boolean", { autoMerge: "true" }],
+      ["a merge freeze that isn't a boolean", { mergeFreeze: 1 }],
+      ["a merge target list, which only the environment may set", { autoMergeTargets: ["acme/prod"] }],
       ["a model call budget of zero", { modelCallBudget: 0 }],
       ["a model call budget above fifty", { modelCallBudget: 51 }],
       ["a fractional model call budget", { modelCallBudget: 2.5 }],
@@ -493,6 +496,11 @@ describe("runtime settings", () => {
         settings: { dryRun: false, reviewRequired: false, automationEnabled: false, modelCallBudget: 50 },
       });
       await assertSucceeds(save("admin1", { ...settings, dryRun: true, modelCallBudget: 1 }));
+    });
+
+    it("accepts the merge switches, and the engine agrees (#9)", async () => {
+      await assertSucceeds(save("admin1", { ...settings, autoMerge: true, mergeFreeze: false }));
+      expect(validateSettings(await stored())).toMatchObject({ ok: true, settings: { autoMerge: true, mergeFreeze: false } });
     });
 
     it("accepts a model and region, and the engine agrees (#7)", async () => {

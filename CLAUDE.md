@@ -6,7 +6,10 @@ Guidance for Claude Code when working in this repository.
 
 An AI ops engineer for teams that don't have one: it watches a Firebase/GCP project's logs,
 judges which incidents are urgent, drafts a fix with Gemini, verifies it deterministically,
-adversarially reviews it, and **stops at a pull request**. It never merges and never deploys.
+adversarially reviews it, and **stops at a pull request**. It never deploys. It merges only
+where an admin turned auto-merge on for that target (the demo, listed in `STARFISH_AUTO_MERGE_TARGETS`)
+and every gate passes (#9: built behind a default-off switch, never run against real GitHub); every
+other target is PR-only.
 
 Two constraints shape everything: the model it uses is **Gemini on Vertex AI**, and it must
 be **generic** (below).
@@ -96,7 +99,9 @@ asked. `/ship` encodes the loop:
 didn't create, force-pushing shared branches); genuinely ambiguous scope; anything that
 would let Starfish **merge or deploy on its own** (the trust ladder in the README is a
 product decision, not a code change; the decided direction and its preconditions are in
-`docs/design/auto-merge-policy.md`: decided, not built, demo project first); spending that isn't free (new paid GCP services);
+`docs/design/auto-merge-policy.md`: built for the demo target behind a default-off switch, never run
+against real GitHub; widening it to another target, loosening a gate or the hard-exclude list, or
+defaulting it on is that product decision); spending that isn't free (new paid GCP services);
 and changes to what the pitch claims.
 
 ## Git
@@ -151,7 +156,20 @@ src/
   agent/cycle.ts   cycle per (incident, recurrence), transactional lease with fencing, append-only run events
                    (redacted) and the cycle's run record (summary.<stage>, path); infrastructure errors throw, logical refusals are returned. Run by `pnpm agent` (deployable, never run)
   agent/loop.ts    one cycle: lease -> triage -> fix -> verify -> review -> PR (interface); rechecks status +
-                   kill switch, one shared revision, call budget, dry run by default. Run by `pnpm agent`
+                   kill switch, one shared revision, call budget, dry run by default. Run by `pnpm agent`. Where
+                   auto-merge may apply it also runs gate 1 and the "fails before" run (`summary.before`) and records
+                   the candidate (`summary.merge` pending); it never merges itself
+  agent/blastRadius.ts  auto-merge gate 1 (#9), pure: a conservative diff classifier (null guard, missing await,
+                   Firestore undefined field; one file, one hunk, one function; test files may only gain lines) and the
+                   hard-exclude list (auth, rules, money, secrets, schema, dependencies/imports, CI/config, shared code).
+                   Unsure is never allowed
+  agent/autoMerge.ts  the switches (`mergeBlockedBy`), gate 2 (`certaintyGate`, pure over the run record) and the merge
+                   step after the pass: fresh switches + incident status, gates, PR head = the head Starfish built, named
+                   checks green on it, daily cap (transactional), evidence comment, squash merge with `sha`. Any failure:
+                   PR stays open + notify. Fakes + emulator tested, never run against real GitHub
+  agent/fastRevert.ts  the watch every merge starts: the incident seen again after a grace and within N minutes of the
+                   MERGE (deploy completion is not observable) -> revert PR of Starfish's own merge commit, merged on
+                   green checks; a later change to the same files escalates; a revert is never reverted
   agent/pass.ts    one pass over the store: candidate selection, stack trace → repo files, bounded driver; the daily
                    cycle cap (`STARFISH_MAX_CYCLES_PER_DAY`, a count of cycles started that UTC day)
   agent/reconcile.ts  after the pass (#17): polls a bounded number of opened PRs (state + named checks on the head), records
@@ -205,9 +223,11 @@ src/
                    (a secret, `loadSlackOnCallWebhook`) never appears in a result. Also the optional #ops-alerts "new incident"
                    message (`loadSlackAlertsWebhook`, `summary.alert`). Run by `pnpm agent`; never run against real Slack
   integrations/githubPr.ts  the pull-request opener (#17): idempotent by cycle id, pushes only
-                   starfish/<id>, never merges, token only in git's environment. Also files the incident's issue
+                   starfish/<id>, does not merge itself, token only in git's environment. Also files the incident's issue
                    (`openIssue`: idempotent by a marker, label `starfish`, a failure recorded on the cycle), and reads one of its PRs
-                   back (`readPullRequest`: refuses one not from starfish/<cycle> in the repo). Never run against real
+                   back (`readPullRequest`: refuses one not from starfish/<cycle> in the repo). For #9 only: squash-merges
+                   one of its PRs at an exact head (`mergePullRequest`), comments on it, and opens the revert of its own
+                   merge commit on starfish/revert-<cycle> (`openRevertPullRequest`). Never run against real
                    GitHub; run by `pnpm agent` (deployable, never run)
   integrations/links.ts  links from Slack and issues back to the UI, built from the configured origin and a plain id
   runtimeSettings.ts  the settings document an admin edits: validated, applied over the

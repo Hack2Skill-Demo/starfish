@@ -18,6 +18,13 @@ export interface RuntimeSettings {
   reviewRequired?: boolean;
   /** The kill switch: false stops the agent loop at its next step. */
   automationEnabled?: boolean;
+  /**
+   * Auto-merge for this deployment's target (#9): a pull request whose gates all pass is merged. The engine's default
+   * is off, and it only ever applies to a target the deployment lists in STARFISH_AUTO_MERGE_TARGETS (the demo).
+   */
+  autoMerge?: boolean;
+  /** The global off switch for merging: true stops every automatic merge and revert, whatever `autoMerge` says. */
+  mergeFreeze?: boolean;
   /** The most model calls one cycle may make. */
   modelCallBudget?: number;
   /** The Gemini model id the agent asks (triage, fix, review), e.g. gemini-3.1-pro-preview. */
@@ -42,6 +49,8 @@ const SETTINGS_KEYS = [
   "dryRun",
   "reviewRequired",
   "automationEnabled",
+  "autoMerge",
+  "mergeFreeze",
   "modelCallBudget",
   "model",
   "location",
@@ -142,7 +151,7 @@ export function validateSettings(raw: unknown): Validation {
     } else settings.ignoredMessages = [...(list as string[])];
   }
 
-  for (const flag of ["dryRun", "reviewRequired", "automationEnabled"] as const) {
+  for (const flag of ["dryRun", "reviewRequired", "automationEnabled", "autoMerge", "mergeFreeze"] as const) {
     if (raw[flag] !== undefined) {
       if (typeof raw[flag] === "boolean") settings[flag] = raw[flag] as boolean;
       else problems.push(`${flag}: true or false`);

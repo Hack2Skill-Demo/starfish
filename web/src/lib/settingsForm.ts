@@ -24,6 +24,8 @@ export const FIELD_NAMES = [
   "dryRun",
   "reviewRequired",
   "automationEnabled",
+  "autoMerge",
+  "mergeFreeze",
   "modelCallBudget",
   "model",
   "location",
@@ -56,6 +58,9 @@ export function formFromStored(stored: StoredSettings | null): FormState {
     dryRun: { override: "dryRun" in s, text: typeof s.dryRun === "boolean" ? String(s.dryRun) : "true" },
     reviewRequired: { override: "reviewRequired" in s, text: typeof s.reviewRequired === "boolean" ? String(s.reviewRequired) : "true" },
     automationEnabled: { override: "automationEnabled" in s, text: typeof s.automationEnabled === "boolean" ? String(s.automationEnabled) : "true" },
+    // Both merge switches start from off: turning auto-merge on is a deliberate admin action (#9).
+    autoMerge: { override: "autoMerge" in s, text: typeof s.autoMerge === "boolean" ? String(s.autoMerge) : "false" },
+    mergeFreeze: { override: "mergeFreeze" in s, text: typeof s.mergeFreeze === "boolean" ? String(s.mergeFreeze) : "false" },
     modelCallBudget: { override: "modelCallBudget" in s, text: typeof s.modelCallBudget === "number" ? String(s.modelCallBudget) : "" },
     model: { override: "model" in s, text: typeof s.model === "string" ? s.model : "" },
     location: { override: "location" in s, text: typeof s.location === "string" ? s.location : "" },
@@ -79,9 +84,9 @@ export function settingsFromForm(form: FormState): FormResult {
   if (form.logResourceTypes.override) raw.logResourceTypes = lines(form.logResourceTypes.text);
   if (form.ignoredMessages.override) raw.ignoredMessages = lines(form.ignoredMessages.text);
 
-  // The two switches are a select, so the text is exactly "true" or "false"; anything else is left as it is
+  // The switches are a select, so the text is exactly "true" or "false"; anything else is left as it is
   // for the validator to refuse rather than guessed at.
-  for (const flag of ["dryRun", "reviewRequired", "automationEnabled"] as const) {
+  for (const flag of ["dryRun", "reviewRequired", "automationEnabled", "autoMerge", "mergeFreeze"] as const) {
     if (form[flag].override) raw[flag] = form[flag].text === "true" ? true : form[flag].text === "false" ? false : form[flag].text;
   }
   if (form.modelCallBudget.override) {

@@ -11,6 +11,16 @@ describe("formFromStored", () => {
     expect(defaults.dryRun.text).toBe("true");
     expect(defaults.reviewRequired.text).toBe("true");
     expect(defaults.automationEnabled.text).toBe("true");
+    // The merge switches start Off: turning auto-merge on is the deliberate act (#9).
+    expect(defaults.autoMerge.text).toBe("false");
+    expect(defaults.mergeFreeze.text).toBe("false");
+  });
+
+  it("round-trips the merge switches (#9)", () => {
+    const form = formFromStored({ version: 1, autoMerge: true, mergeFreeze: false });
+    expect(form.autoMerge).toEqual({ override: true, text: "true" });
+    expect(settingsFromForm(form)).toEqual({ ok: true, settings: { autoMerge: true, mergeFreeze: false } });
+    expect(settingsFromForm(withField({ autoMerge: { override: true, text: "maybe" } })).ok).toBe(false);
   });
 
   it("overrides exactly the fields the document holds, and formats lists and patterns for editing", () => {

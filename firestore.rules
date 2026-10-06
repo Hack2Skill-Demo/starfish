@@ -161,7 +161,7 @@ service cloud.firestore {
     function settingsShapeOk(d) {
       return d.keys().hasOnly(['version', 'revision', 'auditId', 'watchedProjectId', 'environment',
                                'logResourceTypes', 'servicePatterns', 'ignoredMessages',
-                               'dryRun', 'reviewRequired', 'automationEnabled', 'modelCallBudget',
+                               'dryRun', 'reviewRequired', 'automationEnabled', 'autoMerge', 'mergeFreeze', 'modelCallBudget',
                                'model', 'location', 'updatedAt', 'updatedBy'])
         && d.keys().hasAll(['version', 'revision', 'auditId', 'updatedAt', 'updatedBy'])
         && d.version == 1
@@ -180,6 +180,8 @@ service cloud.firestore {
         && (!('dryRun' in d) || d.dryRun is bool)
         && (!('reviewRequired' in d) || d.reviewRequired is bool)
         && (!('automationEnabled' in d) || d.automationEnabled is bool)
+        && (!('autoMerge' in d) || d.autoMerge is bool)
+        && (!('mergeFreeze' in d) || d.mergeFreeze is bool)
         && (!('modelCallBudget' in d) || (d.modelCallBudget is int && d.modelCallBudget >= 1 && d.modelCallBudget <= 50))
         // The same patterns as MODEL_ID and VERTEX_LOCATION in src/settingsSchema.ts.
         && (!('model' in d) || (d.model is string && d.model.matches('^[a-z][a-z0-9._-]{0,63}$')))

@@ -47,6 +47,8 @@ function snapshot(config: StarfishConfig): StarfishConfig {
     ignoredMessages: Object.freeze([...config.ignoredMessages]) as string[],
     excludedServices: Object.freeze([...config.excludedServices]) as string[],
     servicePatterns: Object.freeze({ ...config.servicePatterns }),
+    autoMergeTargets: Object.freeze([...config.autoMergeTargets]) as string[],
+    autoMergeExcludedPaths: Object.freeze([...config.autoMergeExcludedPaths]) as string[],
   });
 }
 
@@ -62,6 +64,8 @@ export function applySettings(base: StarfishConfig, settings: RuntimeSettings): 
     ...(settings.dryRun !== undefined && { dryRun: settings.dryRun }),
     ...(settings.reviewRequired !== undefined && { reviewRequired: settings.reviewRequired }),
     ...(settings.automationEnabled !== undefined && { automationEnabled: settings.automationEnabled }),
+    ...(settings.autoMerge !== undefined && { autoMerge: settings.autoMerge }),
+    ...(settings.mergeFreeze !== undefined && { mergeFreeze: settings.mergeFreeze }),
     ...(settings.modelCallBudget !== undefined && { modelCallBudget: settings.modelCallBudget }),
     ...(settings.model !== undefined && { model: settings.model }),
     ...(settings.location !== undefined && { location: settings.location }),

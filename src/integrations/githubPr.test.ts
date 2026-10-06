@@ -151,7 +151,7 @@ describe("createPullRequestOpener: opening", () => {
   it("pushes one commit on starfish/<cycle> on top of the verified base, and opens one pull request", async () => {
     const mainBefore = git(bare, "rev-parse", "refs/heads/main");
     const result = await opener()(request());
-    expect(result).toEqual({ number: 7, url: PR.html_url });
+    expect(result).toEqual({ number: 7, url: PR.html_url, headSha: git(bare, "rev-parse", "refs/heads/starfish/inc1_r0") });
 
     expect(git(bare, "rev-parse", "refs/heads/main")).toBe(mainBefore);
     expect(branches().map((l) => l.split(" ")[0])).toEqual(["refs/heads/main", "refs/heads/starfish/inc1_r0"]);
@@ -217,7 +217,7 @@ describe("createPullRequestOpener: idempotent by cycle id", () => {
     await expect(open(request())).rejects.toMatchObject({ rule: "server-error" });
     const tip = git(bare, "rev-parse", "refs/heads/starfish/inc1_r0");
 
-    expect(await open(request())).toEqual({ number: 7, url: PR.html_url });
+    expect(await open(request())).toEqual({ number: 7, url: PR.html_url, headSha: tip });
     expect(git(bare, "rev-parse", "refs/heads/starfish/inc1_r0")).toBe(tip); // not pushed again, not rewritten
     expect(createCalls).toBe(2);
   });
@@ -504,7 +504,7 @@ describe("createGithubClient: the CI-backed verify step", () => {
     const c = client();
     const { commit } = await c.pushPatchBranch(patchReq());
     const pr = await c.openPullRequest(patchReq());
-    expect(pr).toEqual({ number: 7, url: PR.html_url });
+    expect(pr).toEqual({ number: 7, url: PR.html_url, headSha: commit });
     expect(tip("starfish/inc1_r0")).toBe(commit);
     expect(createCalls).toBe(1);
   });

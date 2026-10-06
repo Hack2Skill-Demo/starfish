@@ -175,6 +175,33 @@ export interface StarfishConfig {
   /** How long the incident must stay quiet after READY (and the query pass again) before the heal is called healed. */
   indexObserveMinutes: number;
   /**
+   * Auto-merge (#9, src/agent/autoMerge.ts) for THIS deployment's target (`githubRepo`): an admin's switch, off by
+   * default and editable on the Settings page. Even on, a pull request is merged only when the target is listed in
+   * `autoMergeTargets`, `dryRun` is off, the automation switch is on, `mergeFreeze` is off, the daily cap allows it and
+   * both gates pass. It never turns on index creation (`indexAutoApply`), and Starfish never deploys.
+   */
+  autoMerge: boolean;
+  /** The global off switch for merging: true stops every automatic merge and revert, whatever `autoMerge` says. */
+  mergeFreeze: boolean;
+  /**
+   * The repositories (`owner/name`) auto-merge may EVER apply to: the demo target. Environment-only, not an admin
+   * setting, so a production target stays PR-only even if an admin turns `autoMerge` on by mistake. Empty by default.
+   */
+  autoMergeTargets: string[];
+  /** Paths auto-merge never touches, on top of the built-in hard-exclude list and `patchExcludedPaths`. */
+  autoMergeExcludedPaths: string[];
+  /** The most pull requests Starfish merges per UTC day in this environment (reverts not counted). */
+  maxMergesPerDay: number;
+  /** How long an auto-merge candidate may wait for its required checks before it is handed to a person. */
+  mergeCheckWaitMinutes: number;
+  /**
+   * Fast-revert (#9, src/agent/fastRevert.ts): an occurrence of the same incident later than `fastRevertGraceMinutes`
+   * after Starfish's merge and within `fastRevertMinutes` of it reverts that merge. The window starts at the MERGE,
+   * because when a deployment completes is not observable yet; the grace stands in for the deploy.
+   */
+  fastRevertMinutes: number;
+  fastRevertGraceMinutes: number;
+  /**
    * Browser origins allowed to call the admin API (src/adminApi.ts) from another site: the operator UI's
    * origin, e.g. `https://my-site.web.app`. Empty by default: no browser may. Each entry is an exact origin
    * (https, or http only for localhost); a typo throws at startup instead of widening who may call.
@@ -438,6 +465,14 @@ export function loadConfig(): StarfishConfig {
     indexFilePath: validIndexFilePath(process.env.STARFISH_INDEX_FILE),
     indexWaitMinutes: positiveNumber(process.env.STARFISH_INDEX_WAIT_MINUTES, 10, "STARFISH_INDEX_WAIT_MINUTES"),
     indexObserveMinutes: positiveNumber(process.env.STARFISH_INDEX_OBSERVE_MINUTES, 60, "STARFISH_INDEX_OBSERVE_MINUTES"),
+    autoMerge: parseBoolean(process.env.STARFISH_AUTO_MERGE, false, "STARFISH_AUTO_MERGE"),
+    mergeFreeze: parseBoolean(process.env.STARFISH_MERGE_FREEZE, false, "STARFISH_MERGE_FREEZE"),
+    autoMergeTargets: validRepos(parseList(process.env.STARFISH_AUTO_MERGE_TARGETS, ",") ?? []),
+    autoMergeExcludedPaths: parseList(process.env.STARFISH_AUTO_MERGE_EXCLUDED_PATHS, ",") ?? [],
+    maxMergesPerDay: positiveNumber(process.env.STARFISH_MAX_MERGES_PER_DAY, 3, "STARFISH_MAX_MERGES_PER_DAY"),
+    mergeCheckWaitMinutes: positiveNumber(process.env.STARFISH_MERGE_CHECK_WAIT_MINUTES, 120, "STARFISH_MERGE_CHECK_WAIT_MINUTES"),
+    fastRevertMinutes: positiveNumber(process.env.STARFISH_FAST_REVERT_MINUTES, 60, "STARFISH_FAST_REVERT_MINUTES"),
+    fastRevertGraceMinutes: positiveNumber(process.env.STARFISH_FAST_REVERT_GRACE_MINUTES, 10, "STARFISH_FAST_REVERT_GRACE_MINUTES"),
     adminApiOrigins: validOrigins(parseList(process.env.STARFISH_ADMIN_API_ORIGINS, ",") ?? []),
     adminApiPort: positiveNumber(process.env.PORT, 8080, "PORT"),
     uiBaseUrl: validOrigins(parseList(process.env.STARFISH_UI_URL, ",") ?? [], "STARFISH_UI_URL")[0] ?? "",
@@ -594,6 +629,16 @@ function validIndexFilePath(raw: string | undefined): string {
   const path = (raw ?? "").trim() || "firestore.indexes.json";
   if (!INDEX_FILE_PATH_RE.test(path)) throw new Error(`STARFISH_INDEX_FILE must be a plain relative .json path, got "${raw}"`);
   return path;
+}
+
+/** `owner/name` entries, unchanged; a typo throws at startup rather than naming a repository nobody meant. */
+function validRepos(entries: string[]): string[] {
+  for (const entry of entries) {
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,99}\/[A-Za-z0-9._-]{1,100}$/.test(entry)) {
+      throw new Error(`STARFISH_AUTO_MERGE_TARGETS entry "${entry}" must be a repository as owner/name`);
+    }
+  }
+  return entries;
 }
 
 /** Exact web origins (`https://host[:port]`, or `http://localhost[:port]`), no path: one wrong entry would widen who may call. */

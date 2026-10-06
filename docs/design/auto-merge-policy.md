@@ -1,8 +1,87 @@
 # Auto-merge policy: merge what it can prove, escalate the rest
 
-> **Status: decided, not built yet.** Today Starfish stops at a pull request. Auto-merge is
-> planned for the demo project first, where the public can watch a fix merge, deploy and heal.
-> Production targets stay PR-only until the replay evidence below justifies more.
+> **Status: built for the demo target behind a default-off switch (#9); other targets stay
+> PR-only. Never run against real GitHub.** Code-fix auto-merge and fast-revert are written and
+> tested against real git, a fake GitHub API and the Firestore emulator. A target can auto-merge
+> only if the deployment lists it in `STARFISH_AUTO_MERGE_TARGETS` (the demo) **and** an admin
+> turns `autoMerge` on in Settings; every other target stays PR-only even if the switch is turned
+> on by mistake. Starfish never deploys: the target's own CI/CD does. The index path (#11) is
+> separate and not covered by this switch. "As built" below says exactly what runs and what does
+> not; production targets stay PR-only until the replay evidence below justifies more.
+
+## As built (#9)
+
+**Where it runs.** The agent loop (`src/agent/loop.ts`) prepares; the agent pass merges.
+
+1. *In the cycle*, only when the merge switches allow it right now: gate 1 runs on the proposed
+   patch (`src/agent/blastRadius.ts`). When it passes, the patch's **test files alone** are run on
+   the base revision through the same verifier the patch uses, and the result is recorded as
+   `summary.before`. When the pull request opens, the cycle records an auto-merge candidate
+   (`summary.merge`: gate 1's result, the patch hash, the head commit the opener built, whether
+   the incident's stack trace names the changed file). A candidate that fails gate 1 is handed to
+   a person at once.
+2. *After each agent pass* (`src/agent/autoMerge.ts`), each candidate is taken to merged or to a
+   person: the switches and the incident's status read fresh; gate 1 as recorded; gate 2 over the
+   run record (`certaintyGate`, a pure function); the PR still open, from `starfish/<cycle>`, with
+   the head Starfish built; every named required check (`STARFISH_VERIFY_CHECKS`) a success on that
+   head (still running: it waits, at most `STARFISH_MERGE_CHECK_WAIT_MINUTES`); a claim and today's
+   merge count in one transaction (`STARFISH_MAX_MERGES_PER_DAY`, default 3); the switches and
+   status once more; the evidence posted on the PR as one comment; then one squash merge with
+   GitHub told the exact head (`sha`), so a head that moved refuses. Any failure leaves the PR open
+   and tells a person (the loop's notify path). A merge interrupted half-way is never retried: the
+   next pass reads the PR back and records what happened, or hands it to a person.
+3. *The fast-revert watch* (`src/agent/fastRevert.ts`) starts at every merge: see below.
+
+**The switches.** `autoMerge` (per target: the deployment's one `githubRepo`; runtime setting,
+default off), `mergeFreeze` (the global off switch for merging and reverting; runtime setting,
+default off), the automation kill switch, `dryRun` (on ⇒ nothing merges), and the environment-only
+allowlist `STARFISH_AUTO_MERGE_TARGETS`. Turning a switch on is a Settings save, which is audited
+like every other. Nothing merges while any switch says no; a test pins that a non-demo target, or
+the switch off, never prepares or merges anything.
+
+**Gate 1 as built.** One production file, an existing JavaScript/TypeScript file, one hunk, no
+function or class boundary between the first and last changed line, at most 8 lines added and 4
+removed; other files must be test files that only gain lines; every changed block one class:
+*null guard* (an early `return`/`throw`/`continue` when a value is missing, or `?.`/`?? <literal>`
+added to an otherwise unchanged line), *missing `await`* (`await ` added to an otherwise unchanged
+call), *Firestore `undefined` field* (`key: v` becomes `...(v !== undefined && { key: v })` or
+`key: v ?? null`). The hard-exclude list matches path words and changed lines: auth and access
+control, security rules, money paths, secrets and crypto, schema, dependencies and lockfiles (and
+any import or require), CI and deploy config, shared packages, plus `STARFISH_PATCH_EXCLUDED_PATHS`
+and `STARFISH_AUTO_MERGE_EXCLUDED_PATHS`. Unsure is never allowed.
+
+**Gate 2 as built.** All five from the run record: (1) structural cause: triage decided `act`, the
+fixer proposed, and the incident's own stack trace names the changed file (a keyword match is not
+enough, and an error code alone does not tie the cause to a file); (2) **fails before, passes
+after**: the fixer added a test, the test-only run *failed* for this exact patch hash, and (3) the
+full patch *passed* the verify gate, on the same hash as the PR; (4) the adversarial review
+approved that hash with zero attacks broken and zero flagged (no review, as with
+`STARFISH_REVIEW_REQUIRED=false`, fails it); (5) the counter-check counted more than zero (missing
+fails it). The full verify gate being green on the target's CI is checked on the PR's head itself.
+
+**What "fails before" can and cannot show.** It is the verify command failing with only the
+patch's tests applied. With `github-actions` isolation that is the target's CI failing on a
+test-only commit pushed to `starfish/<cycle>` (deleted afterwards); with `cloud-run-job` and
+`in-process` it is the same command. It cannot tell a failing assertion from a test that does not
+compile or a flaky one. A patch with no test file cannot show it, and so never auto-merges.
+
+**Fast-revert as built.** Every merge starts a watch. The incident has come back when it is seen
+again later than `STARFISH_FAST_REVERT_GRACE_MINUTES` (10) after the merge and within
+`STARFISH_FAST_REVERT_MINUTES` (60) of it: its last occurrence, a regression the ingest marked
+`recurred`, or an hour of its occurrence series wholly inside the window. Then Starfish tells a
+person, opens a revert of its own merge commit on `starfish/revert-<cycle>`, and merges it once its
+required checks pass. It escalates instead when a later commit on the base branch touched a file
+the merge touched, when the merge does not revert cleanly, or when a switch forbids merging. A
+revert is never itself watched, so never reverted; a retired incident never triggers one; an
+incident Starfish already reverted for is not auto-merged again. Reverts do not count against the
+daily cap.
+
+**Not built, and said so.** The window starts at the **merge**, not at deployment completion:
+Starfish cannot observe the target's deploy yet, so the grace stands in for it (#9 keeps "start at
+deployment completion" open). Nothing confirms the revert deployed. Nothing marks an incident
+healed. Fault rotation is not paused during the watch (#5). Replay evidence per class (#10) has not
+gated the classes yet. The Gemini spend cap per day is the existing daily cycle cap, not a token
+budget.
 
 ## Positioning
 
@@ -105,7 +184,7 @@ are operational, not security:
    index PR is deferred, and "healed" is recorded separately from the PR (runtime healed, PR pending).
 6. Ship behind a `dryRun` config flag first.
 
-## Configuration surface (planned)
+## Configuration surface (planned; the merge switches are built, above)
 
 Starfish connects three systems, configured on a settings page:
 
@@ -121,10 +200,11 @@ only describes the connections today.
 
 ## Before auto-merge is turned on for a target
 
-- **Fast-revert built**, as above.
+- **Fast-revert built**, as above (built for the demo target, #9).
 - **Replay evidence.** Replaying real incident history gives a measured score for each class,
   and a class auto-merges only once its score justifies it.
-- **An explicit per-target switch**, off by default, owned by an admin.
+- **An explicit per-target switch**, off by default, owned by an admin (built: `autoMerge` plus the
+  environment's `STARFISH_AUTO_MERGE_TARGETS`).
 
 ## Sources
 

@@ -85,6 +85,20 @@ const FIELDS: Record<
     placeholder: "",
     hint: "The kill switch. Off: the agent loop stops at its next step and opens nothing, whatever the other switches say. The engine's default is on. The job that runs it has never run on a real project.",
   },
+  autoMerge: {
+    label: "Auto-merge",
+    multiline: false,
+    kind: "switch",
+    placeholder: "",
+    hint: "On: a pull request whose two gates both pass (one small allowed fix in one function, and the evidence that it is right) is merged without a person, and reverted if the same error comes back soon after. Only for a target the engine lists as auto-mergeable (the demo); any other target stays pull-request-only. Needs dry run off. Starfish never deploys. The engine's default is off. Never run against real GitHub.",
+  },
+  mergeFreeze: {
+    label: "Merge freeze",
+    multiline: false,
+    kind: "switch",
+    placeholder: "",
+    hint: "The global off switch for merging. On: Starfish merges and reverts nothing, whatever auto-merge says; a pull request waiting to merge is handed to a person. The engine's default is off.",
+  },
   modelCallBudget: {
     label: "Model calls per cycle",
     multiline: false,
