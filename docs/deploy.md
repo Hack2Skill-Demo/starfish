@@ -22,7 +22,8 @@ Everything deployment-specific is an environment variable (the header of the scr
 all): `PROJECT_ID`, `REGION`, `WATCHED_PROJECT_ID`, `VERTEX_PROJECT_ID`, `STARFISH_ENV`,
 `SCHEDULE`, `EXTRA_ENV_VARS` for any other engine setting in `.env.example`. A demo wants
 `SCHEDULE='*/5 * * * *'`; the default is hourly. It is idempotent: run it again to ship a new
-image or change the schedule.
+image or change the schedule. Each name may appear once in a job's settings: an `EXTRA_ENV_VARS` entry that repeats a name the
+script sets (or one set twice) is refused before anything changes, so a setting is never silently replaced (#147).
 
 The person running it needs rights to enable APIs, create service accounts, set IAM and deploy
 Cloud Run and Scheduler on `PROJECT_ID` (Owner is the easy way), plus IAM rights on the watched and
@@ -37,9 +38,9 @@ Gemini projects when those are different. `gcloud auth login` first.
 | `roles/logging.viewer` on the **watched** project | read its logs |
 | `roles/datastore.user` on Starfish's project, **conditioned to the `starfish` database** | read and write the store and nothing else in the project (the watched app's `(default)` database stays out of reach when the project is shared) |
 | `roles/aiplatform.user` on the **Gemini** project | call Gemini |
-| Firestore database `starfish`, then `firestore.rules` and indexes | Starfish's own database. `(default)` is refused: its rules would replace the watched app's. |
-| Secret `starfish-github-token`, `secretAccessor` for the engine only | see below |
-| Cloud Run job `starfish-ingest` | one ingest run per execution; exits 1 when the run failed |
+| Firestore database `starfish` (`STARFISH_DATABASE_ID`), then `firestore.rules` and indexes **to that database** | Starfish's own database. `(default)` is refused: its rules would replace the watched app's. `firebase.json` names `starfish`; the script deploys from a temporary copy that names the configured id instead (#148), so a custom id needs no file edited |
+| Secret `starfish-github-token`, readable **by the agent's account only** (with `DEPLOY_AGENT=1`) | see below. The engine's account gets no access, and an access an earlier version granted it is removed |
+| Cloud Run job `starfish-ingest`, **no secret mounted** | one ingest run per execution; exits 1 when the run failed |
 | Service account `starfish-scheduler`, `roles/run.invoker` **on that job only** | the scheduler can start the job and do nothing else |
 | Scheduler job `starfish-ingest-tick` | the cron |
 
@@ -48,25 +49,26 @@ storing in another and running Gemini in a third needs no code and no wider acce
 
 ## Secret Manager
 
-The script creates the secret and lets only the engine read it. With `STARFISH_GITHUB_TOKEN` set (not `GITHUB_TOKEN`, which is the Actions workflow's own token and often a personal one in a shell) it stores
-the value as a new version (over stdin, never printed or passed as an argument) and mounts it into
-the job as `STARFISH_GITHUB_TOKEN`; without a version, Cloud Run would refuse the deploy, so it is
-not mounted.
+The script creates the secret. Only `src/agentCli.ts` uses the token, so only the **agent's** account may read it and only the
+**agent** job mounts it (#146); the ingest job and the admin API have neither the access nor the mount (a re-deploy removes both
+where an earlier version of the script had set them). With `STARFISH_GITHUB_TOKEN` set (not `GITHUB_TOKEN`, which is the Actions workflow's own token and often a personal one in a shell) it stores
+the value as a new version (over stdin, never printed or passed as an argument), and the agent job mounts it as
+`STARFISH_GITHUB_TOKEN`; without a version, Cloud Run would refuse the deploy, so it is not mounted.
 
 **Slack (#17).** With `DEPLOY_AGENT=1` and `STARFISH_SLACK_WEBHOOK_ONCALL=https://hooks.slack.com/services/...` set, the script stores the
 webhook as a version of its own secret, `starfish-slack-oncall` (over stdin, never printed; any other URL is refused, unechoed),
 lets only the **agent's** account read it, and mounts it on the **agent** job only, in the same `--update-secrets` flag as the
 GitHub token. Add `AGENT_EXTRA_ENV_VARS="STARFISH_UI_URL=https://<site>.web.app"` so the message can link back to the incident and its run.
 Without a webhook nothing Slack-shaped is created. The agent is a dry run by default and a dry run **sends nothing**: the cycle's
-record says `dry-run`. To post for real, turn dry run off (`STARFISH_DRY_RUN=false`), which also lets a configured GitHub client open pull requests.
+record says `dry-run`. To post for real, turn dry run off (`STARFISH_DRY_RUN=false` in `AGENT_EXTRA_ENV_VARS`, or an admin on the Settings page; `EXTRA_ENV_VARS` may not set it, #147), which also lets a configured GitHub client open pull requests.
 A failed delivery is recorded on the cycle (`summary.notify`: `failed`, the status and Slack's short error code, never the URL) and the cycle still
 finishes. Delivery is at-least-once: after a crash between the post and its record a resumed cycle posts again. Never run against real Slack.
 
 `loadGithubToken()` (`src/config.ts`) reads that variable, and the pull-request opener
 (`src/integrations/githubPr.ts`) is its only user. The opener is tested against a local git remote
 and a fake GitHub API, **not against real GitHub**, and the only job that calls it (the agent job, never
-deployed) is a dry run, so the secret is still plumbing. The deploy script does not set `STARFISH_GITHUB_REPO`; without it the
-opener cannot be built.
+deployed) is a dry run, so the secret is still plumbing. The deploy script sets `STARFISH_GITHUB_REPO` (from `AGENT_REPO`) on the
+agent job only; without it the opener cannot be built.
 
 **The incident's issue (#17).** For every incident the agent acts on or escalates (not a declined one) it files one GitHub issue in
 `STARFISH_GITHUB_REPO`, labelled `starfish`, with what is failing, the evidence (fingerprint, the independent counter-check, the suspected
@@ -147,17 +149,20 @@ repository; `PROJECT_ID` is the project Starfish deploys into.
 export PROJECT_ID=my-project REPO=OWNER/REPO
 export PROJECT_NUMBER=$(gcloud projects describe "$PROJECT_ID" --format='value(projectNumber)')
 
+export REPO_ID=$(gh api "repos/$REPO" --jq .id)   # the repository's numeric id
+
 # 1. A pool and a GitHub provider. The attribute condition is not optional: without it, any GitHub
 #    repository could present a token to this provider. This one accepts only this repository's jobs
-#    that run in the `deploy` environment.
+#    that run in the `deploy` environment, by the repository's id: a name can be renamed and then
+#    registered again by someone else, an id cannot (#145).
 gcloud services enable iamcredentials.googleapis.com sts.googleapis.com --project="$PROJECT_ID"
 gcloud iam workload-identity-pools create github --project="$PROJECT_ID" --location=global \
   --display-name="GitHub Actions"
 gcloud iam workload-identity-pools providers create-oidc github-deploy --project="$PROJECT_ID" \
   --location=global --workload-identity-pool=github \
   --issuer-uri="https://token.actions.githubusercontent.com" \
-  --attribute-mapping="google.subject=assertion.sub,attribute.repository=assertion.repository,attribute.environment=assertion.environment" \
-  --attribute-condition="assertion.repository == '$REPO' && assertion.environment == 'deploy'"
+  --attribute-mapping="google.subject=assertion.sub,attribute.repository_id=assertion.repository_id,attribute.repository=assertion.repository,attribute.environment=assertion.environment" \
+  --attribute-condition="assertion.repository_id == '$REPO_ID' && assertion.environment == 'deploy'"
 
 # 2. The deploy identity: its own service account, separate from starfish-engine (which only runs the
 #    job) and starfish-scheduler (which only starts it). Only this repository's pool members may use it.
@@ -166,7 +171,7 @@ gcloud iam service-accounts create starfish-deployer --project="$PROJECT_ID" \
 gcloud iam service-accounts add-iam-policy-binding \
   "starfish-deployer@$PROJECT_ID.iam.gserviceaccount.com" --project="$PROJECT_ID" \
   --role=roles/iam.workloadIdentityUser \
-  --member="principalSet://iam.googleapis.com/projects/$PROJECT_NUMBER/locations/global/workloadIdentityPools/github/attribute.repository/$REPO"
+  --member="principalSet://iam.googleapis.com/projects/$PROJECT_NUMBER/locations/global/workloadIdentityPools/github/attribute.repository_id/$REPO_ID"
 
 # 3. Give the deployer what the script needs (the table below), then tell GitHub where to find it.
 gh variable set GCP_WORKLOAD_IDENTITY_PROVIDER \
@@ -178,29 +183,41 @@ gh variable set STARFISH_GCP_PROJECT_ID --body "$PROJECT_ID"
 Then create the `deploy` environment (Settings → Environments), with reviewers and the `main`-only
 deployment branch rule above.
 
-**What the deployer needs, by what the script does.** All on `PROJECT_ID` unless noted:
+**What the deployer needs, by what the script does.** All on `PROJECT_ID` unless noted. The account names, secret names and
+verify bucket follow the same variables as `deploy-gcp.sh` (`ENGINE_SA_NAME`, `AGENT_SA_NAME`, `GITHUB_SECRET`, `VERIFY_BUCKET`, ...):
+set them for `setup-github-deploy.sh` as you set them for the deploy.
 
 | The script does | Role |
 |---|---|
 | enable APIs | `roles/serviceusage.serviceUsageAdmin` (on the Gemini and watched projects too, when they differ) |
-| create the engine and scheduler service accounts | `roles/iam.serviceAccountAdmin` |
-| run a job, and a scheduler call, *as* those accounts | `roles/iam.serviceAccountUser`, on `starfish-engine`, `starfish-scheduler` and, with `DEPLOY_AGENT`, `starfish-agent` and `starfish-verifier` only, not project-wide |
-| bind the engine's three roles | `roles/resourcemanager.projectIamAdmin`, on `PROJECT_ID`, the watched project and the Gemini project (see the warning below) |
+| create and read the service accounts | custom role `starfishDeployer`: `iam.serviceAccounts.create`, `iam.serviceAccounts.get` (and the two creates below). **Not** `roles/iam.serviceAccountAdmin`, which would let it set the IAM policy of every account in the project (#145) |
+| run a job, the admin API and a scheduler call *as* those accounts | `roles/iam.serviceAccountUser`, on `starfish-engine`, `starfish-scheduler`, `starfish-agent`, `starfish-verifier` and `starfish-admin-api` only, not project-wide |
+| with `cloud-run-job`: let the agent's account sign URLs as itself | custom role `starfishServiceAccountIam` (`get`, `getIamPolicy`, `setIamPolicy`) on **`starfish-agent` only**; the deployer already acts as that account, so this reaches no new one |
+| bind the engine's, agent's and admin API's roles | `roles/resourcemanager.projectIamAdmin`, on `PROJECT_ID`, the watched project and the Gemini project, conditioned (see the warning below) |
 | create the `starfish` database, deploy rules and indexes | `roles/datastore.owner`, `roles/firebaserules.admin` |
-| create the secret, grant the engine access, add a version | `roles/secretmanager.admin` |
-| build from source and deploy the job, bind the scheduler to it | `roles/run.admin`, `roles/cloudbuild.builds.editor`, `roles/artifactregistry.admin`, `roles/storage.admin` (the source bucket Cloud Build uses) |
+| create the secrets, grant the agent access, add a version | `secretmanager.secrets.create` (in `starfishDeployer`), and `roles/secretmanager.admin` **conditioned to `starfish-github-token` and `starfish-slack-oncall` by name**: the watched app's secrets, when it shares the project, stay out of reach |
+| build from source and deploy the jobs, bind the scheduler to them | `roles/run.admin`, `roles/cloudbuild.builds.editor`, `roles/artifactregistry.admin`; `storage.buckets.create` and `storage.buckets.list` (in `starfishDeployer`), and `roles/storage.admin` **conditioned to the source bucket** (`run-sources-<project>-*`, or the older `<project>_cloudbuild`) and, with `cloud-run-job`, the verify bucket |
 | create or update the schedule | `roles/cloudscheduler.admin` |
 
 `gcloud run jobs deploy --source` also acts as the project's build service account; if the first run is denied
 there, see "The build is denied" below.
 
 > **`projectIamAdmin` is the powerful one.** A principal that can set IAM policy can grant itself anything.
-> Limit it to the four roles the script grants (the engine's three, and `roles/run.builder` for the build account) with an IAM condition on the deployer's own binding:
+> Limit it to the four roles the script grants on a project (the engine's three, which the agent and the admin API also get, and `roles/run.builder` for the build account) with an IAM condition on the deployer's own binding:
 > `api.getAttribute('iam.googleapis.com/modifiedGrantsByRole', []).hasOnly(['roles/logging.viewer','roles/datastore.user','roles/aiplatform.user','roles/run.builder'])`.
 > `scripts/setup-github-deploy.sh` applies this condition. The script's own grants stay inside that list (a test
-> checks that every project-level role `deploy-gcp.sh` binds is in it), but this has not been tried: the script reads and writes
-> the whole policy, and a conditioned `getIamPolicy` may need adjusting. Until you have checked it, treat the
-> deployer as highly privileged, which is a further reason for the `deploy` environment's gate.
+> checks that every project-level role `deploy-gcp.sh` binds is in it, with the agent and the admin API deployed too), but this has not been tried: the script reads and writes
+> the whole policy, and a conditioned `getIamPolicy` may need adjusting.
+>
+> **The condition only governs the project's own policy.** A grant on a service account, a secret, a bucket or a Cloud Run job
+> goes on that resource's policy, where it does not apply. That is why the deployer gets no project-wide
+> `roles/iam.serviceAccountAdmin`, `roles/secretmanager.admin` or `roles/storage.admin` (#145): with them it could make itself a
+> token creator on any account (the Compute default account is often Editor) or read every secret and bucket. **Still
+> project-wide**: `roles/run.admin` (every Cloud Run service and job in the project, including the watched app's when it shares the
+> project, and their IAM policies), `roles/artifactregistry.admin`, `roles/cloudbuild.builds.editor`, `roles/datastore.owner` (every
+> database, the app's `(default)` too) and `roles/cloudscheduler.admin`. Treat the deployer as highly privileged, which is the
+> reason for the `deploy` environment's gate. Whether Cloud Storage and Secret Manager accept these name conditions for every call
+> the deploy makes has **not been tried**; the first run will say if a permission is missing.
 
 ### Repository variables
 
@@ -265,7 +282,7 @@ Anonymous sign-in is **not** turned on by the workflow: it is project-wide (see 
 Scheduler job `starfish-agent-tick` (hourly at :30), under its own service account `starfish-agent` (the store's
 `starfish` database only, Gemini, `logging.viewer` on the watched project for the counter-check, the one secret). It
 runs `pnpm agent` (`src/agentCli.ts`): pick open incidents with no settled cycle, check the repository out, run triage,
-fix, verify and review as a **dry run**.
+fix, verify and review as a **dry run** (which, with `github-actions` isolation, still pushes the patch to a `starfish/<cycle>` branch: below).
 
 The agent holds those credentials, so it **never runs the target repository's code**: the verify step is isolated, and
 `VERIFY_ISOLATION` says where. There are two, and the first is the default and the one decided for the demo.
@@ -365,10 +382,10 @@ private repository's code leaves its network. Restricting the job's egress (a VP
 and would also stop the command installing dependencies, so it is not done.
 
 **What it costs the agent in permissions:** `roles/storage.objectAdmin` on that bucket,
-`roles/iam.serviceAccountTokenCreator` on **itself** (to sign the URLs), and `roles/run.invoker` on the verify job,
-besides what the loop needs (the store, Gemini, `logging.viewer` on the watched project for the counter-check, the
-secret). `run.invoker` may not be enough to start a job with overrides; if the first start is refused (403), the
-error names the role, and the likely fix is a role that includes `run.jobs.runWithOverrides` on that job only.
+`roles/iam.serviceAccountTokenCreator` on **itself** (to sign the URLs), and `roles/run.jobsExecutorWithOverrides` on the
+verify job only, besides what the loop needs (the store, Gemini, `logging.viewer` on the watched project for the counter-check,
+the secret). The agent passes its request as a container override (`src/agent/cloudRunJob.ts`), which takes
+`run.jobs.runWithOverrides`; `roles/run.invoker` does not hold it (#149). Not yet exercised against the real Cloud Run API.
 
 **Failure modes, on purpose:** a command that failed or timed out is a **result**, and the loop sends the patch
 back to the fixer once. A verify job that cannot be started, writes no result before the deadline (the command's
@@ -376,11 +393,10 @@ limit plus 300 s), or writes something that is not a result **throws**: the cycl
 resumed, counted against its attempts. A forged or mismatched result is refused.
 
 **What is still not true.** Nothing here has opened a pull request; the agent is a dry run and has never run
-against real GitHub, Cloud Logging or Gemini from this job. The ingest's account still holds the secret grant and
-mount from #73 although it never reads the token. The verify job's image is this repository's engine image (Node,
+against real GitHub, Cloud Logging or Gemini from this job. The verify job's image is this repository's engine image (Node,
 pnpm, git): a target repository that needs another toolchain needs another image. The Deploy engine workflow's
-deployer needs more roles for this (a bucket, a service account that must not be given any role, `actAs` on three
-accounts); see the table above.
+deployer needs more for this (the verify bucket, the agent account's own IAM policy): run `setup-github-deploy.sh` with
+`VERIFY_ISOLATION=cloud-run-job`; see the table above.
 
 ```bash
 DRY_RUN=1 DEPLOY_AGENT=1 AGENT_REPO=owner/name VERIFY_ISOLATION=cloud-run-job VERIFY_COMMAND='pnpm install --frozen-lockfile && pnpm run verify' \
@@ -390,7 +406,10 @@ DRY_RUN=1 DEPLOY_AGENT=1 AGENT_REPO=owner/name VERIFY_ISOLATION=cloud-run-job VE
 ## The admin API: run ingest now, and retire an incident (#63, #65)
 
 `DEPLOY_ADMIN_API=1 ADMIN_API_ORIGINS=https://<your-site>.web.app scripts/deploy-gcp.sh` also deploys a Cloud Run **service**,
-`starfish-admin`, from the ingest job's own image (no second build) and the engine's own account (no new role). Two
+`starfish-admin`, from the ingest job's own image (no second build), under **its own account**, `starfish-admin-api`
+(`ADMIN_SA_NAME`; #146): a public service shares an identity with nothing else. That account holds what one ingest run and a
+retire need, `logging.viewer` on the watched project and `datastore.user` conditioned to Starfish's database, and nothing more:
+no Gemini (ingest makes no model call), no secret. Two
 actions, both admin-only, both audited, both the functions that already existed (`triggerIngest`, `retireIncident`):
 
 | Call | What it does |

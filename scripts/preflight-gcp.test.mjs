@@ -41,7 +41,8 @@ case "$*" in
 esac
 `
   );
-  writeFileSync(join(dir, "curl"), `#!/bin/sh\necho "$STUB_PERMS_JSON"\n`);
+  // The curl stub keeps its arguments and its stdin apart, so a test can tell where the token went.
+  writeFileSync(join(dir, "curl"), `#!/bin/sh\necho "$*" >> "${join(dir, "curl.args")}"\ncat >> "${join(dir, "curl.stdin")}"\necho "$STUB_PERMS_JSON"\n`);
   chmodSync(join(dir, "gcloud"), 0o755);
   chmodSync(join(dir, "curl"), 0o755);
   const granted = env.STUB_GRANTED ?? ALL_PERMS;
@@ -57,7 +58,8 @@ esac
     },
     encoding: "utf8",
   });
-  return { ...r, out: `${r.stdout}${r.stderr}`, calls: readFileSync(log, { flag: "a+" }).toString().trim().split("\n") };
+  const read = (name) => readFileSync(join(dir, name), { flag: "a+" }).toString();
+  return { ...r, out: `${r.stdout}${r.stderr}`, calls: read("gcloud.log").trim().split("\n"), curlArgs: read("curl.args"), curlStdin: read("curl.stdin") };
 }
 
 describe("scripts/preflight-gcp.sh", () => {
@@ -123,6 +125,13 @@ describe("scripts/preflight-gcp.sh", () => {
     const r = run({ STARFISH_DATABASE_ID: "(default)" });
     expect(r.status).toBe(1);
     expect(r.out).toContain("FAIL  STARFISH_DATABASE_ID=(default)");
+  });
+
+  it("hands the access token to curl on stdin, never as an argument the process list shows (#145)", () => {
+    const r = run();
+    expect(r.curlArgs).toContain("-H @-");
+    expect(r.curlArgs).not.toContain("tok");
+    expect(r.curlStdin).toBe("Authorization: Bearer tok\n");
   });
 
   it("only reads: every gcloud call it makes is a describe, list or token request", () => {
