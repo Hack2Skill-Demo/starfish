@@ -11,6 +11,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router";
 import { Check, CircleDashed, ExternalLink, Loader2, Workflow } from "lucide-react";
 import PageMeta from "../components/PageMeta";
+import { EngineStatus } from "../components/EngineStatus";
 import { Badge } from "../components/ui/Badge";
 import { EmptyState } from "../components/ui/EmptyState";
 import { formatDateTime, formatRelativeTime } from "../lib/formatters";
@@ -20,6 +21,7 @@ import {
   PATH_LABELS,
   buildWaterfall,
   formatDuration,
+  progressText,
   runStatus,
   safeUrl,
   triageRule,
@@ -85,6 +87,7 @@ export default function Runs() {
           One run per incident and recurrence, updated live as the engine records each step. A step the engine has
           not recorded reads &quot;not reached&quot;.
         </p>
+        <div className="mt-2">{ready && <EngineStatus environment={environment} />}</div>
       </div>
 
       {failed ? (
@@ -219,6 +222,12 @@ function RunDetail({ cycle, environment, now }: { cycle: CycleRow; environment: 
             <>
               <dt className="text-gray-600 dark:text-gray-400">Outcome</dt>
               <dd>{cycle.outcome}</dd>
+            </>
+          )}
+          {water && (
+            <>
+              <dt className="text-gray-600 dark:text-gray-400">Progress</dt>
+              <dd>{progressText(water.steps)}</dd>
             </>
           )}
           <dt className="text-gray-600 dark:text-gray-400">Started</dt>

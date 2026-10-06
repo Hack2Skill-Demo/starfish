@@ -57,7 +57,7 @@ describe("Overview page", () => {
     renderPage();
     act(() => mocks.cyclesCb!([], false));
     expect(screen.getByTestId("headline")).toHaveTextContent("No agent runs are recorded for this environment.");
-    expect(await screen.findByText(/No errors recorded in the last 24 hours/)).toBeInTheDocument();
+    expect(await screen.findByText(/No logged errors in the last 24 hours/)).toBeInTheDocument();
     expect(screen.getByText(/Nothing has run the agent loop/)).toBeInTheDocument();
     expect(screen.getByTestId("engine")).toHaveTextContent("demo");
   });

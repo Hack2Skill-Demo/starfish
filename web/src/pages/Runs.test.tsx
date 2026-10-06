@@ -18,6 +18,7 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("../lib/useSettings", () => ({ useEnvironment: () => mocks.env }));
+vi.mock("../components/EngineStatus", () => ({ EngineStatus: ({ environment }: { environment: string }) => <div data-testid="engine">{environment}</div> }));
 vi.mock("../lib/runs", async (orig) => ({
   ...(await orig<typeof import("../lib/runs")>()),
   subscribeCycles: (_env: string, ok: CyclesCb, err: (e: Error) => void) => {
@@ -97,6 +98,9 @@ describe("Runs page", () => {
     expect(status("triage")).toBe("done");
     for (const stage of ["fix", "verify", "review", "pr"]) expect(status(stage)).toBe("not-reached");
     expect(within(detail).getByText("Attempt 1")).toBeInTheDocument();
+    expect(within(detail).getByText("1 of 5 steps recorded")).toBeInTheDocument();
+    // Engine health sits in the page header, for the environment shown.
+    expect(screen.getByTestId("engine")).toHaveTextContent("demo");
   });
 
   it("marks a run in progress only while a worker holds it", () => {

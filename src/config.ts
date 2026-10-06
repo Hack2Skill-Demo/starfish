@@ -191,6 +191,12 @@ export interface StarfishConfig {
   /** The longest span one ingest window may cover, so catching up after downtime is done in bounded reads. */
   ingestMaxWindowHours: number;
   /**
+   * The Cloud Scheduler cron that starts the ingest (set by scripts/deploy-gcp.sh and scripts/ingest-cadence.sh).
+   * Only told to the UI, through the last-run record, so it can say when the next run is expected; the engine
+   * does not schedule itself. Unset: the UI says nothing about the next run.
+   */
+  ingestSchedule?: string;
+  /**
    * Firestore collection for the ingest run state: `state` (the checkpoint and the window in
    * flight; engine-only) and `last_run` (the outcome of the latest run, which the UI shows).
    */
@@ -282,6 +288,7 @@ export function loadConfig(): StarfishConfig {
     ],
     defaultLookbackHours: Number(process.env.STARFISH_LOOKBACK_HOURS ?? 24),
     ingestLagMinutes: positiveNumber(process.env.STARFISH_INGEST_LAG_MINUTES, 5, "STARFISH_INGEST_LAG_MINUTES"),
+    ...(process.env.STARFISH_INGEST_SCHEDULE?.trim() ? { ingestSchedule: process.env.STARFISH_INGEST_SCHEDULE.trim() } : {}),
     ingestMaxWindowHours: positiveNumber(
       process.env.STARFISH_INGEST_MAX_WINDOW_HOURS,
       6,

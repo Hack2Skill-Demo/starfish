@@ -4,6 +4,7 @@ import {
   formatDuration,
   parseCycle,
   parseEvent,
+  progressText,
   runStatus,
   safeUrl,
   triageRule,
@@ -182,5 +183,12 @@ describe("small helpers", () => {
   it("reads the triage rule from the run record", () => {
     expect(triageRule(cycle({ summary: { triage: { rule: "exhausted-budget" } } }))).toBe("exhausted-budget");
     expect(triageRule(cycle())).toBeUndefined();
+  });
+});
+
+describe("progressText", () => {
+  it("counts only steps with an event as recorded", () => {
+    expect(progressText([{ status: "done" }, { status: "running" }, { status: "not-reached" }])).toBe("1 of 3 steps recorded");
+    expect(progressText([])).toBe("0 of 0 steps recorded");
   });
 });

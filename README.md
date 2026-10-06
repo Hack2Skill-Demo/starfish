@@ -120,8 +120,9 @@ demo runs.
   each one's steps (triage, fix, verify, review, pull request) from the events the engine records,
   live. A step with no event reads "not reached", and a run with no worker holding it is not shown
   as in progress. **The agent job that would fill it is deployable (`DEPLOY_AGENT=1`) and has never run, so on a real
-  deployment the page is empty;** it is exercised against the emulator with seeded data. Not built: the mockup's header
-  (path rule, engine health), the Slack, GitHub-issue, index, deploy, phone and recovery steps (the
+  deployment the page is empty;** it is exercised against the emulator with seeded data. The header shows the path, the
+  triage rule, progress (steps recorded) and the engine's last run. The GitHub-issue and Slack steps appear when a run
+  recorded them. Not built: the index, deploy, phone and recovery steps (the
   loop has no code for them), and the four MVP cases observed end to end (#33 stays open).
 - **Incident evidence:** a first version is built: `/incidents/:id`, linked from the incidents table
   and from the Runs page, shows what was detected and, from the agent's run record, the triage,
@@ -135,7 +136,7 @@ demo runs.
   human, runs in progress, open incidents, regressions, errors per hour (from the incidents' hourly
   buckets), key figures (pull requests opened and failed runs, each as "n of N finished runs"; median run length; untriaged open incidents; errors this hour against the hours before it), what the agent did by path (each row opens the Runs list filtered to runs that ended that way), the latest runs and the engine's status. Every figure is a
   count or median of stored records, not an accuracy score (no run has been scored; see `scoreboard/FORMAT.md`). It does **not** show a run "healed on its own" or merged (nothing records
-  one), the next scheduled run (the engine does not know its cadence), or run events as a feed
+  one), or run events as a feed
   (it lists the latest runs); on a real deployment the run counts are zero until a job runs the agent
   loop (#38 stays open).
 - **Slack messages and GitHub issue/PR bodies:** what Starfish posts elsewhere.
@@ -331,7 +332,9 @@ with the repository's `firestore.indexes.json` (an unreadable file is "unknown",
 tested on URLs **built here from the documented `Index` message, not captured from a real error**, which is
 the first thing to check before wiring it to anything. **Nothing creates an index**: the Admin API call,
 live-inventory dedup, operation tracking, quotas, the READY and recovery checks and the evidence PR are not
-built, and no error is classified as its own "needs an index" class yet.
+built. Ingest does classify a missing index as its own class, `MissingIndexError`: a failed precondition
+whose text carries Google's create-index URL (the code and the URL, never the words alone); nothing acts on
+that class yet.
 
 What does **not** exist yet is the code that assembles an incident's inputs (the counter-check,
 samples and a checkout of the target repo at a pinned revision), the incident's GitHub issue, the

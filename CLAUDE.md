@@ -229,8 +229,10 @@ React 19, Vite, Tailwind 4, react-router, TanStack Query; Starfish's own theme i
   rules and indexes. Never deploy `firestore.rules` to the watched app's database: a rules
   file governs a whole database and would replace the app's own rules.
 - **Admin controls:** an admin sees "Run ingest now" (Incidents) and "Retire" (an incident) when the build has `VITE_STARFISH_ADMIN_API_URL`; they call the admin API with the ID token (`web/src/lib/adminApi.ts`, `components/AdminActions.tsx`). Hiding them is not the gate: the API re-checks the role. Built and unit-tested; never run against a deployed service.
-- **Engine status:** the Incidents page shows a line from `{runCollection}/last_run` (`web/src/lib/engineStatus.ts`):
-  failed, stopped (older than `VITE_STARFISH_STALE_MINUTES`), capped, or never recorded. Read errors say nothing.
+- **Engine status:** Overview, Incidents and Runs show a line from `{runCollection}/last_run` (`web/src/lib/engineStatus.ts`):
+  failed, stopped (older than `VITE_STARFISH_STALE_MINUTES`), capped, or never recorded. Read errors say nothing. When the
+  job knows its schedule (`STARFISH_INGEST_SCHEDULE`, set by the deploy and cadence scripts) it records the interval, and the
+  line says when the next run is expected.
 - **Config:** `web/src/lib/config.ts` is the only reader of `import.meta.env`. The Firebase
   project comes from Hosting's `/__/firebase/init.json` at startup (`VITE_FIREBASE_*` only for
   local dev); the rest from `web/.env` (`web/.env.example`).

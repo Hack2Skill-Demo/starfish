@@ -172,6 +172,17 @@ describe("runIngest on the emulator", () => {
     expect(JSON.stringify(record)).not.toContain("hunter2");
   });
 
+  it("records how often runs are started, so the UI can say when the next is expected, and nothing when it can't tell", async () => {
+    const aggregate = async () => emptyResult;
+    config = { ...config, ingestSchedule: "*/5 * * * *" };
+    await runIngest(db, loader(), now, { aggregate });
+    expect((await lastRun())?.intervalMinutes).toBe(5);
+
+    config = { ...config, ingestSchedule: "0,30 * * * *" };
+    await runIngest(db, loader(), new Date(now.getTime() + 60_000), { aggregate });
+    expect((await lastRun())?.intervalMinutes).toBeUndefined();
+  });
+
   it("reports a capped read instead of calling the window complete", async () => {
     await runIngest(db, loader(), now, {
       aggregate: async () => ({ ...emptyResult, entriesProcessed: 5000, capped: true }),
