@@ -176,7 +176,10 @@ src/
   (repo root)      Dockerfile = the engine image the Cloud Run job runs; scripts/deploy-gcp.sh deploys it
                    (job, Scheduler, Secret Manager, IAM, Firestore rules). Written and tested by a dry run; ingest part run once on the demo project (2026-10-05), agent part not
   indexheal/createIndexUrl.ts  create-index URL → strict spec, default-deny target guard, index-file dedup (#11).
-                   Parser and guard only: nothing creates an index; tested on URLs built from the documented proto
+                   Tested on URLs built from the documented proto
+  indexheal/heal.ts  the gated executor (#11): target guard, `indexAutoApply` + dry run + kill switch (rechecked before the one
+                   create), live-inventory reconcile (a building index is waited on, never duplicated), daily cap, bounded wait;
+                   infra failures throw. `firestoreAdmin.ts` is its REST adapter. Tested with fakes; called by nothing, never run
   integrations/slack.ts  Slack delivery (#17): one "needs a human" message through an incoming webhook, from redacted plain-text
                    fields; bounded retries, a failed delivery is a recorded result (`summary.notify`), a dry run sends nothing; the webhook
                    (a secret, `loadSlackOnCallWebhook`) never appears in a result. Run by `pnpm agent`; never run against real Slack

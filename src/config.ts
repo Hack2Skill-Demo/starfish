@@ -124,6 +124,13 @@ export interface StarfishConfig {
    */
   indexAllowedTargets: string[];
   /**
+   * Whether Starfish may create a missing index at all (#11). Off by default, and separate from `autoMerge` and
+   * from `dryRun`: an index is created only when this is on AND `dryRun` is off AND the automation switch is on.
+   */
+  indexAutoApply: boolean;
+  /** The most indexes Starfish creates per target in one UTC day; the Firestore per-database index limit is why. */
+  indexDailyCap: number;
+  /**
    * Browser origins allowed to call the admin API (src/adminApi.ts) from another site: the operator UI's
    * origin, e.g. `https://my-site.web.app`. Empty by default: no browser may. Each entry is an exact origin
    * (https, or http only for localhost); a typo throws at startup instead of widening who may call.
@@ -304,6 +311,8 @@ export function loadConfig(): StarfishConfig {
     githubApiUrl: (process.env.STARFISH_GITHUB_API_URL ?? "").trim() || "https://api.github.com",
     githubRemoteUrl: (process.env.STARFISH_GITHUB_REMOTE_URL ?? "").trim(),
     indexAllowedTargets: validIndexTargets(parseList(process.env.STARFISH_INDEX_ALLOWED_TARGETS, ",") ?? []),
+    indexAutoApply: parseBoolean(process.env.STARFISH_INDEX_AUTO_APPLY, false, "STARFISH_INDEX_AUTO_APPLY"),
+    indexDailyCap: positiveNumber(process.env.STARFISH_INDEX_DAILY_CAP, 3, "STARFISH_INDEX_DAILY_CAP"),
     adminApiOrigins: validOrigins(parseList(process.env.STARFISH_ADMIN_API_ORIGINS, ",") ?? []),
     adminApiPort: positiveNumber(process.env.PORT, 8080, "PORT"),
     uiBaseUrl: validOrigins(parseList(process.env.STARFISH_UI_URL, ",") ?? [], "STARFISH_UI_URL")[0] ?? "",
