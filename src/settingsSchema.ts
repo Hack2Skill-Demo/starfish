@@ -20,6 +20,10 @@ export interface RuntimeSettings {
   automationEnabled?: boolean;
   /** The most model calls one cycle may make. */
   modelCallBudget?: number;
+  /** The Gemini model id the agent asks (triage, fix, review), e.g. gemini-3.1-pro-preview. */
+  model?: string;
+  /** The Vertex AI location those calls go to: a GCP region such as us-central1, or `global`. */
+  location?: string;
 }
 
 /** The document's schema version. A document of another version is invalid to this engine. */
@@ -39,6 +43,8 @@ const SETTINGS_KEYS = [
   "reviewRequired",
   "automationEnabled",
   "modelCallBudget",
+  "model",
+  "location",
   // Written with the document by whoever edited it (the rules require them);
   // carried, not used by the engine.
   "revision",
@@ -55,6 +61,12 @@ const PROJECT_ID = /^[a-z][a-z0-9-]{4,28}[a-z0-9]$/;
 const ENVIRONMENT = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 // Cloud Logging `resource.type` values: cloud_function, cloud_run_revision, ...
 const RESOURCE_TYPE = /^[a-z][a-z0-9_]{0,63}$/;
+// A Vertex model id as the API takes it: lowercase letters, digits, '.', '_' and '-' (gemini-3.1-pro-preview,
+// gemini-2.5-flash-001). No '/', so a value can't name a resource path. firestore.rules repeats this pattern.
+export const MODEL_ID = /^[a-z][a-z0-9._-]{0,63}$/;
+// A GCP region (us-central1, europe-west4, northamerica-northeast1) or Vertex's `global` endpoint. It becomes part
+// of the API host name, so nothing else is accepted. firestore.rules repeats this pattern.
+export const VERTEX_LOCATION = /^(global|[a-z]{2,20}-[a-z]{2,20}[0-9]{1,2})$/;
 // Control characters are rejected in every free-text value: the log filter is
 // built line by line, and its quoting does not escape a newline.
 // eslint-disable-next-line no-control-regex
@@ -142,6 +154,16 @@ export function validateSettings(raw: unknown): Validation {
     if (typeof n === "number" && Number.isInteger(n) && n >= MODEL_CALL_BUDGET_MIN && n <= MODEL_CALL_BUDGET_MAX) {
       settings.modelCallBudget = n;
     } else problems.push(`modelCallBudget: a whole number from ${MODEL_CALL_BUDGET_MIN} to ${MODEL_CALL_BUDGET_MAX}`);
+  }
+
+  if (raw.model !== undefined) {
+    if (typeof raw.model === "string" && MODEL_ID.test(raw.model)) settings.model = raw.model;
+    else problems.push("model: 1-64 lowercase letters, digits, '.', '_' or '-', starting with a letter");
+  }
+
+  if (raw.location !== undefined) {
+    if (typeof raw.location === "string" && VERTEX_LOCATION.test(raw.location)) settings.location = raw.location;
+    else problems.push("location: a GCP region such as us-central1, or global");
   }
 
   if (raw.revision !== undefined && !(Number.isInteger(raw.revision) && (raw.revision as number) >= 0)) {

@@ -170,6 +170,30 @@ describe("validateSettings", () => {
     expect(JSON.stringify(v)).not.toContain(secret);
   });
 
+  it("accepts a Vertex model id and a GCP region or `global` (#7)", () => {
+    for (const model of ["gemini-3.1-pro-preview", "gemini-2.5-flash-001", "gemini_x", "g"]) {
+      expect(validateSettings({ version: 1, model })).toEqual({ ok: true, settings: { model } });
+    }
+    for (const location of ["us-central1", "europe-west4", "northamerica-northeast1", "me-central2", "global"]) {
+      expect(validateSettings({ version: 1, location })).toEqual({ ok: true, settings: { location } });
+    }
+  });
+
+  it("rejects a model id or region of another shape, without echoing it", () => {
+    const badModels = ["", "Gemini-Pro", "1gemini", "publishers/google/models/gemini", "gemini pro", "gemini\n", "a".repeat(65), 3, null];
+    for (const model of badModels) {
+      const v = validateSettings({ version: 1, model });
+      expect(!v.ok && v.problems.map((p) => p.split(":")[0])).toEqual(["model"]);
+    }
+    const badLocations = ["", "us", "US-CENTRAL1", "us-central", "us-central1.evil.example", "us-central1/x", "us-central123", "globalx", 1];
+    for (const location of badLocations) {
+      const v = validateSettings({ version: 1, location });
+      expect(!v.ok && v.problems.map((p) => p.split(":")[0])).toEqual(["location"]);
+    }
+    const secret = SEEDED_SECRETS.google!;
+    expect(JSON.stringify(validateSettings({ version: 1, model: secret, location: secret }))).not.toContain(secret);
+  });
+
   it("never echoes a value into its problems: a bad value may be a pasted credential", () => {
     const secret = SEEDED_SECRETS.google!;
     const v = validateSettings({
@@ -213,6 +237,17 @@ describe("applySettings", () => {
       modelCallBudget: 9,
     });
     expect(applySettings(safe, {})).toMatchObject({ dryRun: true, reviewRequired: true, automationEnabled: true, modelCallBudget: 6 });
+  });
+
+  it("overrides the model and region, leaving the Vertex project and the verify job's region alone", () => {
+    const env = testConfig({ vertexProjectId: "vertex-home", location: "us-central1", model: "gemini-env", verifyJobRegion: "us-central1" });
+    expect(applySettings(env, { model: "gemini-other", location: "europe-west4" })).toMatchObject({
+      vertexProjectId: "vertex-home",
+      location: "europe-west4",
+      model: "gemini-other",
+      verifyJobRegion: "us-central1",
+    });
+    expect(applySettings(env, {})).toMatchObject({ location: "us-central1", model: "gemini-env" });
   });
 
   it("returns a frozen snapshot that shares nothing mutable with the defaults", () => {

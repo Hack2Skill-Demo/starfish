@@ -63,6 +63,8 @@ export function applySettings(base: StarfishConfig, settings: RuntimeSettings): 
     ...(settings.reviewRequired !== undefined && { reviewRequired: settings.reviewRequired }),
     ...(settings.automationEnabled !== undefined && { automationEnabled: settings.automationEnabled }),
     ...(settings.modelCallBudget !== undefined && { modelCallBudget: settings.modelCallBudget }),
+    ...(settings.model !== undefined && { model: settings.model }),
+    ...(settings.location !== undefined && { location: settings.location }),
   });
 }
 

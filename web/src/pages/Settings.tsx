@@ -32,7 +32,8 @@ export const CONNECTIONS: Connection[] = [
     state: "engine",
     purpose:
       "The model Starfish uses for triage, fix drafting and adversarial review. Those stages are built as the agent job (pnpm agent), which is deployable but has never run; the scheduled ingest does not call Gemini.",
-    detail: "Configured on the engine: GOOGLE_CLOUD_PROJECT, GOOGLE_CLOUD_LOCATION, STARFISH_MODEL.",
+    detail:
+      "The Vertex project is the engine's (STARFISH_VERTEX_PROJECT_ID, else GOOGLE_CLOUD_PROJECT). The model and region default to STARFISH_MODEL and GOOGLE_CLOUD_LOCATION; an admin can override both under Runtime settings, and the agent job reads them at the start of each pass.",
   },
   {
     name: "GitHub",

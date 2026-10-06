@@ -113,6 +113,8 @@ export const STEPS = [
         /^(\/|[A-Za-z]:\\).*\.(ts|tsx|js|mjs)$/.test(line) &&
         all.some((l) => /^\s*\d+:\d+\s+error\s/.test(l)),
       /^\s*✖\s+\d+\s+problems?\s+\([1-9]\d*\s+errors?/,
+      // scripts/check-no-project-ids.mjs, which `pnpm lint` runs after eslint.
+      /^check-no-project-ids: /,
     ],
   },
   {
