@@ -3,8 +3,8 @@
 > **Status: proposed, not built.** The demo app repositories hold no code yet, and most of what the
 > scenarios check is designed but not built in Starfish (see the status column in
 > [`demo-app-scenarios.md`](demo-app-scenarios.md)). Written 2026-10-04 for #5 and #32. Updated the
-> same day with the decisions taken after #50 (see "Decisions needed": what is decided and what is
-> still open, which is tracked in #68).
+> same day with the decisions taken after #50 (see "Decisions"). The last four (#68) were settled by
+> what was built, each on its recommended option (2026-10-06).
 
 ## Summary
 
@@ -247,18 +247,18 @@ Each phase starts only after the gate of the one before it is passed.
 
 ## Decisions
 
-Four are still open and tracked in [#68](https://github.com/Hack2Skill-Demo/starfish/issues/68), each with its recommendation. The rest were decided on 2026-10-04.
+Most were decided on 2026-10-04. The last four ([#68](https://github.com/Hack2Skill-Demo/starfish/issues/68)) were settled by what `demo-app` and `demo-control` built, each on the recommended option (2026-10-06).
 
 | Decision | Recommended | Alternative |
 | --- | --- | --- |
 | Repos | **Decided (2026-10-04):** two. `demo-app` (Starfish fixes it; `main` created) and a private `demo-control` (controller, scenarios, reset script, evaluator tests) | One repo with scenario files kept outside Starfish's read path. Weaker: the fixer could still find them |
 | Who can press the buttons | **Decided:** anyone holding a valid access code, entered once on the app's first screen; codes are issued by the team, expire, can be revoked, are rate-limited and stored only as hashes. The Lab page is in the shop as a thin client; reset is not a button | Team sign-in only, or per-button unlock codes (the earlier proposals) |
-| What exposes the code fault | **Open (#68).** Recommended: Traffic changes (checkout without coupon): instant, no deploy | Deploy a breaking commit. It matches "a deploy went out", but takes 2 to 4 minutes before the first error |
-| API for the notify case | **Open (#68).** Recommended: Cloud Translation, which nothing else in the project uses | A misconfigured Secret Manager secret, which is also CFG-03 |
-| Ingest speed for the video | **Open (#68).** Recommended: Schedule ingest every minute while recording (#6) | A "run ingest now" control in Starfish |
+| What exposes the code fault | **Decided (#68):** traffic changes (checkout without coupon): instant, no deploy. demo-control's traffic drives it (CODE-01) | Deploy a breaking commit. It matches "a deploy went out", but takes 2 to 4 minutes before the first error |
+| API for the notify case | **Decided (#68):** Cloud Translation, which nothing else in the project uses (demo-app's invoices call it) | A misconfigured Secret Manager secret, which is also CFG-03 |
+| Ingest speed for the video | **Decided (#68):** both are built. `scripts/ingest-cadence.sh recording` ticks every minute, and `now` (or the admin's "Run ingest now") runs one at once (#65) | A "run ingest now" control in Starfish |
 | Twilio for the escalation scenarios | **Decided: yes**, one number, Phase 4 only. It is paid per number and per minute | Leave ESC-02 to ESC-07 untested and say so |
 | A second named database, `analytics` | **Decided: yes**, for IDX-04. Small paid usage | Test the allowlist in Starfish's unit tests only |
 | A second repo, `demo-infra` | **Decided: yes**, for CON-01 | Keep indexes in `demo-app` and leave CON-01 untested |
-| Where scenario results live | **Open (#68).** Recommended: In `demo-control`, in #10's results format, read by the lab and by `pnpm scoreboard` | In Starfish, as part of its run records |
+| Where scenario results live | **Decided (#68):** in `demo-control`, in its own result store (one record per run), read by the Lab and by its `pnpm scoreboard`. Not in Starfish's #10 results format | In Starfish, as part of its run records |
 
-Once the four open ones are settled, `demo-control` gets created and Phase 1 starts in `Hack2Skill-Demo/demo-app` on `claude/kind-johnson-3pf3w3`.
+`demo-control` exists, and the planted faults are on demo-app `main` (PR #13), tagged `baseline-v1`.

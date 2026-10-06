@@ -44,7 +44,7 @@ The shop with each feature's broken and working states, then the Scenario lab.
 
 ![The Scenario lab](screens/scenario-lab.png)
 
-> The notify case now disables the Cloud Translation API, not Cloud Storage (disabling Cloud Storage would break deploys; it is the recommended choice in [#68](https://github.com/Hack2Skill-Demo/starfish/issues/68), not yet decided), and the Engine screen lists dependencies and CI config among the never-auto-merged classes. The screenshots below were re-rendered from the HTML pages after those edits (2026-10-06).
+> The notify case now disables the Cloud Translation API, not Cloud Storage (disabling Cloud Storage would break deploys; decided in [#68](https://github.com/Hack2Skill-Demo/starfish/issues/68)), and the Engine screen lists dependencies and CI config among the never-auto-merged classes. The screenshots below were re-rendered from the HTML pages after those edits (2026-10-06).
 
 ### Live runs, one per MVP case
 
