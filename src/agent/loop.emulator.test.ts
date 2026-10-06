@@ -1015,3 +1015,78 @@ describe("runCycle: a cycle given up on is not given up silently (#137)", () => 
     expect((await cycleDoc()).summary.notify).toEqual({ state: "dry-run" });
   });
 });
+
+describe("runCycle: a declined incident is reconsidered on new evidence (#8)", () => {
+  const policy = { reconsiderCooldownMinutes: 30, reconsiderMaxPerDay: 3, reconsiderBurstOccurrences: 20 };
+  const incidents = () => `incidents_${cfg}`;
+  const stored = (over: Record<string, unknown> = {}) =>
+    db.collection(incidents()).doc("inc1").set({ environment: "demo", status: "new", occurrenceCount: 42, errorType: "DatabaseError", lastOccurredAt: t0, ...over });
+  const later = (minutes: number) => new Date(t0.getTime() + minutes * 60_000);
+  const decline = { decision: "decline", reasoning: "A one-off.", suspectedCause: "" };
+
+  it("isolated transient -> sustained burst: declined once, untouched by a replay, then triaged again into one pull request", async () => {
+    cfgOver = { incidentCollection: incidents() };
+    await stored();
+    const opened: PullRequestRequest[] = [];
+    const model = scripted({ triage: [decline, act], fix: [fixOf(GOOD_PATCH)], review: [held] });
+    const d = deps(model, { reconsider: policy }, opened);
+
+    expect(await runCycle(d, key)).toEqual({ kind: "finished", state: "declined", outcome: "model-decline" });
+    expect((await cycleDoc()).decision).toMatchObject({ rule: "model-decline", reason: "A one-off.", occurrenceCount: 42, counterCount: 42, counterWindow: "24h", errorType: "DatabaseError", causeClass: expect.any(String) });
+
+    // The same logs read again, after the cooldown: no new evidence, no model call, still declined.
+    clock = later(45);
+    expect(await runCycle(d, key)).toEqual({ kind: "not-acquired", reason: "closed" });
+    expect(await selectCandidates(db, testConfig({ environment: "demo", cycleCollection: `cycles_${cfg}`, incidentCollection: incidents() }), 5, { reconsider: policy, now: clock })).toEqual([]);
+    expect(model.count("triage")).toBe(1);
+
+    // A burst since the decline: selected, and the same cycle is triaged again.
+    await stored({ occurrenceCount: 90 });
+    expect(await selectCandidates(db, testConfig({ environment: "demo", cycleCollection: `cycles_${cfg}`, incidentCollection: incidents() }), 5, { reconsider: policy, now: clock })).toEqual([{ incidentId: "inc1", recurrence: 0, reconsider: "burst" }]);
+    expect(await runCycle(d, key)).toEqual({ kind: "finished", state: "done", outcome: "pr-opened" });
+    expect(model.count("triage")).toBe(2);
+    expect(opened).toHaveLength(1);
+    expect(opened[0]!.cycleId).toBe("inc1_r0");
+    const k = await kinds();
+    expect(k.slice(0, 3)).toEqual(["cycle:started", "triage:decision", "cycle:reconsidered"]);
+    expect(k.filter((x) => x === "pr:opened")).toHaveLength(1);
+    const c = await cycleDoc();
+    expect(c).toMatchObject({ state: "done", path: "pr", reconsiderCount: 1, reconsideredBecause: "burst" });
+    expect(c.history[0]).toMatchObject({ rule: "model-decline", occurrenceCount: 42 });
+    expect(c.summary.triage).toMatchObject({ decision: "act" });
+
+    // A done cycle is never reconsidered: no second pull request for the recurrence.
+    await stored({ occurrenceCount: 500, retriageRequestedAt: later(50) });
+    clock = later(120);
+    expect(await runCycle(d, key)).toEqual({ kind: "not-acquired", reason: "closed" });
+    expect(opened).toHaveLength(1);
+  });
+
+  it("a new structural cause after the cooldown is new evidence too", async () => {
+    cfgOver = { incidentCollection: incidents() };
+    await stored();
+    const model = scripted({ triage: [decline, decline] });
+    const d = deps(model, { reconsider: policy });
+    await runCycle(d, key);
+    clock = later(31);
+    expect(await runCycle(d, key)).toEqual({ kind: "not-acquired", reason: "closed" });
+    await stored({ errorCode: "FAILED_PRECONDITION" });
+    expect(await runCycle(d, key)).toEqual({ kind: "finished", state: "declined", outcome: "model-decline" });
+    expect(model.count("triage")).toBe(2);
+    expect(await cycleDoc()).toMatchObject({ reconsideredBecause: "cause", reconsiderCount: 1 });
+  });
+
+  it("an operator who ignores the incident during the reconsideration settles it", async () => {
+    cfgOver = { incidentCollection: incidents() };
+    await stored();
+    const model = scripted({ triage: [decline, act], fix: [fixOf(GOOD_PATCH)], review: [held] });
+    const d = deps(model, { reconsider: policy });
+    await runCycle(d, key);
+    await stored({ retriageRequestedAt: later(1) });
+    clock = later(2);
+    // The request is honoured at acquire; the operator then ignores it before the first stage.
+    status = "ignored";
+    expect(await runCycle(d, key)).toEqual({ kind: "finished", state: "declined", outcome: "incident-ignored" });
+    expect(model.count("triage")).toBe(1);
+  });
+});

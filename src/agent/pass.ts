@@ -11,6 +11,7 @@ import type { DocumentSnapshot, Firestore } from "firebase-admin/firestore";
 import type { StarfishConfig } from "../config.js";
 import { OPEN_INCIDENT_STATUSES } from "../types.js";
 import { cycleId, type CycleConfig, type CycleState } from "./cycle.js";
+import { reconsiderTrigger, utcDay, type ReconsiderPolicy, type ReconsiderTrigger } from "./reconsider.js";
 import { isExcludedPath } from "./verifyGate.js";
 import type { LoopResult } from "./loop.js";
 
@@ -20,6 +21,8 @@ export interface Candidate {
   incidentId: string;
   /** The incident's `recurrenceCount`: one cycle per recurrence. */
   recurrence: number;
+  /** Set when the cycle was declined and new evidence arrived since (reconsider.ts); the lease acquire decides again. */
+  reconsider?: ReconsiderTrigger;
 }
 
 /** A cycle in one of these states is finished or waiting on a person: running it again would only repeat it. */
@@ -34,10 +37,17 @@ const MAX_SCAN = 500;
 /**
  * Open incidents of this environment that have no settled cycle for their current recurrence, newest
  * activity first, at most `limit`. A cycle that is absent or still `running` is a candidate (the loop's
- * lease decides whether another worker holds it). An operator-retired incident is never one. Uses the same
- * (environment, lastOccurredAt) index as the incidents list, so it needs no new index.
+ * lease decides whether another worker holds it). A `declined` one is too, with `opts.reconsider`, when new
+ * evidence arrived since its decision (reconsider.ts; the lease acquire checks again in its transaction).
+ * An operator-retired incident is never one. Uses the same (environment, lastOccurredAt) index as the
+ * incidents list, so it needs no new index.
  */
-export async function selectCandidates(db: Firestore, cfg: PassConfig, limit: number): Promise<Candidate[]> {
+export async function selectCandidates(
+  db: Firestore,
+  cfg: PassConfig,
+  limit: number,
+  opts: { reconsider?: ReconsiderPolicy; now?: Date } = {}
+): Promise<Candidate[]> {
   if (!Number.isInteger(limit) || limit < 1) return [];
   const scan = Math.min(limit * SCAN_FACTOR, MAX_SCAN);
   const snap = await db
@@ -48,6 +58,7 @@ export async function selectCandidates(db: Firestore, cfg: PassConfig, limit: nu
     .get();
 
   const open: Candidate[] = [];
+  const incidents = new Map<string, Record<string, unknown>>();
   for (const doc of snap.docs) {
     const d = doc.data();
     if (d.retired === true || !OPEN.includes(String(d.status))) continue;
@@ -55,14 +66,22 @@ export async function selectCandidates(db: Firestore, cfg: PassConfig, limit: nu
     const id = cycleId({ incidentId: doc.id, environment: cfg.environment, recurrence });
     if (id === null) continue; // an id that cannot name a cycle is never worked on
     open.push({ incidentId: doc.id, recurrence });
+    incidents.set(doc.id, d);
   }
   if (open.length === 0) return [];
 
   const refs = open.map((c) => db.collection(cfg.cycleCollection).doc(cycleId({ incidentId: c.incidentId, environment: cfg.environment, recurrence: c.recurrence })!));
   const cycles: DocumentSnapshot[] = await db.getAll(...refs);
   const out: Candidate[] = [];
+  const now = opts.now ?? new Date();
   open.forEach((c, i) => {
-    const state = cycles[i]?.data()?.state as CycleState | undefined;
+    const data = cycles[i]?.data();
+    const state = data?.state as CycleState | undefined;
+    if (state === "declined" && data && opts.reconsider) {
+      const trigger = reconsiderTrigger(data, incidents.get(c.incidentId), opts.reconsider, now);
+      if (trigger !== null && out.length < limit) out.push({ ...c, reconsider: trigger });
+      return;
+    }
     if (state !== undefined && SETTLED.includes(state)) return;
     if (out.length < limit) out.push(c);
   });
@@ -153,6 +172,22 @@ export function pathsFromStack(stack: string | undefined, repoFiles: readonly st
   return chosen;
 }
 
+/**
+ * How many cycles of this environment were started (created, or reopened for a reconsideration) on the UTC day of
+ * `now`: what the daily cap compares against. One count aggregation over the cycle documents' `startDays`, so it
+ * reads no documents. A cycle started twice in one day counts once, so the cap bounds distinct cycles started per day;
+ * a cycle written before `startDays` existed is not counted. Throws when the store does: the caller then starts nothing.
+ */
+export async function countCyclesStartedToday(db: Firestore, cfg: Pick<PassConfig, "environment" | "cycleCollection">, now: Date): Promise<number> {
+  const snap = await db
+    .collection(cfg.cycleCollection)
+    .where("environment", "==", cfg.environment)
+    .where("startDays", "array-contains", utcDay(now))
+    .count()
+    .get();
+  return snap.data().count;
+}
+
 // ---- The bounded driver --------------------------------------------------------------------------------------
 
 export interface PassSummary {
@@ -164,8 +199,13 @@ export interface PassSummary {
   errors: { incidentId: string; message: string }[];
   /** The pass stopped early because the store or the opener kept failing. */
   aborted: boolean;
-  /** The pass did nothing at all: automation is off (or the switch could not be read, which reads as off). */
-  skipped?: "automation-disabled";
+  /**
+   * The pass did nothing at all: automation is off (or the switch could not be read, which reads as off), or the
+   * daily cycle cap was already reached.
+   */
+  skipped?: "automation-disabled" | "daily-cap";
+  /** The daily cycle cap, and how many cycles had been started today before this pass. Absent when no cap is given. */
+  daily?: { cap: number; startedBefore: number };
 }
 
 /** Stop after this many cycles in a row threw: the thing they depend on is probably down. */
@@ -183,6 +223,13 @@ export interface PassDeps {
    * incident is touched while automation is off. Absent: on.
    */
   automationEnabled?: () => Promise<boolean>;
+  /**
+   * The daily cycle cap (#5/#7): the most cycles started per UTC day, and how many were started today so far, asked
+   * once before anything is selected. A pass then selects at most what is left; the resumes it runs count against that
+   * too, so one pass alone can only undershoot the cap. Two passes running at the same time each count before either
+   * starts, so together they could pass it by up to one pass's `maxCycles`. Absent: no daily cap.
+   */
+  daily?: { cap: number; startedToday: () => Promise<number> };
 }
 
 /**
@@ -196,10 +243,19 @@ export async function runAgentPass(deps: PassDeps): Promise<PassSummary> {
   if (deps.automationEnabled && !(await deps.automationEnabled())) {
     return { considered: 0, ran: 0, results: [], errors: [], aborted: false, skipped: "automation-disabled" };
   }
-  const candidates = await deps.select(deps.maxCycles);
-  const summary: PassSummary = { considered: candidates.length, ran: 0, results: [], errors: [], aborted: false };
+  let limit = deps.maxCycles;
+  let daily: PassSummary["daily"];
+  if (deps.daily) {
+    const startedBefore = await deps.daily.startedToday();
+    daily = { cap: deps.daily.cap, startedBefore };
+    const left = Math.floor(deps.daily.cap - startedBefore);
+    if (left < 1) return { considered: 0, ran: 0, results: [], errors: [], aborted: false, skipped: "daily-cap", daily };
+    limit = Math.min(limit, left);
+  }
+  const candidates = await deps.select(limit);
+  const summary: PassSummary = { considered: candidates.length, ran: 0, results: [], errors: [], aborted: false, ...(daily && { daily }) };
   let streak = 0;
-  for (const candidate of candidates.slice(0, deps.maxCycles)) {
+  for (const candidate of candidates.slice(0, limit)) {
     summary.ran += 1;
     try {
       summary.results.push({ incidentId: candidate.incidentId, result: await deps.run(candidate) });

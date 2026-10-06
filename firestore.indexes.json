@@ -23,6 +23,14 @@
         { "fieldPath": "environment", "order": "ASCENDING" },
         { "fieldPath": "at", "order": "DESCENDING" }
       ]
+    },
+    {
+      "collectionGroup": "starfish_cycles",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "environment", "order": "ASCENDING" },
+        { "fieldPath": "startDays", "arrayConfig": "CONTAINS" }
+      ]
     }
   ],
   "fieldOverrides": []

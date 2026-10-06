@@ -78,6 +78,22 @@ export interface StarfishConfig {
    */
   maxPrChecksPerPass: number;
   /**
+   * The most cycles the agent starts in one UTC day in this environment, counted across passes (the spend cap of #5/#7):
+   * a cycle created, or a declined one reconsidered, that day counts once. When it is reached a pass starts nothing,
+   * not even a resume, until the next UTC day.
+   */
+  maxCyclesPerDay: number;
+  /**
+   * Reconsidering a declined incident (#8). A decline is settled until new evidence arrives: an operator asks for a
+   * retriage, the occurrences grow by `reconsiderBurstOccurrences` since the decision, or the incident's structural cause
+   * changes (an error code, name or HTTP status appears or changes, or a detail or stack trace becomes available).
+   * The automatic triggers wait `reconsiderCooldownMinutes` after the decision; an operator's request does not. Either
+   * way a cycle is reconsidered at most `reconsiderMaxPerDay` times in 24 hours.
+   */
+  reconsiderCooldownMinutes: number;
+  reconsiderMaxPerDay: number;
+  reconsiderBurstOccurrences: number;
+  /**
    * Paths a proposed patch may never touch: the built-in `DEFAULT_PATCH_EXCLUDED_PATHS` (CI, secrets, the package
    * manifest and lockfiles, common test, type-check and lint configs) plus whatever the deployment lists, which
    * should name any other file that defines the verify command or the tests that judge it. A trailing `/` is a directory; `*` and `**` are globs; a
@@ -326,6 +342,10 @@ export function loadConfig(): StarfishConfig {
     verifyJobRegion: (process.env.STARFISH_VERIFY_JOB_REGION ?? "").trim() || process.env.GOOGLE_CLOUD_LOCATION || "us-central1",
     maxCyclesPerPass: positiveNumber(process.env.STARFISH_MAX_CYCLES_PER_PASS, 3, "STARFISH_MAX_CYCLES_PER_PASS"),
     maxPrChecksPerPass: positiveNumber(process.env.STARFISH_MAX_PR_CHECKS_PER_PASS, 10, "STARFISH_MAX_PR_CHECKS_PER_PASS"),
+    maxCyclesPerDay: positiveNumber(process.env.STARFISH_MAX_CYCLES_PER_DAY, 30, "STARFISH_MAX_CYCLES_PER_DAY"),
+    reconsiderCooldownMinutes: positiveNumber(process.env.STARFISH_RECONSIDER_COOLDOWN_MINUTES, 30, "STARFISH_RECONSIDER_COOLDOWN_MINUTES"),
+    reconsiderMaxPerDay: positiveNumber(process.env.STARFISH_RECONSIDER_MAX_PER_DAY, 3, "STARFISH_RECONSIDER_MAX_PER_DAY"),
+    reconsiderBurstOccurrences: positiveNumber(process.env.STARFISH_RECONSIDER_BURST_OCCURRENCES, 20, "STARFISH_RECONSIDER_BURST_OCCURRENCES"),
     patchExcludedPaths: [
       ...DEFAULT_PATCH_EXCLUDED_PATHS,
       ...(parseList(process.env.STARFISH_PATCH_EXCLUDED_PATHS, ",") ?? []),

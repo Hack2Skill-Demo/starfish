@@ -149,10 +149,14 @@ src/
                    (redacted) and the cycle's run record (summary.<stage>, path); infrastructure errors throw, logical refusals are returned. Run by `pnpm agent` (deployable, never run)
   agent/loop.ts    one cycle: lease -> triage -> fix -> verify -> review -> PR (interface); rechecks status +
                    kill switch, one shared revision, call budget, dry run by default. Run by `pnpm agent`
-  agent/pass.ts    one pass over the store: candidate selection, stack trace → repo files, bounded driver
+  agent/pass.ts    one pass over the store: candidate selection, stack trace → repo files, bounded driver; the daily
+                   cycle cap (`STARFISH_MAX_CYCLES_PER_DAY`, a count of cycles started that UTC day)
   agent/reconcile.ts  after the pass (#17): polls a bounded number of opened PRs (state + named checks on the head), records
                    `summary.prState` via cycle.ts `recordPrState` (no lease; never changes the cycle's state; newest read wins;
                    merged is final; never marks an incident healed). Fake GitHub + emulator tested, never run against real GitHub
+  agent/reconsider.ts  when a DECLINED cycle is triaged again (#8): an operator's `retriageRequestedAt`, a burst, or a new
+                   structural cause since the recorded decision; cooldown + cap per 24 h; never over ignored/resolved.
+                   cycle.ts reopens the same cycle in the lease transaction, so still one issue and one PR per recurrence
   agent/assemble.ts  one incident's inputs: shallow clone at a pinned revision, counter-check, samples, files the trace names
   scoreboard/      the results format (strict parser), the metrics (ratios keep numerator and denominator; an error or timeout counts
                    against the agent; each path apart) and the Markdown table: `pnpm scoreboard`. `replay.ts`/`corpus.ts` (`pnpm replay`) run

@@ -28,7 +28,7 @@ import { redactPii } from "./ingest/redact.js";
 import { makeAutomationSwitch } from "./agent/automationSwitch.js";
 import { createGitCheckout, createLoader } from "./agent/assemble.js";
 import { runCycle } from "./agent/loop.js";
-import { runAgentPass, selectCandidates } from "./agent/pass.js";
+import { countCyclesStartedToday, runAgentPass, selectCandidates } from "./agent/pass.js";
 import { reconcilePullRequests } from "./agent/reconcile.js";
 import { agentPreflight } from "./agent/preflight.js";
 import { createCloudRunJobStarter, createGcsStore } from "./agent/cloudRunJob.js";
@@ -116,6 +116,7 @@ const deps = {
     return snap.exists && INCIDENT_STATUSES.includes(status as IncidentStatus) ? (status as IncidentStatus) : null;
   },
   automationEnabled,
+  reconsider: cfg,
   ...(remoteVerify && { verify: remoteVerify }),
   // Absent in a dry run: the loop then ends a verified, reviewed patch as "waiting for a person" and opens nothing.
   ...(!cfg.dryRun && github && { openPullRequest: github.openPullRequest, findPullRequest: github.findPullRequest }),
@@ -130,14 +131,17 @@ const deps = {
 let failed: boolean;
 try {
   const summary = await runAgentPass({
-    select: (limit) => selectCandidates(db, cfg, limit),
+    select: (limit) => selectCandidates(db, cfg, limit, { reconsider: cfg }),
     run: (c) => runCycle(deps, { incidentId: c.incidentId, environment: cfg.environment, recurrence: c.recurrence }),
     maxCycles: cfg.maxCyclesPerPass,
+    daily: { cap: cfg.maxCyclesPerDay, startedToday: () => countCyclesStartedToday(db, cfg, new Date()) },
     describeError: (err) => redactPii(err instanceof Error ? `${err.name}: ${err.message}` : String(err)).slice(0, 300),
     // Off (or unreadable): the pass starts no cycle, so nothing is declined while automation is off (#133).
     automationEnabled,
   });
-  if (summary.skipped) console.log(`agent: automation is off (or the settings could not be read); no cycle started.`);
+  if (summary.skipped === "automation-disabled") console.log(`agent: automation is off (or the settings could not be read); no cycle started.`);
+  if (summary.skipped === "daily-cap") console.log(`agent: the daily cap of ${cfg.maxCyclesPerDay} cycle(s) is reached; no cycle started.`);
+  if (summary.daily) console.log(`agent: ${summary.daily.startedBefore} of ${summary.daily.cap} daily cycle(s) started before this pass.`);
   console.log(`agent: ${summary.considered} candidate(s), ${summary.ran} run${cfg.dryRun ? " (dry run)" : ""}`);
   for (const r of summary.results) console.log(`  ${r.incidentId}: ${JSON.stringify(r.result)}`);
   for (const e of summary.errors) console.error(`  ${e.incidentId}: threw: ${e.message}`);

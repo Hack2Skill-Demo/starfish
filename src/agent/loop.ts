@@ -51,6 +51,7 @@ import {
   type CycleKey,
   type CyclePath,
   type CycleState,
+  type DeclineDecision,
   type RunEvent,
 } from "./cycle.js";
 import type { IssueRequest } from "../integrations/githubPr.js";
@@ -59,6 +60,7 @@ import { proposeFix, type FixRequest, type FixRule, type SourceFile } from "./fi
 import { reviewPatch, type Attack, type ReviewVerdict } from "./reviewer.js";
 import { triageIncident, type AskJson, type TriageSubject } from "./triage.js";
 import { verifyPatch, type VerifyConfig, type VerifyRequest, type VerifyResult } from "./verifyGate.js";
+import { causeClass, type ReconsiderPolicy } from "./reconsider.js";
 
 /** Everything about the incident the stages need, assembled by the caller (it owns the repo checkout). */
 export interface LoopSubject {
@@ -133,6 +135,11 @@ export interface LoopDeps {
    * dry run nothing is sent and the record says so.
    */
   alert?: (req: AlertRequest) => Promise<DeliveryResult>;
+  /**
+   * Reconsider a declined cycle when new evidence arrived since its decision (#8, reconsider.ts): the lease acquire
+   * reopens it in its own transaction. Absent: a declined cycle stays closed.
+   */
+  reconsider?: ReconsiderPolicy;
 }
 
 export type LoopResult =
@@ -146,6 +153,12 @@ class LeaseLost extends Error {}
 
 /** How many revisions one cycle may make, shared between a failed verify and a blocking review. */
 export const MAX_REVISIONS = 1;
+
+const RECONSIDER_SUMMARY = {
+  operator: "an operator asked for a retriage",
+  burst: "the occurrences grew past the burst threshold since the decline",
+  cause: "the incident's structural cause changed since the decline",
+} as const;
 
 /** Fixer errors that are the model's patch, not a failed call: retrying would most likely repeat them (#137). */
 export const UNFIT_PATCH_RULES: ReadonlySet<FixRule> = new Set<FixRule>(["patch-malformed", "patch-too-large", "patch-contains-secret-shape"]);
@@ -217,7 +230,7 @@ function leaseKeeper(renew: () => Promise<boolean>, now: () => number, everyMs: 
 
 export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResult> {
   const { db, config: cfg, owner } = deps;
-  const lease = await acquireLease(db, cfg, key, owner, deps.now());
+  const lease = await acquireLease(db, cfg, key, owner, deps.now(), deps.reconsider ? { reconsider: { ...deps.reconsider, incidentCollection: cfg.incidentCollection } } : {});
   if (!lease.acquired) {
     // This call is the one that just gave the cycle up (a later one sees it closed): tell a person, once (#137).
     if (lease.reason === "deadline-passed" || lease.reason === "retries-exhausted") await announceGivenUp(deps, key, lease.reason);
@@ -229,8 +242,8 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
     const r = await recordEvent(db, cfg, id, owner, deps.now(), event);
     if (!r.ok) throw new LeaseLost();
   };
-  const finish = async (state: Exclude<CycleState, "running">, outcome: string, path?: CyclePath): Promise<LoopResult> => {
-    const r = await finishCycle(db, cfg, id, owner, deps.now(), state, outcome, path);
+  const finish = async (state: Exclude<CycleState, "running">, outcome: string, path?: CyclePath, decision?: DeclineDecision): Promise<LoopResult> => {
+    const r = await finishCycle(db, cfg, id, owner, deps.now(), state, outcome, path, decision);
     if (!r.ok) throw new LeaseLost();
     return { kind: "finished", state, outcome };
   };
@@ -250,7 +263,14 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
   );
 
   try {
-    await note({ stage: "cycle", type: "started", summary: `Attempt ${lease.attempt}${lease.resumed ? " (resumed)" : ""}`, data: { attempt: lease.attempt, resumed: lease.resumed } });
+    await note({
+      stage: "cycle",
+      type: lease.reconsidered ? "reconsidered" : "started",
+      summary: lease.reconsidered
+        ? `Declined earlier; triaged again: ${RECONSIDER_SUMMARY[lease.reconsidered]}`
+        : `Attempt ${lease.attempt}${lease.resumed ? " (resumed)" : ""}`,
+      data: { attempt: lease.attempt, resumed: lease.resumed, ...(lease.reconsidered && { trigger: lease.reconsidered }) },
+    });
 
     // A pull request already opened for this cycle ends it (#134): an attempt resumed after the open succeeded but its
     // record or the finish did not must not redo the pipeline (the CI verifier would rebuild the PR's own branch).
@@ -442,8 +462,21 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
     }
     switch (triage.decision) {
       case "skip":
-      case "decline":
-        return await finish("declined", triage.rule, "decline");
+      case "decline": {
+        // What this decline saw, kept so a later pass can tell new evidence from the same logs read again (#8).
+        const incident = loaded.subject.incident;
+        const counter = incident.logCounterCheck;
+        return await finish("declined", triage.rule, "decline", {
+          rule: triage.rule,
+          reason: triage.reason,
+          suspectedCause: triage.suspectedCause ?? null,
+          occurrenceCount: typeof incident.occurrenceCount === "number" ? incident.occurrenceCount : null,
+          counterCount: counter && Number.isFinite(counter.count) ? counter.count : null,
+          counterWindow: counter?.window ?? null,
+          errorType: incident.errorType ?? null,
+          causeClass: causeClass(incident),
+        });
+      }
       case "notify":
         await announce(loaded, "notify", triage.rule, triage.reason);
         return await finish("waiting-human", `notify:${triage.rule}`, "notify");

@@ -110,6 +110,20 @@ service cloud.firestore {
               ? request.resource.data.resolvedAt == request.time
               : !('resolvedAt' in request.resource.data));
 
+      // A retriage request (#8): ask the agent to triage a declined incident again
+      // (src/agent/reconsider.ts). Only the request's time, the server's, and who
+      // asked, the caller: nothing about the incident itself, and only on an open,
+      // unretired one, so it can never reopen what an operator resolved or ignored.
+      // The engine still bounds how often it acts on one (a cap per 24 hours).
+      allow update: if isOperator()
+        && request.resource.data.diff(resource.data).affectedKeys()
+             .hasOnly(['retriageRequestedAt', 'retriageRequestedBy'])
+        && request.resource.data.retriageRequestedAt == request.time
+        && request.resource.data.retriageRequestedBy == request.auth.uid
+        // The open statuses: OPEN_INCIDENT_STATUSES in src/types.ts. Change both together.
+        && resource.data.status in ['new', 'acknowledged', 'logged', 'recurred']
+        && resource.data.get('retired', false) != true;
+
       // Incidents are created and removed by the engine only.
       allow create, delete: if false;
     }

@@ -10,6 +10,10 @@ import { getFirestore } from "firebase-admin/firestore";
 import type { Firestore } from "firebase-admin/firestore";
 import { acquireLease, cycleId, finishCycle, recordEvent, recordPrState, releaseLease, renewLease, sanitizeEvent, type CycleConfig, type CycleKey, type PrStateRecord } from "./cycle.js";
 import { SEEDED_SECRETS } from "../ingest/testSecrets.js";
+import { causeClass } from "./reconsider.js";
+
+/** The structural cause class of the test incident below, which carries no error class, code or trace. */
+const CAUSE = causeClass({});
 
 if (!process.env.FIRESTORE_EMULATOR_HOST) {
   throw new Error("cycle.emulator.test.ts needs the Firestore emulator: run `pnpm test:emulator`");
@@ -396,5 +400,108 @@ describe("recordPrState: a finished cycle's pull request, read back later (#17)"
     }
     expect(await recordPrState(db, cfg, "a/b", obs())).toEqual({ ok: false, reason: "invalid" });
     expect((await cycle()).summary.prState).toBeUndefined();
+  });
+});
+
+describe("reconsidering a declined cycle (#8)", () => {
+  const incidents = () => `${cfg.cycleCollection}_incidents`;
+  const policy = () => ({ incidentCollection: incidents(), reconsiderCooldownMinutes: 30, reconsiderMaxPerDay: 3, reconsiderBurstOccurrences: 20 });
+  const setIncident = (data: Record<string, unknown>) =>
+    db.collection(incidents()).doc(key.incidentId).set({ environment: "demo", status: "new", occurrenceCount: 5, ...data });
+  const mins = (m: number) => at(m * 60);
+
+  /** A cycle declined at t0 + 1 s on 5 occurrences, with an issue already recorded on it. */
+  async function declineAtStart() {
+    await setIncident({});
+    const r = await acquireLease(db, cfg, key, "a", t0);
+    if (!r.acquired) throw new Error("setup");
+    await recordEvent(db, cfg, r.cycleId, "a", t0, { stage: "triage", type: "decision", summary: "transient", record: { decision: "decline" } });
+    await recordEvent(db, cfg, r.cycleId, "a", t0, { stage: "issue", type: "opened", summary: "Issue #7 filed", record: { state: "opened", number: 7, url: "https://x/7" } });
+    await finishCycle(db, cfg, r.cycleId, "a", at(1), "declined", "model-decline", "decline", {
+      rule: "model-decline",
+      reason: "one-off",
+      occurrenceCount: 5,
+      counterCount: 5,
+      counterWindow: "1h",
+      causeClass: CAUSE,
+    });
+  }
+
+  it("keeps what the decline was decided on: when, the rule, the evidence and its window", async () => {
+    await declineAtStart();
+    const c = await cycle();
+    expect(c.decision).toMatchObject({ rule: "model-decline", reason: "one-off", occurrenceCount: 5, counterCount: 5, counterWindow: "1h", causeClass: CAUSE });
+    expect(c.decision.at.toMillis()).toBe(at(1).getTime());
+  });
+
+  it("without a policy, or without new evidence, a decline stays closed", async () => {
+    await declineAtStart();
+    expect(await acquireLease(db, cfg, key, "b", mins(60))).toEqual({ acquired: false, reason: "closed" });
+    expect(await acquireLease(db, cfg, key, "b", mins(60), { reconsider: policy() })).toEqual({ acquired: false, reason: "closed" });
+  });
+
+  it("reopens the SAME cycle on a burst after the cooldown: fresh deadline and attempts, history kept, issue kept", async () => {
+    await declineAtStart();
+    await setIncident({ occurrenceCount: 40 });
+    expect(await acquireLease(db, cfg, key, "b", mins(10), { reconsider: policy() })).toEqual({ acquired: false, reason: "closed" }); // cooldown
+    const r = await acquireLease(db, cfg, key, "b", mins(31), { reconsider: policy() });
+    expect(r).toMatchObject({ acquired: true, cycleId: "inc1_r0", attempt: 1, resumed: false, reconsidered: "burst" });
+    const c = await cycle();
+    expect(c).toMatchObject({ state: "running", owner: "b", attempts: 1, reconsiderCount: 1, reconsideredBecause: "burst", eventCount: 2 });
+    expect(c.deadlineAt.toMillis()).toBe(mins(31 + 60).getTime());
+    expect(c.decision).toBeUndefined();
+    expect(c.outcome).toBeUndefined();
+    expect(c.history).toHaveLength(1);
+    expect(c.history[0]).toMatchObject({ rule: "model-decline", occurrenceCount: 5, outcome: "model-decline" });
+    expect(c.summary.issue).toMatchObject({ number: 7 }); // one issue per recurrence, still
+    expect(c.summary.triage).toBeUndefined(); // the earlier decision is in history and the events, not shown as current
+    expect(c.startDays).toEqual(["2026-10-04"]);
+    // The events go on after the earlier ones.
+    if (r.acquired) expect((await recordEvent(db, cfg, r.cycleId, "b", mins(32), ev("again"))).seq).toBe(3);
+  });
+
+  it("an operator's request reopens it within the cooldown; a request older than the decision does not", async () => {
+    await declineAtStart();
+    await setIncident({ retriageRequestedAt: t0 });
+    expect(await acquireLease(db, cfg, key, "b", mins(2), { reconsider: policy() })).toEqual({ acquired: false, reason: "closed" });
+    await setIncident({ retriageRequestedAt: mins(1) });
+    expect(await acquireLease(db, cfg, key, "b", mins(2), { reconsider: policy() })).toMatchObject({ acquired: true, reconsidered: "operator" });
+  });
+
+  it("only one of many concurrent reconsiderations gets it", async () => {
+    await declineAtStart();
+    await setIncident({ retriageRequestedAt: mins(1) });
+    const results = await Promise.all(Array.from({ length: 6 }, (_, i) => acquireLease(db, cfg, key, `w${i}`, mins(2), { reconsider: policy() })));
+    expect(results.filter((r) => r.acquired)).toHaveLength(1);
+    expect(results.filter((r) => !r.acquired).every((r) => !r.acquired && r.reason === "held")).toBe(true);
+    expect((await cycle()).reconsiderCount).toBe(1);
+  });
+
+  it("never reopens over an operator's ignore", async () => {
+    await declineAtStart();
+    await setIncident({ status: "ignored", occurrenceCount: 500, retriageRequestedAt: mins(1) });
+    expect(await acquireLease(db, cfg, key, "b", mins(40), { reconsider: policy() })).toEqual({ acquired: false, reason: "closed" });
+    expect((await cycle()).state).toBe("declined");
+  });
+
+  it("is capped per 24 hours: the fourth reconsideration in a day is refused", async () => {
+    await declineAtStart();
+    let count = 5;
+    let t = 1;
+    for (let i = 0; i < 3; i++) {
+      t += 31;
+      count += 20;
+      await setIncident({ occurrenceCount: count });
+      const r = await acquireLease(db, cfg, key, `w${i}`, mins(t), { reconsider: policy() });
+      expect(r).toMatchObject({ acquired: true, reconsidered: "burst" });
+      if (r.acquired) await finishCycle(db, cfg, r.cycleId, `w${i}`, mins(t), "declined", "model-decline", "decline", { rule: "model-decline", occurrenceCount: count, causeClass: CAUSE });
+    }
+    t += 31;
+    await setIncident({ occurrenceCount: count + 100, retriageRequestedAt: mins(t - 1) });
+    expect(await acquireLease(db, cfg, key, "late", mins(t), { reconsider: policy() })).toEqual({ acquired: false, reason: "closed" });
+    expect((await cycle()).history).toHaveLength(3);
+    // A day after the first reconsideration there is room again.
+    expect(await acquireLease(db, cfg, key, "next-day", mins(33 + 24 * 60), { reconsider: policy() })).toMatchObject({ acquired: true });
+    expect((await cycle()).startDays).toEqual(["2026-10-04", "2026-10-05"]);
   });
 });
