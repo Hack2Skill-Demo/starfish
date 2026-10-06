@@ -399,7 +399,8 @@ actions, both admin-only, both audited, both the functions that already existed 
 | `POST /api/incidents/<id>/retire` with `{"reason": "..."}` | closes the incident for good and frees its fingerprint, so the demo's reset can replay a fault |
 | `GET /healthz` | `{ok:true}`, no token |
 
-**Who may call.** The caller sends `Authorization: Bearer <Firebase ID token>`. The token is checked (signature, expiry), and
+**Who may call.** The caller sends `Authorization: Bearer <Firebase ID token>`. The token is checked (signature, expiry, and
+not revoked: a disabled account is refused at once), and
 its uid is all that is believed; whether that uid is an admin is read from `starfish_users/{uid}.roles` on every call,
 so revoking the role stops the next request even though the token lives an hour. One 401 for any bad token, one 403
 for a non-admin; no error text from inside ever leaves. A header token, not a cookie, so another site cannot make a

@@ -48,7 +48,8 @@ agent over a corpus yet; this is the format and the aggregation that will judge 
 | Patch pass rate | `code-fix` cases | the run completed and the proposed patch passes the private evaluator test |
 | Index heal | `index` cases | the run completed and the deterministic heal checks out. Never mixed into the patch rate |
 | Reviewer catch rate | `bad-patch` cases | the reviewer blocked the planted patch |
-| Cost, latency, detection to pull request | completed cases that recorded it | (median and mean, with the number behind them) |
+| Cost, latency | every case that recorded it, an errored or timed-out one included (a failed run still costs, and is often the slowest) | (median and mean, with the number behind them) |
+| Detection to pull request | completed cases that recorded it | (median and mean, with the number behind them) |
 
 Every ratio is shown as passed/of. Below 30 cases a ratio is called a small sample.
 

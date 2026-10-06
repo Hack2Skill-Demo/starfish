@@ -29,13 +29,13 @@ const done = (extra: Record<string, unknown> = {}) => ({ status: "completed", ..
 const CASES = [
   { caseId: "fix-1", split: "held-out", path: "code-fix", expectedTriage: "act", caseHash: HASH, outcome: done({ triage: "act", fixPassed: true, openedPr: true, costUsd: 0.02, latencyMs: 40_000 }) },
   { caseId: "fix-2", split: "held-out", path: "code-fix", expectedTriage: "act", caseHash: HASH, outcome: done({ triage: "act", fixPassed: false, costUsd: 0.04, latencyMs: 60_000 }) },
-  { caseId: "fix-3", split: "tuning", path: "code-fix", expectedTriage: "act", outcome: { status: "timeout" } },
+  { caseId: "fix-3", split: "tuning", path: "code-fix", expectedTriage: "act", outcome: { status: "timeout", costUsd: 0.06, latencyMs: 300_000 } },
   { caseId: "idx-1", split: "tuning", path: "index", expectedTriage: "act", outcome: done({ triage: "act", fixPassed: true }) },
   { caseId: "dec-1", split: "held-out", path: "decline", expectedTriage: "decline", caseHash: HASH, outcome: done({ triage: "decline", latencyMs: 2_000 }) },
   { caseId: "dec-2", split: "tuning", path: "decline", expectedTriage: "decline", outcome: done({ triage: "decline", openedPr: true }) },
   { caseId: "not-1", split: "tuning", path: "notify", expectedTriage: "notify", outcome: done({ triage: "act" }) },
   { caseId: "bad-1", split: "held-out", path: "bad-patch", caseHash: HASH, outcome: done({ reviewerBlocked: true }) },
-  { caseId: "bad-2", split: "tuning", path: "bad-patch", outcome: { status: "error" } },
+  { caseId: "bad-2", split: "tuning", path: "bad-patch", outcome: { status: "error", costUsd: 0.01 } },
 ];
 
 describe("parseRun", () => {
@@ -110,12 +110,22 @@ describe("metricsFor", () => {
     expect(tuning.indexHeal).toEqual({ passed: 1, of: 1 });
   });
 
-  it("measures only completed cases that recorded the value", () => {
+  it("measures only cases that recorded the value: a missing one is not a zero", () => {
     expect(held.costUsd).toEqual({ n: 2, mean: 0.03, median: expect.closeTo(0.03, 6) });
     expect(held.latencyMs.n).toBe(3);
     expect(held.latencyMs.median).toBe(40_000);
     expect(held.detectionToPrMs).toEqual({ n: 0 });
-    expect(tuning.latencyMs).toEqual({ n: 0 });
+  });
+
+  // #141: a timed-out run is the slowest, and an errored one still spent; leaving them out made both figures read low.
+  it("counts the cost and latency of a case that errored or timed out", () => {
+    expect(tuning.costUsd).toEqual({ n: 2, mean: expect.closeTo(0.035, 6), median: expect.closeTo(0.035, 6) }); // fix-3 + bad-2
+    expect(tuning.latencyMs).toEqual({ n: 1, mean: 300_000, median: 300_000 }); // fix-3, which timed out
+  });
+
+  it("measures detection to pull request over completed cases only", () => {
+    const m = metricsFor(parseRun(raw([{ ...CASES[2], outcome: { status: "timeout", detectionToPrMs: 1_000 } }])), "tuning");
+    expect(m.detectionToPrMs).toEqual({ n: 0 });
   });
 });
 

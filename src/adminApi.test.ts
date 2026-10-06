@@ -39,6 +39,17 @@ describe("admin API: who may call", () => {
     expect(calls).toEqual([]);
   });
 
+  // #141: the CLI verifies with checkRevoked, so a disabled or revoked account's still-valid token is refused there.
+  it("answers the same 401 when verification refuses a revoked or disabled account, and runs nothing", async () => {
+    for (const code of ["auth/id-token-revoked", "auth/user-disabled"]) {
+      const { api, calls } = fakes({ verifyToken: () => Promise.reject(Object.assign(new Error(code), { code })) });
+      const r = await api(post("/api/ingest/run"));
+      expect(r.status, code).toBe(401);
+      expect(JSON.stringify(r.body)).toBe('{"error":"sign in again"}');
+      expect(calls).toEqual([]);
+    }
+  });
+
   it("passes the verified uid, and nothing the caller says about itself, to the admin check", async () => {
     const { api, calls } = fakes();
     await api(post("/api/ingest/run", { body: { uid: "someone-else", roles: ["admin"] } }));

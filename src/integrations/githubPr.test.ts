@@ -665,8 +665,8 @@ describe("issue references in model text (#140)", () => {
         issueNumber: 9,
         rootCause: CLOSER,
         risk: CLOSER,
-        verify: { status: CLOSER, rule: CLOSER, changedFiles: [], output: "" },
-        review: { verdict: CLOSER, attacks: [{ attack: CLOSER, outcome: CLOSER, detail: CLOSER }] },
+        verify: { status: CLOSER as never, rule: CLOSER as never, changedFiles: [], output: "" },
+        review: { verdict: CLOSER as never, attacks: [{ attack: CLOSER, outcome: CLOSER as never, detail: CLOSER }] },
       })
     );
     expect(body.match(CLOSING_RE)).toEqual(["Closes #9"]);
@@ -716,11 +716,16 @@ describe("pullRequestText: a body over the cap (#141)", () => {
 
   it("closes a fence the cut leaves open, so the footer is not swallowed into a code block", () => {
     const { body } = pullRequestText(
-      request({ issueNumber: 9, rootCause: "a", risk: "b", verify: { status: "passed", rule: "r", changedFiles: [], output: "o".repeat(2000) + "\n" + "p".repeat(2999) }, review: { verdict: "approve", attacks: Array.from({ length: 20 }, () => ({ attack: "&".repeat(200), outcome: "held", detail: "&".repeat(300) })) } })
+      // About 10.5k of head before the output's fence opens; the output (3000) does not fit after it.
+      request({ issueNumber: 9, rootCause: "&".repeat(1500), risk: "&".repeat(600), verify: { status: "passed", rule: "command-passed", changedFiles: [], output: "o".repeat(3000) } })
     );
     expect(body.length).toBeLessThanOrEqual(12_000);
-    const fences = body.split("\n").map((l, i) => (l === "```" ? i : -1)).filter((i) => i >= 0);
-    expect(fences.length % 2).toBe(0);
+    const lines = body.split("\n");
+    const fences = lines.map((l, i) => (l === "```" ? i : -1)).filter((i) => i >= 0);
+    expect(fences).toHaveLength(2);
+    expect(fences[1]!).toBe(fences[0]! + 1); // nothing of the output fitted: an empty, closed block
+    expect(lines[fences[1]! + 2]).toContain("cut to fit"); // the fence we closed sits right before the note
+    expect(lines.indexOf("## Evidence")).toBeGreaterThan(fences[1]!);
     expect(body.trimEnd().endsWith("Closes #9")).toBe(true);
   });
 

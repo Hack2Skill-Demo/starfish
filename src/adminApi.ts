@@ -11,7 +11,7 @@
  * cookie, so a page on another site cannot make the browser send it (no CSRF); CORS is an allowlist of the
  * operator UI's origin and nothing else.
  *
- * What it will not do. It never says why a token failed (one 401 for missing, malformed, expired or forged), never
+ * What it will not do. It never says why a token failed (one 401 for missing, malformed, expired, forged, revoked or disabled), never
  * returns an error's text from inside (a failed run's message is redacted and cut), reads at most 4 KB of body, and
  * runs one ingest at a time per instance: a second request while one runs is a 409, not a pile-up.
  *
