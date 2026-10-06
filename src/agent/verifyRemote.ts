@@ -87,6 +87,8 @@ export function createRemoteVerifier(cfg: RemoteVerifyConfig, deps: RemoteVerify
         const found = await deps.store.read(resultPath);
         if (found !== null) return parseRunnerResult(found.toString("utf8"), patchSha256, req.baseRevision);
         if (now() >= deadline) throw new VerifyRunnerError("the verify job wrote no result before the deadline");
+        // Keeps the cycle's lease alive through the wait, and stops it once the lease is lost (#132).
+        await req.heartbeat?.();
         await sleep(pollMs);
       }
     } finally {

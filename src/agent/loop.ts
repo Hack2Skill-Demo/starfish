@@ -9,13 +9,19 @@
  *
  *   - ONE WORKER. The cycle is leased (cycle.ts). Every event and the final state are written under
  *     that lease, so a worker that lost it stops at once and can record or open nothing.
- *   - RECHECKED BEFORE ACTING. Before each stage, and again before the pull request, the incident's
- *     status is read fresh and the automation switch is asked: an operator who resolved or ignored the
- *     incident, or turned automation off, stops the cycle at the next step.
+ *   - KEPT ALIVE. The lease is renewed about every third of its length while the cycle works, and before verify;
+ *     the verifiers that wait call a heartbeat on every poll, which stops them once the lease is lost (#132).
+ *   - RECHECKED BEFORE ACTING. Before each stage, before verify, and again before the pull request, the
+ *     incident's status is read fresh and the automation switch is asked: an operator who resolved or ignored
+ *     the incident settles the cycle at the next step; automation turned off releases it, uncounted, to be
+ *     taken up again when it is back on (#133).
  *   - BOUNDED. At most `modelCallBudget` model calls; at most ONE revision, shared between a failed
  *     verify and a blocking review (a second failure goes to a person); the cycle's own deadline and
- *     attempt cap (cycle.ts) bound the rest. A failure worth retrying (a missing counter-check, a
- *     model that errored) releases the lease so the next run tries again, counted against the cap.
+ *     attempt cap (cycle.ts) bound the rest, and a person is told when either gives a cycle up. A failure
+ *     worth retrying (a missing counter-check, a model call that failed) releases the lease so the next run
+ *     tries again, counted against the cap; a patch unfit to verify goes to a person.
+ *   - ONE PULL REQUEST. An attempt that finds one already opened for its cycle (recorded, or found by the
+ *     opener) records it and stops (#134).
  *   - DRY RUN BY DEFAULT. With `dryRun` (the default) or no opener, a verified, reviewed patch ends the
  *     cycle waiting for a person and nothing is opened. Opening is an interface (`openPullRequest`)
  *     keyed by the cycle id so a retry after a timeout cannot open a second one; the loop never merges
@@ -32,8 +38,10 @@ import type { Firestore } from "firebase-admin/firestore";
 import type { StarfishConfig } from "../config.js";
 import type { IncidentStatus, LogCounterCheck } from "../types.js";
 import { OPEN_INCIDENT_STATUSES } from "../types.js";
+import { redactPii } from "../ingest/redact.js";
 import {
   acquireLease,
+  cycleId,
   finishCycle,
   recordEvent,
   releaseLease,
@@ -47,7 +55,7 @@ import {
 } from "./cycle.js";
 import type { IssueRequest } from "../integrations/githubPr.js";
 import type { DeliveryResult, NotifyRequest } from "../integrations/slack.js";
-import { proposeFix, type FixRequest, type SourceFile } from "./fixer.js";
+import { proposeFix, type FixRequest, type FixRule, type SourceFile } from "./fixer.js";
 import { reviewPatch, type Attack, type ReviewVerdict } from "./reviewer.js";
 import { triageIncident, type AskJson, type TriageSubject } from "./triage.js";
 import { verifyPatch, type VerifyConfig, type VerifyRequest, type VerifyResult } from "./verifyGate.js";
@@ -79,7 +87,7 @@ export interface PullRequestRequest {
 
 export interface LoopDeps {
   db: Firestore;
-  config: Pick<StarfishConfig, "dryRun" | "reviewRequired" | "modelCallBudget" | "uiBaseUrl" | "model"> & CycleConfig & VerifyConfig;
+  config: Pick<StarfishConfig, "dryRun" | "reviewRequired" | "modelCallBudget" | "uiBaseUrl" | "model" | "incidentCollection"> & CycleConfig & VerifyConfig;
   /** This worker's identity, for the lease. */
   owner: string;
   now: () => Date;
@@ -97,6 +105,12 @@ export interface LoopDeps {
   verify?: (req: VerifyRequest) => Promise<VerifyResult>;
   /** Opens (or finds, by `cycleId`) the pull request. Absent means nothing can be opened. */
   openPullRequest?: (req: PullRequestRequest) => Promise<{ number: number; url: string }>;
+  /**
+   * The pull request this cycle already opened, or null (#134). Asked once at the start of an attempt that has none
+   * recorded, so an attempt resumed after the open succeeded but its record did not stops there instead of redoing
+   * the work. Absent: only the recorded `summary.pr` is consulted.
+   */
+  findPullRequest?: (cycleId: string) => Promise<{ number: number; url: string } | null>;
   /**
    * Files (or finds, by `cycleId`) the incident's GitHub issue (#17). Absent means none is filed. A failure is recorded
    * on the cycle and the cycle goes on: the issue is the incident's history, not a step the fix depends on. In a dry run
@@ -121,6 +135,9 @@ export type LoopResult =
 class LeaseLost extends Error {}
 
 const MAX_REVISIONS = 1;
+
+/** Fixer errors that are the model's patch, not a failed call: retrying would most likely repeat them (#137). */
+const UNFIT_PATCH_RULES: ReadonlySet<FixRule> = new Set<FixRule>(["patch-malformed", "patch-too-large", "patch-contains-secret-shape"]);
 
 /** How many rejected alternatives and review attacks the run record keeps (each value is bounded by cycle.ts). */
 export const MAX_RECORDED_ALTERNATIVES = 5;
@@ -153,10 +170,48 @@ export function counterCheckRecord(check: LogCounterCheck | undefined): Record<s
   };
 }
 
+/**
+ * Keeps the lease alive while the loop waits on something slow (a model call, a clone, above all a verify run that can
+ * take far longer than one lease, #132). `beat` renews when a third of the lease has gone by since the last renewal,
+ * and throws `LeaseLost` once a renewal is refused. A timer beats on its own for the waits that cannot (the in-process
+ * gate, a model call); the CI and remote verifiers also beat on every poll, so they stop as soon as the lease is lost.
+ * A renewal that fails on the store is not a refusal: it is tried again at the next beat, and the next fenced write
+ * proves the lease either way.
+ */
+function leaseKeeper(renew: () => Promise<boolean>, now: () => number, everyMs: number) {
+  let last = now();
+  let lost = false;
+  let pending: Promise<void> | undefined;
+  const beat = async (): Promise<void> => {
+    if (!lost && now() - last >= everyMs) {
+      pending ??= renew()
+        .then(
+          (ok) => {
+            if (ok) last = now();
+            else lost = true;
+          },
+          () => undefined
+        )
+        .finally(() => {
+          pending = undefined;
+        });
+      await pending;
+    }
+    if (lost) throw new LeaseLost();
+  };
+  const timer = setInterval(() => void beat().catch(() => undefined), everyMs);
+  timer.unref();
+  return { beat, stop: () => clearInterval(timer) };
+}
+
 export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResult> {
   const { db, config: cfg, owner } = deps;
   const lease = await acquireLease(db, cfg, key, owner, deps.now());
-  if (!lease.acquired) return { kind: "not-acquired", reason: lease.reason };
+  if (!lease.acquired) {
+    // This call is the one that just gave the cycle up (a later one sees it closed): tell a person, once (#137).
+    if (lease.reason === "deadline-passed" || lease.reason === "retries-exhausted") await announceGivenUp(deps, key, lease.reason);
+    return { kind: "not-acquired", reason: lease.reason };
+  }
   const id = lease.cycleId;
 
   const note = async (event: RunEvent) => {
@@ -168,14 +223,37 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
     if (!r.ok) throw new LeaseLost();
     return { kind: "finished", state, outcome };
   };
-  const release = async (reason: string): Promise<LoopResult> => {
-    const r = await releaseLease(db, cfg, id, owner, deps.now(), reason);
+  const release = async (reason: string, opts: { uncounted?: boolean } = {}): Promise<LoopResult> => {
+    const r = await releaseLease(db, cfg, id, owner, deps.now(), reason, opts);
     if (!r.ok) throw new LeaseLost();
     return { kind: "released", reason };
   };
+  const renew = async (): Promise<void> => {
+    const r = await renewLease(db, cfg, id, owner, deps.now());
+    if (!r.ok) throw new LeaseLost();
+  };
+  const keeper = leaseKeeper(
+    async () => (await renewLease(db, cfg, id, owner, deps.now())).ok,
+    () => deps.now().getTime(),
+    Math.max(1000, (cfg.leaseSeconds * 1000) / 3)
+  );
 
   try {
     await note({ stage: "cycle", type: "started", summary: `Attempt ${lease.attempt}${lease.resumed ? " (resumed)" : ""}`, data: { attempt: lease.attempt, resumed: lease.resumed } });
+
+    // A pull request already opened for this cycle ends it (#134): an attempt resumed after the open succeeded but its
+    // record or the finish did not must not redo the pipeline (the CI verifier would rebuild the PR's own branch).
+    const priorPr = await openedPullRequest(deps, id);
+    if (priorPr) {
+      await note({
+        stage: "pr",
+        type: "opened",
+        summary: "Pull request already opened by an earlier attempt",
+        data: { number: priorPr.number },
+        record: { opened: true, number: priorPr.number, url: priorPr.url, ...(priorPr.patchSha256 !== undefined && { patchSha256: priorPr.patchSha256 }) },
+      });
+      return await finish("done", "pr-opened", "pr");
+    }
 
     // Asked before every stage and before anything is opened: a cycle stops at the next step after an
     // operator resolves or ignores the incident, or automation is switched off.
@@ -186,10 +264,14 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
       if (!(await deps.automationEnabled())) return "automation-disabled";
       return null;
     };
+    // An operator who resolved or ignored the incident settles the cycle. The kill switch only pauses it (#133): the
+    // lease is released, uncounted, so the cycle is taken up again once automation is back on. The switch also reads
+    // "off" when the settings cannot be read, and one failed read must not decline an incident for good.
     const halted = async (): Promise<LoopResult | null> => {
       const why = await stopReason();
       if (why === null) return null;
       await note({ stage: "cycle", type: "stopped", summary: `Stopped before acting: ${why}`, data: { rule: why } });
+      if (why === "automation-disabled") return release(why, { uncounted: true });
       return finish("declined", why, "decline");
     };
 
@@ -208,8 +290,7 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
         await note({ stage: "issue", type: "dry-run", summary: "An issue would be filed here; nothing filed (dry run)", record: { state: "dry-run" } });
         return;
       }
-      const renewed = await renewLease(db, cfg, id, owner, deps.now());
-      if (!renewed.ok) throw new LeaseLost();
+      await renew();
       const incident = loaded.subject.incident;
       const counter = incident.logCounterCheck;
       let filed: { number: number; url: string };
@@ -256,8 +337,7 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
       const prior = (snap.data()?.summary as { notify?: { state?: unknown } } | undefined)?.notify?.state;
       if (prior === "sent" || prior === "failed") return;
       if ((await stopReason()) !== null) return;
-      const renewed = await renewLease(db, cfg, id, owner, deps.now());
-      if (!renewed.ok) throw new LeaseLost();
+      await renew();
       await note({ stage: "notify", type: "pending", summary: "Telling a person", record: { state: "pending", attempts: 0 } });
       const incident = loaded.subject.incident;
       let result: DeliveryResult;
@@ -361,13 +441,29 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
           ...numbered("alternative", fix.rejectedAlternatives ?? [], MAX_RECORDED_ALTERNATIVES),
         },
       });
-      if (fix.outcome === "error") return await release(fix.rule);
-      if (fix.outcome === "declined" || fix.patch === undefined) {
+      // A model that failed, or answered in the wrong shape, may do better next time: released to retry. A patch that is
+      // malformed, too large or carries a credential shape is the model's considered answer, and at temperature 0 the
+      // next attempt would most likely repeat it: that goes to a person now (#137).
+      if (fix.outcome === "error" && !UNFIT_PATCH_RULES.has(fix.rule)) return await release(fix.rule);
+      if (fix.outcome !== "proposed" || fix.patch === undefined) {
         await announce(loaded, "human", fix.rule, fix.rootCause);
         return await finish("waiting-human", fix.rule, "human");
       }
 
-      const verified = await (deps.verify ?? verifyPatch)({ cycleId: id, sourceDir: loaded.sourceDir, patch: fix.patch, baseRevision: loaded.baseRevision, config: cfg });
+      // The kill switch is asked again before verify: with `github-actions` verify pushes a branch to the target (#138).
+      stop = await halted();
+      if (stop) return stop;
+      // Verify can take far longer than one lease: prove the lease is ours and extend it first; the keeper (and the
+      // heartbeat the waiting verifiers call on every poll) keeps it alive while it runs (#132).
+      await renew();
+      const verified = await (deps.verify ?? verifyPatch)({
+        cycleId: id,
+        sourceDir: loaded.sourceDir,
+        patch: fix.patch,
+        baseRevision: loaded.baseRevision,
+        config: cfg,
+        heartbeat: keeper.beat,
+      });
       await note({
         stage: "verify",
         type: verified.status,
@@ -450,8 +546,7 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
       stop = await halted();
       if (stop) return stop;
       // Opening may take a while: prove the lease is still ours, and extended, before and not after.
-      const renewed = await renewLease(db, cfg, id, owner, deps.now());
-      if (!renewed.ok) throw new LeaseLost();
+      await renew();
       const pr = await deps.openPullRequest({
         cycleId: id,
         incidentId: key.incidentId,
@@ -476,5 +571,65 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
   } catch (err) {
     if (err instanceof LeaseLost) return { kind: "lease-lost" };
     throw err;
+  } finally {
+    keeper.stop();
+  }
+}
+
+/** The pull request this cycle already opened: recorded on the cycle, or found by the opener's own lookup. */
+async function openedPullRequest(deps: LoopDeps, id: string): Promise<{ number: number; url: string; patchSha256?: string } | null> {
+  const snap = await deps.db.collection(deps.config.cycleCollection).doc(id).get();
+  const pr = (snap.data()?.summary as { pr?: { opened?: unknown; number?: unknown; url?: unknown; patchSha256?: unknown } } | undefined)?.pr;
+  if (pr?.opened === true && typeof pr.number === "number" && typeof pr.url === "string") {
+    return { number: pr.number, url: pr.url, ...(typeof pr.patchSha256 === "string" && { patchSha256: pr.patchSha256 }) };
+  }
+  if (deps.config.dryRun || !deps.openPullRequest || !deps.findPullRequest) return null;
+  return deps.findPullRequest(id);
+}
+
+/**
+ * A cycle just given up on (its deadline passed, or its attempts ran out) is not left to fail silently (#137): a person
+ * is told, once, and the delivery is recorded on the cycle (`summary.notify`). Only the worker whose acquire made that
+ * transition gets here: every later one finds the cycle closed. No lease is held any more, so the record is written
+ * straight to the (now failed) cycle. Never throws: the cycle is already settled, and a failure here must not read as
+ * an infrastructure error of the pass.
+ */
+async function announceGivenUp(deps: LoopDeps, key: CycleKey, rule: "deadline-passed" | "retries-exhausted"): Promise<void> {
+  if (!deps.notify) return;
+  const id = cycleId(key);
+  if (id === null) return;
+  const { db, config: cfg } = deps;
+  try {
+    const ref = db.collection(cfg.cycleCollection).doc(id);
+    if (cfg.dryRun) {
+      await ref.update({ "summary.notify": { state: "dry-run" } });
+      return;
+    }
+    const incident = (await db.collection(cfg.incidentCollection).doc(key.incidentId).get()).data() ?? {};
+    const text = (v: unknown, fallback: string) => (typeof v === "string" && v !== "" ? v : fallback);
+    let result: DeliveryResult;
+    try {
+      result = await deps.notify({
+        cycleId: id,
+        incidentId: key.incidentId,
+        functionName: text(incident.functionName, "unknown function"),
+        service: text(incident.service, "unknown"),
+        errorType: text(incident.errorType, "unknown"),
+        occurrenceCount: typeof incident.occurrenceCount === "number" && Number.isFinite(incident.occurrenceCount) ? incident.occurrenceCount : null,
+        path: "human",
+        rule,
+        reason:
+          rule === "deadline-passed"
+            ? "Starfish ran out of time on this incident before it could finish with it, so it has stopped trying."
+            : "Starfish tried this incident as many times as it may and could not finish, so it has stopped trying.",
+      });
+    } catch {
+      result = { state: "failed", attempts: 1, reason: "notifier-error" };
+    }
+    await ref.update({
+      "summary.notify": { state: result.state, attempts: result.attempts, ...(result.reason !== undefined && { reason: redactPii(result.reason).slice(0, 300) }) },
+    });
+  } catch {
+    // The store or the incident read failed: nothing more can be done for a cycle that is already settled.
   }
 }

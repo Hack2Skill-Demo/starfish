@@ -26,6 +26,7 @@
 import { askJson } from "../vertex.js";
 import { redactCredentials, redactPii, sanitize } from "../ingest/redact.js";
 import { renderForTriage } from "./triage.js";
+import { MAX_REVIEW_PATCH_CHARS } from "./reviewer.js";
 import type { AskJson, TriageSubject } from "./triage.js";
 
 export interface SourceFile {
@@ -63,7 +64,11 @@ export interface FixResult {
   rejectedAlternatives?: string[];
 }
 
-export const MAX_FIX_PATCH_BYTES = 200_000;
+/**
+ * No larger than what the adversarial review can be shown whole (#136): a patch the reviewer sees only part of could
+ * be approved with code nobody reviewed. A minimal fix is far smaller; a larger one goes to a person.
+ */
+export const MAX_FIX_PATCH_BYTES = MAX_REVIEW_PATCH_CHARS;
 const MAX_TEXT = 1500;
 const MAX_ALTERNATIVES = 5;
 export const MAX_FILE_CHARS = 20_000;

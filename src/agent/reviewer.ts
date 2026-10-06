@@ -72,7 +72,12 @@ export interface ReviewResult {
 
 export const MAX_ATTACKS = 10;
 const MAX_TEXT = 600;
-const MAX_PATCH_CHARS = 30_000;
+/**
+ * The most of a patch the reviewer is shown. The fixer refuses a larger patch (fixer.ts), so normally the whole patch
+ * is reviewed; if redaction ever makes the shown text longer than this, the cut is said in the prompt and the review
+ * can approve only with a flag saying the rest was not reviewed (#136). A verdict never covers code nobody looked at.
+ */
+export const MAX_REVIEW_PATCH_CHARS = 30_000;
 const MAX_FILE_CHARS = 15_000;
 const MAX_TOTAL_SOURCE_CHARS = 45_000;
 const OUTCOMES: readonly AttackOutcome[] = ["held", "flagged", "broken"];
@@ -114,8 +119,15 @@ export function sha256(text: string): string {
   return createHash("sha256").update(text).digest("hex");
 }
 
+/** How much of the patch the reviewer is shown, and how long it is: `shown < total` means the patch was cut. */
+export function patchShown(patch: string): { shown: number; total: number } {
+  const total = redactCredentials(patch).length;
+  return { shown: Math.min(total, MAX_REVIEW_PATCH_CHARS), total };
+}
+
 /** What the reviewer sees: the incident, the claims to doubt, the patch, and the source it was written against. */
 export function renderForReview(req: ReviewRequest): string {
+  const { shown, total } = patchShown(req.patch);
   const parts = [
     renderForTriage(req.subject),
     "",
@@ -123,8 +135,8 @@ export function renderForReview(req: ReviewRequest): string {
     `root cause: ${redactPii(req.claimed.rootCause).slice(0, MAX_TEXT)}`,
     `risk: ${redactPii(req.claimed.risk).slice(0, MAX_TEXT)}`,
     "",
-    "PATCH",
-    redactCredentials(req.patch).slice(0, MAX_PATCH_CHARS),
+    shown < total ? `PATCH (CUT: only the first ${shown} of ${total} characters are shown; the rest is not reviewed)` : "PATCH",
+    redactCredentials(req.patch).slice(0, MAX_REVIEW_PATCH_CHARS),
     "",
     "SOURCE CONTEXT",
   ];
@@ -183,6 +195,16 @@ export async function reviewPatch(req: ReviewRequest, ask: AskJson = askJson): P
   const parsed = parseAttacks(raw);
   if (!parsed) return none("model-output-invalid", "The model's answer was not in the expected shape, so nothing was reviewed.");
   if (parsed.length === 0) return none("review-empty", "The reviewer listed no attacks, which is not a review.");
+
+  // A patch the reviewer saw only part of cannot be approved cleanly: a flag says what was not reviewed (#136).
+  const { shown, total } = patchShown(req.patch);
+  if (shown < total) {
+    parsed.push({
+      attack: "Review the whole patch",
+      outcome: "flagged",
+      detail: `The patch was cut for review: only the first ${shown} of ${total} characters were shown, and the rest was not reviewed.`,
+    });
+  }
 
   // The worst first, so the cap can only ever drop the attacks that held, never the one that explains a block.
   const worstFirst = [...parsed].sort((a, b) => OUTCOMES.indexOf(b.outcome) - OUTCOMES.indexOf(a.outcome));

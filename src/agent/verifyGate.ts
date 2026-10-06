@@ -11,8 +11,10 @@
  *   3. compares the scratch tree before and after, and judges what actually changed rather than
  *      what the diff claims to change. A path the patch's headers spell one way and git resolves
  *      another is still caught, because the check is on files, not on text. It rejects a change
- *      to an excluded path (CI, secrets, whatever defines the verify command or the tests), a new
- *      or changed symlink, a changed file mode, and a patch that touches too many files;
+ *      to an excluded path (`patchExcludedPaths`: CI, secrets, the package manifest and lockfiles and
+ *      common test, type-check and lint configs by default, plus what the deployment lists; a file that
+ *      defines the tests and is on neither list is NOT protected), a new or changed symlink, a changed
+ *      file mode, and a patch that touches too many files;
  *   4. only then runs the configured command, with a scrubbed environment, a timeout and bounded,
  *      redacted output. Exit 0 is the only pass. The wait ends when the command exits or times out, even
  *      if something it started outside its process group still holds the output open; that process is
@@ -93,6 +95,12 @@ export interface VerifyRequest {
    * user after the patch has been judged and applied, and before the command starts.
    */
   runAs?: { uid: number; gid: number };
+  /**
+   * Called by a verifier that waits (the CI and remote verifiers, on every poll) to keep the cycle's lease alive
+   * (#132). It throws when the lease is lost: the verifier must then stop, and must not touch what the cycle's new
+   * holder may be using (its branch). Absent: nothing to keep alive.
+   */
+  heartbeat?: () => Promise<void>;
 }
 
 export const MAX_PATCH_BYTES = 200_000;

@@ -330,7 +330,8 @@ jobs:
   patch's code with whatever secrets it uses. This is the whole trust boundary, and it is a convention in someone else's
   repository, not something Starfish can enforce.
 - **A branch is pushed even in a dry run.** The dry run opens no pull request; it does not stop the push that CI needs, and
-  it spends the target's Actions minutes. `STARFISH_GITHUB_TOKEN` must therefore be set (`preflight` refuses without it) and
+  it spends the target's Actions minutes. In a dry run the branch is deleted once CI has judged it, passed or not (its
+  check runs stay on the commit, and the verdict is recorded on the cycle), so `starfish/*` branches do not pile up. `STARFISH_GITHUB_TOKEN` must therefore be set (`preflight` refuses without it) and
   may write branches. Protect the base branch (a ruleset), as above.
 - **The fixer's second draft gets thin feedback**: check names, conclusions, their summaries and a few annotations, not the
   test log. Make the workflow emit annotations (`::error file=...::message`) for failures if you want better revisions.

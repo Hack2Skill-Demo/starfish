@@ -136,6 +136,18 @@ describe("runAgentPass", () => {
     expect(s.results.map((r) => r.incidentId)).toEqual(["inc0", "inc1", "inc2", "inc3"]);
   });
 
+  it("starts no cycle, and selects nothing, while automation is off (#133)", async () => {
+    const select = vi.fn(async (limit: number) => cands(limit));
+    const run = vi.fn(async () => finished);
+    const s = await runAgentPass(deps({ select, run, automationEnabled: async () => false }));
+    expect(s).toEqual({ considered: 0, ran: 0, results: [], errors: [], aborted: false, skipped: "automation-disabled" });
+    expect(select).not.toHaveBeenCalled();
+    expect(run).not.toHaveBeenCalled();
+    const on = await runAgentPass(deps({ select, run, automationEnabled: async () => true }));
+    expect(on.skipped).toBeUndefined();
+    expect(run).toHaveBeenCalledTimes(3);
+  });
+
   it("asks for no more than it may run", async () => {
     const select = vi.fn(async (limit: number) => cands(limit));
     await runAgentPass(deps({ select, maxCycles: 2 }));

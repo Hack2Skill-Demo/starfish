@@ -156,7 +156,8 @@ src/
                    branch, the demo's choice; `cloud-run-job` hands the source + patch to a separate job whose service
                    account holds NO roles). The agent never runs the target's code. Deployed by `DEPLOY_AGENT=1`; never run
   agent/verifyCi.ts  `github-actions` isolation: local gate checks (nothing executed) → push branch → wait for the NAMED check
-                   runs on that exact commit → delete the branch unless it passed. No check / only queued throws (cycle resumes)
+                   runs on that exact commit (heartbeat each poll) → delete the branch IT pushed unless it passed (in a dry run, always).
+                   No check / only queued throws (cycle resumes)
   agent/verifyRemote.ts  the agent's side of the isolated verify: bundle → signed URLs → start the job → validated result.
                    Infra failures throw (the cycle resumes); a failed command is a result
   agent/verifyRunner.ts  the verify job's side (`src/verifyRunnerCli.ts`): fetch the bundle, run the gate, write the result.

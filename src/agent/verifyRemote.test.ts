@@ -162,6 +162,17 @@ describe("createRemoteVerifier + runVerifier", () => {
     expect([...objects.keys()]).toEqual([]);
   });
 
+  it("beats the heartbeat while it waits, and stops at once (cleaning up) when the lease is lost (#132)", async () => {
+    const never: JobStarter = async () => undefined;
+    let beats = 0;
+    const lost = new Error("lease lost");
+    const req = { ...request(), heartbeat: async () => (++beats === 3 ? Promise.reject(lost) : undefined) };
+    await expect(impatient(never)(req)).rejects.toBe(lost);
+    expect(beats).toBe(3);
+    expect(clock).toBe(6000); // two polls, not the whole wait
+    expect([...objects.keys()]).toEqual([]);
+  });
+
   it("THROWS when the job cannot be started, and still cleans up", async () => {
     const down: JobStarter = async () => {
       throw new VerifyRunnerError("the verify job could not be started: Cloud Run answered 403");

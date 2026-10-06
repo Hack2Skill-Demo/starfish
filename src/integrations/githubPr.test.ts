@@ -489,6 +489,15 @@ describe("createGithubClient: the CI-backed verify step", () => {
     expect(requests.some((r) => r.method === "DELETE")).toBe(false);
   });
 
+  it("finds the pull request a cycle already opened, read-only, and says null when there is none (#134)", async () => {
+    const c = client();
+    expect(await c.findPullRequest("inc1_r0")).toBeNull();
+    api.list = () => ({ status: 200, json: [PR] });
+    expect(await c.findPullRequest("inc1_r0")).toEqual({ number: 7, url: PR.html_url });
+    expect(requests.every((r) => r.method === "GET")).toBe(true);
+    await expect(c.findPullRequest("../main")).rejects.toMatchObject({ rule: "invalid-request" });
+  });
+
   it("lets the pull request be opened later from the branch it pushed: the commit is reused, and one pull request is created", async () => {
     const c = client();
     const { commit } = await c.pushPatchBranch(patchReq());

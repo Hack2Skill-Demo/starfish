@@ -56,6 +56,12 @@ if (!resolved.actionsAllowed) {
   process.exit(1);
 }
 const cfg = resolved.config;
+// Preflight again on what the pass will actually use: an admin can turn the dry run off from Settings (#137).
+const refusedAtRuntime = agentPreflight(cfg, token);
+if (refusedAtRuntime.length > 0) {
+  for (const p of refusedAtRuntime) console.error(`agent: runtime settings: ${p}`);
+  process.exit(2);
+}
 if (cfg.verifyIsolation === "in-process") {
   console.warn("agent: verify runs IN THIS PROCESS (STARFISH_VERIFY_ISOLATION=in-process): not a sandbox.");
 }
@@ -91,6 +97,7 @@ const loader = createLoader({
 });
 
 const owner = `agent-${hostname()}-${process.pid}-${randomUUID().slice(0, 8)}`;
+const automationEnabled = makeAutomationSwitch(settings, db);
 const deps = {
   db,
   config: cfg,
@@ -103,10 +110,10 @@ const deps = {
     const status = snap.data()?.status;
     return snap.exists && INCIDENT_STATUSES.includes(status as IncidentStatus) ? (status as IncidentStatus) : null;
   },
-  automationEnabled: makeAutomationSwitch(settings, db),
+  automationEnabled,
   ...(remoteVerify && { verify: remoteVerify }),
   // Absent in a dry run: the loop then ends a verified, reviewed patch as "waiting for a person" and opens nothing.
-  ...(!cfg.dryRun && github && { openPullRequest: github.openPullRequest }),
+  ...(!cfg.dryRun && github && { openPullRequest: github.openPullRequest, findPullRequest: github.findPullRequest }),
   // Given in a dry run too, so the cycle records that an issue would have been filed; the loop files nothing then.
   ...(github && { openIssue: github.openIssue }),
   // Given in a dry run too, so the cycle records that a person would have been told; the loop sends nothing then.
@@ -120,7 +127,10 @@ try {
     run: (c) => runCycle(deps, { incidentId: c.incidentId, environment: cfg.environment, recurrence: c.recurrence }),
     maxCycles: cfg.maxCyclesPerPass,
     describeError: (err) => redactPii(err instanceof Error ? `${err.name}: ${err.message}` : String(err)).slice(0, 300),
+    // Off (or unreadable): the pass starts no cycle, so nothing is declined while automation is off (#133).
+    automationEnabled,
   });
+  if (summary.skipped) console.log(`agent: automation is off (or the settings could not be read); no cycle started.`);
   console.log(`agent: ${summary.considered} candidate(s), ${summary.ran} run${cfg.dryRun ? " (dry run)" : ""}`);
   for (const r of summary.results) console.log(`  ${r.incidentId}: ${JSON.stringify(r.result)}`);
   for (const e of summary.errors) console.error(`  ${e.incidentId}: threw: ${e.message}`);

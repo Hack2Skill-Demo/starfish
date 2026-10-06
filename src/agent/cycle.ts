@@ -121,16 +121,18 @@ export async function acquireLease(db: Firestore, cfg: CycleConfig, key: CycleKe
     const attempts = Number(d.attempts ?? 1);
     if (heldUntil > now.getTime() && d.owner !== owner) return { acquired: false, reason: "held" };
 
-    // Same owner with a live lease is a renewal; otherwise the lease ran out and this is a takeover.
+    // Same owner with a live lease is a renewal; otherwise the lease ran out and this is a takeover. A cycle released
+    // by the kill switch (`uncounted`) is resumed without counting a start: turning automation off is not the cycle failing.
     const renewing = heldUntil > now.getTime() && d.owner === owner;
-    if (!renewing && attempts >= cfg.maxCycleAttempts) {
+    const free = d.resumeUncounted === true;
+    if (!renewing && !free && attempts >= cfg.maxCycleAttempts) {
       tx.update(ref, { state: "failed", outcome: "retries-exhausted", path: "failed", owner: null, leaseExpiresAt: null, updatedAt: Timestamp.fromDate(now) });
       return { acquired: false, reason: "retries-exhausted" };
     }
 
     const expires = leaseEnd(cfg, now, deadlineMs);
-    const attempt = renewing ? attempts : attempts + 1;
-    tx.update(ref, { owner, leaseExpiresAt: Timestamp.fromMillis(expires), attempts: attempt, updatedAt: Timestamp.fromDate(now) });
+    const attempt = renewing || free ? attempts : attempts + 1;
+    tx.update(ref, { owner, leaseExpiresAt: Timestamp.fromMillis(expires), attempts: attempt, resumeUncounted: false, updatedAt: Timestamp.fromDate(now) });
     return { acquired: true, cycleId: id, attempt, resumed: !renewing, leaseExpiresAt: new Date(expires) };
   });
 }
@@ -247,16 +249,31 @@ export async function recordEvent(
 /**
  * Give the lease up without ending the cycle, so another worker can try again (a missing counter-check,
  * a model that failed). The start already counted stays counted, so retrying is bounded by
- * `maxCycleAttempts` like any other resume.
+ * `maxCycleAttempts` like any other resume. With `uncounted` (the kill switch stopped the cycle, #133) the next
+ * start is not counted: the cycle did not fail, it was paused. The deadline still bounds it.
  */
-export async function releaseLease(db: Firestore, cfg: CycleConfig, id: string, owner: string, now: Date, reason: string): Promise<FenceResult> {
+export async function releaseLease(
+  db: Firestore,
+  cfg: CycleConfig,
+  id: string,
+  owner: string,
+  now: Date,
+  reason: string,
+  opts: { uncounted?: boolean } = {}
+): Promise<FenceResult> {
   const ref = cycleRef(db, cfg, id);
   return db.runTransaction(async (tx) => {
     const snap = await tx.get(ref);
     const d = snap.data() as Record<string, unknown> | undefined;
     if (!snap.exists) return { ok: false, reason: "no-such-cycle" } as const;
     if (!fence(d, owner, now)) return { ok: false, reason: "lease-lost" } as const;
-    tx.update(ref, { owner: null, leaseExpiresAt: null, releasedBecause: clip(reason, MAX_OUTCOME), updatedAt: Timestamp.fromDate(now) });
+    tx.update(ref, {
+      owner: null,
+      leaseExpiresAt: null,
+      releasedBecause: clip(reason, MAX_OUTCOME),
+      resumeUncounted: opts.uncounted === true,
+      updatedAt: Timestamp.fromDate(now),
+    });
     return { ok: true } as const;
   });
 }

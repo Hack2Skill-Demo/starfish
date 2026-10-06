@@ -420,6 +420,11 @@ export interface GithubClient {
   pushPatchBranch: (req: PatchBranchRequest) => Promise<{ branch: string; commit: string }>;
   /** Delete the cycle's branch. Already gone is fine. Refuses anything outside `starfish/`. */
   deleteBranch: (cycleId: string) => Promise<void>;
+  /**
+   * The pull request already opened from this cycle's branch, in any state, or null. Read-only: lets a resumed cycle
+   * whose earlier attempt opened one, but crashed before recording it, stop instead of redoing the work (#134).
+   */
+  findPullRequest: (cycleId: string) => Promise<PullRequestResult | null>;
   listCheckRuns: (commit: string) => Promise<CheckRun[]>;
   annotations: (checkRunId: number) => Promise<CheckAnnotation[]>;
 }
@@ -606,6 +611,13 @@ export function createGithubClient(cfg: GithubPrConfig, deps: GithubPrDeps): Git
     await removeBranch(branch);
   }
 
+  async function findPullRequest(cycleId: string): Promise<PullRequestResult | null> {
+    const branch = branchFor(cycleId);
+    if (branch === null) throw new GithubError("invalid-request", "The cycle id is not a plain id, so it cannot name a branch.");
+    await checkTarget();
+    return findExisting(branch);
+  }
+
   async function listCheckRuns(commit: string): Promise<CheckRun[]> {
     if (!/^[0-9a-f]{40}$/.test(commit)) throw new GithubError("invalid-request", "A check run is looked up by a full commit id.");
     const r = await call("GET", `/repos/${cfg.githubRepo}/commits/${commit}/check-runs?per_page=${MAX_CHECKS}`);
@@ -691,5 +703,5 @@ export function createGithubClient(cfg: GithubPrConfig, deps: GithubPrDeps): Git
     return issue;
   }
 
-  return { openPullRequest, openIssue, pushPatchBranch, deleteBranch, listCheckRuns, annotations };
+  return { openPullRequest, openIssue, pushPatchBranch, deleteBranch, findPullRequest, listCheckRuns, annotations };
 }

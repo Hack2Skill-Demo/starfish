@@ -73,8 +73,9 @@ export interface StarfishConfig {
   /** The most cycles one agent pass starts. */
   maxCyclesPerPass: number;
   /**
-   * Paths a proposed patch may never touch (`.github/`, `.env*`, the files that define the verify
-   * command or the tests that judge it). A trailing `/` is a directory; `*` and `**` are globs; a
+   * Paths a proposed patch may never touch: the built-in `DEFAULT_PATCH_EXCLUDED_PATHS` (CI, secrets, the package
+   * manifest and lockfiles, common test, type-check and lint configs) plus whatever the deployment lists, which
+   * should name any other file that defines the verify command or the tests that judge it. A trailing `/` is a directory; `*` and `**` are globs; a
    * pattern with no `/` matches that name at any depth. Matching ignores case.
    */
   patchExcludedPaths: string[];
@@ -84,9 +85,17 @@ export interface StarfishConfig {
    * subcollection (src/agent/cycle.ts).
    */
   cycleCollection: string;
-  /** How long a worker's lease on a cycle lasts before another may take it over. */
+  /**
+   * How long a worker's lease on a cycle lasts before another may take it over. The loop renews it about every
+   * third of this while it works (a verify run can wait far longer than one lease, #132), so this bounds how soon a
+   * CRASHED worker's cycle is resumed, not how long a stage may take.
+   */
   leaseSeconds: number;
-  /** The most a cycle may take overall, however many times its lease is renewed or taken over. */
+  /**
+   * The most a cycle may take overall, however many times its lease is renewed or taken over. A released cycle
+   * (a missing counter-check, a model error) is retried by the NEXT agent pass, so this must span several of the
+   * agent's schedule intervals, or a retry finds the deadline already passed (#137). Unset: 360 (six hourly passes).
+   */
   cycleDeadlineMinutes: number;
   /** How many times a cycle may be started (the first try included) before it is given up on. */
   maxCycleAttempts: number;
@@ -220,11 +229,33 @@ export interface StarfishConfig {
 /** Starfish's own service name: never ingested (see `excludedServices`). */
 export const DEFAULT_EXCLUDED_SERVICES = ["starfish"];
 
-/** Never editable by a proposed patch, on top of whatever the deployment lists. Secrets and CI, mainly. */
+/**
+ * Never editable by a proposed patch, on top of whatever the deployment lists: secrets, CI, and the common files that
+ * define how a JavaScript/TypeScript project is installed, tested, type-checked and linted. Without the manifest a
+ * patch could rewrite the `"test"` script and pass (#138). A repository judged by other files (a Makefile, a
+ * pytest.ini) lists them in STARFISH_PATCH_EXCLUDED_PATHS.
+ */
 export const DEFAULT_PATCH_EXCLUDED_PATHS = [
   ".git/",
   ".github/",
   ".claude/",
+  "node_modules/",
+  "package.json",
+  "package-lock.json",
+  "npm-shrinkwrap.json",
+  "pnpm-lock.yaml",
+  "pnpm-workspace.yaml",
+  "yarn.lock",
+  "vitest.config.*",
+  "vitest.workspace.*",
+  "vite.config.*",
+  "jest.config.*",
+  "karma.conf.*",
+  "playwright.config.*",
+  ".mocharc*",
+  "tsconfig*.json",
+  "eslint.config.*",
+  ".eslintrc*",
   ".env",
   ".env.*",
   "*.pem",
@@ -325,7 +356,7 @@ export function loadConfig(): StarfishConfig {
     excludedServices: parseList(process.env.STARFISH_EXCLUDED_SERVICES, ",") ?? DEFAULT_EXCLUDED_SERVICES,
     cycleCollection: process.env.STARFISH_CYCLE_COLLECTION || "starfish_cycles",
     leaseSeconds: positiveNumber(process.env.STARFISH_LEASE_SECONDS, 300, "STARFISH_LEASE_SECONDS"),
-    cycleDeadlineMinutes: positiveNumber(process.env.STARFISH_CYCLE_DEADLINE_MINUTES, 60, "STARFISH_CYCLE_DEADLINE_MINUTES"),
+    cycleDeadlineMinutes: positiveNumber(process.env.STARFISH_CYCLE_DEADLINE_MINUTES, 360, "STARFISH_CYCLE_DEADLINE_MINUTES"),
     maxCycleAttempts: positiveNumber(process.env.STARFISH_MAX_CYCLE_ATTEMPTS, 3, "STARFISH_MAX_CYCLE_ATTEMPTS"),
     logResourceTypes: requireNonEmpty(
       parseList(process.env.STARFISH_LOG_RESOURCE_TYPES, ",") ?? DEFAULT_LOG_RESOURCE_TYPES,
