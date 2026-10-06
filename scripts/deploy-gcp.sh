@@ -32,6 +32,11 @@
 #                        message can link back: AGENT_EXTRA_ENV_VARS="STARFISH_UI_URL=https://<site>.web.app"
 #   STARFISH_SLACK_WEBHOOK_ALERTS  with DEPLOY_AGENT=1, optional: the #ops-alerts webhook for the "new incident" message
 #                        (#17). Handled exactly like the on-call one, in its own secret starfish-slack-alerts.
+#   STARFISH_MONITORING_ENABLED  true to read the Cloud Monitoring failure signal beside the logs (#19). Default false.
+#                        Set on the ingest job (and the admin API, which runs ingest too), and only when true are their
+#                        accounts granted roles/monitoring.viewer on WATCHED_PROJECT_ID and the Monitoring API enabled
+#                        there. Always set here, never in EXTRA_ENV_VARS, so the setting and the role can't disagree.
+#                        Turning it off again stops the reads; it does not remove a role granted earlier
 #   BUDGET_USD           if set (with BILLING_ACCOUNT), create a budget that EMAILS billing admins at 50% and
 #                        90% of this monthly amount for PROJECT_ID. An alert, not a cap: nothing stops spending
 #   BILLING_ACCOUNT      the billing account id (0123AB-456CDE-789FGH), needed with BUDGET_USD
@@ -106,6 +111,7 @@ SKIP_FIRESTORE_RULES="${SKIP_FIRESTORE_RULES:-0}"
 RUN_AFTER_DEPLOY="${RUN_AFTER_DEPLOY:-0}"
 BUILD_SERVICE_ACCOUNT="${BUILD_SERVICE_ACCOUNT:-}"
 DRY_RUN="${DRY_RUN:-0}"
+STARFISH_MONITORING_ENABLED="${STARFISH_MONITORING_ENABLED:-false}"
 
 JOB_NAME="${JOB_NAME:-starfish-ingest}"
 ENGINE_SA_NAME="${ENGINE_SA_NAME:-starfish-engine}"
@@ -133,6 +139,19 @@ fi
 for var in EXTRA_ENV_VARS AGENT_EXTRA_ENV_VARS; do
   case "${!var}" in
     @*|*@|*@@*) die "$var is a list of NAME=value entries separated by @ (no leading, trailing or doubled @): ${!var}" ;;
+  esac
+done
+# The spellings the engine accepts (parseBoolean in src/config.ts), so a value copied from .env means the same here.
+case "$(printf '%s' "$STARFISH_MONITORING_ENABLED" | tr '[:upper:]' '[:lower:]')" in
+  true|1|yes) STARFISH_MONITORING_ENABLED=true ;;
+  false|0|no) STARFISH_MONITORING_ENABLED=false ;;
+  *) die "STARFISH_MONITORING_ENABLED must be true or false: $STARFISH_MONITORING_ENABLED" ;;
+esac
+# The Monitoring signal needs a role this script grants only when it turns the signal on: set elsewhere, the job would
+# read Monitoring with no right to, and every window would be recorded as unavailable.
+for var in EXTRA_ENV_VARS AGENT_EXTRA_ENV_VARS; do
+  case "@${!var}" in
+    *@STARFISH_MONITORING_ENABLED=*) die "$var may not set STARFISH_MONITORING_ENABLED: set STARFISH_MONITORING_ENABLED=true for the script, which also grants the role it needs" ;;
   esac
 done
 [ "$STARFISH_DATABASE_ID" != "(default)" ] ||
@@ -226,6 +245,9 @@ ENV_VARS="GOOGLE_CLOUD_PROJECT=$PROJECT_ID@STARFISH_WATCHED_PROJECT_ID=$WATCHED_
 ENV_VARS="$ENV_VARS@GOOGLE_CLOUD_LOCATION=$REGION@STARFISH_ENV=$STARFISH_ENV@STARFISH_DATABASE_ID=$STARFISH_DATABASE_ID"
 # The job is told its own schedule only so the UI can say when the next run is expected (#38).
 ENV_VARS="$ENV_VARS@STARFISH_INGEST_SCHEDULE=$SCHEDULE"
+# Always set, false included, so a redeploy with it off turns off a job deployed with it on (--update-env-vars keeps
+# a name it is not given).
+ENV_VARS="$ENV_VARS@STARFISH_MONITORING_ENABLED=$STARFISH_MONITORING_ENABLED"
 # With the admin API, its service name is never ingested either: its errors would otherwise become incidents.
 ADMIN_EXCLUDED=""
 [ "$DEPLOY_ADMIN_API" != "1" ] || ADMIN_EXCLUDED=",$ADMIN_SERVICE_NAME"
@@ -342,6 +364,9 @@ run gcloud services enable aiplatform.googleapis.com --project="$VERTEX_PROJECT_
 if [ "$WATCHED_PROJECT_ID" != "$PROJECT_ID" ]; then
   run gcloud services enable logging.googleapis.com --project="$WATCHED_PROJECT_ID"
 fi
+if [ "$STARFISH_MONITORING_ENABLED" = "true" ]; then
+  run gcloud services enable monitoring.googleapis.com --project="$WATCHED_PROJECT_ID"
+fi
 
 # `gcloud run jobs deploy --source` builds the image as this account, and a project made recently does not give it
 # the right to read the uploaded source ("Build failed because the default service account is missing required
@@ -381,6 +406,9 @@ fi
 step "Least-privilege grants for the engine"
 # Three projects may be three different places; each grant names the project it applies to.
 bind "$WATCHED_PROJECT_ID" "$ENGINE_SA" roles/logging.viewer   # read the watched project's logs
+if [ "$STARFISH_MONITORING_ENABLED" = "true" ]; then
+  bind "$WATCHED_PROJECT_ID" "$ENGINE_SA" roles/monitoring.viewer   # read its failure metrics (#19), only when asked
+fi
 # Read and write Starfish's own database and no other: when the project is shared with the watched
 # app, a project-wide role would let the engine reach the app's (default) database too.
 DB_RESOURCE="projects/$PROJECT_ID/databases/$STARFISH_DATABASE_ID"
@@ -620,6 +648,10 @@ if [ "$DEPLOY_ADMIN_API" = "1" ]; then
       --display-name="Starfish admin API (run ingest now, retire)"
   fi
   bind "$WATCHED_PROJECT_ID" "$ADMIN_SA" roles/logging.viewer
+  # "Run ingest now" is the same ingest, so with the Monitoring signal on it reads the same metrics (#19).
+  if [ "$STARFISH_MONITORING_ENABLED" = "true" ]; then
+    bind "$WATCHED_PROJECT_ID" "$ADMIN_SA" roles/monitoring.viewer
+  fi
   bind "$PROJECT_ID" "$ADMIN_SA" roles/datastore.user \
     "resource.name == \"$DB_RESOURCE\" || resource.name.startsWith(\"$DB_RESOURCE/\")"
   # --allow-unauthenticated: a browser must reach it, so Cloud Run's own IAM check cannot be the gate. An organisation

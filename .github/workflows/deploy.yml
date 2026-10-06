@@ -128,6 +128,7 @@ jobs:
           VERIFY_COMMAND: ${{ vars.STARFISH_VERIFY_COMMAND }}
           VERIFY_TIMEOUT_SECONDS: ${{ vars.STARFISH_VERIFY_TIMEOUT_SECONDS }}
           VERIFY_BUCKET: ${{ vars.STARFISH_VERIFY_BUCKET }}
+          STARFISH_MONITORING_ENABLED: ${{ vars.STARFISH_MONITORING_ENABLED }}
           DRY_RUN: ${{ inputs.dry_run && '1' || '0' }}
           RUN_AFTER_DEPLOY: ${{ inputs.run_after_deploy && '1' || '0' }}
           SKIP_FIRESTORE_RULES: ${{ inputs.skip_firestore_rules && '1' || '0' }}

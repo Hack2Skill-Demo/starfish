@@ -24,6 +24,10 @@ all): `PROJECT_ID`, `REGION`, `WATCHED_PROJECT_ID`, `VERTEX_PROJECT_ID`, `STARFI
 `SCHEDULE='*/5 * * * *'`; the default is hourly. It is idempotent: run it again to ship a new
 image or change the schedule. Each name may appear once in a job's settings: an `EXTRA_ENV_VARS` entry that repeats a name the
 script sets (or one set twice) is refused before anything changes, so a setting is never silently replaced (#147).
+`STARFISH_MONITORING_ENABLED=true` turns on the Cloud Monitoring failure signal (#19): the script sets it on the ingest
+job (and the admin API) and only then grants their accounts `roles/monitoring.viewer` on the watched project and enables
+the Monitoring API there. It is refused in `EXTRA_ENV_VARS`, so the setting and its role can't disagree. Turning it off
+again stops the reads but does not remove a role granted earlier. Dry-run tested only; never run against a real project.
 
 The person running it needs rights to enable APIs, create service accounts, set IAM and deploy
 Cloud Run and Scheduler on `PROJECT_ID` (Owner is the easy way), plus IAM rights on the watched and
@@ -238,6 +242,7 @@ defaults when empty.
 | `STARFISH_DATABASE_ID`, `STARFISH_FIRESTORE_LOCATION` | `STARFISH_DATABASE_ID`, `FIRESTORE_LOCATION` | |
 | `STARFISH_SCHEDULE`, `STARFISH_SCHEDULE_TIME_ZONE` | `SCHEDULE`, `SCHEDULE_TIME_ZONE` | default hourly, UTC |
 | `STARFISH_EXTRA_ENV_VARS` | `EXTRA_ENV_VARS` | `A=1@B=2` |
+| `STARFISH_MONITORING_ENABLED` | `STARFISH_MONITORING_ENABLED` | `true` turns on the Cloud Monitoring signal (#19) and grants `roles/monitoring.viewer` on the watched project; default off |
 | `STARFISH_DEPLOY_AGENT`, `STARFISH_AGENT_REPO` | `DEPLOY_AGENT`, `AGENT_REPO` | set `1` and `owner/name` to deploy the agent too ([below](#the-agent-and-where-its-tests-run-74)); default off |
 | `STARFISH_VERIFY_ISOLATION`, `STARFISH_VERIFY_CHECKS`, `STARFISH_VERIFY_COMMAND` | `VERIFY_ISOLATION`, `VERIFY_CHECKS`, `VERIFY_COMMAND` | `github-actions` (default) with the check names that must pass, or `cloud-run-job` with a command |
 | `STARFISH_VERIFY_TIMEOUT_SECONDS`, `STARFISH_VERIFY_BUCKET`, `STARFISH_AGENT_BASE_BRANCH`, `STARFISH_AGENT_SCHEDULE`, `STARFISH_AGENT_EXTRA_ENV_VARS` | `VERIFY_TIMEOUT_SECONDS`, `VERIFY_BUCKET`, `AGENT_BASE_BRANCH`, `AGENT_SCHEDULE`, `AGENT_EXTRA_ENV_VARS` | default 600, `<project>-starfish-verify`, `main`, `30 * * * *` |

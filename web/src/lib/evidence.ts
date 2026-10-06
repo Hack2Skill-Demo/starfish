@@ -106,6 +106,16 @@ function counterCheckStage(triage: Record<string, string | number | boolean | nu
   };
 }
 
+/**
+ * A Monitoring-only incident has no ERROR log, so a raw-log recount of it is zero by construction: say so beside
+ * the recount, so a zero there is not read as "this was noise" (#19).
+ */
+function monitoringOnlyCounterCheck(stage: EvidenceStage, row: IncidentRow): EvidenceStage {
+  if (!row.monitoringOnly || stage.status !== "recorded") return stage;
+  const note = "Monitoring only: there is no ERROR log to recount, so the raw-log recount is zero by construction, not a sign of noise.";
+  return { ...stage, note: stage.note ? `${note} ${stage.note}` : note };
+}
+
 /** The pull request as the engine last read it back from GitHub (#17), or that it never was. */
 function prNowFields(cycle: CycleRow | null, nowMs: number): EvidenceField[] {
   const view = cycle ? prStateView(cycle, nowMs) : undefined;
@@ -115,6 +125,22 @@ function prNowFields(cycle: CycleRow | null, nowMs: number): EvidenceField[] {
     { label: "State now", value: view.text },
     ...(view.checkedAt ? [{ label: "Read from GitHub", value: view.checkedAt.toISOString() }] : []),
     ...(view.checkedAt && typeof headSha === "string" && headSha !== "" ? [{ label: "Head commit", value: headSha, mono: true }] : []),
+  ];
+}
+
+const MONITORING_ONLY_NOTE =
+  "Monitoring only: Cloud Monitoring counted failed invocations of this function with no ERROR log entry behind them. There is no log message or stack trace, so the occurrences are those failures.";
+
+/** What Cloud Monitoring recorded for the incident (#19): its total, and each reading of the latest window, as stored. */
+function monitoringFields(row: IncidentRow): EvidenceField[] {
+  return [
+    ...(row.monitoringOnly ? [{ label: "Source", value: "Cloud Monitoring only (no ERROR log entry)" }] : []),
+    ...(row.monitoringCount !== undefined ? [{ label: "Failed invocations (Cloud Monitoring)", value: String(row.monitoringCount) }] : []),
+    ...(row.lastMonitoring ?? []).map((r, i) => ({
+      label: `Monitoring reading ${i + 1}`,
+      value: `${r.capped ? "at least " : ""}${r.failureCount} failed · ${r.metricType} on ${r.resourceType} in ${r.projectId} · ${r.windowStart} to ${r.windowEnd}`,
+      mono: true,
+    })),
   ];
 }
 
@@ -143,7 +169,9 @@ export function buildEvidence(row: IncidentRow, cycle: CycleRow | null, nowMs = 
       { label: "First seen", value: row.firstOccurredAt },
       { label: "Last seen", value: row.lastOccurredAt },
       ...(row.recurrenceCount > 0 ? [{ label: "Regressions", value: String(row.recurrenceCount) }] : []),
+      ...monitoringFields(row),
     ].filter((f) => f.value !== ""),
+    ...(row.monitoringOnly && { note: MONITORING_ONLY_NOTE }),
   };
   const prStage = later(
     "pr",
@@ -191,7 +219,7 @@ export function buildEvidence(row: IncidentRow, cycle: CycleRow | null, nowMs = 
 
   const stages: EvidenceStage[] = [
     detected,
-    counterCheckStage(rec.triage, row.occurrenceCount, noRun),
+    monitoringOnlyCounterCheck(counterCheckStage(rec.triage, row.occurrenceCount, noRun), row),
     later("triage", "Triage", [
       ["decision", "Decision"],
       ["rule", "Rule", true],

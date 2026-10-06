@@ -70,6 +70,51 @@ export interface IncidentRow {
   previousIssueUrl?: string;
   /** Written by `pnpm seed-demo` (src/seedDemo.ts), not by any real run: the UI must say so wherever it shows it. */
   synthetic?: true;
+  /**
+   * Opened from Cloud Monitoring alone (#19): failed invocations counted with no ERROR log entry behind them, so
+   * there is no log message, stack trace or log recount. `signalSource: "monitoring"`, or a `mon-` fingerprint.
+   */
+  monitoringOnly?: true;
+  /** Failed invocations Cloud Monitoring counted for this function, summed over the windows that read one (#19). */
+  monitoringCount?: number;
+  /** The readings from the latest window that folded one in (#19). */
+  lastMonitoring?: MonitoringReading[];
+}
+
+/** One Cloud Monitoring reading as stored on an incident (StoredMonitoringObservation in src/types.ts). */
+export interface MonitoringReading {
+  metricType: string;
+  resourceType: string;
+  projectId: string;
+  /** The observation window, (start, end], ISO. */
+  windowStart: string;
+  windowEnd: string;
+  failureCount: number;
+  /** The read stopped at its cap: the count is a floor. */
+  capped: boolean;
+}
+
+/** The engine keeps at most this many readings per document (store.ts); more is not a document it wrote. */
+const MAX_READINGS = 8;
+
+/** The stored readings that are whole, in order; a malformed one is left out rather than shown half-filled. */
+function cleanReadings(v: unknown): MonitoringReading[] | undefined {
+  if (!Array.isArray(v)) return undefined;
+  const out: MonitoringReading[] = [];
+  for (const r of v.slice(0, MAX_READINGS) as unknown[]) {
+    if (typeof r !== "object" || r === null) continue;
+    const o = r as Record<string, unknown>;
+    const metricType = str(o.metricType);
+    const resourceType = str(o.resourceType);
+    const projectId = str(o.projectId);
+    const windowStart = iso(o.windowStart);
+    const windowEnd = iso(o.windowEnd);
+    const n = o.failureCount;
+    if (!metricType || !resourceType || !projectId || !windowStart || !windowEnd) continue;
+    if (typeof n !== "number" || !Number.isFinite(n) || n < 0) continue;
+    out.push({ metricType, resourceType, projectId, windowStart, windowEnd, failureCount: n, capped: o.capped === true });
+  }
+  return out.length > 0 ? out : undefined;
 }
 
 const MS_PER_HOUR = 3600_000;
@@ -142,6 +187,12 @@ export function toRow(id: string, d: Record<string, unknown>, windowHours: numbe
     previousIssueNumber: typeof last.githubIssueNumber === "number" ? last.githubIssueNumber : undefined,
     previousIssueUrl: str(last.githubIssueUrl),
     ...(d.synthetic === true && { synthetic: true as const }),
+    // The engine writes both on a Monitoring-only incident (fingerprintOf in src/ingest/fingerprint.ts).
+    ...((d.signalSource === "monitoring" || (typeof d.fingerprint === "string" && d.fingerprint.startsWith("mon-"))) && {
+      monitoringOnly: true as const,
+    }),
+    ...(typeof d.monitoringCount === "number" && Number.isFinite(d.monitoringCount) && d.monitoringCount >= 0 && { monitoringCount: d.monitoringCount }),
+    ...(cleanReadings(d.lastMonitoring) && { lastMonitoring: cleanReadings(d.lastMonitoring) }),
   };
 }
 
