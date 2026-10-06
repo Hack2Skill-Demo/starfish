@@ -4,6 +4,7 @@ import type { Firestore } from "firebase-admin/firestore";
 import {
   APPLIED_WINDOWS_RETAINED,
   incidentKeyId,
+  isClosedTransactionError,
   MAX_SHORT_FIELD_LEN,
   upsertIncident,
   UPSERT_MAX_ATTEMPTS,
@@ -201,6 +202,97 @@ describe("upsertIncident", () => {
 });
 
 const isSentinel = (value: unknown, expected: FieldValue) => (value as FieldValue).isEqual(expected);
+
+/** The error the emulator gives a read re-sent on a transaction it already closed (#151). */
+const closedTxError = () =>
+  Object.assign(new Error("3 INVALID_ARGUMENT: Transaction is invalid or closed."), {
+    code: 3,
+    details: "Transaction is invalid or closed.",
+  });
+
+/**
+ * Wrap a fake db's runTransaction so it behaves like the SDK's runner on the point under test (it
+ * re-runs the callback while it throws ABORTED, code 10, up to maxAttempts) and so the first
+ * `failures` queries throw `error`. Returns every error the runner saw.
+ */
+function withFailingQueries(fake: ReturnType<typeof fakeDb>, failures: number, error: () => Error) {
+  const seen: unknown[] = [];
+  let left = failures;
+  const inner = fake.db.runTransaction.bind(fake.db) as unknown as (
+    fn: (tx: { get: (t: { kind: string }) => Promise<unknown> }) => Promise<unknown>,
+    options: { maxAttempts: number }
+  ) => Promise<unknown>;
+  (fake.db as unknown as { runTransaction: unknown }).runTransaction = async (
+    fn: (tx: unknown) => Promise<unknown>,
+    options: { maxAttempts: number }
+  ) => {
+    for (let attempt = 1; ; attempt++) {
+      try {
+        return await inner(
+          (tx) =>
+            fn({
+              ...tx,
+              get: async (target: { kind: string }) => {
+                if (target.kind === "query" && left > 0) {
+                  left--;
+                  throw error();
+                }
+                return tx.get(target);
+              },
+            }),
+          options
+        );
+      } catch (err) {
+        seen.push(err);
+        if ((err as { code?: unknown }).code !== 10 || attempt >= options.maxAttempts) throw err;
+      }
+    }
+  };
+  return seen;
+}
+
+describe("upsertIncident: a transaction closed under a read (#151)", () => {
+  it("hands the runner ABORTED, with the original as its cause, so the attempt is redone", async () => {
+    const fake = fakeDb([]);
+    const seen = withFailingQueries(fake, 1, closedTxError);
+
+    const outcome = await upsertIncident(fake.db, STORE, input, Timestamp.now());
+
+    expect(outcome).toBe("new");
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toMatchObject({ code: 10 });
+    expect((seen[0] as Error).cause).toMatchObject({ code: 3, details: "Transaction is invalid or closed." });
+    // The failed attempt wrote nothing; the retried one wrote the incident once.
+    expect(fake.writes.filter((w) => w.op === "set")).toHaveLength(1);
+  });
+
+  it("still gives up after maxAttempts, surfacing the error rather than looping", async () => {
+    const fake = fakeDb([]);
+    const seen = withFailingQueries(fake, Infinity, closedTxError);
+
+    await expect(upsertIncident(fake.db, STORE, input, Timestamp.now())).rejects.toMatchObject({ code: 10 });
+    expect(seen).toHaveLength(UPSERT_MAX_ATTEMPTS);
+    expect(fake.writes).toHaveLength(0);
+  });
+
+  it("passes any other error through untouched", async () => {
+    const other = Object.assign(new Error("3 INVALID_ARGUMENT: a different bad request"), { code: 3 });
+    const fake = fakeDb([]);
+    const seen = withFailingQueries(fake, 1, () => other);
+
+    await expect(upsertIncident(fake.db, STORE, input, Timestamp.now())).rejects.toBe(other);
+    expect(seen).toEqual([other]);
+  });
+
+  it("recognises only INVALID_ARGUMENT with the closed-transaction message", () => {
+    expect(isClosedTransactionError(closedTxError())).toBe(true);
+    expect(isClosedTransactionError(Object.assign(new Error("Transaction is invalid or closed."), { code: 10 }))).toBe(false);
+    expect(isClosedTransactionError(Object.assign(new Error("3 INVALID_ARGUMENT: bad field"), { code: 3 }))).toBe(false);
+    expect(isClosedTransactionError(new Error("Transaction is invalid or closed."))).toBe(false);
+    expect(isClosedTransactionError(null)).toBe(false);
+    expect(isClosedTransactionError("Transaction is invalid or closed.")).toBe(false);
+  });
+});
 
 describe("upsertIncident: regressions", () => {
   const resolvedAt = Timestamp.fromDate(new Date("2026-09-20T00:00:00.000Z"));

@@ -48,7 +48,7 @@
  */
 import { createHash } from "node:crypto";
 import { Timestamp, FieldValue } from "firebase-admin/firestore";
-import type { DocumentSnapshot, Firestore, Transaction } from "firebase-admin/firestore";
+import type { DocumentReference, DocumentSnapshot, Firestore, Transaction } from "firebase-admin/firestore";
 import type { StarfishConfig } from "../config.js";
 import { fingerprintOf } from "./fingerprint.js";
 import type { MonitoringObservation } from "./monitoring.js";
@@ -311,71 +311,117 @@ export async function upsertIncident(
   const keyRef = db.collection(store.incidentKeyCollection).doc(incidentKeyId(input.environment, fingerprint));
 
   return db.runTransaction(
-    async (tx) => {
-      // Every read comes before any write: Firestore transactions require it.
-      const keySnap = await tx.get(keyRef);
-      const applied = readAppliedWindows(keySnap);
-      // A window this fingerprint already took is a replay: write nothing, count nothing.
-      if (input.windowId !== undefined && applied.includes(input.windowId)) return "duplicate";
-      const keyed = await readKeyedIncident(db, tx, store, keySnap, fingerprint);
-      // The key names a document that still holds this fingerprint: it decides.
-      // Otherwise (no key yet, or a stale one) fall back to the lookup that
-      // predates keys, so incidents stored before them are adopted, not forked.
-      const target = keyed ?? (await findUnkeyedIncident(db, tx, store, input.environment, fingerprint));
-
-      // Written when the pointer moves, and whenever a window must be recorded; an
-      // unchanged key with nothing to record is left alone (no write for nothing).
-      const pointKeyAt = (incidentId: string) => {
-        const moved = keySnap.get("incidentId") !== incidentId;
-        if (!moved && input.windowId === undefined) return;
-        const appliedWindows =
-          input.windowId === undefined ? applied : [...applied, input.windowId].slice(-APPLIED_WINDOWS_RETAINED);
-        const key: IncidentKey = {
-          incidentId,
-          environment: input.environment,
-          fingerprint,
-          updatedAt: now,
-          ...(appliedWindows.length > 0 && { appliedWindows }),
-        };
-        tx.set(keyRef, key);
-      };
-
-      const data = target?.data() as StoredIncident | undefined;
-      if (target && data && isOpen(data.status)) {
-        tx.update(target.ref, {
-          ...buildAccrualUpdate(data, input, now),
-          // Re-queue for triage only when it was never triaged. A decision already
-          // taken ("declined", "acting") must not be silently undone by a recurrence.
-          ...(data.triageState == null && { triageState: "pending" as const }),
-        });
-        pointKeyAt(target.id);
-        return "updated";
-      }
-
-      if (target && data?.status === "resolved") {
-        pointKeyAt(target.id);
-        const resolvedAtMs = tsMillis(data.resolvedAt);
-        // Logs are aggregated with a lag, so a batch can hold occurrences from
-        // BEFORE the incident was resolved. Those are the old failure, not a
-        // regression: count them on the resolved incident and leave it resolved.
-        if (resolvedAtMs != null && input.lastOccurredAt.getTime() <= resolvedAtMs) {
-          tx.update(target.ref, buildAccrualUpdate(data, input, now));
-          return "updated";
-        }
-        tx.update(target.ref, buildRecurrenceUpdate(data, input, now));
-        return "recurred";
-      }
-
-      // Nothing to accrue onto, or the keyed incident was ignored: an ignored
-      // incident is never re-opened, so the occurrence opens a fresh one, and
-      // the key moves to it.
-      const ref = db.collection(store.incidentCollection).doc();
-      tx.set(ref, buildNewIncident(input, fingerprint, now));
-      pointKeyAt(ref.id);
-      return "new";
-    },
+    (tx) => abortIfClosed(() => upsertInTransaction(db, tx, store, input, fingerprint, keyRef, now)),
     { maxAttempts: UPSERT_MAX_ATTEMPTS }
   );
+}
+
+/** gRPC status codes this file tells apart (google.rpc.Code). */
+const GRPC_INVALID_ARGUMENT = 3;
+const GRPC_ABORTED = 10;
+
+/**
+ * True for the error a read gets when its transaction has already been closed under it. Seen on the
+ * emulator (#151): a transactional read failed before any response (a lock-acquire timeout, which also
+ * closes the transaction), the client's streaming layer re-sent the same request on the same
+ * transaction id, and that re-send got this. Nothing was committed, so the attempt is safe to redo.
+ */
+export function isClosedTransactionError(err: unknown): boolean {
+  const e = err as { code?: unknown; message?: unknown } | null;
+  return (
+    e?.code === GRPC_INVALID_ARGUMENT &&
+    typeof e.message === "string" &&
+    /transaction is invalid or closed/i.test(e.message)
+  );
+}
+
+/**
+ * Run one transaction attempt's body (the upsert here, and every transaction in retire.ts and run.ts, which read
+ * the same way); a closed-transaction error leaves it as ABORTED, the code the transaction
+ * runner retries, so the attempt is redone under the same `maxAttempts` budget and backoff instead of
+ * failing the upsert. Every other error passes through untouched.
+ */
+export async function abortIfClosed<T>(attempt: () => Promise<T>): Promise<T> {
+  try {
+    return await attempt();
+  } catch (err) {
+    if (!isClosedTransactionError(err)) throw err;
+    const message = `transaction closed under a read, retried as aborted: ${(err as Error).message}`;
+    throw Object.assign(new Error(message, { cause: err }), { code: GRPC_ABORTED });
+  }
+}
+
+/** One attempt of upsertIncident, inside its transaction. */
+async function upsertInTransaction(
+  db: Firestore,
+  tx: Transaction,
+  store: IncidentStoreConfig,
+  input: IncidentInput,
+  fingerprint: string,
+  keyRef: DocumentReference,
+  now: Timestamp
+): Promise<UpsertOutcome> {
+  // Every read comes before any write: Firestore transactions require it.
+  const keySnap = await tx.get(keyRef);
+  const applied = readAppliedWindows(keySnap);
+  // A window this fingerprint already took is a replay: write nothing, count nothing.
+  if (input.windowId !== undefined && applied.includes(input.windowId)) return "duplicate";
+  const keyed = await readKeyedIncident(db, tx, store, keySnap, fingerprint);
+  // The key names a document that still holds this fingerprint: it decides.
+  // Otherwise (no key yet, or a stale one) fall back to the lookup that
+  // predates keys, so incidents stored before them are adopted, not forked.
+  const target = keyed ?? (await findUnkeyedIncident(db, tx, store, input.environment, fingerprint));
+
+  // Written when the pointer moves, and whenever a window must be recorded; an
+  // unchanged key with nothing to record is left alone (no write for nothing).
+  const pointKeyAt = (incidentId: string) => {
+    const moved = keySnap.get("incidentId") !== incidentId;
+    if (!moved && input.windowId === undefined) return;
+    const appliedWindows =
+      input.windowId === undefined ? applied : [...applied, input.windowId].slice(-APPLIED_WINDOWS_RETAINED);
+    const key: IncidentKey = {
+      incidentId,
+      environment: input.environment,
+      fingerprint,
+      updatedAt: now,
+      ...(appliedWindows.length > 0 && { appliedWindows }),
+    };
+    tx.set(keyRef, key);
+  };
+
+  const data = target?.data() as StoredIncident | undefined;
+  if (target && data && isOpen(data.status)) {
+    tx.update(target.ref, {
+      ...buildAccrualUpdate(data, input, now),
+      // Re-queue for triage only when it was never triaged. A decision already
+      // taken ("declined", "acting") must not be silently undone by a recurrence.
+      ...(data.triageState == null && { triageState: "pending" as const }),
+    });
+    pointKeyAt(target.id);
+    return "updated";
+  }
+
+  if (target && data?.status === "resolved") {
+    pointKeyAt(target.id);
+    const resolvedAtMs = tsMillis(data.resolvedAt);
+    // Logs are aggregated with a lag, so a batch can hold occurrences from
+    // BEFORE the incident was resolved. Those are the old failure, not a
+    // regression: count them on the resolved incident and leave it resolved.
+    if (resolvedAtMs != null && input.lastOccurredAt.getTime() <= resolvedAtMs) {
+      tx.update(target.ref, buildAccrualUpdate(data, input, now));
+      return "updated";
+    }
+    tx.update(target.ref, buildRecurrenceUpdate(data, input, now));
+    return "recurred";
+  }
+
+  // Nothing to accrue onto, or the keyed incident was ignored: an ignored
+  // incident is never re-opened, so the occurrence opens a fresh one, and
+  // the key moves to it.
+  const ref = db.collection(store.incidentCollection).doc();
+  tx.set(ref, buildNewIncident(input, fingerprint, now));
+  pointKeyAt(ref.id);
+  return "new";
 }
 
 /** The windows a key has applied. Tolerates a missing or malformed field: nothing applied. */
