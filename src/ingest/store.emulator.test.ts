@@ -220,6 +220,45 @@ describe("upsertIncident on the emulator", () => {
     expect(fresh.get("occurrenceCount")).toBe(4);
     expect((await keys())[0]?.get("incidentId")).toBe(fresh.id);
   });
+
+  it("redoes the attempt when its transaction was closed under the unkeyed lookup (#151)", async () => {
+    // #151: under contention a transactional query failed before any response (a lock timeout, which
+    // closes the transaction), the client's streaming layer re-sent it on the same transaction id, and
+    // the re-send got INVALID_ARGUMENT "Transaction is invalid or closed", which the runner does not
+    // retry. Reproduced here without the race: the emulator really closes the transaction (a Rollback
+    // RPC on its id) just before the first query of the first attempt is sent. Reaching the transaction
+    // id and the RPC needs two SDK internals; this test is the only place that touches them.
+    type Internals = { _transactionIdPromise?: Promise<Uint8Array> };
+    type Rpc = { request: (method: string, req: object, tag: string) => Promise<unknown>; formattedName: string };
+    const original = db.runTransaction.bind(db);
+    let closed = false;
+    db.runTransaction = (<T>(fn: (tx: Transaction) => Promise<T>, options?: object) =>
+      original(async (tx) => {
+        const get = tx.get.bind(tx) as (target: unknown) => Promise<unknown>;
+        (tx as unknown as { get: typeof get }).get = async (target) => {
+          const isQuery = !(target as { path?: string }).path;
+          if (!closed && isQuery) {
+            closed = true;
+            const id = await (tx as unknown as Internals)._transactionIdPromise;
+            const rpc = db as unknown as Rpc;
+            await rpc.request("rollback", { database: rpc.formattedName, transaction: id }, "issue-151");
+          }
+          return get(target);
+        };
+        return fn(tx);
+      }, options)) as typeof db.runTransaction;
+
+    try {
+      expect(await upsert(occurrence(base))).toBe("new");
+    } finally {
+      db.runTransaction = original;
+    }
+    expect(closed).toBe(true);
+    const docs = await incidents();
+    expect(docs).toHaveLength(1);
+    expect(docs[0]?.get("occurrenceCount")).toBe(1);
+    expect((await keys())[0]?.get("incidentId")).toBe(docs[0]?.id);
+  });
 });
 
 describe("upsertIncident replays on the emulator", () => {
