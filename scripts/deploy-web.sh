@@ -13,8 +13,10 @@
 #   DRY_RUN=1             print the commands instead of running them
 #
 # The bundle carries no Firebase project: at startup it reads /__/firebase/init.json, which Hosting serves
-# for the project, so this build can be served from any project. That needs a Firebase *web app* registered
-# in the project; this script registers one named "starfish" if there is none.
+# for the site, so this build can be served from any project. On a site other than the project's default one that
+# file carries the config of the Firebase *web app linked to the site*, so: a new site is created linked to the web
+# app named "starfish" (registered if there is none); an existing site linked to no app is linked to it (Hosting REST
+# sites.patch, which needs `gcloud`; not yet run on a real project); a site already linked is left as it is (#156).
 #
 # Needs: `firebase login` (or Application Default Credentials in CI), and pnpm. Does NOT turn on Anonymous
 # sign-in: that is project-wide, so it is a decision for a person (docs/setup.md).
@@ -42,29 +44,82 @@ FIREBASE=(pnpm dlx firebase-tools@14)
 step "Build the UI (environment label: $STARFISH_ENV)"
 run env "VITE_STARFISH_ENV=${VITE_STARFISH_ENV:-$STARFISH_ENV}" "VITE_STARFISH_DATABASE_ID=${VITE_STARFISH_DATABASE_ID:-$STARFISH_DATABASE_ID}" pnpm run build
 
-step "A Firebase web app, so Hosting can serve /__/firebase/init.json"
-APP_ID=""
-if [ "$DRY_RUN" = "1" ]; then
-  echo "+ ${FIREBASE[*]} apps:list WEB --json --project $PROJECT_ID   (create one named starfish if the list is empty)"
-  APP_ID="<web-app-id>"
-else
-  list="$("${FIREBASE[@]}" apps:list WEB --json --project "$PROJECT_ID")"
-  APP_ID="$(printf '%s' "$list" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const r=JSON.parse(s).result||[];console.log(r[0]?r[0].appId:"")})')"
-  if [ -z "$APP_ID" ]; then
-    created="$("${FIREBASE[@]}" apps:create WEB starfish --json --project "$PROJECT_ID")"
-    APP_ID="$(printf '%s' "$created" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{console.log((JSON.parse(s).result||{}).appId||"")})')"
+# Prints one field of a Firebase CLI --json reply (its `result`, as r), or nothing; fails on a reply that is not JSON.
+PICK='let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{let v;try{v=JSON.parse(s.slice(s.indexOf("{")))}catch{process.exit(2)}const x=new Function("r","return ("+process.argv[1]+")")(v.result);console.log(x==null?"":String(x))})'
+
+# Sets APP_ID to Starfish's own web app: the one named "starfish", registered if there is none. Never another app
+# in the project (the watched app's, say): a site is linked to the app this picks.
+starfish_app() {
+  local list
+  if list="$("${FIREBASE[@]}" apps:list WEB --project "$PROJECT_ID" --json 2>/dev/null)"; then
+    APP_ID="$(printf '%s' "$list" | node -e "$PICK" '((r || []).find(a => a.displayName === "starfish") || {}).appId')" \
+      || die "could not read apps:list WEB"
+  elif [ "$DRY_RUN" = "1" ]; then
+    echo "  (could not list the project's web apps; planning as if none is named starfish)"
+    APP_ID=""
+  else
+    die "could not list the web apps of $PROJECT_ID (firebase login?)"
   fi
-  [ -n "$APP_ID" ] || die "could not find or create a Firebase web app in $PROJECT_ID"
-fi
+  if [ -n "$APP_ID" ]; then echo "  (web app starfish: $APP_ID)"; return; fi
+  if [ "$DRY_RUN" = "1" ]; then
+    run "${FIREBASE[@]}" apps:create WEB starfish --project "$PROJECT_ID" --json
+    APP_ID="<web-app-id>"
+    return
+  fi
+  local created
+  created="$("${FIREBASE[@]}" apps:create WEB starfish --project "$PROJECT_ID" --json)"
+  APP_ID="$(printf '%s' "$created" | node -e "$PICK" 'r && r.appId')" || true
+  [ -n "$APP_ID" ] || die "could not create a Firebase web app named starfish in $PROJECT_ID"
+}
+
+# Links the existing site to APP_ID. The Firebase CLI links a site only when it creates one (hosting:sites:create
+# --app), so this is the Hosting REST API's sites.patch with updateMask=appId. Not yet run on a real project.
+link_site() {
+  local url="https://firebasehosting.googleapis.com/v1beta1/projects/$PROJECT_ID/sites/$HOSTING_SITE?updateMask=appId"
+  local body="{\"appId\":\"$APP_ID\"}"
+  if [ "$DRY_RUN" = "1" ]; then
+    echo "+ curl -X PATCH -H 'Authorization: Bearer <gcloud access token>' -H 'x-goog-user-project: $PROJECT_ID' -d '$body' $url"
+    return
+  fi
+  local token
+  token="$(gcloud auth print-access-token 2>/dev/null || gcloud auth application-default print-access-token 2>/dev/null)" \
+    || die "linking $HOSTING_SITE needs an access token from gcloud; or link it in the console (docs/setup.md)"
+  # The token goes in on stdin (-H @-), so it is never in curl's argv, which other users of the host can list.
+  printf 'Authorization: Bearer %s\n' "$token" | curl -fsS -X PATCH -H @- -H "x-goog-user-project: $PROJECT_ID" \
+    -H "Content-Type: application/json" -d "$body" "$url" >/dev/null \
+    || die "could not link $HOSTING_SITE to web app $APP_ID; link it in the console (docs/setup.md)"
+  local linked
+  linked="$("${FIREBASE[@]}" hosting:sites:get "$HOSTING_SITE" --project "$PROJECT_ID" --json 2>/dev/null | node -e "$PICK" 'r && r.appId')" || true
+  [ "$linked" = "$APP_ID" ] || die "$HOSTING_SITE still is not linked to web app $APP_ID after the update; link it in the console (docs/setup.md)"
+}
 
 step "Hosting site $HOSTING_SITE"
-if [ "$DRY_RUN" = "1" ]; then
-  echo "+ ${FIREBASE[*]} hosting:sites:get $HOSTING_SITE --project $PROJECT_ID   (create it if missing)"
-  run "${FIREBASE[@]}" hosting:sites:create "$HOSTING_SITE" --app "$APP_ID" --project "$PROJECT_ID"
-elif ! "${FIREBASE[@]}" hosting:sites:get "$HOSTING_SITE" --project "$PROJECT_ID" >/dev/null 2>&1; then
-  run "${FIREBASE[@]}" hosting:sites:create "$HOSTING_SITE" --app "$APP_ID" --project "$PROJECT_ID"
+# On a site that is not the project's default one, /__/firebase/init.json carries the config of the web app LINKED to
+# that site; with none linked it has no appId and the UI refuses to start (#156). So an existing site is checked too,
+# not only a new one. Reads change nothing, so a dry run makes them as well (when this shell can) and plans from them.
+SITE_STATE=missing
+SITE_APP=""
+if site_json="$("${FIREBASE[@]}" hosting:sites:get "$HOSTING_SITE" --project "$PROJECT_ID" --json 2>/dev/null)"; then
+  SITE_STATE=exists
+  SITE_APP="$(printf '%s' "$site_json" | node -e "$PICK" 'r && r.appId')" || die "could not read hosting:sites:get $HOSTING_SITE"
+elif [ "$DRY_RUN" = "1" ]; then
+  echo "  (could not read the site: missing, or this shell is not signed in; planning as if missing)"
+fi
+
+if [ "$SITE_STATE" = "exists" ] && [ -n "$SITE_APP" ]; then
+  # Linked already: leave it. Relinking would change what an existing site serves, and the link may be someone's choice.
+  echo "  (exists, linked to web app $SITE_APP)"
 else
-  echo "  (exists)"
+  # Never link the project's default site: it is the watched app's, not Starfish's.
+  [ "$HOSTING_SITE" != "$PROJECT_ID" ] || die "$HOSTING_SITE is the project's default Hosting site, which is not Starfish's; link it in the console if you mean to"
+  step "Starfish's Firebase web app (named starfish), so Hosting can serve /__/firebase/init.json"
+  starfish_app
+  if [ "$SITE_STATE" = "missing" ]; then
+    run "${FIREBASE[@]}" hosting:sites:create "$HOSTING_SITE" --app "$APP_ID" --project "$PROJECT_ID"
+  else
+    echo "  (exists, linked to no web app: linking $APP_ID)"
+    link_site
+  fi
 fi
 
 step "Deploy"

@@ -270,8 +270,21 @@ chose for the engine). Unlike the engine deploy it runs `pnpm install --frozen-l
 
 **What the deployer needs on top of the engine's list** (a starting set, not a verified minimum; the first run
 will name what is missing): Firebase Hosting Admin (`roles/firebasehosting.admin`) to create the site and release
-to it, and a role holding `firebase.apps.create` for the one-time web-app registration (the script registers a
-web app named `starfish` when the project has none). Keep both off the engine's runtime identity.
+to it (and to link an existing site to the web app, below), and a role holding `firebase.apps.create` for the
+one-time web-app registration (the script registers a web app named `starfish` when the project has none by that
+name). Keep both off the engine's runtime identity. Linking an existing site also needs `gcloud` signed in on the
+runner, which this workflow does not set up; until it does, link the site once from a terminal or the console.
+
+**The site must be linked to a web app (#156).** On a Hosting site that is not the project's default one,
+`/__/firebase/init.json` carries the config of the web app linked to that site; with none linked it has no `appId`
+and the UI stops with "init.json is missing appId". `scripts/deploy-web.sh` therefore: creates a new site linked to
+the web app named `starfish` (registering it if missing; never another app in the project); links an existing site
+that has no app to that same app, with the Hosting REST API's `sites.patch` (`updateMask=appId`, token from
+`gcloud auth print-access-token`) and reads the site back to confirm; and leaves a site that is already linked as it
+is. It never links the project's default site. A dry run makes the two reads (`hosting:sites:get`, `apps:list`)
+when it can and prints which of these it would do. **The linking call is dry-run tested only, not yet run on a real
+project**; whether Hosting accepts a web app already linked to another site is not known. If it fails, the manual
+fix is the console: Project settings → Your apps → the `starfish` web app → "Link to a Firebase Hosting site".
 
 **Repository variables** (nothing deployment-specific is in the workflow): the same three required ones, plus
 `STARFISH_ENV` (the label the page shows; **`demo` for the public page**), `STARFISH_DATABASE_ID`, and
