@@ -8,7 +8,8 @@
  * it informed). The fixer's rejected alternatives and each review attack are numbered keys
  * (`alternative1`..., `attack1`...), since the record holds flat values only.
  *
- * Not stored, and said so on the page rather than faked: the patch text (only its SHA-256 is recorded).
+ * Not stored, and said so on the page rather than faked: the patch text (only its SHA-256 is recorded); when a pull
+ * request was opened, the fix stage links to its diff on GitHub instead (#39).
  */
 import type { IncidentRow } from "./incidents";
 import { indexRuntimeView, isIndexCycle, prStateView, safeUrl, type CycleRow } from "./runsModel";
@@ -277,7 +278,14 @@ export function buildEvidence(row: IncidentRow, cycle: CycleRow | null, nowMs = 
   // hash only if one was actually recorded.
   const fix = stages.find((s) => s.id === "fix")!;
   if (fix.status === "recorded") {
-    fix.note = hashes.length > 0 ? "The patch text is not stored; its SHA-256 is recorded under the later stages." : "The patch text is not stored.";
+    // The diff lives on GitHub, in the pull request (#39): link to it rather than store the patch text here.
+    const diffUrl = prUrl ? `${prUrl.replace(/\/+$/, "")}/files` : undefined;
+    if (diffUrl) fix.fields.push({ label: "Diff", value: "View the changes on GitHub", href: diffUrl });
+    fix.note = diffUrl
+      ? "The patch text is not stored here; the diff is in the pull request on GitHub."
+      : hashes.length > 0
+        ? "The patch text is not stored; its SHA-256 is recorded under the later stages. No pull request was opened, so there is no diff to link to."
+        : "The patch text is not stored.";
   }
   const samePatch = hashes.length < 2 ? null : hashes.every((h) => h === hashes[0]);
 
