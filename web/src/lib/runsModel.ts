@@ -38,6 +38,8 @@ export interface CycleRow {
   deadlineAt: Date | null;
   /** The run record: `summary.<stage>` as the stages stored it. */
   summary: Record<string, Flat>;
+  /** Written by `pnpm seed-demo` (src/seedDemo.ts), not by any real run: the UI must say so wherever it shows it. */
+  synthetic?: true;
 }
 
 export interface EventRow {
@@ -92,6 +94,7 @@ export function parseCycle(id: string, d: Record<string, unknown>): CycleRow | n
     leaseExpiresAt: date(d.leaseExpiresAt),
     deadlineAt: date(d.deadlineAt),
     summary,
+    ...(d.synthetic === true && { synthetic: true as const }),
   };
 }
 

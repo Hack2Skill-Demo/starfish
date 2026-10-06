@@ -119,6 +119,14 @@ describe("Runs page", () => {
     expect(screen.getByTestId("engine")).toHaveTextContent("demo");
   });
 
+  it("badges a synthetic run in the list and its header, and only that run", () => {
+    renderRuns();
+    act(() => mocks.cyclesCb!([cycle("synthetic-demo-pr_r0", { synthetic: true, state: "done", leaseExpiresAt: null }), cycle("inc-b_r0")], false));
+    const list = screen.getByRole("region", { name: "Runs" });
+    expect(within(list).getAllByText("Synthetic")).toHaveLength(1);
+    expect(within(screen.getByRole("region", { name: "Run detail" })).getByText("Synthetic")).toBeInTheDocument();
+  });
+
   it("marks a run in progress only while a worker holds it", () => {
     renderRuns();
     act(() =>

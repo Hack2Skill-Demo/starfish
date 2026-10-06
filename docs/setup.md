@@ -99,7 +99,11 @@ Be honest with yourself about this list before the demo:
   (`src/integrations/githubPr.ts`, tested against a local git remote and a fake GitHub API, **never against real
   GitHub**) and the mounted GitHub token has that one reader, but nothing that runs deployed calls it.
 - **No alert when ingestion stops**, only the UI's "engine stopped" line (#6).
-- **No App Check, no seeded evidence history** (#12). The public page shows what really happened and no more.
+- **No App Check** (#12). The public page shows what really happened and no more, unless you add the synthetic
+  history: `STARFISH_ENV=demo pnpm seed-demo -- --apply --project=<id>` writes five made-up incidents and finished
+  runs, one per path of the loop, each marked `synthetic: true` and badged "Synthetic" in the UI; `--remove` deletes
+  exactly them. It refuses any other environment. What it writes: the README's
+  [Synthetic demo history](../README.md#synthetic-demo-history).
 
 Everything here is in the issues; the order that gets to the headline demo fastest is #5 (something to break),
 #74 (the loop as a job, once the verify step's isolation is decided), then #11 (the index heal: only its parser

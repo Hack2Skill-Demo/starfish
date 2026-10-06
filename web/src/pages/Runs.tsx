@@ -14,6 +14,7 @@ import PageMeta from "../components/PageMeta";
 import SettingsUnavailableNotice from "../components/SettingsUnavailableNotice";
 import { EngineStatus } from "../components/EngineStatus";
 import { Badge } from "../components/ui/Badge";
+import { SyntheticBadge } from "../components/SyntheticBadge";
 import { EmptyState } from "../components/ui/EmptyState";
 import { formatDateTime, formatRelativeTime } from "../lib/formatters";
 import { useEnvironment } from "../lib/useSettings";
@@ -164,7 +165,10 @@ function RunList({
               >
                 <div className="flex items-center justify-between gap-2">
                   <span className="truncate font-mono text-xs text-gray-900 dark:text-gray-100">{c.incidentId}</span>
-                  <Badge tone={status.tone}>{status.label}</Badge>
+                  <span className="flex shrink-0 items-center gap-1">
+                    {c.synthetic && <SyntheticBadge />}
+                    <Badge tone={status.tone}>{status.label}</Badge>
+                  </span>
                 </div>
                 <div className="mt-1 flex flex-wrap gap-x-3 text-xs text-gray-600 dark:text-gray-400">
                   {c.recurrence > 0 && <span>recurrence {c.recurrence}</span>}
@@ -206,6 +210,7 @@ function RunDetail({ cycle, environment, now }: { cycle: CycleRow; environment: 
         <div className="flex flex-wrap items-center gap-2">
           <h2 className="font-mono text-sm font-semibold text-gray-900 dark:text-white">{cycle.incidentId}</h2>
           <Badge tone={status.tone}>{status.label}</Badge>
+          {cycle.synthetic && <SyntheticBadge />}
         </div>
         <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-sm text-gray-700 dark:text-gray-300">
           {cycle.path && (

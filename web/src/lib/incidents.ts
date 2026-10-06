@@ -68,6 +68,8 @@ export interface IncidentRow {
   /** The issue that tracked the fix the latest regression broke, when there was one. */
   previousIssueNumber?: number;
   previousIssueUrl?: string;
+  /** Written by `pnpm seed-demo` (src/seedDemo.ts), not by any real run: the UI must say so wherever it shows it. */
+  synthetic?: true;
 }
 
 const MS_PER_HOUR = 3600_000;
@@ -139,6 +141,7 @@ export function toRow(id: string, d: Record<string, unknown>, windowHours: numbe
     lastRecurredAt: str(iso(d.lastRecurredAt)),
     previousIssueNumber: typeof last.githubIssueNumber === "number" ? last.githubIssueNumber : undefined,
     previousIssueUrl: str(last.githubIssueUrl),
+    ...(d.synthetic === true && { synthetic: true as const }),
   };
 }
 

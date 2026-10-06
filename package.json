@@ -13,6 +13,7 @@
     "spike": "tsx src/spike.ts",
     "scrub": "tsx src/scrubCli.ts",
     "scoreboard": "tsx src/scoreboardCli.ts",
+    "seed-demo": "tsx src/seedDemoCli.ts",
     "ingest": "tsx src/ingestCli.ts",
     "agent": "tsx src/agentCli.ts",
     "status": "tsx src/statusCli.ts",
