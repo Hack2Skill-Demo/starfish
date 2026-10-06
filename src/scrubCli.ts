@@ -11,7 +11,7 @@
  */
 import { initializeApp } from "firebase-admin/app";
 import { getFirestore } from "firebase-admin/firestore";
-import { loadConfig } from "./config.js";
+import { loadConfig, usingFirestoreEmulator } from "./config.js";
 import { scrubCollection } from "./scrub.js";
 
 const args = process.argv.slice(2);
@@ -30,7 +30,7 @@ if (apply && named !== config.projectId) {
 initializeApp({ projectId: config.projectId });
 const db = getFirestore(config.databaseId);
 const where = `${config.projectId} / ${config.databaseId} / ${config.incidentCollection}`;
-console.log(`${apply ? "Scrubbing" : "Dry run on"} ${where}${process.env.FIRESTORE_EMULATOR_HOST ? " (emulator)" : ""}`);
+console.log(`${apply ? "Scrubbing" : "Dry run on"} ${where}${usingFirestoreEmulator() ? " (emulator)" : ""}`);
 
 const r = await scrubCollection(db, config, { apply });
 console.log(`scanned ${r.scanned} incidents; ${r.changed} held something to redact`);

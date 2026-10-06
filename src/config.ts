@@ -370,6 +370,19 @@ export function loadChildProcessBasics(): { PATH?: string; HOME?: string } {
   return { PATH: process.env.PATH, HOME: process.env.HOME };
 }
 
+/**
+ * What the verify gate's command may inherit from this process (src/agent/verifyGate.ts): PATH to find its tools and
+ * LANG for its locale. HOME is not here: the gate gives the command a scratch home of its own.
+ */
+export function loadVerifyCommandBasics(): { PATH?: string; LANG: string } {
+  return { PATH: process.env.PATH, LANG: process.env.LANG ?? "C.UTF-8" };
+}
+
+/** True when the Firestore Admin SDK is pointed at the emulator (FIRESTORE_EMULATOR_HOST), for CLIs that say so. */
+export function usingFirestoreEmulator(): boolean {
+  return Boolean(process.env.FIRESTORE_EMULATOR_HOST);
+}
+
 /** The entries unchanged if each is `project/database`; a typo throws at startup rather than widening what is allowed. */
 function validIndexTargets(entries: string[]): string[] {
   parseAllowedTargets(entries);

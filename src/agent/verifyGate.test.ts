@@ -9,6 +9,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { MAX_CHANGED_FILES, MAX_OUTPUT_CHARS, MAX_PATCH_BYTES, isExcludedPath, verifyPatch, type VerifyConfig } from "./verifyGate.js";
+import { parseRunnerResult } from "./verifyProtocol.js";
 import { DEFAULT_PATCH_EXCLUDED_PATHS } from "../config.js";
 import { SEEDED_SECRETS } from "../ingest/testSecrets.js";
 
@@ -89,6 +90,24 @@ function isRunning(pid: number): boolean {
     return !execFileSync("ps", ["-o", "stat=", "-p", String(pid)], { encoding: "utf8" }).trim().startsWith("Z");
   } catch {
     return false; // ps exits non-zero when the process is gone
+  }
+}
+
+const hasSetsid = (() => {
+  try {
+    execFileSync("sh", ["-c", "command -v setsid"], { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+})();
+
+/** Kill the process whose pid the command wrote to `marker`: the gate deliberately leaves an escaped one running. */
+function killMarked() {
+  try {
+    process.kill(Number(readFileSync(marker, "utf8").trim()), "SIGKILL");
+  } catch {
+    // already gone, or never written
   }
 }
 
@@ -213,6 +232,15 @@ describe("verifyPatch: what it refuses before running anything", () => {
     const files = Object.fromEntries(Array.from({ length: MAX_CHANGED_FILES + 1 }, (_, i) => [`gen/f${i}.txt`, "x\n"]));
     await refused(diffOf(files), "too-many-files");
   });
+
+  it("a too-many-files refusal survives the verify job's protocol, however many files it changed (#135)", async () => {
+    const files = Object.fromEntries(Array.from({ length: MAX_CHANGED_FILES + 5 }, (_, i) => [`gen/f${i}.txt`, "x\n"]));
+    const r = await verify(diffOf(files));
+    expect(r).toMatchObject({ status: "rejected", rule: "too-many-files" });
+    expect(r.changedFiles).toHaveLength(MAX_CHANGED_FILES + 1);
+    // What the runner writes is what the agent parses: the refusal must reach the fixer, not throw.
+    expect(parseRunnerResult(JSON.stringify(r), r.patchSha256)).toMatchObject({ status: "rejected", rule: "too-many-files" });
+  });
 });
 
 describe("verifyPatch: paths that leave the checkout", () => {
@@ -276,15 +304,35 @@ describe("verifyPatch: the command's world", () => {
     }
   });
 
-  it("passes through only the variables it was told to", async () => {
-    process.env.STARFISH_TEST_ALLOWED = "allowed-value";
+  it("passes the extra variables it was given by value, and cannot have its basics overridden by them", async () => {
+    const r = await verify(goodPatch(), cfg({ verifyCommand: 'echo "x=$STARFISH_TEST_ALLOWED"; echo "ci=$CI"; grep -q new greeting.txt' }), {
+      extraEnv: { STARFISH_TEST_ALLOWED: "allowed-value", CI: "0" },
+    });
+    expect(r.output).toContain("x=allowed-value");
+    expect(r.output).toContain("ci=1");
+  });
+
+  it("does not wait on a process that left the process group: the timeout still bounds the wait (#135)", async () => {
+    if (!hasSetsid) return; // setsid is util-linux; without it this escape cannot be staged
     try {
-      const r = await verify(goodPatch(), cfg({ verifyCommand: "echo $STARFISH_TEST_ALLOWED; grep -q new greeting.txt" }), {
-        passEnv: ["STARFISH_TEST_ALLOWED", "STARFISH_NOT_SET"],
-      });
-      expect(r.output).toContain("allowed-value");
+      const started = Date.now();
+      const r = await verify(goodPatch(), cfg({ verifyCommand: `setsid sleep 15 & echo $! > ${marker}; sleep 30`, verifyTimeoutSeconds: 2 }));
+      expect(r).toMatchObject({ status: "timeout", rule: "command-timeout" });
+      expect(Date.now() - started).toBeLessThan(8_000);
     } finally {
-      delete process.env.STARFISH_TEST_ALLOWED;
+      killMarked();
+    }
+  });
+
+  it("returns when the command exits, even if an escaped child still holds its output (#135)", async () => {
+    if (!hasSetsid) return;
+    try {
+      const started = Date.now();
+      const r = await verify(goodPatch(), cfg({ verifyCommand: `setsid sleep 15 & echo $! > ${marker}; exit 0`, verifyTimeoutSeconds: 2 }));
+      expect(r).toMatchObject({ status: "passed", exitCode: 0 });
+      expect(Date.now() - started).toBeLessThan(8_000);
+    } finally {
+      killMarked();
     }
   });
 

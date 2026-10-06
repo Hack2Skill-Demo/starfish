@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { loadChildProcessBasics, loadConfig, loadGithubToken, loadSlackOnCallWebhook, loadVerifyRunnerRequest } from "./config.js";
+import { loadChildProcessBasics, loadConfig, loadGithubToken, loadSlackOnCallWebhook, loadVerifyCommandBasics, loadVerifyRunnerRequest, usingFirestoreEmulator } from "./config.js";
 
 // Env vars that loadConfig reads; cleared first so the developer's own .env/shell can't leak in.
 const KEYS = [
@@ -237,6 +237,22 @@ describe("loadConfig: the pull-request target", () => {
     vi.stubEnv("HOME", "/home/x");
     vi.stubEnv("STARFISH_GITHUB_TOKEN", "sekret");
     expect(loadChildProcessBasics()).toEqual({ PATH: "/bin", HOME: "/home/x" });
+  });
+
+  it("hands the verify command only PATH and LANG, with a default locale", () => {
+    vi.stubEnv("PATH", "/bin");
+    vi.stubEnv("LANG", "de_DE.UTF-8");
+    vi.stubEnv("STARFISH_GITHUB_TOKEN", "sekret");
+    expect(loadVerifyCommandBasics()).toEqual({ PATH: "/bin", LANG: "de_DE.UTF-8" });
+    vi.stubEnv("LANG", undefined);
+    expect(loadVerifyCommandBasics().LANG).toBe("C.UTF-8");
+  });
+
+  it("knows when the Firestore emulator is in use", () => {
+    vi.stubEnv("FIRESTORE_EMULATOR_HOST", "localhost:8080");
+    expect(usingFirestoreEmulator()).toBe(true);
+    vi.stubEnv("FIRESTORE_EMULATOR_HOST", "");
+    expect(usingFirestoreEmulator()).toBe(false);
   });
 });
 
