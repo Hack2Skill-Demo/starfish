@@ -88,6 +88,8 @@ describe("scripts/setup-github-deploy.sh", () => {
       const secrets = project.find((l) => roleOf(l) === "roles/secretmanager.admin");
       expect(secrets).toContain('resource.name == "projects/<project-number>/secrets/starfish-github-token"');
       expect(secrets).toContain('resource.name.startsWith("projects/<project-number>/secrets/starfish-slack-oncall/")');
+      // #169: the #ops-alerts webhook is deploy-gcp.sh's secret too, so the deployer must be able to write it.
+      expect(secrets).toContain('resource.name == "projects/<project-number>/secrets/starfish-slack-alerts"');
       for (const twilio of ["starfish-twilio-account-sid", "starfish-twilio-auth-token", "starfish-twilio-from-number"]) {
         expect(secrets).toContain(`resource.name == "projects/<project-number>/secrets/${twilio}"`);
       }
@@ -109,9 +111,10 @@ describe("scripts/setup-github-deploy.sh", () => {
   });
 
   it("names the secrets and buckets deploy-gcp.sh uses, and refuses names that could reach a condition", () => {
-    const r = setup({ ...dry, GITHUB_SECRET: "gh-tok", SLACK_SECRET: "slack-x" });
+    const r = setup({ ...dry, GITHUB_SECRET: "gh-tok", SLACK_SECRET: "slack-x", SLACK_ALERTS_SECRET: "slack-a" });
     expect(r.out).toContain("secrets/gh-tok");
     expect(r.out).toContain("secrets/slack-x");
+    expect(r.out).toContain("secrets/slack-a");
     for (const bad of ['a"b', "a b", "a)||true"]) expect(setup({ ...dry, GITHUB_SECRET: bad }).status, bad).not.toBe(0);
   });
 

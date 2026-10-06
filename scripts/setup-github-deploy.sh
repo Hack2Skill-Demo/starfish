@@ -19,7 +19,7 @@
 #   VERIFY_ISOLATION     what the deploy will use (deploy-gcp.sh's setting). Default github-actions; cloud-run-job also lets
 #                        the deployer manage the verify bucket and the agent account's own IAM policy
 #   ENGINE_SA_NAME, SCHEDULER_SA_NAME, AGENT_SA_NAME, VERIFIER_SA_NAME, ADMIN_SA_NAME, GITHUB_SECRET, SLACK_SECRET,
-#   TWILIO_SID_SECRET, TWILIO_TOKEN_SECRET, TWILIO_FROM_SECRET, VERIFY_BUCKET
+#   SLACK_ALERTS_SECRET, TWILIO_SID_SECRET, TWILIO_TOKEN_SECRET, TWILIO_FROM_SECRET, VERIFY_BUCKET
 #                        the names deploy-gcp.sh uses, with its defaults: set them here as you set them there
 #
 # What it makes: the pool, the provider (attribute condition: this repository's id AND this environment, so no other
@@ -55,6 +55,7 @@ VERIFIER_SA_NAME="${VERIFIER_SA_NAME:-starfish-verifier}"
 ADMIN_SA_NAME="${ADMIN_SA_NAME:-starfish-admin-api}"
 GITHUB_SECRET="${GITHUB_SECRET:-starfish-github-token}"
 SLACK_SECRET="${SLACK_SECRET:-starfish-slack-oncall}"
+SLACK_ALERTS_SECRET="${SLACK_ALERTS_SECRET:-starfish-slack-alerts}"
 TWILIO_SID_SECRET="${TWILIO_SID_SECRET:-starfish-twilio-account-sid}"
 TWILIO_TOKEN_SECRET="${TWILIO_TOKEN_SECRET:-starfish-twilio-auth-token}"
 TWILIO_FROM_SECRET="${TWILIO_FROM_SECRET:-starfish-twilio-from-number}"
@@ -71,7 +72,7 @@ case "$REPO" in
 esac
 case "$ENVIRONMENT$POOL$PROVIDER$DEPLOYER_NAME" in *[!A-Za-z0-9._-]*) die "ENVIRONMENT, POOL, PROVIDER and DEPLOYER_NAME may hold only letters, digits, . _ -" ;; esac
 # These names go into IAM condition expressions and resource paths: nothing but the characters the resources allow.
-for var in ENGINE_SA_NAME SCHEDULER_SA_NAME AGENT_SA_NAME VERIFIER_SA_NAME ADMIN_SA_NAME GITHUB_SECRET SLACK_SECRET TWILIO_SID_SECRET TWILIO_TOKEN_SECRET TWILIO_FROM_SECRET VERIFY_BUCKET; do
+for var in ENGINE_SA_NAME SCHEDULER_SA_NAME AGENT_SA_NAME VERIFIER_SA_NAME ADMIN_SA_NAME GITHUB_SECRET SLACK_SECRET SLACK_ALERTS_SECRET TWILIO_SID_SECRET TWILIO_TOKEN_SECRET TWILIO_FROM_SECRET VERIFY_BUCKET; do
   case "${!var}" in ''|*[!A-Za-z0-9._-]*) die "$var may hold only letters, digits, . _ -: ${!var}" ;; esac
 done
 case "$DEPLOYER_ROLE_ID$SA_IAM_ROLE_ID" in *[!A-Za-z0-9_.]*) die "DEPLOYER_ROLE_ID and SA_IAM_ROLE_ID may hold only letters, digits, _ ." ;; esac
@@ -162,10 +163,10 @@ for role in roles/serviceusage.serviceUsageAdmin "$DEPLOYER_ROLE" roles/datastor
   bind "$PROJECT_ID" "$role"
 done
 # Secrets: Starfish's own, by name, and no other (the watched app's, when it shares the project, stay out of reach): the
-# GitHub token, the Slack on-call webhook, and Twilio's three for the phone escalation (#37).
+# GitHub token, the Slack on-call and #ops-alerts webhooks (#169), and Twilio's three for the phone escalation (#37).
 # Secret Manager names a secret by the project NUMBER.
 secret_is() { echo "resource.name == \"projects/$PROJECT_NUMBER/secrets/$1\" || resource.name.startsWith(\"projects/$PROJECT_NUMBER/secrets/$1/\")"; }
-bind "$PROJECT_ID" roles/secretmanager.admin "$(secret_is "$GITHUB_SECRET") || $(secret_is "$SLACK_SECRET") || $(secret_is "$TWILIO_SID_SECRET") || $(secret_is "$TWILIO_TOKEN_SECRET") || $(secret_is "$TWILIO_FROM_SECRET")"
+bind "$PROJECT_ID" roles/secretmanager.admin "$(secret_is "$GITHUB_SECRET") || $(secret_is "$SLACK_SECRET") || $(secret_is "$SLACK_ALERTS_SECRET") || $(secret_is "$TWILIO_SID_SECRET") || $(secret_is "$TWILIO_TOKEN_SECRET") || $(secret_is "$TWILIO_FROM_SECRET")"
 # Buckets: the source bucket `run jobs deploy --source` uploads to (run-sources-<project>-<region>, or the older
 # <project>_cloudbuild) and, with cloud-run-job, the verify bucket; their objects too. No other bucket.
 bucket_is() { echo "resource.name == \"projects/_/buckets/$1\" || resource.name.startsWith(\"projects/_/buckets/$1/\")"; }
