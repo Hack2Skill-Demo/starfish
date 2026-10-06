@@ -22,7 +22,11 @@ const file = {
   cases: [{ caseId: "c", split: "tuning", path: "decline", expectedTriage: "decline", outcome: { status: "completed", triage: "decline" } }],
 };
 
-describe("pnpm scoreboard", () => {
+// Each case starts the CLI as its own process (pnpm, then tsx): a few seconds apiece, more on a busy machine. The
+// default 5 s timeout made the slowest case fail under load, so these cases get room, not a skip.
+const CLI_TIMEOUT_MS = 30_000;
+
+describe("pnpm scoreboard", { timeout: CLI_TIMEOUT_MS }, () => {
   it("writes nothing when there are no runs, and says so", () => {
     const d = mkdtempSync(join(tmpdir(), "sbcli-"));
     const r = run("--dir", join(d, "results"), "--out", join(d, "RESULTS.md"));

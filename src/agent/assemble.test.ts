@@ -38,7 +38,7 @@ beforeAll(() => {
 });
 afterAll(() => rmSync(root, { recursive: true, force: true }));
 
-const cfgRepo = (over = {}) => ({ githubRepo: "acme/shop", githubBaseBranch: "main", githubRemoteUrl: bare, ...over });
+const cfgRepo = (over = {}) => ({ githubRepo: "acme/shop", githubBaseBranch: "main", githubRemoteUrl: bare, githubApiUrl: "https://api.github.com", ...over });
 
 describe("createGitCheckout", () => {
   it("clones the base branch at its tip, lists the tracked files and cleans up", async () => {
