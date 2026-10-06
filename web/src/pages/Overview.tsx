@@ -15,6 +15,7 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router";
 import { useQuery } from "@tanstack/react-query";
 import PageMeta from "../components/PageMeta";
+import SettingsUnavailableNotice from "../components/SettingsUnavailableNotice";
 import { Badge } from "../components/ui/Badge";
 import { HourlyBars } from "../components/HourlyBars";
 import { EngineStatus } from "../components/EngineStatus";
@@ -29,7 +30,7 @@ const WINDOW_HOURS = 24;
 const TICK_MS = 15_000;
 
 export default function Overview() {
-  const { environment, ready } = useEnvironment();
+  const { environment, ready, settingsUnavailable } = useEnvironment();
   const [cycles, setCycles] = useState<CycleRow[] | null>(null);
   const [capped, setCapped] = useState(false);
   const [cyclesFailed, setCyclesFailed] = useState(false);
@@ -74,6 +75,7 @@ export default function Overview() {
   return (
     <div className="space-y-6">
       <PageMeta title="Overview | Starfish" description="What is waiting on a human, and what the agent is doing" />
+      {settingsUnavailable && <SettingsUnavailableNotice environment={environment} subject="incidents, runs and errors" />}
       <div>
         <h1 className="text-xl font-semibold text-gray-900 dark:text-white">Overview</h1>
         <p className="mt-1 text-lg text-gray-900 dark:text-gray-100" data-testid="headline">

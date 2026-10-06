@@ -69,6 +69,22 @@ describe("Runs page", () => {
     vi.clearAllMocks();
     mocks.subscribedEvents.length = 0;
     mocks.cyclesCb = mocks.cyclesErr = mocks.eventsCb = undefined;
+    mocks.env = { environment: "demo", ready: true, settingsUnavailable: false };
+  });
+
+  it("says the settings couldn't be read, so an empty list isn't taken for a quiet day (#143)", () => {
+    mocks.env = { environment: "build-label", ready: true, settingsUnavailable: true };
+    renderRuns();
+    act(() => mocks.cyclesCb!([], false));
+    const notice = screen.getByText(/Couldn't read the runtime settings/);
+    expect(notice).toHaveTextContent("runs are filtered");
+    expect(notice).toHaveTextContent("build-label");
+  });
+
+  it("shows no settings notice when the settings read succeeded", () => {
+    renderRuns();
+    act(() => mocks.cyclesCb!([], false));
+    expect(screen.queryByText(/Couldn't read the runtime settings/)).toBeNull();
   });
 
   it("says nothing has run, instead of looking like a quiet day", async () => {

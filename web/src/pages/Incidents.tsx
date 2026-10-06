@@ -31,6 +31,7 @@ import {
 } from "lucide-react";
 import { EmptyState } from "../components/ui/EmptyState";
 import PageMeta from "../components/PageMeta";
+import SettingsUnavailableNotice from "../components/SettingsUnavailableNotice";
 import { EngineStatus } from "../components/EngineStatus";
 import { RunIngestButton } from "../components/AdminActions";
 import { toast } from "../components/ui/toast";
@@ -181,16 +182,7 @@ export default function Incidents() {
     <>
       <PageMeta title="Incidents | Starfish" description="Browse and triage production incidents" />
       <div className="space-y-6">
-        {settingsUnavailable && (
-          <p
-            role="status"
-            className="rounded-lg border border-warning-200 bg-warning-50 px-4 py-3 text-sm text-warning-800 dark:border-warning-500/30 dark:bg-warning-500/10 dark:text-warning-200"
-          >
-            Couldn&apos;t read the runtime settings, so incidents are filtered by this build&apos;s environment label (
-            <span className="font-mono">{environment}</span>). If an admin has changed the label, this list may be empty or
-            out of date.
-          </p>
-        )}
+        {settingsUnavailable && <SettingsUnavailableNotice environment={environment} subject="incidents" />}
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Incidents</h1>

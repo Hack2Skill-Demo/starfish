@@ -67,6 +67,23 @@ describe("IncidentDetail page", () => {
     vi.clearAllMocks();
     mocks.getIncident.mockResolvedValue(row);
     mocks.readCycle.mockResolvedValue(null);
+    mocks.env = { environment: "demo", ready: true, settingsUnavailable: false };
+  });
+
+  it("says the settings couldn't be read, so \"no incident here\" isn't taken at face value (#143)", async () => {
+    mocks.env = { environment: "build-label", ready: true, settingsUnavailable: true };
+    mocks.getIncident.mockResolvedValue(null);
+    renderPage();
+    expect(await screen.findByText("No incident with this id in this environment.")).toBeInTheDocument();
+    const notice = screen.getByText(/Couldn't read the runtime settings/);
+    expect(notice).toHaveTextContent("build-label");
+    expect(mocks.getIncident).toHaveBeenCalledWith("inc-1", "build-label");
+  });
+
+  it("shows no settings notice when the settings read succeeded", async () => {
+    renderPage();
+    await screen.findByRole("heading", { name: "orders-create" });
+    expect(screen.queryByText(/Couldn't read the runtime settings/)).toBeNull();
   });
 
   it("shows what was detected, and every later stage as not reached when no run is recorded", async () => {
