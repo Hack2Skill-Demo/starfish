@@ -51,6 +51,7 @@ scripts/setup-github-deploy.sh   # one-time: lets GitHub Actions deploy with no 
 scripts/ingest-cadence.sh status|recording|restore|now   # the ingest's tick for recording the demo, and a run now (#65); DRY_RUN=1 prints
 pnpm scoreboard       # scoreboard/RESULTS.md from recorded runs (#10; format in scoreboard/FORMAT.md; no run recorded yet)
 pnpm replay           # replay the agent's stages over a corpus into a results file (#10); --check-corpus checks the cases without a model; needs Vertex for a real run, none recorded
+pnpm escalate         # one tick of the phone escalation (#37); the agent pass runs it too; off unless STARFISH_PHONE_ESCALATION; never run against real Twilio
 pnpm scrub            # dry-run: how many stored incidents still hold a credential/email (--apply to rewrite)
 pnpm seed-demo        # dry-run: the synthetic, badged demo history (#12); --apply/--remove need --project, refuses unless STARFISH_ENV=demo
 bash .claude/hooks/git-branch-guard.test.sh        # hook suites
@@ -231,6 +232,21 @@ src/
                    one of its PRs at an exact head (`mergePullRequest`), comments on it, and opens the revert of its own
                    merge commit on starfish/revert-<cycle> (`openRevertPullRequest`). Never run against real
                    GitHub; run by `pnpm agent` (deployable, never run)
+  oncall/escalation.ts  phone escalation (#37): an urgent cycle (triage notify/act, waiting for a person) whose Slack message
+                   went unacknowledged for the policy's wait -> primary, primary again after 2 min, secondary, support lead.
+                   One sequence per cycle, each call claimed in a transaction (claimer, per-person daily cap) before it is
+                   placed; ack = incident acknowledged/resolved/ignored in the UI, or keypress 1; quiet hours unless critical
+                   (recurred, or >= criticalOccurrences); run events stage `escalation`, numbers masked, people by role.
+                   Ticked by `pnpm agent` and `pnpm escalate`. Off by default (env switch + admin's switch); dry run places nothing
+  oncall/twilio.ts the Twilio REST client (place a call, send a text; never retries, never throws), X-Twilio-Signature
+                   check, and the fixed TwiML (one recording, one key; no incident text is ever spoken)
+  oncall/webhooks.ts  Twilio's webhooks on the admin API (`/twilio/voice|gather|status`): signature-checked against the
+                   configured origin, 1 takes it, 2 texts the incident link, 3 passes, voicemail/no input moves on
+  oncall/optIn.ts  a number is called only once confirmed: an admin asks for a texted code, the person reads it back
+                   (admin API `POST /api/oncall/people/<id>/send-code|confirm`); hash bound to person + number
+  oncallSchema.ts  the on-call policy and person schema, `maskPhone`, quiet hours: pure, shared with the UI's Settings -> On-call.
+                   People (phone numbers) live in an admin-only collection, never the runtime settings.
+                   All of #37: tested against a fake Twilio and the emulator, never run against real Twilio
   integrations/links.ts  links from Slack and issues back to the UI, built from the configured origin and a plain id
   runtimeSettings.ts  the settings document an admin edits: validated, applied over the
                    env defaults, last-good fallback, a frozen snapshot per run
@@ -253,8 +269,10 @@ the engine recorded healed, `isHealedRun`; its activity feed is a
 collection-group query over `events`, with its own rule and index), the
 **Incidents** page, a **Runs** page (live subscription to `{cycleCollection}` and its events,
 `web/src/lib/runs.ts`; the waterfall logic is pure in `runsModel.ts`: a step with no event is "not
-reached", a cycle whose lease ran out is not "in progress"), an **incident evidence** page (`/incidents/:id`, `lib/evidence.ts`: only stored records, never a placeholder result), and a **Settings** page: the Gemini, GitHub and Slack connections, and an
-admin editor for the runtime settings (`src/runtimeSettings.ts` reads what it saves).
+reached", a cycle whose lease ran out is not "in progress"), an **incident evidence** page (`/incidents/:id`, `lib/evidence.ts`: only stored records, never a placeholder result), and a **Settings** page: the Gemini, GitHub and Slack connections, an
+admin editor for the runtime settings (`src/runtimeSettings.ts` reads what it saves), and, for admins only, **On-call** (#37,
+`pages/OnCallEditor.tsx`, `lib/onCallWrite.ts`): the people (numbers shown masked, typed in but never read back), the
+opt-in code, and the call policy.
 React 19, Vite, Tailwind 4, react-router, TanStack Query; Starfish's own theme in
 `web/src/styles/theme.css` and components in `web/src/components/ui/`.
 

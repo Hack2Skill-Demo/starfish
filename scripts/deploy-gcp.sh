@@ -32,6 +32,14 @@
 #                        message can link back: AGENT_EXTRA_ENV_VARS="STARFISH_UI_URL=https://<site>.web.app"
 #   STARFISH_SLACK_WEBHOOK_ALERTS  with DEPLOY_AGENT=1, optional: the #ops-alerts webhook for the "new incident" message
 #                        (#17). Handled exactly like the on-call one, in its own secret starfish-slack-alerts.
+#   STARFISH_TWILIO_ACCOUNT_SID, STARFISH_TWILIO_AUTH_TOKEN, STARFISH_TWILIO_FROM_NUMBER  all three or none: Twilio's
+#                        credentials for the phone escalation (#37). Each is stored over stdin as a version of its own
+#                        secret (starfish-twilio-account-sid, -auth-token, -from-number), never printed, and mounted on
+#                        the agent job (DEPLOY_AGENT=1) and the admin API (DEPLOY_ADMIN_API=1, which serves Twilio's
+#                        webhooks), readable by those two accounts only. A Twilio number and every call cost money.
+#                        Storing them turns nothing on: the agent also needs STARFISH_PHONE_ESCALATION=true,
+#                        STARFISH_ONCALL_AUDIO_URL and STARFISH_TWILIO_WEBHOOK_URL (EXTRA_ENV_VARS), the admin's switch in
+#                        Settings -> On-call, and its dry run off. Never run against real Twilio (docs/deploy.md)
 #   STARFISH_MONITORING_ENABLED  true to read the Cloud Monitoring failure signal beside the logs (#19). Default false.
 #                        Set on the ingest job (and the admin API, which runs ingest too), and only when true are their
 #                        accounts granted roles/monitoring.viewer on WATCHED_PROJECT_ID and the Monitoring API enabled
@@ -67,6 +75,7 @@
 #                        runs ingest now and retires an incident for a caller holding a Firebase ID token AND the admin
 #                        role. It reuses the ingest job's image (no second build) and runs as its OWN account (#146),
 #                        which holds what an ingest run needs (the watched project's logs, Starfish's database) and no secret
+#                        but Twilio's, when STARFISH_TWILIO_* are given (#37)
 #   ADMIN_SA_NAME        the admin API's service account. Default starfish-admin-api
 #   ADMIN_API_ORIGINS    the operator UI's origin(s), comma-separated, allowed to call it from a browser, e.g.
 #                        https://my-site.web.app. Empty: no browser may (a server-side caller is not affected)
@@ -120,6 +129,9 @@ SCHEDULER_JOB_NAME="${SCHEDULER_JOB_NAME:-$JOB_NAME-tick}"
 GITHUB_SECRET="${GITHUB_SECRET:-starfish-github-token}"
 SLACK_SECRET="${SLACK_SECRET:-starfish-slack-oncall}"
 SLACK_ALERTS_SECRET="${SLACK_ALERTS_SECRET:-starfish-slack-alerts}"
+TWILIO_SID_SECRET="${TWILIO_SID_SECRET:-starfish-twilio-account-sid}"
+TWILIO_TOKEN_SECRET="${TWILIO_TOKEN_SECRET:-starfish-twilio-auth-token}"
+TWILIO_FROM_SECRET="${TWILIO_FROM_SECRET:-starfish-twilio-from-number}"
 AGENT_JOB_NAME="${AGENT_JOB_NAME:-starfish-agent}"
 AGENT_SA_NAME="${AGENT_SA_NAME:-starfish-agent}"
 AGENT_SCHEDULER_JOB_NAME="${AGENT_SCHEDULER_JOB_NAME:-$AGENT_JOB_NAME-tick}"
@@ -130,6 +142,19 @@ ADMIN_SA_NAME="${ADMIN_SA_NAME:-starfish-admin-api}"
 die() { echo "deploy-gcp: $*" >&2; exit 1; }
 
 [ -n "$PROJECT_ID" ] || die "PROJECT_ID is required"
+# Twilio (#37): all three or none, each of its shape (loadTwilioCredentials in src/config.ts). Refused by name, never echoed.
+TWILIO_GIVEN=0
+TWILIO_SET=0
+for var in STARFISH_TWILIO_ACCOUNT_SID STARFISH_TWILIO_AUTH_TOKEN STARFISH_TWILIO_FROM_NUMBER; do
+  [ -z "${!var:-}" ] || TWILIO_SET=$((TWILIO_SET + 1))
+done
+if [ "$TWILIO_SET" != "0" ]; then
+  [ "$TWILIO_SET" = "3" ] || die "STARFISH_TWILIO_ACCOUNT_SID, STARFISH_TWILIO_AUTH_TOKEN and STARFISH_TWILIO_FROM_NUMBER must be set together"
+  [[ "$STARFISH_TWILIO_ACCOUNT_SID" =~ ^AC[0-9a-f]{32}$ ]] || die "STARFISH_TWILIO_ACCOUNT_SID is not a Twilio account SID (AC + 32 hex)"
+  [[ "$STARFISH_TWILIO_AUTH_TOKEN" =~ ^[0-9a-f]{32}$ ]] || die "STARFISH_TWILIO_AUTH_TOKEN is not a Twilio auth token (32 hex)"
+  [[ "$STARFISH_TWILIO_FROM_NUMBER" =~ ^\+[1-9][0-9]{6,14}$ ]] || die "STARFISH_TWILIO_FROM_NUMBER is not an E.164 number (+15551234567)"
+  TWILIO_GIVEN=1
+fi
 if [ "$DEPLOY_ADMIN_API" = "1" ]; then
   case "$ADMIN_SERVICE_NAME" in ''|*[!a-z0-9-]*|-*|*-) die "ADMIN_SERVICE_NAME must be lowercase letters, digits and hyphens: $ADMIN_SERVICE_NAME" ;; esac
   case "$ADMIN_API_ORIGINS" in *[[:space:]]*|*[\"\'\@]*) die "ADMIN_API_ORIGINS is a comma-separated list of origins like https://my-site.web.app: $ADMIN_API_ORIGINS" ;; esac
@@ -463,6 +488,33 @@ elif has_secret_version; then
   SECRET_VERSION=1
 fi
 
+# Twilio (#37): one secret per value, created only when the credentials are given (an empty secret would fail the deploy
+# that mounts it). Who may read them is granted below, to the agent's and the admin API's accounts only.
+TWILIO_SECRETS=""
+if [ "$TWILIO_GIVEN" = "1" ]; then
+  step "Secret Manager: Twilio's credentials (#37: the phone escalation; mounted on the agent and the admin API only)"
+  for pair in "STARFISH_TWILIO_ACCOUNT_SID:$TWILIO_SID_SECRET" "STARFISH_TWILIO_AUTH_TOKEN:$TWILIO_TOKEN_SECRET" "STARFISH_TWILIO_FROM_NUMBER:$TWILIO_FROM_SECRET"; do
+    name="${pair%%:*}" secret="${pair#*:}"
+    if ! exists gcloud secrets describe "$secret" --project="$PROJECT_ID"; then
+      run gcloud secrets create "$secret" --replication-policy=automatic --project="$PROJECT_ID"
+    fi
+    if [ "$DRY_RUN" = "1" ]; then
+      echo "+ printf %s <$name> | gcloud secrets versions add $secret --data-file=- --project=$PROJECT_ID"
+    else
+      printf %s "${!name}" | gcloud secrets versions add "$secret" --data-file=- --project="$PROJECT_ID" --format=none
+    fi
+    TWILIO_SECRETS="${TWILIO_SECRETS:+$TWILIO_SECRETS,}$name=$secret:latest"
+  done
+fi
+# Let one account read the three Twilio secrets.
+grant_twilio() { # <service account>
+  local secret
+  for secret in "$TWILIO_SID_SECRET" "$TWILIO_TOKEN_SECRET" "$TWILIO_FROM_SECRET"; do
+    retry gcloud secrets add-iam-policy-binding "$secret" --project="$PROJECT_ID" \
+      --member="serviceAccount:$1" --role=roles/secretmanager.secretAccessor --quiet --format=none
+  done
+}
+
 step "Cloud Run job '$JOB_NAME' (image built from the Dockerfile)"
 DEPLOY_ARGS=(
   gcloud run jobs deploy "$JOB_NAME" --source . --region="$REGION" --project="$PROJECT_ID" --quiet
@@ -610,6 +662,10 @@ if [ "$DEPLOY_AGENT" = "1" ]; then
   fi
   [ "$SLACK_MOUNT" != "1" ] || AGENT_SECRETS="${AGENT_SECRETS:+$AGENT_SECRETS,}STARFISH_SLACK_WEBHOOK_ONCALL=$SLACK_SECRET:latest"
   [ "$SLACK_ALERTS_MOUNT" != "1" ] || AGENT_SECRETS="${AGENT_SECRETS:+$AGENT_SECRETS,}STARFISH_SLACK_WEBHOOK_ALERTS=$SLACK_ALERTS_SECRET:latest"
+  if [ -n "$TWILIO_SECRETS" ]; then
+    grant_twilio "$AGENT_SA"
+    AGENT_SECRETS="${AGENT_SECRETS:+$AGENT_SECRETS,}$TWILIO_SECRETS"
+  fi
   [ -z "$AGENT_SECRETS" ] || AGENT_DEPLOY_ARGS+=(--update-secrets="$AGENT_SECRETS")
   run "${AGENT_DEPLOY_ARGS[@]}"
   retry gcloud run jobs add-iam-policy-binding "$AGENT_JOB_NAME" --region="$REGION" --project="$PROJECT_ID" \
@@ -642,7 +698,8 @@ if [ "$DEPLOY_ADMIN_API" = "1" ]; then
   fi
   # Its own account (#146): a public service should not share an identity with anything else. It holds what one ingest
   # run and a retire need (src/adminApiCli.ts: Firebase Auth's public keys need no role; the watched project's logs;
-  # Starfish's database, read and write) and nothing more: no Gemini (ingest makes no model call), no secret.
+  # Starfish's database, read and write) and nothing more: no Gemini (ingest makes no model call), and no secret but
+  # Twilio's when they are given (#37: it serves Twilio's webhooks and texts the opt-in codes).
   if ! exists gcloud iam service-accounts describe "$ADMIN_SA" --project="$PROJECT_ID"; then
     run gcloud iam service-accounts create "$ADMIN_SA_NAME" --project="$PROJECT_ID" \
       --display-name="Starfish admin API (run ingest now, retire)"
@@ -657,11 +714,19 @@ if [ "$DEPLOY_ADMIN_API" = "1" ]; then
   # --allow-unauthenticated: a browser must reach it, so Cloud Run's own IAM check cannot be the gate. An organisation
   # policy that forbids public services will refuse this line, and then the admin API cannot serve a browser.
   # Capped instances and a cheap token check are the only limits on a stranger who calls it.
-  run gcloud run deploy "$ADMIN_SERVICE_NAME" --image="$ADMIN_IMAGE" --region="$REGION" --project="$PROJECT_ID" --quiet \
-    --service-account="$ADMIN_SA" \
-    --args=node,--import,tsx,src/adminApiCli.ts \
-    --allow-unauthenticated --max-instances=2 --concurrency=8 --timeout=900 --cpu=1 --memory=512Mi \
+  ADMIN_DEPLOY_ARGS=(
+    gcloud run deploy "$ADMIN_SERVICE_NAME" --image="$ADMIN_IMAGE" --region="$REGION" --project="$PROJECT_ID" --quiet
+    --service-account="$ADMIN_SA"
+    --args=node,--import,tsx,src/adminApiCli.ts
+    --allow-unauthenticated --max-instances=2 --concurrency=8 --timeout=900 --cpu=1 --memory=512Mi
     --update-env-vars="^@^$ADMIN_ENV"
+  )
+  # Twilio (#37): the admin API serves Twilio's webhooks (checked against the auth token) and texts the opt-in codes.
+  if [ -n "$TWILIO_SECRETS" ]; then
+    grant_twilio "$ADMIN_SA"
+    ADMIN_DEPLOY_ARGS+=(--update-secrets="$TWILIO_SECRETS")
+  fi
+  run "${ADMIN_DEPLOY_ARGS[@]}"
 fi
 
 if [ "$RUN_AFTER_DEPLOY" = "1" ]; then

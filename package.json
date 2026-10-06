@@ -17,6 +17,7 @@
     "replay": "tsx src/replayCli.ts",
     "ingest": "tsx src/ingestCli.ts",
     "agent": "tsx src/agentCli.ts",
+    "escalate": "tsx src/escalateCli.ts",
     "status": "tsx src/statusCli.ts",
     "smoke-check": "tsx src/smokeCheckCli.ts",
     "grant-operator": "tsx src/grantOperatorCli.ts",

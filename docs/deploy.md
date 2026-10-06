@@ -70,6 +70,31 @@ finishes. Delivery is at-least-once: after a crash between the post and its reco
 The optional `#ops-alerts` "new incident" webhook, `STARFISH_SLACK_WEBHOOK_ALERTS`, is handled exactly the same way in a secret of its own,
 `starfish-slack-alerts` (agent's account, agent job, the same `--update-secrets` flag), and recorded as `summary.alert`.
 
+**Phone escalation (#37). It costs money: a Twilio phone number is a monthly charge, and every call and text is billed by
+Twilio.** It is off by default and nothing here turns it on. What the operator must provide:
+
+- **A Twilio account and a voice-capable number.** Give the script all three of `STARFISH_TWILIO_ACCOUNT_SID`,
+  `STARFISH_TWILIO_AUTH_TOKEN` and `STARFISH_TWILIO_FROM_NUMBER` (E.164, `+15551234567`): it stores each over stdin as a
+  version of its own secret (`starfish-twilio-account-sid`, `-auth-token`, `-from-number`; never printed; a partial set or
+  a value of the wrong shape is refused by name, unechoed), lets only the **agent's** and the **admin API's** accounts read
+  them, and mounts them on those two only (the agent places calls; the admin API serves Twilio's webhooks, which it checks
+  against the auth token, and texts the opt-in codes). Without them nothing Twilio-shaped is created.
+- **The recording.** One audio file (MP3 or WAV) saying, in your words, that an urgent incident needs a person and the
+  details are in the on-call channel. It must name no incident: every call plays the same file. Twilio fetches it, so it
+  must be public over https, e.g. an object in a Cloud Storage bucket with `allUsers` as `roles/storage.objectViewer` on
+  that object only. Set `STARFISH_ONCALL_AUDIO_URL` to it.
+- **Where Twilio calls back.** Deploy the admin API (`DEPLOY_ADMIN_API=1`) and set `STARFISH_TWILIO_WEBHOOK_URL` to its
+  URL (the origin only, e.g. the `https://...run.app` the script prints). The signature on each webhook is checked against
+  this configured origin, never the request's Host header.
+
+Then, in `EXTRA_ENV_VARS` (so the agent and the admin API agree): `STARFISH_PHONE_ESCALATION=true`,
+`STARFISH_ONCALL_AUDIO_URL=...`, `STARFISH_TWILIO_WEBHOOK_URL=...` and `STARFISH_UI_URL=...` (the link a "2" texts). An
+admin then adds the on-call people in Settings -> On-call, has each one confirm their number with the code Starfish texts
+on request, and turns the admin's switch on. Calls are placed only with the agent's dry run off; a dry run records on the
+cycle what it would have done. The waits (10 minutes, then 2) are checked at each agent pass and whenever Twilio reports a
+call's end; for tighter timing, schedule `pnpm escalate` more often (this script does not). Built, tested against a fake
+Twilio and the Firestore emulator; **never run against real Twilio**.
+
 `loadGithubToken()` (`src/config.ts`) reads that variable, and the pull-request opener
 (`src/integrations/githubPr.ts`) is its only user. The opener is tested against a local git remote
 and a fake GitHub API, **not against real GitHub**, and the only job that calls it (the agent job, never
@@ -201,7 +226,7 @@ set them for `setup-github-deploy.sh` as you set them for the deploy.
 | with `cloud-run-job`: let the agent's account sign URLs as itself | custom role `starfishServiceAccountIam` (`get`, `getIamPolicy`, `setIamPolicy`) on **`starfish-agent` only**; the deployer already acts as that account, so this reaches no new one |
 | bind the engine's, agent's and admin API's roles | `roles/resourcemanager.projectIamAdmin`, on `PROJECT_ID`, the watched project and the Gemini project, conditioned (see the warning below) |
 | create the `starfish` database, deploy rules and indexes | `roles/datastore.owner`, `roles/firebaserules.admin` |
-| create the secrets, grant the agent access, add a version | `secretmanager.secrets.create` (in `starfishDeployer`), and `roles/secretmanager.admin` **conditioned to `starfish-github-token` and `starfish-slack-oncall` by name**: the watched app's secrets, when it shares the project, stay out of reach |
+| create the secrets, grant the agent access, add a version | `secretmanager.secrets.create` (in `starfishDeployer`), and `roles/secretmanager.admin` **conditioned to `starfish-github-token`, `starfish-slack-oncall` and the three `starfish-twilio-*` secrets by name**: the watched app's secrets, when it shares the project, stay out of reach |
 | build from source and deploy the jobs, bind the scheduler to them | `roles/run.admin`, `roles/cloudbuild.builds.editor`, `roles/artifactregistry.admin`; `storage.buckets.create` and `storage.buckets.list` (in `starfishDeployer`), and `roles/storage.admin` **conditioned to the source bucket** (`run-sources-<project>-*`, or the older `<project>_cloudbuild`) and, with `cloud-run-job`, the verify bucket |
 | create or update the schedule | `roles/cloudscheduler.admin` |
 
@@ -474,7 +499,7 @@ DRY_RUN=1 DEPLOY_AGENT=1 AGENT_REPO=owner/name VERIFY_ISOLATION=cloud-run-job VE
 `starfish-admin`, from the ingest job's own image (no second build), under **its own account**, `starfish-admin-api`
 (`ADMIN_SA_NAME`; #146): a public service shares an identity with nothing else. That account holds what one ingest run and a
 retire need, `logging.viewer` on the watched project and `datastore.user` conditioned to Starfish's database, and nothing more:
-no Gemini (ingest makes no model call), no secret. Two
+no Gemini (ingest makes no model call), no secret but Twilio's when they are given (#37: the phone escalation's webhooks and opt-in routes, `POST /twilio/*` and `POST /api/oncall/people/<id>/send-code|confirm`, all a 404 without them). Two
 actions, both admin-only, both audited, both the functions that already existed (`triggerIngest`, `retireIncident`):
 
 | Call | What it does |

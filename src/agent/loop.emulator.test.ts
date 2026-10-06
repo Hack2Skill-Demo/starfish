@@ -634,7 +634,7 @@ describe("runCycle: telling a person (#17)", () => {
     expect(calls[0]).toMatchObject({ cycleId: "inc1_r0", incidentId: "inc1", functionName: "orders-createOrder", service: "orders", path: "notify", rule: "model-notify", occurrenceCount: 42 });
     expect(calls[0]!.reason).toContain("The API is not enabled");
     expect(await kinds()).toEqual(["cycle:started", "triage:decision", "notify:pending", "notify:sent"]);
-    expect(await summaryNotify()).toEqual({ state: "sent", attempts: 1 });
+    expect(await summaryNotify()).toEqual({ at: expect.any(String), state: "sent", attempts: 1 });
   });
 
   it("tells a person when a fix could not be finished: the fixer declines, the gate or the review will not pass", async () => {
@@ -677,7 +677,7 @@ describe("runCycle: telling a person (#17)", () => {
     const notify = async () => ({ state: "failed" as const, attempts: 3, reason: "http-404:no_service" });
     const r = await runCycle(deps(scripted({ triage: [notifyDecision] }), { notify }), key);
     expect(r).toMatchObject({ kind: "finished", state: "waiting-human" });
-    expect(await summaryNotify()).toEqual({ state: "failed", attempts: 3, reason: "http-404:no_service" });
+    expect(await summaryNotify()).toEqual({ at: expect.any(String), state: "failed", attempts: 3, reason: "http-404:no_service" });
     expect(await kinds()).toContain("notify:failed");
   });
 
@@ -697,7 +697,7 @@ describe("runCycle: telling a person (#17)", () => {
     cfgOver = { dryRun: true };
     await runCycle(deps(scripted({ triage: [notifyDecision] }), { notify }), key);
     expect(calls).toHaveLength(0);
-    expect(await summaryNotify()).toEqual({ state: "dry-run" });
+    expect(await summaryNotify()).toEqual({ at: expect.any(String), state: "dry-run" });
   });
 
   it("records no notify stage at all when nothing is configured to tell a person", async () => {
@@ -837,7 +837,7 @@ describe("runCycle: the #ops-alerts \"new incident\" message (#17)", () => {
     expect(calls[0]).toMatchObject({ cycleId: "inc1_r0", incidentId: "inc1", functionName: "orders-createOrder", path: "act", occurrenceCount: 42, issueUrl: ISSUE.url });
     expect(calls[0]!.reason).toContain("A defect in the order code");
     expect(await kinds()).toEqual(["cycle:started", "triage:decision", "issue:opened", "alert:pending", "alert:sent", "fix:proposed", "verify:passed", "review:approve", "pr:opened"]);
-    expect(await summaryAlert()).toEqual({ state: "sent", attempts: 1 });
+    expect(await summaryAlert()).toEqual({ at: expect.any(String), state: "sent", attempts: 1 });
   });
 
   it("alerts for an escalated incident too, beside the on-call message, and never for a declined one", async () => {
@@ -867,7 +867,7 @@ describe("runCycle: the #ops-alerts \"new incident\" message (#17)", () => {
     cfgOver = { dryRun: true };
     await runCycle(deps(scripted({ triage: [notifyDecision] }), { alert }), key);
     expect(calls).toHaveLength(0);
-    expect(await summaryAlert()).toEqual({ state: "dry-run" });
+    expect(await summaryAlert()).toEqual({ at: expect.any(String), state: "dry-run" });
   });
 
   it("does not send again once recorded sent or failed, and sends again after a crash left it pending", async () => {

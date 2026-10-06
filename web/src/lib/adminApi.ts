@@ -45,7 +45,11 @@ function messageFor(status: number): string {
   }
 }
 
-async function post(deps: AdminApiDeps, path: string, body?: unknown): Promise<AdminResult<unknown>> {
+/**
+ * `serverSays`: for a refusal that is not about the session (401) or the role (403), show the server's own short reason
+ * (the on-call routes' "wrong code", "the code expired: send a new one"), which it chose to be safe to show.
+ */
+async function post(deps: AdminApiDeps, path: string, body?: unknown, serverSays = false): Promise<AdminResult<unknown>> {
   if (!deps.baseUrl) return { ok: false, message: "The admin service is not configured for this site." };
   let token: string | null;
   try {
@@ -75,7 +79,17 @@ async function post(deps: AdminApiDeps, path: string, body?: unknown): Promise<A
   } catch {
     return { ok: false, message: "Could not reach the admin service." };
   }
-  if (!res.ok) return { ok: false, message: messageFor(res.status) };
+  if (!res.ok) {
+    if (serverSays && res.status !== 401 && res.status !== 403) {
+      try {
+        const error = ((await res.json()) as { error?: unknown } | null)?.error;
+        if (typeof error === "string" && error.length > 0 && error.length <= 120) return { ok: false, message: `${error.charAt(0).toUpperCase()}${error.slice(1)}.` };
+      } catch {
+        // no readable reason: the generic message below
+      }
+    }
+    return { ok: false, message: messageFor(res.status) };
+  }
   try {
     return { ok: true, value: await res.json() };
   } catch {
@@ -108,6 +122,18 @@ export async function retireIncident(deps: AdminApiDeps, incidentId: string, rea
   const r = await post(deps, `/api/incidents/${encodeURIComponent(incidentId)}/retire`, { reason });
   if (!r.ok) return r;
   return { ok: true, value: { alreadyRetired: (r.value as { alreadyRetired?: unknown } | null)?.alreadyRetired === true } };
+}
+
+/** Phone escalation (#37): text a person the code that confirms their number. The server checks the admin role. */
+export async function sendOnCallCode(deps: AdminApiDeps, personId: string): Promise<AdminResult<null>> {
+  const r = await post(deps, `/api/oncall/people/${encodeURIComponent(personId)}/send-code`, undefined, true);
+  return r.ok ? { ok: true, value: null } : r;
+}
+
+/** Phone escalation (#37): confirm a person's number with the six-digit code they read back. */
+export async function confirmOnCallNumber(deps: AdminApiDeps, personId: string, code: string): Promise<AdminResult<null>> {
+  const r = await post(deps, `/api/oncall/people/${encodeURIComponent(personId)}/confirm`, { code }, true);
+  return r.ok ? { ok: true, value: null } : r;
 }
 
 /** The deps the app uses: the configured URL and the current user's fresh ID token. */

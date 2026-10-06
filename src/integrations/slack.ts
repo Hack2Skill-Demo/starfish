@@ -26,7 +26,8 @@
  * A second, optional channel (the design's `#ops-alerts`) gets the "new incident" message, `buildNewIncidentMessage`,
  * through its own webhook: once per cycle Starfish acts on or escalates, recorded the same way (`summary.alert`).
  *
- * Not built: the `#ops-log` channel (a merged fix, healed) and the phone escalation (#37). Never run against
+ * When an urgent "needs a human" message goes unacknowledged, the phone escalation (src/oncall/, #37) calls the on-call
+ * people; this file is not part of it. Not built: the `#ops-log` channel (a merged fix, healed). Never run against
  * real Slack: tested over local HTTP against a fake webhook.
  */
 import { redactPii } from "../ingest/redact.js";

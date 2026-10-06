@@ -18,6 +18,11 @@
  * returns an error's text from inside (a failed run's message is redacted and cut), reads at most 4 KB of body, and
  * runs one ingest at a time per instance: a second request while one runs is a 409, not a pile-up.
  *
+ * Phone escalation (#37): two more admin routes, `POST /api/oncall/people/<id>/send-code` and `.../confirm` (a person's
+ * consent to be phoned, src/oncall/optIn.ts), under the same token rules; and Twilio's webhooks, `POST /twilio/*`, which
+ * carry no ID token and are handed to src/oncall/webhooks.ts, which refuses anything without a valid Twilio signature.
+ * Absent wiring (no Twilio configured): all of them are a 404.
+ *
  * Public on the network on purpose: the browser must reach it (Cloud Run `--allow-unauthenticated`), and
  * everything above is what stands between the internet and the store. There is no rate limit here; the deploy caps
  * the instances, and a token check is cheap.
@@ -25,6 +30,8 @@
 import { redactPii, truncate } from "./ingest/redact.js";
 import type { RetireResult } from "./ingest/retire.js";
 import type { TriggerResult } from "./ingest/trigger.js";
+import type { ConfirmResult, SendCodeResult } from "./oncall/optIn.js";
+import type { TwilioWebhookRequest, TwilioWebhookResponse } from "./oncall/webhooks.js";
 
 export interface ApiRequest {
   method: string;
@@ -36,6 +43,12 @@ export interface ApiRequest {
   origin?: string;
   /** The parsed JSON body, or undefined when there was none (or it was not JSON). */
   body?: unknown;
+  /** The raw query string, without `?` (Twilio's webhooks are signed over it). */
+  query?: string;
+  /** A form-encoded body's parameters (Twilio's webhooks). */
+  form?: Record<string, string>;
+  /** The `X-Twilio-Signature` header. */
+  twilioSignature?: string;
 }
 
 export interface ApiResponse {
@@ -43,6 +56,8 @@ export interface ApiResponse {
   headers: Record<string, string>;
   /** JSON-serialisable; absent for a 204. */
   body?: unknown;
+  /** A body sent as it is (TwiML), instead of `body`; its content type is in `headers`. */
+  text?: string;
 }
 
 export interface AdminApiDeps {
@@ -58,9 +73,31 @@ export interface AdminApiDeps {
   verifyAppCheck?(appCheckToken: string): Promise<void>;
   /** Exact origins allowed to call from a browser. */
   allowedOrigins: readonly string[];
+  /** Phone escalation (#37): text a person their confirmation code. Absent: the route is a 404. */
+  sendOnCallCode?(personId: string, actorUid: string): Promise<SendCodeResult>;
+  /** Phone escalation (#37): confirm a person's number with the code they read back. Absent: a 404. */
+  confirmOnCallNumber?(personId: string, code: string, actorUid: string): Promise<ConfirmResult>;
+  /** Twilio's webhooks (#37), signature-checked there. Absent: `/twilio/*` is a 404. */
+  twilioWebhooks?(req: TwilioWebhookRequest): Promise<TwilioWebhookResponse>;
 }
 
 const RETIRE_RE = /^\/api\/incidents\/([A-Za-z0-9_-]{1,128})\/retire$/;
+const ONCALL_RE = /^\/api\/oncall\/people\/([A-Za-z0-9_-]{1,64})\/(send-code|confirm)$/;
+
+/** What each refusal of the on-call routes becomes: a status and a message safe to show. */
+const ONCALL_STATUS: Record<string, [number, string]> = {
+  "not-admin": [403, "admins only"],
+  "no-such-person": [404, "no such person"],
+  "invalid-id": [400, "bad request"],
+  "already-confirmed": [409, "already confirmed"],
+  "too-soon": [429, "a code was sent less than a minute ago"],
+  off: [409, "phone escalation is off on this deployment"],
+  "send-failed": [502, "the text could not be sent"],
+  "no-code": [409, "send a code first"],
+  expired: [409, "the code expired: send a new one"],
+  "wrong-code": [400, "wrong code"],
+  "too-many-tries": [409, "too many wrong codes: send a new one"],
+};
 const MAX_REASON = 200;
 
 function corsHeaders(deps: AdminApiDeps, origin: string | undefined): Record<string, string> {
@@ -88,8 +125,20 @@ export function createAdminApi(deps: AdminApiDeps): (req: ApiRequest) => Promise
     if (req.method === "OPTIONS") return { status: 204, headers: cors };
     if (req.method === "GET" && req.path === "/healthz") return reply(200, { ok: true });
 
+    // Twilio's webhooks carry no ID token: webhooks.ts checks Twilio's signature instead, before anything else.
+    if (req.path.startsWith("/twilio/")) {
+      if (!deps.twilioWebhooks) return reply(404, { error: "not found" });
+      try {
+        const out = await deps.twilioWebhooks({ method: req.method, path: req.path, query: req.query ?? "", form: req.form ?? {}, ...(req.twilioSignature !== undefined && { signature: req.twilioSignature }) });
+        return { status: out.status, headers: { "content-type": out.contentType, "cache-control": "no-store" }, text: out.body };
+      } catch {
+        return { status: 500, headers: { "content-type": "text/plain", "cache-control": "no-store" }, text: "server error" };
+      }
+    }
+
     const retireMatch = RETIRE_RE.exec(req.path);
-    const route = req.path === "/api/ingest/run" ? "ingest" : retireMatch ? "retire" : undefined;
+    const onCallMatch = ONCALL_RE.exec(req.path);
+    const route = req.path === "/api/ingest/run" ? "ingest" : retireMatch ? "retire" : onCallMatch && (onCallMatch[2] === "send-code" ? deps.sendOnCallCode : deps.confirmOnCallNumber) ? "oncall" : undefined;
     if (route === undefined) return reply(404, { error: "not found" });
     if (req.method !== "POST") return reply(405, { error: "method not allowed" });
 
@@ -133,6 +182,25 @@ export function createAdminApi(deps: AdminApiDeps): (req: ApiRequest) => Promise
         return reply(500, { error: "the run failed to start" });
       } finally {
         ingestRunning = false;
+      }
+    }
+
+    if (route === "oncall") {
+      const [, personId, action] = onCallMatch!;
+      try {
+        let result: SendCodeResult | ConfirmResult;
+        if (action === "send-code") {
+          result = await deps.sendOnCallCode!(personId!, uid);
+        } else {
+          const code = typeof req.body === "object" && req.body !== null ? (req.body as { code?: unknown }).code : undefined;
+          if (typeof code !== "string" || !/^\d{6}$/.test(code)) return reply(400, { error: "bad request" });
+          result = await deps.confirmOnCallNumber!(personId!, code, uid);
+        }
+        if (result.ok) return reply(200, { ok: true });
+        const [status, error] = ONCALL_STATUS[result.reason] ?? [400, "bad request"];
+        return reply(status, { error });
+      } catch {
+        return reply(500, { error: "the on-call change failed" });
       }
     }
 

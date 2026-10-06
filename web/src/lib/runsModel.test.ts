@@ -115,6 +115,13 @@ describe("buildWaterfall", () => {
     expect(issue).toMatchObject({ title: "GitHub issue", status: "done", outcome: "opened" });
   });
 
+  it("shows the phone escalation (#37) as one step, with its last outcome, only on a cycle that has one", () => {
+    const c = cycle({ state: "waiting-human", leaseExpiresAt: null, updatedAt: new Date(T0 + 9000) });
+    expect(buildWaterfall(c, [ev("triage", "decision", 5000)], T0 + 10_000).steps.some((s) => s.stage === "escalation")).toBe(false);
+    const w = buildWaterfall(c, [ev("triage", "decision", 5000), ev("notify", "sent", 6000), ev("escalation", "calling", 7000), ev("escalation", "acknowledged", 8000)], T0 + 10_000);
+    expect(w.steps.find((s) => s.stage === "escalation")).toMatchObject({ title: "Phone the on-call", status: "done", outcome: "acknowledged" });
+  });
+
   it("marks a stage without an event as not reached, never done", () => {
     const c = cycle({ state: "declined", leaseExpiresAt: null, updatedAt: new Date(T0 + 5000) });
     const w = buildWaterfall(c, [ev("triage", "decision", 5000)], T0 + 10_000);

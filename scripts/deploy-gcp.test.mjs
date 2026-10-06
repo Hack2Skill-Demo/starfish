@@ -548,6 +548,56 @@ describe("scripts/deploy-gcp.sh: the agent verified by the target's CI (#74), VE
   });
 });
 
+describe("scripts/deploy-gcp.sh: Twilio's credentials for the phone escalation (#37)", () => {
+  const both = { ...dry, DEPLOY_AGENT: "1", AGENT_REPO: "acme/shop", VERIFY_CHECKS: "verify", STARFISH_GITHUB_TOKEN: "ghp_x", DEPLOY_ADMIN_API: "1" };
+  const SID = `AC${"0".repeat(31)}9`;
+  const TOKEN = `${"a".repeat(31)}b`;
+  const FROM = "+15550001111";
+  const twilio = { STARFISH_TWILIO_ACCOUNT_SID: SID, STARFISH_TWILIO_AUTH_TOKEN: TOKEN, STARFISH_TWILIO_FROM_NUMBER: FROM };
+  const SECRETS = "STARFISH_TWILIO_ACCOUNT_SID=starfish-twilio-account-sid:latest,STARFISH_TWILIO_AUTH_TOKEN=starfish-twilio-auth-token:latest,STARFISH_TWILIO_FROM_NUMBER=starfish-twilio-from-number:latest";
+
+  it("creates and mounts nothing for Twilio when no credentials are given", () => {
+    const r = deploy(both);
+    expect(r.status).toBe(0);
+    expect(r.out).not.toContain("twilio");
+    expect(r.out).not.toContain("TWILIO");
+  });
+
+  it("stores each value in its own secret over stdin, never printed, readable by the agent's and the admin API's accounts only", () => {
+    const r = deploy({ ...both, ...twilio });
+    expect(r.status).toBe(0);
+    for (const v of [SID, TOKEN]) expect(r.out).not.toContain(v);
+    for (const [name, secret] of [["STARFISH_TWILIO_ACCOUNT_SID", "starfish-twilio-account-sid"], ["STARFISH_TWILIO_AUTH_TOKEN", "starfish-twilio-auth-token"], ["STARFISH_TWILIO_FROM_NUMBER", "starfish-twilio-from-number"]]) {
+      expect(r.out).toContain(`gcloud secrets create ${secret}`);
+      expect(r.out).toContain(`<${name}> | gcloud secrets versions add ${secret} --data-file=-`);
+      const members = r.out.split("\n").filter((l) => l.includes(`add-iam-policy-binding ${secret}`)).map((l) => /--member=serviceAccount:([^ ]+)/.exec(l)?.[1]);
+      expect(members.sort()).toEqual(["starfish-admin-api@star-proj.iam.gserviceaccount.com", "starfish-agent@star-proj.iam.gserviceaccount.com"]);
+    }
+  });
+
+  it("mounts them on the agent job (in its one secrets flag) and the admin API, never on the ingest", () => {
+    const r = deploy({ ...both, ...twilio });
+    const lines = r.out.split("\n");
+    const agentDeploy = lines.find((l) => l.includes("gcloud run jobs deploy starfish-agent")) ?? "";
+    const adminDeploy = lines.find((l) => l.includes("gcloud run deploy starfish-admin")) ?? "";
+    const ingestDeploy = lines.find((l) => l.includes("gcloud run jobs deploy starfish-ingest")) ?? "";
+    expect(agentDeploy).toContain(`--update-secrets=STARFISH_GITHUB_TOKEN=starfish-github-token:latest,${SECRETS}`);
+    expect(agentDeploy.match(/--update-secrets/g)).toHaveLength(1);
+    expect(adminDeploy).toContain(`--update-secrets=${SECRETS}`);
+    expect(ingestDeploy).not.toContain("TWILIO");
+  });
+
+  it("refuses a partial set, or a value of the wrong shape, by name and without echoing it", () => {
+    const partial = deploy({ ...both, STARFISH_TWILIO_ACCOUNT_SID: SID });
+    expect(partial.status).not.toBe(0);
+    expect(partial.out).toContain("must be set together");
+    const bad = deploy({ ...both, ...twilio, STARFISH_TWILIO_AUTH_TOKEN: "notatokenzzzz" });
+    expect(bad.status).not.toBe(0);
+    expect(bad.out).toContain("STARFISH_TWILIO_AUTH_TOKEN is not a Twilio auth token");
+    expect(bad.out).not.toContain("notatokenzzzz");
+  });
+});
+
 describe("scripts/deploy-gcp.sh: the agent's Slack webhook (#17)", () => {
   const agent = { ...dry, DEPLOY_AGENT: "1", AGENT_REPO: "acme/shop", VERIFY_CHECKS: "verify", STARFISH_GITHUB_TOKEN: "ghp_x" };
   const HOOK = "https://hooks.slack.com/services/T000AAAA/B000BBBB/" + "x".repeat(24);

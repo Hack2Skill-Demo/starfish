@@ -14,6 +14,7 @@ import { useAuth } from "../auth/authCore";
 import { webConfig } from "../lib/config";
 import { useEnvironment } from "../lib/useSettings";
 import { SettingsEditor } from "./SettingsEditor";
+import { OnCallEditor } from "./OnCallEditor";
 
 type ConnectionState = "engine" | "planned";
 
@@ -49,7 +50,7 @@ export const CONNECTIONS: Connection[] = [
     state: "planned",
     purpose: "Notify on incidents, escalate what needs a human, report what healed.",
     detail:
-      "The \"needs a human\" message is built, tested over local HTTP against a fake webhook, and has never run against real Slack. The #ops-alerts and #ops-log messages are not built.",
+      "The \"needs a human\" message is built, tested over local HTTP against a fake webhook, and has never run against real Slack. When an urgent one goes unacknowledged, the phone escalation (On-call, below, admins only) calls the on-call people through Twilio: built, tested against a fake Twilio, never run against real Twilio, off by default. The #ops-log message is not built.",
   },
   {
     name: "Rules & feedback engines",
@@ -68,7 +69,7 @@ const STATE_BADGE: Record<ConnectionState, { tone: "success" | "neutral"; label:
 export default function Settings() {
   const cfg = webConfig();
   const { environment } = useEnvironment();
-  const { guest } = useAuth();
+  const { guest, roles } = useAuth();
   return (
     <>
       <PageMeta title="Settings | Starfish" description="Connections and configuration" />
@@ -110,6 +111,8 @@ export default function Settings() {
         ) : (
           <SettingsEditor />
         )}
+        {/* Phone numbers are personal data: admins only, never a guest or a plain operator (#37). */}
+        {!guest && roles.includes("admin") && <OnCallEditor />}
       </div>
     </>
   );

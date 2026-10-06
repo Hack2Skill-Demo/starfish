@@ -3,21 +3,29 @@ import { createServer, type IncomingMessage, type Server } from "node:http";
 import type { ApiRequest, ApiResponse } from "./adminApi.js";
 
 const MAX_BODY_BYTES = 4096;
+/** Twilio's webhooks post a few dozen form fields (#37): more room for those, and only for those. */
+const MAX_FORM_BYTES = 16_384;
 
-/** The JSON body, undefined for none or for something that is not JSON; null when it is too big. */
-async function readBody(req: IncomingMessage): Promise<unknown | null> {
+const isForm = (req: IncomingMessage): boolean => String(req.headers["content-type"] ?? "").toLowerCase().startsWith("application/x-www-form-urlencoded");
+
+/** The JSON body (or, for a form, its fields), undefined for none or for something that is neither; null when it is too big. */
+async function readBody(req: IncomingMessage): Promise<{ json?: unknown; form?: Record<string, string> } | null> {
+  const form = isForm(req);
+  const limit = form ? MAX_FORM_BYTES : MAX_BODY_BYTES;
   const chunks: Buffer[] = [];
   let size = 0;
   for await (const chunk of req) {
     size += (chunk as Buffer).length;
-    if (size > MAX_BODY_BYTES) return null;
+    if (size > limit) return null;
     chunks.push(chunk as Buffer);
   }
-  if (size === 0 || !String(req.headers["content-type"] ?? "").toLowerCase().includes("json")) return undefined;
+  const text = Buffer.concat(chunks).toString("utf8");
+  if (form) return { form: Object.fromEntries(new URLSearchParams(text)) };
+  if (size === 0 || !String(req.headers["content-type"] ?? "").toLowerCase().includes("json")) return {};
   try {
-    return JSON.parse(Buffer.concat(chunks).toString("utf8")) as unknown;
+    return { json: JSON.parse(text) as unknown };
   } catch {
-    return undefined;
+    return {};
   }
 }
 
@@ -30,21 +38,26 @@ export function startAdminApiServer(handle: (req: ApiRequest) => Promise<ApiResp
         if (body === null) {
           out = { status: 413, headers: { "content-type": "application/json" }, body: { error: "too large" } };
         } else {
-          const path = new URL(req.url ?? "/", "http://localhost").pathname;
+          const raw = req.url ?? "/";
+          const path = new URL(raw, "http://localhost").pathname;
+          const q = raw.indexOf("?");
           out = await handle({
             method: req.method ?? "GET",
             path,
+            ...(q >= 0 && { query: raw.slice(q + 1) }),
             ...(typeof req.headers.authorization === "string" && { authorization: req.headers.authorization }),
             ...(typeof req.headers["x-firebase-appcheck"] === "string" && { appCheck: req.headers["x-firebase-appcheck"] }),
+            ...(typeof req.headers["x-twilio-signature"] === "string" && { twilioSignature: req.headers["x-twilio-signature"] }),
             ...(typeof req.headers.origin === "string" && { origin: req.headers.origin }),
-            ...(body !== undefined && { body }),
+            ...(body.json !== undefined && { body: body.json }),
+            ...(body.form !== undefined && { form: body.form }),
           });
         }
       } catch {
         out = { status: 500, headers: { "content-type": "application/json" }, body: { error: "server error" } };
       }
       res.writeHead(out.status, out.headers);
-      res.end(out.body === undefined ? undefined : JSON.stringify(out.body));
+      res.end(out.text !== undefined ? out.text : out.body === undefined ? undefined : JSON.stringify(out.body));
     })();
   });
   // A run can take minutes; Cloud Run's own request timeout (set at deploy) is the limit, not this server's.

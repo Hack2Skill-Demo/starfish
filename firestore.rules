@@ -19,7 +19,9 @@ rules_version = '2';
 // starfish_settings_public and starfish_settings_audit. The ingest run records use
 // starfish_runs (STARFISH_RUN_COLLECTION); the agent cycles and their run events use
 // starfish_cycles (STARFISH_CYCLE_COLLECTION); the audit trail of admin actions on the
-// engine uses starfish_audit (STARFISH_AUDIT_COLLECTION).
+// engine uses starfish_audit (STARFISH_AUDIT_COLLECTION). The on-call rota uses starfish_oncall and
+// starfish_oncall_people (STARFISH_ONCALL_COLLECTION, STARFISH_ONCALL_PEOPLE_COLLECTION); the call sequences,
+// starfish_escalations (STARFISH_ESCALATION_COLLECTION), are engine-only.
 //
 // Model: roles live on an operator record and are read fresh on every request,
 // never cached in a token.
@@ -309,7 +311,70 @@ service cloud.firestore {
       allow write: if false;
     }
 
-    // Everything else is closed (including starfish_runs/state).
+    // ---- On-call people and policy (#37, src/oncall/) -----------------------------
+    //
+    // starfish_oncall/policy               when Starfish may phone: the admin's switch, the wait after the Slack
+    //                                      message, quiet hours, the per-person daily cap, what counts as critical.
+    // starfish_oncall_people/{personId}    a person on the rota: name, role and PHONE NUMBER. Personal data: admins
+    //                                      only, never guests or plain operators (which is why it is not in the runtime
+    //                                      settings, whose operator copy anyone signed in may read). The UI shows it masked.
+    // A client creates a person only as `pending`, and changing a number makes it `pending` again: only the engine
+    // (src/oncall/optIn.ts, the Admin SDK) marks a number `confirmed`, when its owner read back the code it texted, and
+    // only it writes the code fields. The call sequences (starfish_escalations) are engine-only: the closing rule.
+    // Same names as STARFISH_ONCALL_COLLECTION / STARFISH_ONCALL_PEOPLE_COLLECTION; change both together.
+    function onCallPersonFieldsOk(d) {
+      return d.name is string && d.name.size() >= 1 && d.name.size() <= 80
+        && d.role in ['primary', 'secondary', 'support-lead']
+        // E164_RE in src/oncallSchema.ts.
+        && d.phone is string && d.phone.matches('^[+][1-9][0-9]{6,14}$')
+        && d.updatedBy == request.auth.uid
+        && d.updatedAt == request.time;
+    }
+
+    match /starfish_oncall_people/{personId} {
+      allow read, delete: if isAdmin();
+
+      allow create: if isAdmin()
+        && request.resource.data.keys().hasOnly(['name', 'role', 'phone', 'state', 'createdAt', 'updatedAt', 'updatedBy'])
+        && request.resource.data.keys().hasAll(['name', 'role', 'phone', 'state', 'createdAt', 'updatedAt', 'updatedBy'])
+        && onCallPersonFieldsOk(request.resource.data)
+        && request.resource.data.state == 'pending'
+        && request.resource.data.createdAt == request.time;
+
+      // Name, role and number only. A new number is unconfirmed; otherwise the confirmation state is the engine's.
+      allow update: if isAdmin()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['name', 'role', 'phone', 'state', 'updatedAt', 'updatedBy'])
+        && onCallPersonFieldsOk(request.resource.data)
+        && (request.resource.data.phone != resource.data.phone
+              ? request.resource.data.state == 'pending'
+              : request.resource.data.state == resource.data.state);
+    }
+
+    match /starfish_oncall/policy {
+      allow read: if isAdmin();
+      allow delete: if false;
+      // parsePolicy in src/oncallSchema.ts: the engine validates again on read and places no call on an invalid one.
+      allow create, update: if isAdmin()
+        && request.resource.data.keys().hasOnly(['enabled', 'waitMinutes', 'quietStart', 'quietEnd', 'timeZone',
+                                                 'dailyCapPerPerson', 'criticalOccurrences', 'updatedAt', 'updatedBy'])
+        && request.resource.data.updatedBy == request.auth.uid
+        && request.resource.data.updatedAt == request.time
+        && (!('enabled' in request.resource.data) || request.resource.data.enabled is bool)
+        && (!('waitMinutes' in request.resource.data)
+            || (request.resource.data.waitMinutes is int && request.resource.data.waitMinutes >= 1 && request.resource.data.waitMinutes <= 240))
+        && (!('quietStart' in request.resource.data)
+            || (request.resource.data.quietStart is string && request.resource.data.quietStart.matches('^(([01][0-9]|2[0-3]):[0-5][0-9])?$')))
+        && (!('quietEnd' in request.resource.data)
+            || (request.resource.data.quietEnd is string && request.resource.data.quietEnd.matches('^(([01][0-9]|2[0-3]):[0-5][0-9])?$')))
+        && (!('timeZone' in request.resource.data)
+            || (request.resource.data.timeZone is string && request.resource.data.timeZone.size() >= 1 && request.resource.data.timeZone.size() <= 64))
+        && (!('dailyCapPerPerson' in request.resource.data)
+            || (request.resource.data.dailyCapPerPerson is int && request.resource.data.dailyCapPerPerson >= 1 && request.resource.data.dailyCapPerPerson <= 20))
+        && (!('criticalOccurrences' in request.resource.data)
+            || (request.resource.data.criticalOccurrences is int && request.resource.data.criticalOccurrences >= 1 && request.resource.data.criticalOccurrences <= 1000000));
+    }
+
+    // Everything else is closed (including starfish_runs/state and starfish_escalations).
     match /{document=**} {
       allow read, write: if false;
     }

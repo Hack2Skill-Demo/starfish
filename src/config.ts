@@ -226,6 +226,33 @@ export interface StarfishConfig {
    * run (src/integrations/slack.ts). Empty means a message carries no links. Same rules as the admin API's origins.
    */
   uiBaseUrl: string;
+  /**
+   * Phone escalation (#37, src/oncall/): when an urgent incident's "needs a human" Slack message goes unacknowledged,
+   * Starfish phones the on-call people through Twilio. Off by default, because a call costs money: a deployment turns it
+   * on here AND an admin turns it on in Settings -> On-call. A dry run (the agent's default) still places no call. Built,
+   * tested against a fake Twilio and the Firestore emulator; never run against real Twilio.
+   */
+  phoneEscalation: boolean;
+  /** Firestore collection of the on-call policy (`{this}/policy`): admin-only (firestore.rules). */
+  onCallCollection: string;
+  /** Firestore collection of the on-call people and their phone numbers: admin-only, personal data (firestore.rules). */
+  onCallPeopleCollection: string;
+  /** Firestore collection of the call sequences, one per escalated cycle, and the per-person daily call counts. Engine-only. */
+  escalationCollection: string;
+  /**
+   * The ONE pre-recorded audio file every call plays (https, e.g. a public Cloud Storage object): it says an urgent
+   * incident needs a person and the details are in the on-call channel. No incident detail is ever spoken. Empty: no
+   * call can be placed.
+   */
+  onCallAudioUrl: string;
+  /** Twilio's REST API root. Only `https://`, or plain `http://` to localhost for tests. */
+  twilioApiUrl: string;
+  /**
+   * The public origin Twilio calls back (the admin API service, src/adminApiServer.ts), e.g.
+   * its Cloud Run URL. The webhook signature is checked against this origin plus the path, never
+   * the request's own Host header. Empty: no call can be placed (Twilio would have nowhere to report to).
+   */
+  twilioWebhookUrl: string;
   /** The author and committer on the commit Starfish pushes. */
   githubCommitName: string;
   githubCommitEmail: string;
@@ -490,6 +517,13 @@ export function loadConfig(): StarfishConfig {
     adminApiPort: positiveNumber(process.env.PORT, 8080, "PORT"),
     adminApiRequireAppCheck: parseBoolean(process.env.STARFISH_ADMIN_API_APPCHECK, false, "STARFISH_ADMIN_API_APPCHECK"),
     uiBaseUrl: validOrigins(parseList(process.env.STARFISH_UI_URL, ",") ?? [], "STARFISH_UI_URL")[0] ?? "",
+    phoneEscalation: parseBoolean(process.env.STARFISH_PHONE_ESCALATION, false, "STARFISH_PHONE_ESCALATION"),
+    onCallCollection: process.env.STARFISH_ONCALL_COLLECTION || "starfish_oncall",
+    onCallPeopleCollection: process.env.STARFISH_ONCALL_PEOPLE_COLLECTION || "starfish_oncall_people",
+    escalationCollection: process.env.STARFISH_ESCALATION_COLLECTION || "starfish_escalations",
+    onCallAudioUrl: validHttpsUrl(process.env.STARFISH_ONCALL_AUDIO_URL, "STARFISH_ONCALL_AUDIO_URL"),
+    twilioApiUrl: validApiRoot(process.env.STARFISH_TWILIO_API_URL, "https://api.twilio.com", "STARFISH_TWILIO_API_URL"),
+    twilioWebhookUrl: validOrigins(parseList(process.env.STARFISH_TWILIO_WEBHOOK_URL, ",") ?? [], "STARFISH_TWILIO_WEBHOOK_URL")[0] ?? "",
     githubCommitName: (process.env.STARFISH_GITHUB_COMMIT_NAME ?? "").trim() || "Starfish",
     githubCommitEmail: (process.env.STARFISH_GITHUB_COMMIT_EMAIL ?? "").trim() || "starfish@users.noreply.github.com",
     usersCollection: process.env.STARFISH_USERS_COLLECTION || "starfish_users",
@@ -575,6 +609,32 @@ function slackWebhook(name: "STARFISH_SLACK_WEBHOOK_ONCALL" | "STARFISH_SLACK_WE
     throw new Error(`${name} is not a Slack incoming-webhook URL (https://hooks.slack.com/services/...)`);
   }
   return url;
+}
+
+/** Twilio's credentials (#37): the account SID, its auth token, and the number calls and texts come from. */
+export interface TwilioCredentials {
+  accountSid: string;
+  authToken: string;
+  fromNumber: string;
+}
+
+/**
+ * Twilio's credentials, or undefined when none are set (src/oncall/twilio.ts). Like the Slack webhook, not a field of
+ * StarfishConfig: the auth token both places calls (which cost money) and signs Twilio's webhooks, so it must not travel
+ * with a config snapshot. Mounted from Secret Manager on Cloud Run (docs/deploy.md). All three or none: a partial set,
+ * or a value of the wrong shape, is refused by NAME, never echoed.
+ */
+export function loadTwilioCredentials(): TwilioCredentials | undefined {
+  const accountSid = (process.env.STARFISH_TWILIO_ACCOUNT_SID ?? "").trim();
+  const authToken = (process.env.STARFISH_TWILIO_AUTH_TOKEN ?? "").trim();
+  const fromNumber = (process.env.STARFISH_TWILIO_FROM_NUMBER ?? "").trim();
+  const set = [accountSid, authToken, fromNumber].filter((v) => v !== "").length;
+  if (set === 0) return undefined;
+  if (set !== 3) throw new Error("STARFISH_TWILIO_ACCOUNT_SID, STARFISH_TWILIO_AUTH_TOKEN and STARFISH_TWILIO_FROM_NUMBER must be set together");
+  if (!/^AC[0-9a-f]{32}$/.test(accountSid)) throw new Error("STARFISH_TWILIO_ACCOUNT_SID is not a Twilio account SID (AC + 32 hex)");
+  if (!/^[0-9a-f]{32}$/.test(authToken)) throw new Error("STARFISH_TWILIO_AUTH_TOKEN is not a Twilio auth token (32 hex)");
+  if (!/^\+[1-9]\d{6,14}$/.test(fromNumber)) throw new Error("STARFISH_TWILIO_FROM_NUMBER is not an E.164 number (+15551234567)");
+  return { accountSid, authToken, fromNumber };
 }
 
 /**
@@ -670,6 +730,37 @@ function validOrigins(entries: string[], name = "STARFISH_ADMIN_API_ORIGINS"): s
     }
     return u.origin;
   });
+}
+
+/** An https URL (no credentials), or "" when unset; anything else throws at startup, by name. */
+function validHttpsUrl(raw: string | undefined, name: string): string {
+  const v = (raw ?? "").trim();
+  if (v === "") return "";
+  let u: URL;
+  try {
+    u = new URL(v);
+  } catch {
+    throw new Error(`${name} is not a URL`);
+  }
+  if (u.protocol !== "https:" || u.username || u.password) throw new Error(`${name} must be an https URL with no credentials`);
+  return u.toString();
+}
+
+/** An API root: https, or http to localhost (tests); the default when unset. No trailing slash. */
+function validApiRoot(raw: string | undefined, fallback: string, name: string): string {
+  const v = (raw ?? "").trim();
+  if (v === "") return fallback;
+  let u: URL;
+  try {
+    u = new URL(v);
+  } catch {
+    throw new Error(`${name} is not a URL`);
+  }
+  const local = u.hostname === "localhost" || u.hostname === "127.0.0.1";
+  if ((u.protocol !== "https:" && !(local && u.protocol === "http:")) || u.username || u.password) {
+    throw new Error(`${name} must be https (or http to localhost)`);
+  }
+  return v.replace(/\/+$/, "");
 }
 
 /** A number above zero, or the default when unset. A window of zero or negative length would never advance. */

@@ -31,6 +31,8 @@ import {
 } from "firebase/firestore";
 import { validateSettings } from "../src/runtimeSettings.js";
 import { readRecentChanges, saveSettings, settingsCollections } from "../web/src/lib/settingsWrite";
+import { addPerson, readOnCall, removePerson, savePolicy, updatePerson } from "../web/src/lib/onCallWrite";
+import { DEFAULT_POLICY } from "../src/oncallSchema.js";
 
 let env: RulesTestEnvironment;
 
@@ -926,6 +928,72 @@ describe("the audit trail of admin actions", () => {
   it("an operator still cannot retire or un-retire an incident through the triage update", async () => {
     await env.withSecurityRulesDisabled((ctx) => setDoc(doc(ctx.firestore(), "incidents/i1"), { functionName: "f", status: "new", updatedAt: Timestamp.now() }));
     await assertFails(updateDoc(doc(as("op1"), "incidents/i1"), { retired: true, status: "resolved", resolvedAt: serverTimestamp(), statusChangedBy: "op1", updatedAt: serverTimestamp() }));
+  });
+});
+
+describe("the on-call rota (#37): phone numbers are personal data", () => {
+  const cols = { policy: "starfish_oncall", people: "starfish_oncall_people" };
+  const guest = () => env.authenticatedContext("guest1", { firebase: { sign_in_provider: "anonymous" } }).firestore();
+  const PHONE = "+15550000142";
+  const seedPerson = (state: string) =>
+    env.withSecurityRulesDisabled((ctx) =>
+      setDoc(doc(ctx.firestore(), "starfish_oncall_people/p1"), { name: "Ada", role: "primary", phone: PHONE, state, createdAt: Timestamp.now(), updatedAt: Timestamp.now(), updatedBy: "admin1" })
+    );
+
+  it("an admin adds a person (unconfirmed), reads the rota masked, edits, and removes them, with the editor's own writes", async () => {
+    const id = await assertSucceeds(addPerson(as("admin1"), cols, "admin1", { name: "Ada", role: "primary", phone: PHONE }));
+    const view = await readOnCall(as("admin1"), cols);
+    expect(view.people).toEqual([{ id, name: "Ada", role: "primary", maskedPhone: "+1 ••• ••• ••42", state: "pending" }]);
+    expect(JSON.stringify(view)).not.toContain(PHONE);
+    await assertSucceeds(updatePerson(as("admin1"), cols, "admin1", id, { name: "Ada L.", role: "secondary" }));
+    await assertSucceeds(updatePerson(as("admin1"), cols, "admin1", id, { name: "Ada L.", role: "secondary", phone: "+15550000199" }));
+    await assertSucceeds(removePerson(as("admin1"), cols, id));
+  });
+
+  it("never lets a client mark a number confirmed, or touch the code the engine keeps", async () => {
+    await assertFails(
+      setDoc(doc(as("admin1"), "starfish_oncall_people/x"), { name: "Ada", role: "primary", phone: PHONE, state: "confirmed", createdAt: serverTimestamp(), updatedAt: serverTimestamp(), updatedBy: "admin1" })
+    );
+    await seedPerson("pending");
+    await assertFails(updateDoc(doc(as("admin1"), "starfish_oncall_people/p1"), { state: "confirmed", updatedAt: serverTimestamp(), updatedBy: "admin1" }));
+    await assertFails(updateDoc(doc(as("admin1"), "starfish_oncall_people/p1"), { codeHash: "x", updatedAt: serverTimestamp(), updatedBy: "admin1" }));
+  });
+
+  it("a new number on a confirmed person must be confirmed again", async () => {
+    await seedPerson("confirmed");
+    await assertFails(updateDoc(doc(as("admin1"), "starfish_oncall_people/p1"), { phone: "+15550000199", updatedAt: serverTimestamp(), updatedBy: "admin1" }));
+    await assertSucceeds(updatePerson(as("admin1"), cols, "admin1", "p1", { name: "Ada", role: "primary", phone: "+15550000199" }));
+    // A rename keeps the confirmation.
+    await seedPerson("confirmed");
+    await assertSucceeds(updatePerson(as("admin1"), cols, "admin1", "p1", { name: "Ada Lovelace", role: "primary" }));
+  });
+
+  it("refuses a number that is not E.164 and a role that does not exist", async () => {
+    await assertFails(addPerson(as("admin1"), cols, "admin1", { name: "Ada", role: "primary", phone: "555-0142" }));
+    await assertFails(addPerson(as("admin1"), cols, "admin1", { name: "Ada", role: "boss" as "primary", phone: PHONE }));
+  });
+
+  it("operators, guests, role-less users and visitors read and write none of it", async () => {
+    await seedPerson("confirmed");
+    for (const [who, db] of [["op1", as("op1")], ["nobody", as("nobody")], ["guest", guest()], ["anon", anon()]] as const) {
+      await assertFails(getDoc(doc(db, "starfish_oncall_people/p1")));
+      await assertFails(getDocs(collection(db, "starfish_oncall_people")));
+      await assertFails(getDoc(doc(db, "starfish_oncall/policy")));
+      await assertFails(addPerson(db, cols, who, { name: "Eve", role: "primary", phone: PHONE }));
+      await assertFails(savePolicy(db, cols, who, { ...DEFAULT_POLICY, enabled: true }));
+      await assertFails(deleteDoc(doc(db, "starfish_oncall_people/p1")));
+    }
+  });
+
+  it("an admin saves a valid policy and nothing else; nobody but the engine reads the call sequences", async () => {
+    await assertSucceeds(savePolicy(as("admin1"), cols, "admin1", { ...DEFAULT_POLICY, enabled: true, quietStart: "22:00", quietEnd: "07:00", timeZone: "Europe/London" }));
+    expect((await readOnCall(as("admin1"), cols)).policy).toMatchObject({ enabled: true, quietStart: "22:00", timeZone: "Europe/London" });
+    await assertFails(savePolicy(as("admin1"), cols, "admin1", { ...DEFAULT_POLICY, waitMinutes: 0 }));
+    await assertFails(savePolicy(as("admin1"), cols, "admin1", { ...DEFAULT_POLICY, quietStart: "7am", quietEnd: "08:00" }));
+    await assertFails(setDoc(doc(as("admin1"), "starfish_oncall/policy"), { enabled: true, phone: PHONE, updatedAt: serverTimestamp(), updatedBy: "admin1" }));
+    await env.withSecurityRulesDisabled((ctx) => setDoc(doc(ctx.firestore(), "starfish_escalations/inc1_r0"), { environment: "demo", open: true }));
+    await assertFails(getDoc(doc(as("admin1"), "starfish_escalations/inc1_r0")));
+    await assertFails(getDoc(doc(guest(), "starfish_escalations/inc1_r0")));
   });
 });
 
