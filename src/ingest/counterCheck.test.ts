@@ -95,6 +95,11 @@ describe("toSample", () => {
     expect(sample?.error).toBeUndefined();
   });
 
+  it("reads an object-valued message instead of [object Object] (#131)", () => {
+    const sample = toSample({ metadata: meta, data: { message: { code: 5, text: "boom" } } });
+    expect(sample?.message).toBe('{"code":5,"text":"boom"}');
+  });
+
   it("never passes credential-shaped fields or emails to the model", () => {
     const sample = toSample({
       metadata: meta,

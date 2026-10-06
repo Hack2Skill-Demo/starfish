@@ -24,11 +24,23 @@ import { FieldPath } from "firebase-admin/firestore";
 import type { Firestore } from "firebase-admin/firestore";
 import { computeErrorFingerprint } from "./ingest/fingerprint.js";
 import { redactPii } from "./ingest/redact.js";
-import { incidentKeyId, type IncidentStoreConfig } from "./ingest/store.js";
+import { incidentKeyId, redactShortField, type IncidentStoreConfig } from "./ingest/store.js";
 
-/** The text fields the store redacts on every write (store.ts redactInput). */
-export const SCRUBBED_FIELDS = ["errorMessage", "errorDetail", "stackTrace", "errorName"] as const;
+/** The fields the store redacts on every write (store.ts redactInput). */
+export const SCRUBBED_FIELDS = [
+  "errorMessage",
+  "errorDetail",
+  "stackTrace",
+  "errorName",
+  "service",
+  "errorCode",
+  "tenantId",
+  "requestId",
+] as const;
 export type ScrubbedField = (typeof SCRUBBED_FIELDS)[number];
+
+/** The identifier-like fields, which the store also bounds (#130): scrubbed the same way, so a rerun is a no-op. */
+const SHORT_FIELDS: ReadonlySet<ScrubbedField> = new Set(["service", "errorCode", "tenantId", "requestId"]);
 
 const PAGE_SIZE = 200;
 /** Firestore caps a batch at 500 writes; each record can need up to 2 (update + key delete). */
@@ -50,7 +62,7 @@ export function scrubDocument(data: Record<string, unknown>): DocumentScrub | nu
   for (const field of SCRUBBED_FIELDS) {
     const value = data[field];
     if (typeof value !== "string") continue;
-    const clean = redactPii(value);
+    const clean = SHORT_FIELDS.has(field) ? redactShortField(value) : redactPii(value);
     if (clean !== value) updates[field] = clean;
   }
   if (Object.keys(updates).length === 0) return null;
@@ -90,7 +102,7 @@ export async function scrubCollection(
   const report: ScrubReport = {
     scanned: 0,
     changed: 0,
-    byField: { errorMessage: 0, errorDetail: 0, stackTrace: 0, errorName: 0 },
+    byField: Object.fromEntries(SCRUBBED_FIELDS.map((f) => [f, 0])) as Record<ScrubbedField, number>,
     refingerprinted: 0,
     keysRemoved: 0,
     applied: opts.apply,

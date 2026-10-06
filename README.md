@@ -197,8 +197,10 @@ apparent over-engineering is scar tissue from real incidents, and the tests in
   anything is read, the checkpoint advances only after every upsert of it has committed, and a
   retry replays the same window, and two runs that overlap are given the same one (claimed in a transaction); the incident key remembers the windows it applied, so a window
   replayed after a half-failed run counts once, even under concurrency (`run.emulator.test.ts`,
-  `store.emulator.test.ts`). A read that hits the 5,000-entry cap is flagged on the run record,
-  not called complete. `pnpm ingest` runs this once; the Cloud Run job and Scheduler that would run it on a schedule are written (`scripts/deploy-gcp.sh`) but not yet deployed anywhere (#6). The checkpoint
+  `store.emulator.test.ts`). A window is read oldest first; a read that hits the 5,000-entry cap
+  writes nothing and narrows the pending window to the part it read in full, and the rest is read by
+  the windows after it (#127). Only a window with more than 5,000 entries in its first millisecond is
+  processed as read and flagged capped on the run record. `pnpm ingest` runs this once; the Cloud Run job and Scheduler that would run it on a schedule are written (`scripts/deploy-gcp.sh`) but not yet deployed anywhere (#6). The checkpoint
   is per (watched project, environment) and is not carried over when settings change either
 - an admin can retire an incident (`src/ingest/retire.ts`): it is closed for good with its history
   kept, its incident key is removed, and the same error firing again opens a **new** incident

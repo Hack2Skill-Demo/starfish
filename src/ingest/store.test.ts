@@ -1,7 +1,14 @@
 import { describe, it, expect } from "vitest";
 import { Timestamp, FieldValue } from "firebase-admin/firestore";
 import type { Firestore } from "firebase-admin/firestore";
-import { APPLIED_WINDOWS_RETAINED, incidentKeyId, upsertIncident, UPSERT_MAX_ATTEMPTS, type IncidentInput } from "./store.js";
+import {
+  APPLIED_WINDOWS_RETAINED,
+  incidentKeyId,
+  MAX_SHORT_FIELD_LEN,
+  upsertIncident,
+  UPSERT_MAX_ATTEMPTS,
+  type IncidentInput,
+} from "./store.js";
 import { computeErrorFingerprint } from "./fingerprint.js";
 import { SEEDED_SECRETS } from "./testSecrets.js";
 
@@ -565,6 +572,37 @@ describe("upsertIncident redaction", () => {
     for (const needle of ["bob@y.org", "hunter2", ...Object.values(SEEDED_SECRETS)]) {
       expect(written).not.toContain(needle);
     }
+  });
+
+  it("redacts and bounds the identifier fields a handler fills from its own payload (#130)", async () => {
+    const { db, writes } = fakeDb([]);
+    await upsertIncident(
+      db,
+      STORE,
+      {
+        ...input,
+        tenantId: "alice@x.com",
+        errorCode: `E_${SEEDED_SECRETS.github}`,
+        service: `svc ${SEEDED_SECRETS.stripe}`,
+        requestId: `req-${SEEDED_SECRETS.jwt} ${"r".repeat(1000)}`,
+      },
+      Timestamp.now()
+    );
+
+    const written = JSON.stringify(writes);
+    for (const needle of ["alice@x.com", SEEDED_SECRETS.github!, SEEDED_SECRETS.stripe!, SEEDED_SECRETS.jwt!]) {
+      expect(written).not.toContain(needle);
+    }
+    const data = writes[0]?.data;
+    expect(data).toMatchObject({ tenantId: "[redacted-email]", errorCode: "E_[redacted-secret]", service: "svc [redacted-secret]" });
+    expect((data?.requestId as string).startsWith("req-[redacted-secret] r")).toBe(true);
+    expect(data?.requestId).toHaveLength(MAX_SHORT_FIELD_LEN);
+  });
+
+  it("leaves ordinary identifiers exactly as they were", async () => {
+    const { db, writes } = fakeDb([]);
+    await upsertIncident(db, STORE, { ...input, tenantId: "t-42", errorCode: "E_TIMEOUT", service: "billing", requestId: "abc123" }, Timestamp.now());
+    expect(writes[0]?.data).toMatchObject({ tenantId: "t-42", errorCode: "E_TIMEOUT", service: "billing", requestId: "abc123" });
   });
 });
 

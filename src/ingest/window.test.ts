@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { planWindow, windowOf, type WindowPlan } from "./window.js";
+import { narrowWindow, planWindow, windowOf, type WindowPlan } from "./window.js";
 
 const HOUR = 3600_000;
 const now = new Date("2026-10-04T12:00:00.000Z");
@@ -48,5 +48,23 @@ describe("planWindow", () => {
     expect(windowOf(a, b).id).toBe(windowOf(new Date(a), new Date(b)).id);
     expect(windowOf(a, b).id).not.toBe(windowOf(a, new Date(b.getTime() + 1)).id);
     expect(windowOf(a, b).id).not.toBe(windowOf(new Date(a.getTime() + 1), b).id);
+  });
+});
+
+describe("narrowWindow (#127)", () => {
+  const w = windowOf(new Date(now.getTime() - 6 * HOUR), now);
+
+  it("keeps the start and ends a millisecond before the last entry read, which may share its millisecond with unread ones", () => {
+    const last = new Date(now.getTime() - 2 * HOUR);
+    const n = narrowWindow(w, last)!;
+    expect(n.start).toEqual(w.start);
+    expect(n.end.getTime()).toBe(last.getTime() - 1);
+    expect(n.id).not.toBe(w.id);
+  });
+
+  it("refuses when there is nothing to narrow to: a capped first millisecond, a bound outside the window, a bad date", () => {
+    expect(narrowWindow(w, new Date(w.start.getTime() + 1))).toBeNull();
+    expect(narrowWindow(w, new Date(w.end.getTime() + 1))).toBeNull();
+    expect(narrowWindow(w, new Date(Number.NaN))).toBeNull();
   });
 });

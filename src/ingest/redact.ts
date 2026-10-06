@@ -37,10 +37,12 @@ const GOOGLE_API_KEY_RE = /\bAIza[0-9A-Za-z_-]{35,}/g;
 /**
  * A credential carried in a URL query parameter: a Firebase Storage download
  * `token`, an OAuth `access_token`, a signed-URL signature, an API `key`. Only the
- * VALUE is replaced, so the URL stays readable.
+ * VALUE is replaced, so the URL stays readable. `(?!\[redacted-)`, as in `KEY_VALUE_RE`: the value
+ * class accepts `[`, so without it a second pass read `[redacted-secret` as a value and appended a `]`
+ * each time, which moved the fingerprint `pnpm scrub` recomputes and forked the incident (#128).
  */
 const URL_CREDENTIAL_PARAM_RE =
-  /([?&](?:token|access_token|id_token|refresh_token|api_key|apikey|key|sig|signature|x-goog-signature|x-goog-credential|x-amz-signature|x-amz-credential|x-amz-security-token)=)[^&\s#"'<>)\]]+/gi;
+  /([?&](?:token|access_token|id_token|refresh_token|api_key|apikey|key|sig|signature|x-goog-signature|x-goog-credential|x-amz-signature|x-amz-credential|x-amz-security-token)=)(?!\[redacted-)[^&\s#"'<>)\]]+/gi;
 
 /** PEM blocks (private keys), including one cut off by truncation before its END line. */
 const PRIVATE_KEY_RE =
@@ -151,9 +153,38 @@ function redactEmails(text: string): string {
   return out + text.slice(last);
 }
 
+/**
+ * The first `max` UTF-16 units of `s`, one fewer when the cut would split a surrogate pair. A lone
+ * high surrogate is not valid UTF-8, so Firestore rejected the write; the window holding it was
+ * replayed and rejected on every run, and ingest never got past it (#126). Every bounded slice of
+ * text that is stored goes through here.
+ */
+export function sliceWellFormed(s: string, max: number): string {
+  if (s.length <= max) return s;
+  const end = max > 0 && isHighSurrogate(s.charCodeAt(max - 1)) ? max - 1 : max;
+  return s.slice(0, Math.max(0, end));
+}
+
+const LONE_SURROGATE_RE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g;
+
+/**
+ * `s` with every lone surrogate replaced by U+FFFD (`String.prototype.toWellFormed`, which ES2023's
+ * lib does not type). For text that arrives as parsed JSON (an API body), where `"\ud83d"` is legal
+ * and Firestore would reject it; Cloud Logging text is decoded UTF-8 and cannot carry one.
+ */
+export function toWellFormed(s: string): string {
+  return s.replace(LONE_SURROGATE_RE, "�");
+}
+
+function isHighSurrogate(code: number): boolean {
+  return code >= 0xd800 && code <= 0xdbff;
+}
+
 export function truncate(text: string, max = MAX_TEXT_LEN): string {
   const s = String(text ?? "");
-  return s.length <= max ? s : `${s.slice(0, max)}\n…[truncated ${s.length - max} chars]`;
+  if (s.length <= max) return s;
+  const kept = sliceWellFormed(s, max);
+  return `${kept}\n…[truncated ${s.length - kept.length} chars]`;
 }
 
 /** Redact then bound, in that order. */

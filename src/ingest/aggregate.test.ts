@@ -2,21 +2,22 @@ import { describe, it, expect, vi } from "vitest";
 import type { Firestore } from "firebase-admin/firestore";
 
 const entries: unknown[] = [];
-const logging = { projects: [] as unknown[], filters: [] as string[] };
+const logging = { projects: [] as unknown[], filters: [] as string[], orders: [] as string[] };
 vi.mock("@google-cloud/logging", () => ({
   Logging: class {
     constructor(options: unknown) {
       logging.projects.push(options);
     }
-    getEntries = async (request: { filter: string }) => {
+    getEntries = async (request: { filter: string; orderBy: string }) => {
       logging.filters.push(request.filter);
+      logging.orders.push(request.orderBy);
       return [entries];
     };
   },
 }));
 
 const { SEEDED_SECRETS } = await import("./testSecrets.js");
-const { aggregateErrors } = await import("./aggregate.js");
+const { aggregateErrors, MAX_ENTRIES_PER_RUN } = await import("./aggregate.js");
 const { windowOf } = await import("./window.js");
 const { testConfig } = await import("../testConfig.js");
 
@@ -127,5 +128,40 @@ describe("aggregateErrors", () => {
     expect(logging.filters[0]).toContain('resource.type="gae_app"');
     expect(logging.filters[0]).not.toContain("cloud_function");
     expect(logging.filters[0]).toContain('NOT textPayload:"probe"');
+  });
+
+  describe("a read that hits the cap (#127)", () => {
+    const at = (ms: number, message: string) => ({
+      metadata: { timestamp: new Date(ms), resource: { labels: { function_name: "lookup" } } },
+      data: message,
+    });
+
+    it("reads oldest first, writes nothing, and hands back the part of the window it covered in full", async () => {
+      const t0 = window.start.getTime() + 60_000;
+      entries.splice(0, entries.length, ...Array.from({ length: MAX_ENTRIES_PER_RUN }, (_, i) => at(t0 + i * 1000, `e${i % 3}`)));
+      logging.orders.length = 0;
+      const { db, created } = fakeDb();
+
+      const result = await aggregateErrors(db, config, window);
+
+      expect(logging.orders).toEqual(["timestamp asc"]);
+      expect(created).toHaveLength(0);
+      expect(result).toMatchObject({ entriesProcessed: 0, incidentsCreated: 0, capped: false });
+      const lastRead = t0 + (MAX_ENTRIES_PER_RUN - 1) * 1000;
+      expect(result.narrowedTo?.start).toEqual(window.start);
+      expect(result.narrowedTo?.end.getTime()).toBe(lastRead - 1);
+    });
+
+    it("processes the read and flags it capped when the window cannot be narrowed", async () => {
+      // Every entry in the window's first millisecond: there is no shorter window to replay.
+      entries.splice(0, entries.length, ...Array.from({ length: MAX_ENTRIES_PER_RUN }, () => at(window.start.getTime() + 1, "burst")));
+      const { db, created } = fakeDb();
+
+      const result = await aggregateErrors(db, config, window);
+
+      expect(result).toMatchObject({ entriesProcessed: MAX_ENTRIES_PER_RUN, incidentsCreated: 1, capped: true });
+      expect(result.narrowedTo).toBeUndefined();
+      expect(created).toHaveLength(1);
+    });
   });
 });

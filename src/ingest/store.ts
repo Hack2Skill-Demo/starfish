@@ -51,7 +51,7 @@ import { Timestamp, FieldValue } from "firebase-admin/firestore";
 import type { DocumentSnapshot, Firestore, Transaction } from "firebase-admin/firestore";
 import type { StarfishConfig } from "../config.js";
 import { computeErrorFingerprint } from "./fingerprint.js";
-import { redactPii } from "./redact.js";
+import { redactPii, sliceWellFormed } from "./redact.js";
 import { hourBucketKey, mergeOccurrenceBuckets } from "./buckets.js";
 import { OPEN_INCIDENT_STATUSES, type IncidentResolution, type StoredIncident } from "../types.js";
 
@@ -235,7 +235,24 @@ function redactInput(input: IncidentInput): IncidentInput {
     ...(input.errorDetail != null && { errorDetail: redactPii(input.errorDetail) }),
     ...(input.stackTrace != null && { stackTrace: redactPii(input.stackTrace) }),
     ...(input.errorName != null && { errorName: redactPii(input.errorName) }),
+    // Short fields a handler fills from its own payload (#130): a tenantId that is an email, an errorCode
+    // or service that carries a token. Shown to guests on the demo, so redacted like the text, and bounded.
+    ...(input.service != null && { service: redactShortField(input.service) }),
+    ...(input.errorCode != null && { errorCode: redactShortField(input.errorCode) }),
+    ...(input.tenantId != null && { tenantId: redactShortField(input.tenantId) }),
+    ...(input.requestId != null && { requestId: redactShortField(input.requestId) }),
   };
+}
+
+/** Cap on an identifier-like field (tenantId, errorCode, service, requestId); real ones are far shorter. */
+export const MAX_SHORT_FIELD_LEN = 256;
+
+/**
+ * Redact, then bound without a suffix, so applying it twice changes nothing (`pnpm scrub` reapplies it).
+ * The cut never splits a surrogate pair (#126).
+ */
+export function redactShortField(value: string): string {
+  return sliceWellFormed(redactPii(value), MAX_SHORT_FIELD_LEN);
 }
 
 export async function upsertIncident(

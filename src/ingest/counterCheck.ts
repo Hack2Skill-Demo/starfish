@@ -13,8 +13,8 @@
  * before it can reach the model.
  */
 import type { LogCounterCheck } from "../types.js";
-import { buildLogFilter, extractErrorDetail, type LogSource } from "./parseLogEntry.js";
-import { isSensitiveKey, redactPii } from "./redact.js";
+import { buildLogFilter, extractErrorDetail, extractMessageTitle, type LogSource } from "./parseLogEntry.js";
+import { isSensitiveKey, redactPii, sliceWellFormed } from "./redact.js";
 
 export const COUNTER_CHECK_WINDOW_HOURS = 24;
 /**
@@ -119,7 +119,7 @@ export interface ErrorLogSample {
 }
 
 function clip(text: string, max: number): string {
-  return redactPii(text).slice(0, max);
+  return sliceWellFormed(redactPii(text), max);
 }
 
 export function toSample(entry: unknown): ErrorLogSample | null {
@@ -144,7 +144,7 @@ export function toSample(entry: unknown): ErrorLogSample | null {
     const json = data as Record<string, unknown>;
     if (typeof json.type_url === "string" && json.type_url.includes("AuditLog")) return null;
     const detail = extractErrorDetail(json.error);
-    message = String(json.message || detail || "");
+    message = json.message ? extractMessageTitle(json.message) : detail || "";
     if (detail && detail !== message) error = clip(detail, SAMPLE_ERROR_MAX);
     const rawStack = json.stack ?? json.stackTrace;
     if (typeof rawStack === "string") stack = rawStack;

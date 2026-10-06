@@ -14,15 +14,17 @@ import { detectErrorType, extractErrorCode, detectService } from "./classify.js"
 import { computeErrorFingerprint } from "./fingerprint.js";
 import { sanitize } from "./redact.js";
 import { upsertIncident, type IncidentInput } from "./store.js";
-import type { IngestWindow } from "./window.js";
+import { narrowWindow, type IngestWindow } from "./window.js";
 
 const PAGE_SIZE = 500;
 /**
- * Upper bound on entries read per run. `getEntries` auto-paginates by default,
+ * Upper bound on entries read per window. `getEntries` auto-paginates by default,
  * so without this a sustained burst reads every entry in the window into memory
  * and runs the job into its timeout — during exactly the incident it exists to
- * catch. Newest entries are kept (the query is timestamp-desc); the
- * counter-check, not this job, is what reports the true volume.
+ * catch. The read is oldest first, so a capped read has covered a prefix of the
+ * window in full: it writes nothing and hands back that prefix to replay instead
+ * (`narrowWindow`), and the rest is read by the windows after it (#127). Reading
+ * the newest entries and completing the window anyway lost every older one.
  */
 export const MAX_ENTRIES_PER_RUN = 5000;
 /**
@@ -40,8 +42,17 @@ export interface AggregationResult {
   incidentsRecurred: number;
   /** Incidents whose window had already been applied, so this run changed nothing for them. */
   incidentsReplayed: number;
-  /** True when the read stopped at MAX_ENTRIES_PER_RUN; occurrence counts are then a floor. */
+  /**
+   * True when the read stopped at MAX_ENTRIES_PER_RUN and the window could not be narrowed (more
+   * entries than that in its first millisecond): it was processed as read, and the rest of it is lost,
+   * so occurrence counts are a floor.
+   */
   capped: boolean;
+  /**
+   * Set when the read stopped at the cap and nothing was written: the part of the window the read
+   * covered in full. The caller replays this narrower window in place of the one it asked for.
+   */
+  narrowedTo?: IngestWindow;
 }
 
 /**
@@ -71,11 +82,19 @@ export async function aggregateErrors(
     filter: buildLogFilter(config, window.start, undefined, window.end),
     pageSize: PAGE_SIZE,
     maxResults: MAX_ENTRIES_PER_RUN,
-    orderBy: "timestamp desc",
+    orderBy: "timestamp asc",
   });
 
+  if (entries.length >= MAX_ENTRIES_PER_RUN) {
+    const lastReadAt = latestTimestamp(entries as RawLogEntry[]);
+    const narrowed = lastReadAt && narrowWindow(window, lastReadAt);
+    // Nothing is written: the narrowed window gets its own id, and the store must not see these
+    // entries under this window's id and again under that one's.
+    if (narrowed) return { ...result, narrowedTo: narrowed };
+    result.capped = true;
+  }
+
   result.entriesProcessed = entries.length;
-  result.capped = entries.length >= MAX_ENTRIES_PER_RUN;
   if (entries.length === 0) return result;
 
   // Group by fingerprint before writing anything.
@@ -160,4 +179,19 @@ export async function aggregateErrors(
   }
 
   return result;
+}
+
+/**
+ * The latest readable timestamp among `entries`, or undefined when none has one. The latest, not the
+ * last: the read is oldest first, but taking the maximum does not depend on that.
+ */
+function latestTimestamp(entries: readonly RawLogEntry[]): Date | undefined {
+  let latest: number | undefined;
+  for (const e of entries) {
+    const ts = e?.metadata?.timestamp;
+    if (ts === undefined) continue;
+    const t = new Date(ts).getTime();
+    if (Number.isFinite(t) && (latest === undefined || t > latest)) latest = t;
+  }
+  return latest === undefined ? undefined : new Date(latest);
 }

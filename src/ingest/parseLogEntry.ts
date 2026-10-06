@@ -93,6 +93,18 @@ export function extractErrorDetail(raw: unknown): string | undefined {
   return String(raw);
 }
 
+/**
+ * The title text of a `jsonPayload.message` value. A string (the usual case), number or boolean reads
+ * as it always has: the title keys the fingerprint, so its spelling must not move. A plain object (a
+ * handler that logs `{ code, text }` as the message) went through `String()` and became
+ * "[object Object]", so every such error from one function shared one fingerprint and unrelated
+ * bugs merged into one incident (#131); it now reads like `jsonPayload.error` does.
+ */
+export function extractMessageTitle(raw: unknown): string {
+  if (raw !== null && typeof raw === "object" && !Array.isArray(raw)) return extractErrorDetail(raw) ?? "";
+  return String(raw);
+}
+
 function extractProjectId(entry: RawLogEntry): string | undefined {
   const labels = entry.metadata?.resource?.labels;
   if (labels?.project_id) return labels.project_id;
@@ -144,7 +156,7 @@ export function parseLogEntry(
     // keys the fingerprint, the detail is what a fixer needs. `||`, not `??` —
     // an empty-string title must still fall back.
     const detail = extractErrorDetail(json.error);
-    errorMessage = String(json.message || detail || JSON.stringify(data));
+    errorMessage = json.message ? extractMessageTitle(json.message) : String(detail || JSON.stringify(data));
     if (detail && detail !== errorMessage) errorDetail = detail;
     const rawStack = json.stack ?? json.stackTrace;
     if (typeof rawStack === "string") stackTrace = rawStack;

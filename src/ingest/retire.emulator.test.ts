@@ -179,6 +179,16 @@ describe("retireIncident: who may, and what is recorded", () => {
     expect(JSON.stringify(entry)).not.toContain(SEEDED_SECRETS.github);
     expect(entry!.reason.length).toBeLessThanOrEqual(200);
   });
+
+  it("stores a reason with an emoji at the cut or a lone surrogate, rather than failing the write (#126)", async () => {
+    await upsert(occurrence());
+    const [doc] = await incidents();
+    // "😀" straddles unit 199/200, and "\ud83d" alone is what a JSON body can carry.
+    const result = await retire(doc!.id, "admin1", "\ud83d " + "x".repeat(197) + "😀");
+    expect(result).toMatchObject({ ok: true });
+    const [entry] = await audit();
+    expect(entry!.reason).toBe("� " + "x".repeat(197));
+  });
 });
 
 describe("retireIncident racing the engine", () => {

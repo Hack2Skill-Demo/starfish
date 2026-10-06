@@ -16,19 +16,32 @@ if (!process.env.FIRESTORE_EMULATOR_HOST) {
   throw new Error("run.emulator.test.ts needs the Firestore emulator: run `pnpm test:emulator`");
 }
 
-// The real aggregator reads Cloud Logging; here it reads whatever this holds.
+// The real aggregator reads Cloud Logging; here it reads whatever this holds, as Logging would: only
+// the entries inside the filter's (start, end], in the requested order, at most `maxResults` of them.
 const logs = { entries: [] as unknown[], filters: [] as string[] };
+const timeOf = (e: unknown) => Date.parse((e as { metadata: { timestamp: string } }).metadata.timestamp);
 vi.mock("@google-cloud/logging", () => ({
   Logging: class {
-    getEntries = async (request: { filter: string }) => {
+    getEntries = async (request: { filter: string; orderBy?: string; maxResults?: number }) => {
       logs.filters.push(request.filter);
-      return [logs.entries];
+      const bound = (op: string) => {
+        const m = request.filter.match(new RegExp(`timestamp${op}"([^"]+)"`));
+        return m ? Date.parse(m[1]!) : undefined;
+      };
+      const after = bound(">") ?? -Infinity;
+      const upTo = bound("<=") ?? Infinity;
+      const inWindow = logs.entries
+        .filter((e) => timeOf(e) > after && timeOf(e) <= upTo)
+        .sort((a, b) => timeOf(a) - timeOf(b));
+      if (request.orderBy === "timestamp desc") inWindow.reverse();
+      return [inWindow.slice(0, request.maxResults ?? inWindow.length)];
     };
   },
 }));
 
 const { runIngest, STATE_DOC, LAST_RUN_DOC, MAX_WINDOWS_PER_RUN } = await import("./run.js");
-const { aggregateErrors } = await import("./aggregate.js");
+const { aggregateErrors, MAX_ENTRIES_PER_RUN } = await import("./aggregate.js");
+const { windowOf } = await import("./window.js");
 
 const app = initializeApp({ projectId: "demo-starfish-rules" }, "run-emulator-tests");
 const db: Firestore = getFirestore(app, "run-tests");
@@ -183,11 +196,65 @@ describe("runIngest on the emulator", () => {
     expect((await lastRun())?.intervalMinutes).toBeUndefined();
   });
 
-  it("reports a capped read instead of calling the window complete", async () => {
+  it("never completes a window past entries a capped read did not reach: the rest is read next (#127)", async () => {
+    config = { ...config, defaultLookbackHours: 6 };
+    const start = horizon.getTime() - 6 * HOUR;
+    const entry = (t: number, message: string, fn = "api") => ({
+      metadata: { timestamp: new Date(t).toISOString(), resource: { labels: { function_name: fn } } },
+      data: message,
+    });
+    const BURST = MAX_ENTRIES_PER_RUN + 1000;
+    logs.entries = [
+      // Fired once, early: reading the newest MAX_ENTRIES_PER_RUN entries never saw it.
+      entry(start + 10 * 60_000, "early failure", "billing"),
+      ...Array.from({ length: BURST }, (_, i) => entry(start + HOUR + i * 2000, "burst failure")),
+      entry(horizon.getTime() - 10 * 60_000, "late failure", "billing"),
+    ];
+
+    const result = await runIngest(db, loader(), now);
+
+    expect(result).toMatchObject({ outcome: "ok", capped: false, totals: { entriesProcessed: BURST + 2, incidentsCreated: 3 } });
+    const docs = (await db.collection(config.incidentCollection).get()).docs.map((d) => d.data());
+    const count = (m: string) => docs.find((d) => d.errorMessage === m)?.occurrenceCount;
+    expect(count("early failure")).toBe(1);
+    expect(count("late failure")).toBe(1);
+    // Every burst entry counted exactly once across the narrowed window and the one after it.
+    expect(count("burst failure")).toBe(BURST);
+    expect(ms((await state())?.checkpoint)).toBe(horizon.getTime());
+    expect(await lastRun()).toMatchObject({ outcome: "ok", capped: false });
+  });
+
+  it("reports a read it could not narrow as capped, so its counts read as a floor", async () => {
     await runIngest(db, loader(), now, {
       aggregate: async () => ({ ...emptyResult, entriesProcessed: 5000, capped: true }),
     });
     expect(await lastRun()).toMatchObject({ outcome: "ok", capped: true, totals: { entriesProcessed: 20000 } });
+  });
+
+  it("a run that only narrowed its window is not idle, and the next run replays the narrowed window", async () => {
+    config = { ...config, defaultLookbackHours: 2 };
+    const seen: { id: string; start: number; end: number }[] = [];
+    const aggregate = async (_d: Firestore, _c: StarfishConfig, w: { id: string; start: Date; end: Date }) => {
+      seen.push({ id: w.id, start: w.start.getTime(), end: w.end.getTime() });
+      // Narrow on every read, to the first half: the run spends its whole budget narrowing.
+      const half = new Date(w.start.getTime() + Math.floor((w.end.getTime() - w.start.getTime()) / 2));
+      return { ...emptyResult, narrowedTo: windowOf(w.start, half) };
+    };
+
+    const first = await runIngest(db, loader(), now, { aggregate });
+
+    expect(first).toMatchObject({ outcome: "ok", windows: 0, capped: false });
+    expect(seen).toHaveLength(MAX_WINDOWS_PER_RUN);
+    // Each read was of the window the one before it narrowed to, never a fresh one.
+    for (let i = 1; i < seen.length; i++) expect(seen[i]).toMatchObject({ start: seen[0]!.start, end: seen[i - 1]!.start + (seen[i - 1]!.end - seen[i - 1]!.start) / 2 });
+    const pending = (await state())?.pending;
+    expect(ms(pending.start)).toBe(seen[0]!.start);
+    expect(ms(pending.end)).toBeLessThan(seen.at(-1)!.end);
+    expect((await state())?.checkpoint).toBeUndefined();
+
+    seen.length = 0;
+    await runIngest(db, loader(), new Date(now.getTime() + HOUR), { aggregate });
+    expect(seen[0]).toMatchObject({ start: ms(pending.start), end: ms(pending.end) });
   });
 
   it("does not carry a checkpoint over to a different watched project or environment", async () => {

@@ -11,6 +11,8 @@
  * The checkpoint advances only after every upsert of the window has committed. If the process
  * dies between the last commit and the checkpoint, the next run replays the window and the
  * store recognises it (store.ts, "Replays"), so nothing is counted twice.
+ * A window with more entries than one read takes is narrowed, not completed: the pending window
+ * shrinks to the part the read covered in full, and the rest is planned after it (#127).
  *
  * `{runCollection}/last_run` is the outcome of the latest run, for the UI: when it ran, over
  * what, what it found, whether it was capped or failed. It holds counts and field names, never
@@ -39,8 +41,11 @@ export interface RunSummary {
   windows: number;
   /** The last window attempted (the one that failed, on a failure). */
   window?: { start: Date; end: Date };
-  totals: Omit<AggregationResult, "capped">;
-  /** True if any window hit the read cap: counts are then a floor, not the truth. */
+  totals: Omit<AggregationResult, "capped" | "narrowedTo">;
+  /**
+   * True if any window hit the read cap and could not be narrowed (see `narrowWindow`): part of it
+   * was not read, so counts are a floor, not the truth. A capped read that was narrowed loses nothing.
+   */
   capped: boolean;
   configSource: ConfigSource;
   /** Why the runtime settings weren't used, as field names and rules. */
@@ -126,6 +131,12 @@ export async function runIngest(
 
       summary.window = { start: window.start, end: window.end };
       const result = await withDeadline(deps.aggregate(db, config, window), deps.windowTimeoutMs ?? WINDOW_TIMEOUT_MS);
+      if (result.narrowedTo) {
+        // A capped read wrote nothing: replay the part it covered in full, and leave the rest of the
+        // window to the windows planned after it (#127). It still counts against MAX_WINDOWS_PER_RUN.
+        await narrowPending(db, stateRef, target, window, result.narrowedTo);
+        continue;
+      }
       summary.windows += 1;
       summary.capped ||= result.capped;
       for (const key of Object.keys(summary.totals) as (keyof RunSummary["totals"])[]) {
@@ -134,7 +145,8 @@ export async function runIngest(
 
       await completeWindow(db, stateRef, target, window);
     }
-    summary.outcome = summary.windows > 0 ? "ok" : "idle";
+    // A run that only narrowed a window did work and has more to do: not idle.
+    summary.outcome = summary.window ? "ok" : "idle";
   } catch (err) {
     summary.outcome = "failed";
     summary.error = errorLabel(err);
@@ -182,6 +194,30 @@ async function completeWindow(
     const state = parseState(await tx.get(ref), target);
     if (state.pending?.id !== window.id) return;
     tx.set(ref, serializeState({ target, checkpoint: window.end }));
+  });
+}
+
+/**
+ * Replaces the pending window with the narrower one a capped read asked for, keeping the checkpoint.
+ * Only if that window is still the pending one, as in `completeWindow`: if another run already
+ * narrowed or completed it, the next claim picks up whatever that run left.
+ */
+async function narrowPending(
+  db: Firestore,
+  ref: DocumentReference,
+  target: RunState["target"],
+  window: IngestWindow,
+  narrowed: IngestWindow
+): Promise<void> {
+  // A narrowed window that does not start where this one does, or does not end inside it, would skip or
+  // re-read time. The aggregator never returns one; this keeps a bad one from reaching the state.
+  if (narrowed.start.getTime() !== window.start.getTime() || !(narrowed.end > window.start && narrowed.end < window.end)) {
+    throw new Error("narrowed window is not a prefix of the pending one");
+  }
+  await db.runTransaction(async (tx) => {
+    const state = parseState(await tx.get(ref), target);
+    if (state.pending?.id !== window.id) return;
+    tx.set(ref, serializeState({ ...state, pending: narrowed }));
   });
 }
 

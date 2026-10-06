@@ -71,6 +71,18 @@ describe("loadConfig: ingest windows", () => {
     vi.stubEnv("STARFISH_INGEST_MAX_WINDOW_HOURS", bad);
     expect(() => loadConfig()).toThrow("STARFISH_INGEST_MAX_WINDOW_HOURS");
   });
+
+  it("reads the lookback, 24 hours by default", () => {
+    vi.stubEnv("STARFISH_LOOKBACK_HOURS", "");
+    expect(loadConfig().defaultLookbackHours).toBe(24);
+    vi.stubEnv("STARFISH_LOOKBACK_HOURS", "48");
+    expect(loadConfig().defaultLookbackHours).toBe(48);
+  });
+
+  it.each(["0", "-1", "24h", "abc", "Infinity"])("refuses a lookback of %s, which would leave every run idle (#129)", (bad) => {
+    vi.stubEnv("STARFISH_LOOKBACK_HOURS", bad);
+    expect(() => loadConfig()).toThrow("STARFISH_LOOKBACK_HOURS");
+  });
 });
 
 describe("loadConfig: the verify gate", () => {

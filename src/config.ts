@@ -286,7 +286,9 @@ export function loadConfig(): StarfishConfig {
       ...DEFAULT_PATCH_EXCLUDED_PATHS,
       ...(parseList(process.env.STARFISH_PATCH_EXCLUDED_PATHS, ",") ?? []),
     ],
-    defaultLookbackHours: Number(process.env.STARFISH_LOOKBACK_HOURS ?? 24),
+    // Validated like the other numbers (#129): 0, a negative or "24h" made every first run idle while
+    // the status line said ok.
+    defaultLookbackHours: positiveNumber(process.env.STARFISH_LOOKBACK_HOURS, 24, "STARFISH_LOOKBACK_HOURS"),
     ingestLagMinutes: positiveNumber(process.env.STARFISH_INGEST_LAG_MINUTES, 5, "STARFISH_INGEST_LAG_MINUTES"),
     ...(process.env.STARFISH_INGEST_SCHEDULE?.trim() ? { ingestSchedule: process.env.STARFISH_INGEST_SCHEDULE.trim() } : {}),
     ingestMaxWindowHours: positiveNumber(
