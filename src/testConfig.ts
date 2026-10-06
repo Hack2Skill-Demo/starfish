@@ -43,6 +43,8 @@ export function testConfig(over: Partial<StarfishConfig> = {}): StarfishConfig {
     githubApiUrl: "https://api.github.com",
     githubRemoteUrl: "",
     indexAllowedTargets: [],
+    indexAutoApply: false,
+    indexDailyCap: 3,
     adminApiOrigins: [],
     adminApiPort: 8080,
     uiBaseUrl: "",

@@ -385,6 +385,23 @@ describe("loadConfig: where a missing index may be created", () => {
     vi.stubEnv("STARFISH_INDEX_ALLOWED_TARGETS", bad);
     expect(() => loadConfig()).toThrow("STARFISH_INDEX_ALLOWED_TARGETS");
   });
+
+  it("creates no index and caps three a day by default", () => {
+    vi.stubEnv("STARFISH_INDEX_AUTO_APPLY", "");
+    vi.stubEnv("STARFISH_INDEX_DAILY_CAP", "");
+    expect(loadConfig()).toMatchObject({ indexAutoApply: false, indexDailyCap: 3 });
+  });
+
+  it("reads the switch and the cap, and refuses a typo at startup", () => {
+    vi.stubEnv("STARFISH_INDEX_AUTO_APPLY", "true");
+    vi.stubEnv("STARFISH_INDEX_DAILY_CAP", "5");
+    expect(loadConfig()).toMatchObject({ indexAutoApply: true, indexDailyCap: 5 });
+    vi.stubEnv("STARFISH_INDEX_AUTO_APPLY", "maybe");
+    expect(() => loadConfig()).toThrow("STARFISH_INDEX_AUTO_APPLY");
+    vi.stubEnv("STARFISH_INDEX_AUTO_APPLY", "true");
+    vi.stubEnv("STARFISH_INDEX_DAILY_CAP", "0");
+    expect(() => loadConfig()).toThrow("STARFISH_INDEX_DAILY_CAP");
+  });
 });
 
 describe("loadConfig: admin actions", () => {
