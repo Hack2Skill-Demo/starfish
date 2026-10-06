@@ -44,10 +44,10 @@ export type ParseResult = { ok: true; spec: IndexSpec; url: string } | { ok: fal
 const HOSTS = new Set(["console.firebase.google.com", "console.cloud.google.com"]);
 const MAX_URL = 4000;
 const MAX_FIELDS = 10;
-const PROJECT_RE = /^[a-z][a-z0-9-]{4,28}[a-z0-9]$/;
-const DATABASE_RE = /^(?:\(default\)|[a-z][a-z0-9-]{0,61}[a-z0-9])$/;
-const COLLECTION_RE = /^[A-Za-z_][A-Za-z0-9_-]{0,127}$/;
-const FIELD_PATH_RE = /^(?:__name__|[A-Za-z_][A-Za-z0-9_]{0,127}(?:\.[A-Za-z_][A-Za-z0-9_]{0,127}){0,19})$/;
+export const PROJECT_RE = /^[a-z][a-z0-9-]{4,28}[a-z0-9]$/;
+export const DATABASE_RE = /^(?:\(default\)|[a-z][a-z0-9-]{0,61}[a-z0-9])$/;
+export const COLLECTION_RE = /^[A-Za-z_][A-Za-z0-9_-]{0,127}$/;
+export const FIELD_PATH_RE = /^(?:__name__|[A-Za-z_][A-Za-z0-9_]{0,127}(?:\.[A-Za-z_][A-Za-z0-9_]{0,127}){0,19})$/;
 const NAME_RE = /^projects\/([^/]+)\/databases\/([^/]+)\/collectionGroups\/([^/]+)\/indexes\/_$/;
 const URL_IN_TEXT_RE = /https:\/\/console\.(?:firebase|cloud)\.google\.com\/[^\s"'<>)\]]*create_composite=[A-Za-z0-9_\-%=]+/;
 

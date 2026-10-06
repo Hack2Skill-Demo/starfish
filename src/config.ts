@@ -9,6 +9,8 @@
  * service patterns, and it works there.
  */
 import { parseAllowedTargets } from "./indexheal/createIndexUrl.js";
+import { INDEX_FILE_PATH_RE } from "./indexheal/indexFilePatch.js";
+import { parseIndexProbes, type IndexProbeSpec } from "./indexheal/probe.js";
 
 export interface StarfishConfig {
   /** GCP project Starfish runs in: its Firestore store and its Vertex AI calls. */
@@ -160,6 +162,18 @@ export interface StarfishConfig {
   indexAutoApply: boolean;
   /** The most indexes Starfish creates per target in one UTC day; the Firestore per-database index limit is why. */
   indexDailyCap: number;
+  /**
+   * The failing queries, written down by an operator, that the heal replays (src/indexheal/probe.ts): before creating an
+   * index one must fail naming exactly it, and after READY they must pass. Empty by default, so no index is created:
+   * a create-index URL alone does not say what the query was.
+   */
+  indexProbes: IndexProbeSpec[];
+  /** The repository's index file, relative to its root: what the evidence pull request adds the entry to. */
+  indexFilePath: string;
+  /** How long one cycle waits for a created index to be READY before it lets go and a later pass picks it up again. */
+  indexWaitMinutes: number;
+  /** How long the incident must stay quiet after READY (and the query pass again) before the heal is called healed. */
+  indexObserveMinutes: number;
   /**
    * Browser origins allowed to call the admin API (src/adminApi.ts) from another site: the operator UI's
    * origin, e.g. `https://my-site.web.app`. Empty by default: no browser may. Each entry is an exact origin
@@ -420,6 +434,10 @@ export function loadConfig(): StarfishConfig {
     indexAllowedTargets: validIndexTargets(parseList(process.env.STARFISH_INDEX_ALLOWED_TARGETS, ",") ?? []),
     indexAutoApply: parseBoolean(process.env.STARFISH_INDEX_AUTO_APPLY, false, "STARFISH_INDEX_AUTO_APPLY"),
     indexDailyCap: positiveNumber(process.env.STARFISH_INDEX_DAILY_CAP, 3, "STARFISH_INDEX_DAILY_CAP"),
+    indexProbes: parseIndexProbes(process.env.STARFISH_INDEX_PROBES),
+    indexFilePath: validIndexFilePath(process.env.STARFISH_INDEX_FILE),
+    indexWaitMinutes: positiveNumber(process.env.STARFISH_INDEX_WAIT_MINUTES, 10, "STARFISH_INDEX_WAIT_MINUTES"),
+    indexObserveMinutes: positiveNumber(process.env.STARFISH_INDEX_OBSERVE_MINUTES, 60, "STARFISH_INDEX_OBSERVE_MINUTES"),
     adminApiOrigins: validOrigins(parseList(process.env.STARFISH_ADMIN_API_ORIGINS, ",") ?? []),
     adminApiPort: positiveNumber(process.env.PORT, 8080, "PORT"),
     uiBaseUrl: validOrigins(parseList(process.env.STARFISH_UI_URL, ",") ?? [], "STARFISH_UI_URL")[0] ?? "",
@@ -569,6 +587,13 @@ export function usingFirestoreEmulator(): boolean {
 function validIndexTargets(entries: string[]): string[] {
   parseAllowedTargets(entries);
   return entries;
+}
+
+/** The index file's path in the target repository; a path that could leave the checkout throws at startup. */
+function validIndexFilePath(raw: string | undefined): string {
+  const path = (raw ?? "").trim() || "firestore.indexes.json";
+  if (!INDEX_FILE_PATH_RE.test(path)) throw new Error(`STARFISH_INDEX_FILE must be a plain relative .json path, got "${raw}"`);
+  return path;
 }
 
 /** Exact web origins (`https://host[:port]`, or `http://localhost[:port]`), no path: one wrong entry would widen who may call. */

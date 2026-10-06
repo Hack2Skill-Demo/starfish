@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { IndexSpec } from "./createIndexUrl.js";
 import type { IndexAdmin, LiveIndex } from "./firestoreAdmin.js";
 import { healIndex, sameIndex, type HealDeps, type HealSettings } from "./heal.js";
+import type { ProbeVerdict } from "./probe.js";
 
 // ---- A create-index URL built from the documented Index message (name=1, query_scope=2, fields=3) ----------
 
@@ -58,16 +59,21 @@ const SETTINGS: HealSettings = {
   maxWaitMs: 100,
 };
 
-function harness(over: { list?: LiveIndex[][]; ops?: { done: boolean; error?: { code: number; message: string } }[]; automation?: boolean[]; created?: number; file?: unknown } = {}) {
+function harness(
+  over: { list?: LiveIndex[][]; ops?: { done: boolean; error?: { code: number; message: string } }[]; automation?: boolean[]; created?: number; file?: unknown; probe?: ProbeVerdict[] } = {}
+) {
   const lists = [...(over.list ?? [[]])];
   const ops = [...(over.ops ?? [{ done: true }])];
   const automation = [...(over.automation ?? [true])];
   let t = 0;
   const calls: string[] = [];
+  let lastList: LiveIndex[] = [];
+  const probes = over.probe ? [...over.probe] : undefined;
   const admin: IndexAdmin = {
     list: vi.fn(async () => {
       calls.push("list");
-      return lists.length > 1 ? lists.shift()! : lists[0]!;
+      lastList = lists.length > 1 ? lists.shift()! : lists[0]!;
+      return lastList;
     }),
     create: vi.fn(async () => {
       calls.push("create");
@@ -83,8 +89,17 @@ function harness(over: { list?: LiveIndex[][]; ops?: { done: boolean; error?: { 
     automationOn: vi.fn(async () => (automation.length > 1 ? automation.shift()! : automation[0]!)),
     readIndexFile: vi.fn(async () => ("file" in over ? over.file : { indexes: [] })),
     createdToday: vi.fn(async () => over.created ?? 0),
+    onCreating: vi.fn(async () => {
+      calls.push("creating");
+    }),
     onOperation: vi.fn(async () => {
       calls.push("persist");
+    }),
+    // By default the replayed query fails for this index until one exists (created here, or listed READY), then passes.
+    probe: vi.fn(async (): Promise<ProbeVerdict> => {
+      calls.push("probe");
+      if (probes) return probes.length > 1 ? probes.shift()! : probes[0]!;
+      return calls.includes("create") || lastList.some((l) => l.state === "READY" && sameIndex(SPEC, l)) ? { state: "passed", probes: 1 } : { state: "needs-index", probes: 1 };
     }),
     sleep: vi.fn(async (ms: number) => {
       t += ms;
@@ -240,6 +255,74 @@ describe("healIndex: reconciling what is already there (including after a crash)
       throw new Error("ENOENT");
     });
     expect(await healIndex(ERROR(), SETTINGS, unreadable.deps)).toMatchObject({ outcome: "ready", repoFile: "unknown" });
+  });
+});
+
+describe("healIndex: the replayed query (the deterministic probe)", () => {
+  it("creates nothing when no probe is configured for the collection: the URL alone is not the query", async () => {
+    const h = harness({ probe: [{ state: "not-configured" }] });
+    expect(await healIndex(ERROR(), SETTINGS, h.deps)).toMatchObject({ outcome: "refused", rule: "no-probe" });
+    expect(h.admin.create).not.toHaveBeenCalled();
+    expect(h.deps.onCreating).not.toHaveBeenCalled();
+  });
+
+  it("creates nothing when the probe passes already, or fails some other way", async () => {
+    for (const verdict of [{ state: "passed", probes: 1 }, { state: "inconclusive", probes: 1, reason: "a probe failed with code 7" }] as ProbeVerdict[]) {
+      const h = harness({ probe: [verdict] });
+      expect(await healIndex(ERROR(), SETTINGS, h.deps)).toMatchObject({ outcome: "refused", rule: "probe-not-confirmed" });
+      expect(h.admin.create).not.toHaveBeenCalled();
+    }
+  });
+
+  it("records the attempt before the create and replays the query after READY", async () => {
+    const h = harness();
+    expect(await healIndex(ERROR(), SETTINGS, h.deps)).toMatchObject({ outcome: "ready", created: true, probe: "passed" });
+    expect(h.calls.filter((c) => ["probe", "creating", "create", "persist"].includes(c))).toEqual(["probe", "creating", "create", "persist", "probe"]);
+  });
+
+  it("says when the index is READY but the query still fails: not healed", async () => {
+    const h = harness({ probe: [{ state: "needs-index", probes: 1 }] });
+    expect(await healIndex(ERROR(), SETTINGS, h.deps)).toMatchObject({ outcome: "ready", probe: "needs-index" });
+  });
+
+  it("checks the probe after reconciling an index that was already READY", async () => {
+    const h = harness({ list: [[live("READY")]] });
+    expect(await healIndex(ERROR(), SETTINGS, h.deps)).toMatchObject({ outcome: "ready", created: false, probe: "passed" });
+  });
+
+  it("reports what the probe says in a dry run, and creates nothing", async () => {
+    const h = harness();
+    expect(await healIndex(ERROR(), { ...SETTINGS, dryRun: true }, h.deps)).toMatchObject({ outcome: "dry-run", probe: "needs-index" });
+    expect(h.admin.create).not.toHaveBeenCalled();
+  });
+});
+
+describe("healIndex: a restart after the create", () => {
+  it("polls the operation an earlier attempt persisted instead of creating a second index", async () => {
+    const h = harness({ ops: [{ done: false }, { done: true }] });
+    const op = "projects/demo-app-1/databases/(default)/operations/earlier";
+    expect(await healIndex(ERROR(), SETTINGS, h.deps, { priorOperation: op })).toMatchObject({ outcome: "ready", created: true, operation: op });
+    expect(h.admin.create).not.toHaveBeenCalled();
+    expect(h.deps.createdToday).not.toHaveBeenCalled();
+    expect(h.admin.getOperation).toHaveBeenCalledWith(op);
+  });
+
+  it("reports the persisted operation's failure and never retries the create", async () => {
+    const h = harness({ ops: [{ done: true, error: { code: 8, message: "quota" } }] });
+    expect(await healIndex(ERROR(), SETTINGS, h.deps, { priorOperation: "projects/demo-app-1/databases/(default)/operations/x" })).toMatchObject({ outcome: "build-failed" });
+    expect(h.admin.create).not.toHaveBeenCalled();
+  });
+
+  it("never creates again after an earlier attempt that left no operation and no index", async () => {
+    const h = harness();
+    expect(await healIndex(ERROR(), SETTINGS, h.deps, { priorAttempt: true })).toMatchObject({ outcome: "refused", rule: "unresolved-earlier-create" });
+    expect(h.admin.create).not.toHaveBeenCalled();
+  });
+
+  it("prefers the live inventory over a persisted operation when the index is listed", async () => {
+    const h = harness({ list: [[live("READY")]] });
+    expect(await healIndex(ERROR(), SETTINGS, h.deps, { priorOperation: "projects/demo-app-1/databases/(default)/operations/x" })).toMatchObject({ outcome: "ready", created: false });
+    expect(h.admin.getOperation).not.toHaveBeenCalled();
   });
 });
 

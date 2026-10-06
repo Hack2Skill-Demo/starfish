@@ -47,7 +47,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { StarfishConfig } from "../config.js";
-import type { PullRequestRequest } from "../agent/loop.js";
+import type { IndexEvidence, PullRequestRequest } from "../agent/loop.js";
 import { redactPii } from "../ingest/redact.js";
 import { incidentUrl, runUrl } from "./links.js";
 
@@ -291,6 +291,7 @@ function fitBody(head: string[], footer: string[]): string {
 
 /** The pull request's title and body. Redacted and bounded; fenced text cannot close its own fence. */
 export function pullRequestText(req: PullRequestRequest): { title: string; body: string } {
+  if (req.index) return indexPullRequestText(req, req.index);
   const title = `Starfish: ${plainLine(req.rootCause, 70) || "proposed fix"}`;
   const lines: string[] = [
     "## What",
@@ -303,15 +304,16 @@ export function pullRequestText(req: PullRequestRequest): { title: string; body:
     "",
     "## Verify gate",
     "",
-    `Result: **${inertLine(req.verify.status, 40)}** (${inertLine(req.verify.rule, 80)}).`,
+    req.verify ? `Result: **${inertLine(req.verify.status, 40)}** (${inertLine(req.verify.rule, 80)}).` : "Not run.",
   ];
-  if (req.verify.changedFiles.length > 0) {
+  const verify = req.verify;
+  if (verify && verify.changedFiles.length > 0) {
     lines.push("", "Files changed:", "");
-    for (const f of req.verify.changedFiles.slice(0, MAX_FILES_IN_BODY)) lines.push(`- \`${code(f, 200)}\``);
-    if (req.verify.changedFiles.length > MAX_FILES_IN_BODY) lines.push(`- … and ${req.verify.changedFiles.length - MAX_FILES_IN_BODY} more`);
+    for (const f of verify.changedFiles.slice(0, MAX_FILES_IN_BODY)) lines.push(`- \`${code(f, 200)}\``);
+    if (verify.changedFiles.length > MAX_FILES_IN_BODY) lines.push(`- … and ${verify.changedFiles.length - MAX_FILES_IN_BODY} more`);
   }
-  if (req.verify.output.trim() !== "") {
-    lines.push("", "Output (tail):", "", "```", fence(clip(req.verify.output.slice(-MAX_OUTPUT_IN_BODY), MAX_OUTPUT_IN_BODY)), "```");
+  if (verify && verify.output.trim() !== "") {
+    lines.push("", "Output (tail):", "", "```", fence(clip(verify.output.slice(-MAX_OUTPUT_IN_BODY), MAX_OUTPUT_IN_BODY)), "```");
   }
   lines.push("", "## Adversarial review", "");
   if (req.review) {
@@ -330,6 +332,64 @@ export function pullRequestText(req: PullRequestRequest): { title: string; body:
     ...(req.issueNumber !== undefined && Number.isInteger(req.issueNumber) && req.issueNumber > 0 ? [`- Issue: #${req.issueNumber}`] : []),
     `- Incident: \`${code(req.incidentId, 128)}\``,
     `- Run: \`${code(req.cycleId, 128)}\``,
+    `- Base revision: \`${code(req.baseRevision, 40)}\``,
+    `- Patch SHA-256: \`${code(req.patchSha256, 64)}\``,
+    "",
+    "Opened by Starfish. It does not merge or deploy: a person decides.",
+    ...(req.issueNumber !== undefined && Number.isInteger(req.issueNumber) && req.issueNumber > 0 ? ["", `Closes #${req.issueNumber}`] : []),
+    "",
+  ];
+  return { title, body: fitBody(lines, footer) };
+}
+
+/** `status` ASCENDING, `createdAt` DESCENDING: the index's fields, as code spans. */
+const indexFields = (fields: IndexEvidence["fields"]) => fields.map((f) => `\`${code(f.fieldPath, 200)}\` ${code(f.order, 12)}`).join(", ");
+
+/** The one-line summary of the index the heal added: the title, and the commit message the opener writes. */
+export function indexRootCause(index: Pick<IndexEvidence, "collectionGroup" | "fields">): string {
+  return `add the missing Firestore index on ${index.collectionGroup} (${index.fields.map((f) => `${f.fieldPath} ${f.order === "DESCENDING" ? "desc" : "asc"}`).join(", ")})`;
+}
+
+/**
+ * The missing-index heal's evidence pull request (#11): a fixed template, filled from the spec Google's own error named
+ * and the run's record. No model writes any of it. It says what is already true in production (the index exists and the
+ * query passes), what merging does (only the file changes), and what a deploy of the file would do.
+ */
+export function indexPullRequestText(req: PullRequestRequest, index: IndexEvidence): { title: string; body: string } {
+  const title = `Starfish: ${plainLine(indexRootCause(index), 70)}`;
+  const where = `\`${code(index.project, 40)}\` / \`${code(index.database, 70)}\``;
+  const lines: string[] = [
+    "## What",
+    "",
+    `A query on the collection group \`${code(index.collectionGroup, 128)}\` failed with \`FAILED_PRECONDITION\`: Firestore needed a composite index that did not exist.`,
+    "",
+    index.created
+      ? `Starfish created that one index in ${where} with a single Admin API call, waited until it was READY, and replayed the configured query, which now succeeds.`
+      : `That index already exists in ${where} and is READY (it was not created by this run), and the configured query now succeeds.`,
+    "",
+    `This pull request ${index.fileCreated ? "creates" : "adds the same entry to"} \`${code(index.indexFile, 200)}\`, so the repository matches what is in production. Merging it changes nothing in production by itself.`,
+    "",
+    "## The index",
+    "",
+    `- Collection group: \`${code(index.collectionGroup, 128)}\``,
+    `- Query scope: \`${code(index.queryScope, 20)}\``,
+    `- Fields: ${indexFields(index.fields)}`,
+    "",
+    "## Before you merge or deploy",
+    "",
+    "- Deploying the index file (`firebase deploy --only firestore:indexes`) deploys the whole file. For indexes that exist in production but are missing from it, the CLI offers to delete them (and does, with `--force`). Compare the file with the console first.",
+    "- Cost: a composite index adds an index entry, storage and write work for every document in the collection group. Starfish does not estimate the amount.",
+    "- Starfish never deletes an index, and reverting this pull request does not remove the index from production.",
+  ];
+  const footer = [
+    "",
+    "## Evidence",
+    "",
+    ...(req.issueNumber !== undefined && Number.isInteger(req.issueNumber) && req.issueNumber > 0 ? [`- Issue: #${req.issueNumber}`] : []),
+    `- Incident: \`${code(req.incidentId, 128)}\``,
+    `- Run: \`${code(req.cycleId, 128)}\``,
+    ...(index.operation ? [`- Create operation: \`${code(index.operation, 300)}\``] : []),
+    `- READY and the query passed at: \`${code(index.readyAt, 40)}\``,
     `- Base revision: \`${code(req.baseRevision, 40)}\``,
     `- Patch SHA-256: \`${code(req.patchSha256, 64)}\``,
     "",

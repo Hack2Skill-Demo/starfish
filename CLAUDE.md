@@ -192,8 +192,14 @@ src/
   indexheal/createIndexUrl.ts  create-index URL → strict spec, default-deny target guard, index-file dedup (#11).
                    Tested on URLs built from the documented proto
   indexheal/heal.ts  the gated executor (#11): target guard, `indexAutoApply` + dry run + kill switch (rechecked before the one
-                   create), live-inventory reconcile (a building index is waited on, never duplicated), daily cap, bounded wait;
-                   infra failures throw. `firestoreAdmin.ts` is its REST adapter. Tested with fakes; called by nothing, never run
+                   create), live-inventory reconcile (a building index is waited on, never duplicated), a persisted operation
+                   polled not repeated, daily cap, the probe confirming the failing query, bounded wait; infra failures throw.
+                   `firestoreAdmin.ts` is its REST adapter; `probe.ts` replays the CONFIGURED failing query (STARFISH_INDEX_PROBES,
+                   read-only, limit 1); `indexFilePatch.ts` the evidence PR's diff (self-checked, entries only added);
+                   `observe.ts` decides healed / recurred after the quiet window (writes the run record only, never the incident)
+  agent/indexPath.ts  the loop's index path: a MissingIndexError skips triage and the model when an index target is allowed;
+                   attempt recorded (fenced) before the create, operation after; evidence PR via the PR opener. Run by
+                   `pnpm agent`; tested against fakes and the emulator, never run against Google
   integrations/slack.ts  Slack delivery (#17): one "needs a human" message through an incoming webhook, from redacted plain-text
                    fields; bounded retries, a failed delivery is a recorded result (`summary.notify`), a dry run sends nothing; the webhook
                    (a secret, `loadSlackOnCallWebhook`) never appears in a result. Also the optional #ops-alerts "new incident"

@@ -474,6 +474,22 @@ describe("loadConfig: where a missing index may be created", () => {
     vi.stubEnv("STARFISH_INDEX_DAILY_CAP", "0");
     expect(() => loadConfig()).toThrow("STARFISH_INDEX_DAILY_CAP");
   });
+
+  it("has no probe, the root index file, a 10-minute wait and a 60-minute watch by default", () => {
+    for (const k of ["STARFISH_INDEX_PROBES", "STARFISH_INDEX_FILE", "STARFISH_INDEX_WAIT_MINUTES", "STARFISH_INDEX_OBSERVE_MINUTES"]) vi.stubEnv(k, "");
+    expect(loadConfig()).toMatchObject({ indexProbes: [], indexFilePath: "firestore.indexes.json", indexWaitMinutes: 10, indexObserveMinutes: 60 });
+  });
+
+  it("reads the probes and the index file, and refuses either malformed at startup", () => {
+    vi.stubEnv("STARFISH_INDEX_PROBES", JSON.stringify([{ target: "demo-app-1/(default)", collection: "orders", where: [["status", "==", "open"]] }]));
+    vi.stubEnv("STARFISH_INDEX_FILE", "firebase/firestore.indexes.json");
+    expect(loadConfig()).toMatchObject({ indexProbes: [{ project: "demo-app-1", collection: "orders" }], indexFilePath: "firebase/firestore.indexes.json" });
+    vi.stubEnv("STARFISH_INDEX_FILE", "../elsewhere.json");
+    expect(() => loadConfig()).toThrow("STARFISH_INDEX_FILE");
+    vi.stubEnv("STARFISH_INDEX_FILE", "");
+    vi.stubEnv("STARFISH_INDEX_PROBES", "[{");
+    expect(() => loadConfig()).toThrow("STARFISH_INDEX_PROBES");
+  });
 });
 
 describe("loadConfig: admin actions", () => {

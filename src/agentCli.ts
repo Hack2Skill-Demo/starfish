@@ -37,6 +37,12 @@ import { createCiVerifier } from "./agent/verifyCi.js";
 import { createGithubClient } from "./integrations/githubPr.js";
 import { createSlackAlerter, createSlackNotifier } from "./integrations/slack.js";
 import { INCIDENT_STATUSES, type IncidentStatus } from "./types.js";
+import { parseAllowedTargets } from "./indexheal/createIndexUrl.js";
+import { createFirestoreAdmin } from "./indexheal/firestoreAdmin.js";
+import { observeIndexHeals } from "./indexheal/observe.js";
+import { createIndexProbe } from "./indexheal/probe.js";
+import { createFirestoreProbeRunner } from "./indexheal/probeFirestore.js";
+import type { IndexHealWiring } from "./agent/indexPath.js";
 
 const base = loadConfig();
 const token = loadGithubToken();
@@ -100,6 +106,34 @@ const loader = createLoader({
   checkout: createGitCheckout(cfg, { ...(token && { token }), env: loadChildProcessBasics() }),
 });
 
+// The missing-index heal (#11) is wired in only when a target is allowed (empty by default): a MissingIndexError incident
+// then takes the index path instead of triage. Creating an index still needs STARFISH_INDEX_AUTO_APPLY, the dry run off,
+// the automation switch on, a configured probe that confirms the failing query, and room under the daily cap.
+const indexProbe = createIndexProbe(cfg.indexProbes, createFirestoreProbeRunner());
+const indexHeal: IndexHealWiring | undefined =
+  cfg.indexAllowedTargets.length > 0
+    ? {
+        settings: {
+          allowedTargets: parseAllowedTargets(cfg.indexAllowedTargets),
+          own: { project: cfg.projectId, database: cfg.databaseId },
+          autoApply: cfg.indexAutoApply,
+          dailyCap: cfg.indexDailyCap,
+          pollMs: 15_000,
+          maxWaitMs: cfg.indexWaitMinutes * 60_000,
+        },
+        admin: createFirestoreAdmin(),
+        probe: indexProbe,
+        sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+        indexFilePath: cfg.indexFilePath,
+        observeMinutes: cfg.indexObserveMinutes,
+      }
+    : undefined;
+if (indexHeal) {
+  console.warn(
+    `agent: missing-index heal wired for ${cfg.indexAllowedTargets.join(", ")} (create ${cfg.indexAutoApply && !cfg.dryRun ? "allowed by the switches" : "off: dry run or STARFISH_INDEX_AUTO_APPLY"}; ${cfg.indexProbes.length} probe(s)).`
+  );
+}
+
 const owner = `agent-${hostname()}-${process.pid}-${randomUUID().slice(0, 8)}`;
 const automationEnabled = makeAutomationSwitch(settings, db);
 const deps = {
@@ -117,6 +151,7 @@ const deps = {
   },
   automationEnabled,
   reconsider: cfg,
+  ...(indexHeal && { indexHeal }),
   ...(remoteVerify && { verify: remoteVerify }),
   // Absent in a dry run: the loop then ends a verified, reviewed patch as "waiting for a person" and opens nothing.
   ...(!cfg.dryRun && github && { openPullRequest: github.openPullRequest, findPullRequest: github.findPullRequest }),
@@ -147,6 +182,20 @@ try {
   for (const e of summary.errors) console.error(`  ${e.incidentId}: threw: ${e.message}`);
   if (summary.aborted) console.error("agent: stopped early: cycles kept throwing.");
   failed = summary.errors.length > 0 || summary.aborted;
+
+  // Whether earlier index heals held (#11): READY + the query passing + a quiet window. Writes only the cycle's
+  // `summary.index.runtime`; never the incident, never an index.
+  if (indexHeal) {
+    try {
+      const obs = await observeIndexHeals({ db, config: cfg, probe: indexProbe, now: () => new Date() });
+      console.log(`agent: ${obs.considered} index heal(s) under observation, ${obs.waiting} still in their window`);
+      for (const d of obs.decided) console.log(`  ${d.cycleId}: index heal ${d.runtime}`);
+      for (const e of obs.errors) console.error(`  ${e.cycleId}: index heal not decided: ${e.message}`);
+    } catch (err) {
+      console.error(`agent: checking index heals failed: ${redactPii(err instanceof Error ? err.message : String(err)).slice(0, 300)}`);
+      failed = true;
+    }
+  }
 
   // Read back the pull requests earlier cycles opened (#17): merged, closed or open, and the named checks on their head,
   // recorded on each cycle. Read-only on GitHub; never marks an incident healed. Needs the GitHub client.

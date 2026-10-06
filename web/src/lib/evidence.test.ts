@@ -174,3 +174,40 @@ describe("buildEvidence: the pull request afterwards (#17)", () => {
     expect(stage(e, "pr").note).toBeUndefined();
   });
 });
+
+describe("buildEvidence: the missing-index path (#11)", () => {
+  it("shows the index and its evidence pull request, not triage, a draft, a verify gate or a review", () => {
+    const e = buildEvidence(
+      { ...row, errorType: "MissingIndexError" },
+      cycle({
+        index: {
+          state: "ready",
+          collectionGroup: "orders",
+          fields: "status ASCENDING, createdAt DESCENDING",
+          created: true,
+          probe: "passed",
+          runtime: "healed",
+          runtimeBasis: "no occurrence since READY",
+        },
+        pr: { opened: true, number: 11, url: "https://github.com/acme/shop/pull/11", patchSha256: HASH },
+      })
+    );
+    expect(e.stages.map((s) => s.id)).toEqual(["detected", "index", "pr"]);
+    const index = stage(e, "index");
+    expect(index.fields).toEqual(
+      expect.arrayContaining([
+        { label: "Collection group", value: "orders", mono: true },
+        { label: "Configured query replayed", value: "passed" },
+        { label: "Runtime", value: expect.stringContaining("Healed") },
+      ])
+    );
+    expect(index.note).toMatch(/No model wrote this fix/);
+    expect(stage(e, "pr").note).toMatch(/already exists in production/);
+  });
+
+  it("a dry run on the index path records what it would have done, and no pull request", () => {
+    const e = buildEvidence(row, cycle({ index: { state: "dry-run", live: "absent", probe: "needs-index", repoFile: "absent" } }));
+    expect(stage(e, "index").fields.map((f) => f.label)).toEqual(["State", "Live inventory (dry run)", "Configured query replayed", "In the repository's index file"]);
+    expect(stage(e, "pr").status).toBe("not-reached");
+  });
+});
