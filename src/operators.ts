@@ -6,6 +6,11 @@
  * It sets the roles it is given and nothing else (re-running with fewer roles removes the others), and
  * it never handles a password: a person who has no account yet is created without one and gets a
  * password-reset link to set their own.
+ *
+ * It refuses an existing account whose email is not verified (#139): with self sign-up on, anyone holding the public
+ * web API key can register `ops@victim.com` with a password of their choosing before the owner runs this, and the
+ * roles would then go to the attacker's uid. An account this run created, or one the person running it vouches for
+ * with `--trust-existing` (after reading its creation time and providers, which the result carries), is let through.
  */
 import type { Auth } from "firebase-admin/auth";
 import type { Firestore } from "firebase-admin/firestore";
@@ -37,6 +42,39 @@ export interface GrantResult {
   created: boolean;
   /** Present for a created account, or when a link was asked for: the link the person opens to choose a password. */
   passwordResetLink?: string;
+  /** What Auth says about the account, for the person running the grant to check it is the one they mean. */
+  account: AccountFacts;
+}
+
+export interface AccountFacts {
+  emailVerified: boolean;
+  /** When Auth says the account was made (its own string), or null if it did not say. */
+  creationTime: string | null;
+  /** The sign-in providers linked to it ("password", "google.com", ...); empty for an account with none. */
+  providers: string[];
+}
+
+type AuthUser = {
+  uid: string;
+  emailVerified?: boolean;
+  metadata?: { creationTime?: string };
+  providerData?: { providerId: string }[];
+};
+
+function accountFacts(user: AuthUser): AccountFacts {
+  return {
+    emailVerified: user.emailVerified === true,
+    creationTime: typeof user.metadata?.creationTime === "string" ? user.metadata.creationTime : null,
+    providers: (user.providerData ?? []).map((p) => p.providerId),
+  };
+}
+
+/** One line a person can read before trusting an account: "created <time>, providers <list>, email (not) verified". */
+export function describeAccount(facts: AccountFacts): string {
+  return (
+    `created ${facts.creationTime ?? "(unknown)"}, providers ${facts.providers.length > 0 ? facts.providers.join(",") : "(none)"}, ` +
+    `email ${facts.emailVerified ? "verified" : "NOT verified"}`
+  );
 }
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -47,7 +85,14 @@ export async function grantOperator(
     db: Pick<Firestore, "collection">;
     usersCollection: string;
   },
-  request: { email: string; roles: OperatorRole[]; createAccount: boolean; resetLink?: boolean }
+  request: {
+    email: string;
+    roles: OperatorRole[];
+    createAccount: boolean;
+    resetLink?: boolean;
+    /** Grant to an existing account whose email is not verified. The person running the grant vouches for it. */
+    trustExisting?: boolean;
+  }
 ): Promise<GrantResult> {
   const email = request.email.trim();
   if (!EMAIL_RE.test(email)) throw new Error("not an email address");
@@ -65,24 +110,35 @@ export async function grantOperator(
   }
 
   let created = false;
-  let uid: string;
+  let user: AuthUser;
   try {
-    uid = (await deps.auth.getUserByEmail(email)).uid;
+    user = await deps.auth.getUserByEmail(email);
   } catch (err) {
     if ((err as { code?: string }).code !== "auth/user-not-found") throw err;
     if (!request.createAccount) {
       throw new Error("no account for that email; create it in the console, or pass --create", { cause: err });
     }
-    uid = (await deps.auth.createUser({ email })).uid;
+    user = await deps.auth.createUser({ email });
     created = true;
   }
+  const uid = user.uid;
+  const account = accountFacts(user);
   if (!isValidUid(uid)) throw new Error("the account's uid is not usable as a document id");
+  // An account this run did not make, with an email nobody has proved they own, may be a stranger's sign-up (#139).
+  if (!created && !account.emailVerified && request.trustExisting !== true) {
+    throw new Error(
+      `refusing: an account for that email already exists and its email is not verified (${describeAccount(account)}). ` +
+        "Anyone can sign up with any address while self sign-up is on. If you made this account yourself, pass " +
+        "--trust-existing; otherwise delete it in the Firebase console and re-run with --create. Nothing was written."
+    );
+  }
 
   await deps.db.collection(deps.usersCollection).doc(uid).set({ roles: request.roles });
 
   return {
     uid,
     created,
+    account,
     ...((created || request.resetLink === true) && { passwordResetLink: await deps.auth.generatePasswordResetLink(email) }),
   };
 }

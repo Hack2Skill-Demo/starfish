@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { grantOperator, parseRoles } from "./operators.js";
+import { describeAccount, grantOperator, parseRoles } from "./operators.js";
 
 describe("parseRoles", () => {
   it("reads one or more roles, once each", () => {
@@ -15,14 +15,21 @@ describe("parseRoles", () => {
   });
 });
 
-function fakes(existing: Record<string, string> = {}) {
+const VERIFIED = { emailVerified: true, creationTime: "Mon, 05 Oct 2026 09:00:00 GMT", providers: ["password"] };
+
+function fakes(existing: Record<string, string> = {}, unverified: Record<string, true> = {}) {
   const written: Record<string, unknown> = {};
   const createdEmails: string[] = [];
   const auth = {
     getUserByEmail: (email: string) => {
       const uid = existing[email];
       return uid !== undefined
-        ? Promise.resolve({ uid })
+        ? Promise.resolve({
+            uid,
+            emailVerified: unverified[email] !== true,
+            metadata: { creationTime: "Mon, 05 Oct 2026 09:00:00 GMT" },
+            providerData: [{ providerId: "password" }],
+          })
         : Promise.reject(Object.assign(new Error("nope"), { code: "auth/user-not-found" }));
     },
     createUser: (props: { email?: string }) => {
@@ -52,7 +59,7 @@ describe("grantOperator", () => {
       { auth: f.auth as never, db: f.db as never, usersCollection: "starfish_users" },
       { email: "a@example.com", roles: ["admin"], createAccount: false }
     );
-    expect(r).toEqual({ uid: "uid-1", created: false });
+    expect(r).toEqual({ uid: "uid-1", created: false, account: VERIFIED });
     expect(f.written).toEqual({ "starfish_users/uid-1": { roles: ["admin"] } });
     expect(f.createdEmails).toEqual([]);
   });
@@ -61,7 +68,7 @@ describe("grantOperator", () => {
     const f = fakes({ "a@example.com": "uid-1" });
     const deps = { auth: f.auth as never, db: f.db as never, usersCollection: "starfish_users" };
     const asked = await grantOperator(deps, { email: "a@example.com", roles: ["admin"], createAccount: false, resetLink: true });
-    expect(asked).toEqual({ uid: "uid-1", created: false, passwordResetLink: "https://reset.example/a@example.com" });
+    expect(asked).toEqual({ uid: "uid-1", created: false, account: VERIFIED, passwordResetLink: "https://reset.example/a@example.com" });
     const plain = await grantOperator(deps, { email: "a@example.com", roles: ["admin"], createAccount: false });
     expect(plain.passwordResetLink).toBeUndefined();
     expect(f.createdEmails).toEqual([]);
@@ -84,8 +91,43 @@ describe("grantOperator", () => {
       { auth: f.auth as never, db: f.db as never, usersCollection: "ops" },
       { email: "new@example.com", roles: ["operator"], createAccount: true }
     );
-    expect(r).toEqual({ uid: "new-uid", created: true, passwordResetLink: "https://reset.example/new@example.com" });
+    expect(r).toEqual({
+      uid: "new-uid",
+      created: true,
+      account: { emailVerified: false, creationTime: null, providers: [] },
+      passwordResetLink: "https://reset.example/new@example.com",
+    });
     expect(f.written).toEqual({ "ops/new-uid": { roles: ["operator"] } });
+  });
+
+  // #139: with self sign-up on, a stranger can register the owner's address first; the grant must not go to them.
+  it("refuses an existing account whose email is not verified, and says when it was made and how", async () => {
+    const f = fakes({ "ops@example.com": "attacker-uid" }, { "ops@example.com": true });
+    const deps = { auth: f.auth as never, db: f.db as never, usersCollection: "starfish_users" };
+    for (const createAccount of [false, true]) {
+      await expect(grantOperator(deps, { email: "ops@example.com", roles: ["admin"], createAccount })).rejects.toThrow(
+        /not verified \(created Mon, 05 Oct 2026 09:00:00 GMT, providers password, email NOT verified\).*--trust-existing.*Nothing was written/
+      );
+    }
+    expect(f.written).toEqual({});
+    expect(f.createdEmails).toEqual([]);
+  });
+
+  it("grants to an unverified existing account only when the person running it vouches for it", async () => {
+    const f = fakes({ "ops@example.com": "uid-9" }, { "ops@example.com": true });
+    const r = await grantOperator(
+      { auth: f.auth as never, db: f.db as never, usersCollection: "starfish_users" },
+      { email: "ops@example.com", roles: ["admin"], createAccount: false, trustExisting: true }
+    );
+    expect(r.account.emailVerified).toBe(false);
+    expect(f.written).toEqual({ "starfish_users/uid-9": { roles: ["admin"] } });
+  });
+
+  it("describes an account in one line", () => {
+    expect(describeAccount(VERIFIED)).toBe("created Mon, 05 Oct 2026 09:00:00 GMT, providers password, email verified");
+    expect(describeAccount({ emailVerified: false, creationTime: null, providers: [] })).toBe(
+      "created (unknown), providers (none), email NOT verified"
+    );
   });
 
   it("does not hide an Auth failure that is not 'no such user'", async () => {
