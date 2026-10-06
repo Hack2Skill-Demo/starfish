@@ -120,7 +120,7 @@ demo runs.
   each one's steps (triage, fix, verify, review, pull request) from the events the engine records,
   live. A step with no event reads "not reached", and a run with no worker holding it is not shown
   as in progress. **The agent job that would fill it is deployable (`DEPLOY_AGENT=1`) and has never run, so on a real
-  deployment the page is empty;** it is exercised against the emulator with seeded data. The header shows the path, the
+  deployment the page is empty** unless the synthetic demo history (`pnpm seed-demo`, badged "Synthetic") was written; it is exercised against the emulator with seeded data. The header shows the path, the
   triage rule, progress (steps recorded) and the engine's last run. The GitHub-issue and Slack steps appear when a run
   recorded them. Not built: the index, deploy, phone and recovery steps (the
   loop has no code for them), and the four MVP cases observed end to end (#33 stays open).
@@ -134,10 +134,9 @@ demo runs.
   for that decision).
 - **Overview:** a first version is built and is the page the app opens on: how many runs wait on a
   human, runs in progress, open incidents, regressions, errors per hour (from the incidents' hourly
-  buckets), key figures (pull requests opened and failed runs, each as "n of N finished runs"; median run length; untriaged open incidents; errors this hour against the hours before it), what the agent did by path (each row opens the Runs list filtered to runs that ended that way), the latest runs and the engine's status. Every figure is a
+  buckets), key figures (pull requests opened and failed runs, each as "n of N finished runs"; median run length; untriaged open incidents; errors this hour against the hours before it), what the agent did by path (each row opens the Runs list filtered to runs that ended that way), the latest runs, the latest activity (the newest run events across all runs, each opening its run) and the engine's status. Every figure is a
   count or median of stored records, not an accuracy score (no run has been scored; see `scoreboard/FORMAT.md`). It does **not** show a run "healed on its own" or merged (nothing records
-  one), or run events as a feed
-  (it lists the latest runs); on a real deployment the run counts are zero until a job runs the agent
+  one); on a real deployment the run counts are zero until a job runs the agent
   loop (#38 stays open).
 - **Slack messages and GitHub issue/PR bodies:** what Starfish posts elsewhere.
 - **Pre-recorded phone call:** to the on-call person when Slack goes unanswered.
@@ -145,7 +144,7 @@ demo runs.
 
 The Incidents page opens with a line saying whether the engine is running (from the engine's last-run record: failed, stopped past a configurable threshold, read capped, or never recorded), so a quiet list can't pass for good news; nothing writes that record in production until the ingest job is deployed and scheduled: `scripts/deploy-gcp.sh` does both but has not been run against a real project yet (#6).
 
-The public demo needs no sign-in: a visitor is signed in anonymously and sees the Overview, the incidents and their evidence, the Runs page and a view-only Settings page, all for the `demo` environment only, with no triage buttons (#12). That needs Anonymous sign-in enabled in the Firebase project and only `demo`-labelled data; App Check, the seeded evidence history and the uptime check are not built. A private deployment leaves Anonymous sign-in disabled and still requires an operator account.
+The public demo needs no sign-in: a visitor is signed in anonymously and sees the Overview, the incidents and their evidence, the Runs page and a view-only Settings page, all for the `demo` environment only, with no triage buttons (#12). That needs Anonymous sign-in enabled in the Firebase project and only `demo`-labelled data; App Check and the uptime check are not built. Because the agent has never run, the demo can carry a **synthetic** evidence history instead: `pnpm seed-demo` (see [Synthetic demo history](#synthetic-demo-history)), every record of which the UI badges "Synthetic". A private deployment leaves Anonymous sign-in disabled and still requires an operator account.
 
 ![Live runs: a missing-index fault, from first error to an evidence PR waiting for a human](docs/design/screens/live-runs-index.png)
 
@@ -381,9 +380,29 @@ pnpm run verify         # the gate: lint · typecheck · test · build
 pnpm test:emulator      # firestore.rules + store concurrency on the emulator (needs Java)
 pnpm -C web dev         # operator UI on :5177 (copy web/.env.example to web/.env)
 pnpm dev:emulated       # the UI against seeded local emulators, no GCP project needed
+pnpm seed-demo          # dry run: the synthetic demo history it would write (--apply / --remove; demo environment only)
 pnpm spike              # fix-quality spike (needs Vertex AI access)
 pnpm scoreboard         # scoreboard/RESULTS.md from scoreboard/results/*.json; says so and writes nothing with no runs
 ```
+
+### Synthetic demo history
+
+`pnpm seed-demo` (`src/seedDemo.ts`) writes a small, **made-up** history into the configured Starfish database so the
+public demo shows what each path of the loop records even with no live incident: five incidents and, for each, a
+finished cycle with its run events and run record in the shapes the agent writes, one per path (declined by triage, a
+person told, a dry-run draft that passed verify and review, a pull request after one failed verify, and a patch the
+review broke twice), timestamped over the last few days. **None of it happened: no model was called, no test ran, and
+the issue and pull-request numbers it shows exist nowhere** (they carry no link).
+
+- Every document it writes has `synthetic: true`; each incident's message starts `[Synthetic demo data, not a real
+  incident]`, and each run's first event says no agent ran it. The Incidents table, the incident page and the Runs page
+  show a "Synthetic" badge on them. The Overview's counts do include them.
+- It refuses unless `STARFISH_ENV=demo`. Without flags it is a dry run that prints what it would write. `--apply
+  --project=<id>` writes it; ids are fixed, so a re-run replaces (with fresh timestamps) and never duplicates.
+  `--remove --project=<id>` deletes exactly those documents. Neither touches a document at one of its ids that is not
+  marked synthetic.
+- It writes no incident key and its fingerprints are not hashes, so a real occurrence never lands on a synthetic
+  incident, and each incident's cycle is already finished, so the agent never picks one up.
 
 To deploy to a project, follow [`docs/setup.md`](docs/setup.md): a read-only preflight
 (`scripts/preflight-gcp.sh`), the ingest job and its schedule (`scripts/deploy-gcp.sh`), the first

@@ -68,6 +68,12 @@ describe("toRow", () => {
     });
   });
 
+  it("marks an incident synthetic only when the document says exactly true", () => {
+    expect(toRow("s", { synthetic: true }, 24, now).synthetic).toBe(true);
+    expect(toRow("s", { synthetic: 1 }, 24, now).synthetic).toBeUndefined();
+    expect(toRow("s", {}, 24, now)).not.toHaveProperty("synthetic");
+  });
+
   it("degrades a malformed document instead of throwing", () => {
     const row = toRow("x", { status: "bogus", occurrenceCount: "lots", githubPrState: "weird" }, 24, now);
     expect(row).toMatchObject({

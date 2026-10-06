@@ -60,6 +60,12 @@ describe("parseCycle / parseEvent", () => {
     expect(parseCycle("x", cycleDoc({ summary: "oops" }))?.summary).toEqual({});
   });
 
+  it("marks a cycle synthetic only when the document says exactly true", () => {
+    expect(parseCycle("x", cycleDoc({ synthetic: true }))?.synthetic).toBe(true);
+    expect(parseCycle("x", cycleDoc({ synthetic: "true" }))?.synthetic).toBeUndefined();
+    expect(parseCycle("x", cycleDoc())).not.toHaveProperty("synthetic");
+  });
+
   it("drops an unknown path rather than showing it", () => {
     expect(parseCycle("x", cycleDoc({ path: "merge" }))?.path).toBeUndefined();
   });

@@ -11,6 +11,7 @@
  *    opener (src/integrations/githubPr.ts) records its results on the cycle.
  */
 import { Fragment, useState } from "react";
+import { SyntheticBadge } from "../components/SyntheticBadge";
 import { Link, useSearchParams } from "react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -356,7 +357,10 @@ export default function Incidents() {
                                 {isExpanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
                               </button>
                               <div>
-                                <p className="font-medium text-gray-900 dark:text-white">{row.functionName}</p>
+                                <p className="flex flex-wrap items-center gap-2 font-medium text-gray-900 dark:text-white">
+                                  {row.functionName}
+                                  {row.synthetic && <SyntheticBadge />}
+                                </p>
                                 <p className="text-xs text-gray-500 dark:text-gray-400">
                                   {row.service}
                                   {row.tenantId ? ` · ${row.tenantId}` : ""}

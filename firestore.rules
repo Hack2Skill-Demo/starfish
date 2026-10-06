@@ -268,6 +268,15 @@ service cloud.firestore {
       }
     }
 
+    // The Overview's activity feed: the newest events across every cycle, one collection-group query
+    // (web/src/lib/runs.ts). A collection-group rule matches an `events` collection at any depth, so it
+    // grants `list` only (a single read stays with the rule above) and only on the same terms: operators,
+    // and a guest whose query filters on the demo environment. The engine writes `events` only under
+    // starfish_cycles; the UI also drops any result whose path is not a cycle's.
+    match /{path=**}/events/{seq} {
+      allow list: if isOperator() || guestList();
+    }
+
     // ---- Admin actions on the engine (src/ingest/retire.ts) -----------------------
     //
     // starfish_audit/{id}   who did what to which incident, when and why. Admins read it; only the

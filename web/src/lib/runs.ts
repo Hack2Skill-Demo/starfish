@@ -5,11 +5,13 @@
  * browser writes. Both queries filter on `environment`, which the rules need before they will serve a
  * guest a list. The cycle list is newest-update first and needs the composite index in
  * firestore.indexes.json; a cycle's events are few, so they are read in full and put in order here.
+ * The Overview's feed reads the newest events across cycles with a collection-group query.
  */
-import { collection, doc, getDoc, limit, onSnapshot, orderBy, query, where, type Unsubscribe } from "firebase/firestore";
+import { collection, collectionGroup, doc, getDoc, limit, onSnapshot, orderBy, query, where, type Unsubscribe } from "firebase/firestore";
 import { firestore } from "./firebase";
 import { webConfig } from "./config";
 import { parseCycle, parseEvent, type CycleRow, type EventRow } from "./runsModel";
+import { latestActivity, parseActivity, type ActivityRow } from "./overviewModel";
 
 /** Cycles read for the list. The page says so when it hits this. */
 export const CYCLE_LIMIT = 50;
@@ -52,6 +54,35 @@ export function subscribeEvents(
   return onSnapshot(
     q,
     (snap) => onData(snap.docs.flatMap((d) => parseEvent(d.id, d.data()) ?? []).sort((a, b) => a.seq - b.seq)),
+    onError
+  );
+}
+
+/** Events in the Overview's feed. */
+export const ACTIVITY_LIMIT = 10;
+
+/**
+ * The newest run events across every cycle of this environment, live: one collection-group query over
+ * `events` (the subcollection name src/agent/cycle.ts writes), newest first. It needs the
+ * COLLECTION_GROUP index in firestore.indexes.json and the collection-group rule in firestore.rules;
+ * without the index Firestore refuses the query, and the caller's onError says the feed couldn't be read.
+ */
+export function subscribeLatestEvents(
+  environment: string,
+  onData: (rows: ActivityRow[]) => void,
+  onError: (err: Error) => void
+): Unsubscribe {
+  const q = query(
+    collectionGroup(firestore(), "events"),
+    where("environment", "==", environment),
+    orderBy("at", "desc"),
+    limit(ACTIVITY_LIMIT)
+  );
+  const cycles = webConfig().cycleCollection;
+  return onSnapshot(
+    q,
+    (snap) =>
+      onData(latestActivity(snap.docs.flatMap((d) => parseActivity(cycles, environment, d.ref.path, d.data()) ?? []), ACTIVITY_LIMIT)),
     onError
   );
 }
