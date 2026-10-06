@@ -31,6 +31,11 @@ export interface RuntimeSettings {
   model?: string;
   /** The Vertex AI location those calls go to: a GCP region such as us-central1, or `global`. */
   location?: string;
+  /**
+   * The GCP project those calls run in and are billed to. The engine's accounts need `roles/aiplatform.user` there
+   * and the Vertex AI API enabled; the deploy grants that only on its own VERTEX_PROJECT_ID.
+   */
+  vertexProjectId?: string;
 }
 
 /** The document's schema version. A document of another version is invalid to this engine. */
@@ -54,6 +59,7 @@ const SETTINGS_KEYS = [
   "modelCallBudget",
   "model",
   "location",
+  "vertexProjectId",
   // Written with the document by whoever edited it (the rules require them);
   // carried, not used by the engine.
   "revision",
@@ -66,6 +72,7 @@ const MAX_LIST = 100;
 /** A cycle needs at least triage, a fix and a review; fifty is far past any sensible spend cap. */
 export const MODEL_CALL_BUDGET_MIN = 1;
 export const MODEL_CALL_BUDGET_MAX = 50;
+// A GCP project id. firestore.rules repeats this pattern for watchedProjectId and vertexProjectId.
 const PROJECT_ID = /^[a-z][a-z0-9-]{4,28}[a-z0-9]$/;
 const ENVIRONMENT = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 // Cloud Logging `resource.type` values: cloud_function, cloud_run_revision, ...
@@ -173,6 +180,12 @@ export function validateSettings(raw: unknown): Validation {
   if (raw.location !== undefined) {
     if (typeof raw.location === "string" && VERTEX_LOCATION.test(raw.location)) settings.location = raw.location;
     else problems.push("location: a GCP region such as us-central1, or global");
+  }
+
+  if (raw.vertexProjectId !== undefined) {
+    if (typeof raw.vertexProjectId === "string" && PROJECT_ID.test(raw.vertexProjectId)) {
+      settings.vertexProjectId = raw.vertexProjectId;
+    } else problems.push("vertexProjectId: not a GCP project id");
   }
 
   if (raw.revision !== undefined && !(Number.isInteger(raw.revision) && (raw.revision as number) >= 0)) {

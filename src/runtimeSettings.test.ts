@@ -202,6 +202,19 @@ describe("validateSettings", () => {
     expect(JSON.stringify(validateSettings({ version: 1, model: secret, location: secret }))).not.toContain(secret);
   });
 
+  it("accepts a Vertex project id and rejects anything else, without echoing it (#7)", () => {
+    for (const vertexProjectId of ["vertex-project", "my-ai-project-123"]) {
+      expect(validateSettings({ version: 1, vertexProjectId })).toEqual({ ok: true, settings: { vertexProjectId } });
+    }
+    const bad = ["", "abc", "Vertex-Home", "1vertex-project", "vertex-project-", "projects/vertex-project", "vertex home", "v".repeat(31), 7, null];
+    for (const vertexProjectId of bad) {
+      const v = validateSettings({ version: 1, vertexProjectId });
+      expect(!v.ok && v.problems.map((p) => p.split(":")[0])).toEqual(["vertexProjectId"]);
+    }
+    const secret = SEEDED_SECRETS.google!;
+    expect(JSON.stringify(validateSettings({ version: 1, vertexProjectId: secret }))).not.toContain(secret);
+  });
+
   it("never echoes a value into its problems: a bad value may be a pasted credential", () => {
     const secret = SEEDED_SECRETS.google!;
     const v = validateSettings({
@@ -255,14 +268,24 @@ describe("applySettings", () => {
   });
 
   it("overrides the model and region, leaving the Vertex project and the verify job's region alone", () => {
-    const env = testConfig({ vertexProjectId: "vertex-home", location: "us-central1", model: "gemini-env", verifyJobRegion: "us-central1" });
+    const env = testConfig({ vertexProjectId: "vertex-project", location: "us-central1", model: "gemini-env", verifyJobRegion: "us-central1" });
     expect(applySettings(env, { model: "gemini-other", location: "europe-west4" })).toMatchObject({
-      vertexProjectId: "vertex-home",
+      vertexProjectId: "vertex-project",
       location: "europe-west4",
       model: "gemini-other",
       verifyJobRegion: "us-central1",
     });
     expect(applySettings(env, {})).toMatchObject({ location: "us-central1", model: "gemini-env" });
+  });
+
+  it("overrides the Vertex project, and nothing else that names a project (#7)", () => {
+    const env = testConfig({ projectId: "store-project", watchedProjectId: "app-home", vertexProjectId: "vertex-project" });
+    expect(applySettings(env, { vertexProjectId: "elsewhere" })).toMatchObject({
+      projectId: "store-project",
+      watchedProjectId: "app-home",
+      vertexProjectId: "elsewhere",
+    });
+    expect(applySettings(env, {})).toMatchObject({ vertexProjectId: "vertex-project" });
   });
 
   it("returns a frozen snapshot that shares nothing mutable with the defaults", () => {

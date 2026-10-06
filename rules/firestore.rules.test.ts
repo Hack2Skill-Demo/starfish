@@ -469,6 +469,9 @@ describe("runtime settings", () => {
       ["a region that isn't a GCP region", { location: "us-central1.evil.example" }],
       ["a region with no number", { location: "us-central" }],
       ["a region that isn't a string", { location: true }],
+      ["a Vertex project that isn't a project id", { vertexProjectId: "Vertex-Home" }],
+      ["a Vertex project that is a resource path", { vertexProjectId: "projects/vertex-project" }],
+      ["a Vertex project that isn't a string", { vertexProjectId: 7 }],
       ["someone else's name on the change", { updatedBy: "op1" }],
       ["a backdated change", { updatedAt: Timestamp.fromMillis(0) }],
       ["a revision that isn't an integer", { revision: 1.5 }],
@@ -511,6 +514,11 @@ describe("runtime settings", () => {
       });
       await assertSucceeds(save("admin1", { ...settings, model: "g", location: "global" }));
       expect(validateSettings(await stored())).toMatchObject({ ok: true, settings: { model: "g", location: "global" } });
+    });
+
+    it("accepts a Vertex project, and the engine agrees (#7)", async () => {
+      await assertSucceeds(save("admin1", { ...settings, vertexProjectId: "vertex-project" }));
+      expect(validateSettings(await stored())).toMatchObject({ ok: true, settings: { vertexProjectId: "vertex-project" } });
     });
 
     it("a document the rules accept is one the engine accepts", async () => {

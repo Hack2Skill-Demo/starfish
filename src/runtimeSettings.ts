@@ -69,6 +69,7 @@ export function applySettings(base: StarfishConfig, settings: RuntimeSettings): 
     ...(settings.modelCallBudget !== undefined && { modelCallBudget: settings.modelCallBudget }),
     ...(settings.model !== undefined && { model: settings.model }),
     ...(settings.location !== undefined && { location: settings.location }),
+    ...(settings.vertexProjectId !== undefined && { vertexProjectId: settings.vertexProjectId }),
   });
 }
 

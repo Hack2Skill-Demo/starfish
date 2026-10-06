@@ -29,6 +29,7 @@ export const FIELD_NAMES = [
   "modelCallBudget",
   "model",
   "location",
+  "vertexProjectId",
 ] as const;
 export type FieldName = (typeof FIELD_NAMES)[number];
 export type FormState = Record<FieldName, FieldState>;
@@ -64,6 +65,7 @@ export function formFromStored(stored: StoredSettings | null): FormState {
     modelCallBudget: { override: "modelCallBudget" in s, text: typeof s.modelCallBudget === "number" ? String(s.modelCallBudget) : "" },
     model: { override: "model" in s, text: typeof s.model === "string" ? s.model : "" },
     location: { override: "location" in s, text: typeof s.location === "string" ? s.location : "" },
+    vertexProjectId: { override: "vertexProjectId" in s, text: typeof s.vertexProjectId === "string" ? s.vertexProjectId : "" },
   };
 }
 
@@ -81,6 +83,7 @@ export function settingsFromForm(form: FormState): FormResult {
   if (form.environment.override) raw.environment = form.environment.text.trim();
   if (form.model.override) raw.model = form.model.text.trim();
   if (form.location.override) raw.location = form.location.text.trim();
+  if (form.vertexProjectId.override) raw.vertexProjectId = form.vertexProjectId.text.trim();
   if (form.logResourceTypes.override) raw.logResourceTypes = lines(form.logResourceTypes.text);
   if (form.ignoredMessages.override) raw.ignoredMessages = lines(form.ignoredMessages.text);
 

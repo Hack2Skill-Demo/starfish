@@ -55,7 +55,7 @@ describe("SettingsEditor", () => {
     expect(field("Environment label").value).toBe("prod");
     expect(field("Environment label").disabled).toBe(false);
     expect(field("Watched project").disabled).toBe(true);
-    expect(screen.getAllByText("Using the engine's default.")).toHaveLength(12);
+    expect(screen.getAllByText("Using the engine's default.")).toHaveLength(13);
     expect(screen.getByText("Revision 2")).toBeInTheDocument();
   });
 
@@ -121,6 +121,18 @@ describe("SettingsEditor", () => {
       model: "gemini-2.5-flash",
       location: "europe-west4",
     });
+  });
+
+  it("edits the Vertex AI project (#7)", async () => {
+    renderEditor();
+    await screen.findByText("Runtime settings");
+    expect(field("Vertex AI project").disabled).toBe(true);
+    await override("Vertex AI project");
+    await userEvent.type(field("Vertex AI project"), "my-ai-project");
+    await userEvent.click(screen.getByRole("button", { name: "Save settings" }));
+
+    await waitFor(() => expect(mocks.saveSettings).toHaveBeenCalledTimes(1));
+    expect(mocks.saveSettings.mock.calls[0]![3]).toEqual({ environment: "prod", vertexProjectId: "my-ai-project" });
   });
 
   it("refuses a region that isn't one without saving", async () => {
