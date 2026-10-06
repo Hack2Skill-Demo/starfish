@@ -74,7 +74,9 @@ if check_project "Starfish" "$PROJECT_ID"; then
   token="$(gcloud auth print-access-token 2>/dev/null || true)"
   perms='"serviceusage.services.enable","iam.serviceAccounts.create","resourcemanager.projects.setIamPolicy","run.jobs.create","cloudscheduler.jobs.create","secretmanager.secrets.create","cloudbuild.builds.create","artifactregistry.repositories.create","datastore.databases.create"'
   if [ -n "$token" ]; then
-    answer="$(curl -sS --max-time 20 -X POST -H "Authorization: Bearer $token" -H 'Content-Type: application/json' \
+    # The token reaches curl on stdin (-H @-), never as an argument, which any user on the machine can read in the
+    # process list (#145). printf is a shell builtin, so it starts no process of its own.
+    answer="$(printf 'Authorization: Bearer %s\n' "$token" | curl -sS --max-time 20 -X POST -H @- -H 'Content-Type: application/json' \
       -d "{\"permissions\":[$perms]}" \
       "https://cloudresourcemanager.googleapis.com/v1/projects/$PROJECT_ID:testIamPermissions" 2>/dev/null || true)"
     missing=""

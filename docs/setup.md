@@ -25,7 +25,12 @@ the few steps only a person with the console can do.
 1. **A project with billing on.** Create or pick it; link a billing account. (`scripts/preflight-gcp.sh` checks.)
 2. **Add Firebase to it** (Firebase console → Add project → choose the existing project). Auth and Hosting need it.
 3. **Authentication → Get started → Email/Password → Enable.** The first admin signs in this way. Auth has to be
-   initialised in the console once; that step is not scripted.
+   initialised in the console once; that step is not scripted. Then **Authentication → Settings → User actions →
+   untick "Enable create (sign-up)"**: the web API key is public, so with sign-up on anyone can register
+   `you@example.com` before you grant it. Operators are made by `pnpm grant-operator --create`, which needs no
+   sign-up. (`grant-operator` also refuses an existing account whose email is not verified, #139.) If you turn on
+   Anonymous sign-in below, check a guest visit still works afterwards; whether this setting also stops anonymous
+   accounts has not been checked here.
 4. **Anonymous sign-in**, only if you decided yes above.
 5. **Gemini access.** The deploy enables the Vertex AI API. Confirm the model in `STARFISH_MODEL` is available in
    your region (the default is `gemini-3.1-pro-preview` in `us-central1`); `pnpm spike` makes real Gemini calls (it spends tokens), so run it once, on purpose.
@@ -55,6 +60,8 @@ SCHEDULE='*/5 * * * *' BUDGET_USD=20 BILLING_ACCOUNT=0123AB-456CDE-789FGH script
 # 3. The first admin. Creates the account without a password and prints a link for them to choose one.
 pnpm grant-operator --project $PROJECT_ID --email you@example.com --role admin --create
 # No link (or no email): `--link` on an existing account prints a fresh one to open in a browser.
+# An existing account whose email is not verified is refused (anyone could have signed it up); the refusal prints when
+# it was made and its providers. Only if it is yours (an earlier `--create`, say): add `--trust-existing`. Otherwise delete it and use `--create`.
 
 # 4. Prove the ingest works end to end: plants one error, waits ~7 minutes, runs the job, checks.
 SMOKE_ACTOR_UID=<admin uid> scripts/smoke-gcp.sh

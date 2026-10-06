@@ -12,7 +12,7 @@
  *     terminal at once, because repeating it cannot succeed.
  *   - Let incident text steer the message. Every dynamic field is redacted (redactPii) and cut, and goes into a
  *     `plain_text` block, which Slack does not parse for mentions, links or markup; the fallback text is sent with
- *     `mrkdwn: false`. Only the two links are markup, and they are built here from the configured UI origin and an id
+ *     `mrkdwn: false` and with `&`, `<` and `>` escaped as Slack asks. Only the links are markup, and they are built here from the configured UI origin and an id
  *     that is checked to be a plain id.
  *   - Reveal the webhook. The URL is the credential (anyone holding it can post to the channel). It is never put in
  *     an error, a log line or the result; a failure's `reason` is a status class and, at most, Slack's own short
@@ -87,6 +87,13 @@ export interface SlackPayload {
 }
 
 const plain = (text: string) => ({ type: "plain_text", text, emoji: false });
+/**
+ * The three characters Slack asks every `text` to escape (#141). The top-level `text` is the notification and fallback
+ * text, and Slack reads `<!channel>`, `<@U123>` and `<url|label>` there as control sequences; escaped, incident text
+ * cannot ping a channel or make a link. `&` first, so the other two escapes are not escaped again. `plain_text` blocks
+ * are not parsed for these, so they are left as they are.
+ */
+export const slackEscape = (text: string): string => text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
 /** The message for a cycle that needs a person. Pure: the same request gives the same payload. */
 export function buildNeedsHumanMessage(req: NotifyRequest, uiBaseUrl: string): SlackPayload {
@@ -113,7 +120,7 @@ export function buildNeedsHumanMessage(req: NotifyRequest, uiBaseUrl: string): S
     { label: "Open the issue", url: safeHttpsUrl(req.issueUrl) },
   ].filter((l): l is { label: string; url: string } => l.url !== null);
   if (links.length > 0) blocks.push({ type: "actions", elements: links.map((l) => ({ type: "button", text: plain(l.label), url: l.url })) });
-  return { text: headline, mrkdwn: false, blocks };
+  return { text: slackEscape(headline), mrkdwn: false, blocks };
 }
 
 type Attempt = { kind: "ok" } | { kind: "retry"; reason: string; waitMs?: number } | { kind: "terminal"; reason: string };

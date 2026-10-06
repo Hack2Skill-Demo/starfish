@@ -27,9 +27,9 @@ function table(m: SplitMetrics): string[] {
     ["Patch pass rate (code fixes)", formatRatio(m.patchPassRate), "the proposed patch passes the private evaluator test"],
     ["Index heal", formatRatio(m.indexHeal), "deterministic; reported apart from the patch pass rate"],
     ["Reviewer catch rate", formatRatio(m.reviewerCatchRate), "planted bad patches the reviewer blocked"],
-    ["Cost per case", formatMeasure(m.costUsd, "usd"), "completed cases that recorded it"],
-    ["Latency per case", formatMeasure(m.latencyMs, "ms"), "completed cases that recorded it"],
-    ["Detection to pull request", formatMeasure(m.detectionToPrMs, "ms"), "where the run measured it"],
+    ["Cost per case", formatMeasure(m.costUsd, "usd"), "every case that recorded it, errored and timed-out ones included"],
+    ["Latency per case", formatMeasure(m.latencyMs, "ms"), "every case that recorded it, errored and timed-out ones included"],
+    ["Detection to pull request", formatMeasure(m.detectionToPrMs, "ms"), "completed cases that recorded it"],
   ];
   return ["| Metric | Result | Meaning |", "| --- | --- | --- |", ...rows.map(([a, b, c]) => `| ${a} | ${b} | ${c} |`)];
 }

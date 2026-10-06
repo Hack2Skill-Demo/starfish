@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { SEEDED_SECRETS } from "./testSecrets.js";
-import { redactPii, redactCredentials, sanitize, isSensitiveKey } from "./redact.js";
+import { redactPii, redactCredentials, sanitize, isSensitiveKey, sliceWellFormed, truncate } from "./redact.js";
 
 describe("redactCredentials", () => {
   for (const [name, secret] of Object.entries(SEEDED_SECRETS)) {
@@ -72,6 +72,32 @@ describe("redactPii", () => {
     expect(redactPii(once)).toBe(once);
   });
 
+  it("is idempotent on a credential in a URL query parameter, with or without a scheme (#128)", () => {
+    for (const text of [
+      "bad callback example.com/hook?key=abc",
+      "Invalid request ?api_key=XYZ",
+      "GET /o/x?alt=media&token=abc&sig=xyz",
+      "https://example.com/hook?key=abc",
+    ]) {
+      const once = redactPii(text);
+      expect(once).not.toMatch(/\]\]/);
+      expect(redactPii(once)).toBe(once);
+    }
+  });
+
+  it("is idempotent over random mixes of the characters its patterns turn on (#128)", () => {
+    // A deterministic generator, so a failure reproduces.
+    let seed = 128;
+    const next = () => (seed = (seed * 1103515245 + 12345) % 2 ** 31);
+    const parts = ["?", "&", "key=", "token=", "sig=", "[", "]", "a", " ", "=", "redacted-", "password:", "x@y.io", "://u:p@"];
+    for (let i = 0; i < 5000; i++) {
+      let text = "";
+      for (let j = next() % 12; j >= 0; j--) text += parts[next() % parts.length];
+      const once = redactPii(text);
+      expect(redactPii(once), JSON.stringify(text)).toBe(once);
+    }
+  });
+
   it("redacts emails and credentials together", () => {
     const out = redactPii(`user bob@y.org sent ${SEEDED_SECRETS.github}`);
     expect(out).toBe("user [redacted-email] sent [redacted-secret]");
@@ -87,6 +113,18 @@ describe("sanitize", () => {
 
   it("still redacts a token glued to a preceding word character", () => {
     expect(redactCredentials(`tok_${SEEDED_SECRETS.github}`)).not.toContain("ghp_");
+  });
+
+  it("never splits a surrogate pair at the cap, so Firestore accepts the write (#126)", () => {
+    // "😀" is two UTF-16 units; at 3999 it straddles the 4000-unit cut.
+    const text = "x".repeat(3999) + "😀" + "tail";
+    const out = sanitize(text) ?? "";
+    // Well-formed UTF-16 survives a UTF-8 round trip; a lone surrogate becomes U+FFFD.
+    expect(Buffer.from(out, "utf8").toString("utf8")).toBe(out);
+    expect(out.startsWith("x".repeat(3999) + "\n…[truncated 6 chars]")).toBe(true);
+    // A pair that fits whole is kept.
+    expect(truncate("x".repeat(3998) + "😀" + "tail").startsWith("x".repeat(3998) + "😀\n")).toBe(true);
+    expect(sliceWellFormed("😀", 1)).toBe("");
   });
 
   it("passes undefined through", () => {

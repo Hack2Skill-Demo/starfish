@@ -20,7 +20,7 @@ about that product (names, project IDs, code) belongs in this repo.
 
 Every deployment-specific value lives in `src/config.ts` and nowhere else. `src/config.ts`
 is the only file in `src/` allowed to read `process.env` — enforced at edit time by
-`.claude/hooks/config-boundary-guard.sh`. New setting → a `StarfishConfig` field, its env
+`.claude/hooks/config-boundary-guard.sh` and on every file by lint (`eslint.config.js`; tests exempt). New setting → a `StarfishConfig` field, its env
 var and default in `loadConfig()`, and a line in `.env.example`. The README's genericity
 table tracks what still isn't configurable; keep it honest.
 
@@ -216,11 +216,12 @@ React 19, Vite, Tailwind 4, react-router, TanStack Query; Starfish's own theme i
   record `starfish_users/{uid}.roles` and are read fresh on every token event, never cached
   in a claim, so a revoked role takes effect on the next request. Grant access by writing that record from the Admin
   SDK or the console.
-- **Guests (rules and UI built):** an anonymous Firebase Auth session may *read* incidents whose
-  `environment` is `demo` and the operator copy of the settings, and nothing else; it never writes.
+- **Guests (rules and UI built):** an anonymous Firebase Auth session may *read* incidents, cycles,
+  their events and `last_run` whose `environment` is `demo` (a get of a missing one reads as missing),
+  and the operator copy of the settings, and nothing else; it never writes.
   A signed-in email account with no role is not a guest. A visitor with no session is signed in
-  anonymously on arrival (`RequireRole`/`enterAsGuest`) and sees Incidents and a view-only Settings
-  with no triage buttons; signing out does not re-enter guest, and if Anonymous sign-in is refused
+  anonymously on arrival (`RequireRole`/`enterAsGuest`) and sees Overview, Incidents, incident evidence,
+  Runs and a view-only Settings with no triage or admin buttons; signing out does not re-enter guest, and if Anonymous sign-in is refused
   they land on /signin. The public demo (#12) uses this so a judge needs no account; a private
   deployment just leaves Anonymous sign-in disabled. App Check is not built. Anonymous sign-in
   is project-wide, so see #32 before enabling it in a project shared with another app.

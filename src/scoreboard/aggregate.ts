@@ -10,7 +10,7 @@ export interface Ratio {
   of: number;
 }
 
-/** Only completed cases that recorded the value: a missing measurement is not a zero. */
+/** Only cases that recorded the value: a missing measurement is not a zero. Which cases count is per measure. */
 export interface Measure {
   n: number;
   mean?: number;
@@ -32,8 +32,10 @@ export interface SplitMetrics {
   indexHeal: Ratio;
   /** The planted bad patch was blocked by the reviewer, over the bad-patch cases. */
   reviewerCatchRate: Ratio;
+  /** Every case that recorded it, an errored or timed-out one included: a failed run still spends, and is often the slowest. */
   costUsd: Measure;
   latencyMs: Measure;
+  /** Completed cases that recorded it: only a completed run can open a pull request. */
   detectionToPrMs: Measure;
 }
 
@@ -55,8 +57,8 @@ const completed = (c: CaseResult): boolean => c.outcome.status === "completed";
 export function metricsFor(run: ScoreboardRun, split: Split): SplitMetrics {
   const cases = run.cases.filter((c) => c.split === split);
   const done = cases.filter(completed);
-  const values = (pick: (c: CaseResult) => number | undefined): number[] =>
-    done.map(pick).filter((v): v is number => v !== undefined);
+  const values = (from: readonly CaseResult[], pick: (c: CaseResult) => number | undefined): number[] =>
+    from.map(pick).filter((v): v is number => v !== undefined);
   return {
     split,
     cases: cases.length,
@@ -82,8 +84,9 @@ export function metricsFor(run: ScoreboardRun, split: Split): SplitMetrics {
       cases.filter((c) => c.path === "bad-patch"),
       (c) => completed(c) && c.outcome.reviewerBlocked === true,
     ),
-    costUsd: measure(values((c) => c.outcome.costUsd)),
-    latencyMs: measure(values((c) => c.outcome.latencyMs)),
-    detectionToPrMs: measure(values((c) => c.outcome.detectionToPrMs)),
+    // #141: from completed cases only, these read low, which cuts against "an error or timeout counts against the agent".
+    costUsd: measure(values(cases, (c) => c.outcome.costUsd)),
+    latencyMs: measure(values(cases, (c) => c.outcome.latencyMs)),
+    detectionToPrMs: measure(values(done, (c) => c.outcome.detectionToPrMs)),
   };
 }

@@ -56,6 +56,20 @@ service cloud.firestore {
       return request.auth != null && request.auth.token.firebase.sign_in_provider == 'anonymous';
     }
 
+    // A guest's single-document read. A document that does not exist has no environment
+    // (`resource` is null, and reading resource.data would deny the get), yet the UI must tell a
+    // guest "not reached" or "no run recorded" rather than show a read error (issue #142). So a
+    // guest may get a missing document: the answer is "it doesn't exist", which holds no data.
+    // It does tell a missing id from a non-demo one, which matters only to someone who already
+    // knows that id. Lists never use this: a guest's query must filter on environment == 'demo'.
+    function guestGet() {
+      return isGuest() && (resource == null || resource.data.environment == 'demo');
+    }
+
+    function guestList() {
+      return isGuest() && resource.data.environment == 'demo';
+    }
+
     // Operators read only their own record. Roles are granted from the Admin SDK
     // or the console, never by the client.
     match /starfish_users/{uid} {
@@ -78,7 +92,8 @@ service cloud.firestore {
 
     match /incidents/{incidentId} {
       // A guest's query must itself filter on environment == 'demo', or it is denied whole.
-      allow read: if isOperator() || (isGuest() && resource.data.environment == 'demo');
+      allow get: if isOperator() || guestGet();
+      allow list: if isOperator() || guestList();
 
       // Triage only: status and its bookkeeping, nothing else, attributed to the
       // caller and stamped by the server. `resolvedAt` exists exactly when the
@@ -87,6 +102,8 @@ service cloud.firestore {
         && request.resource.data.diff(resource.data).affectedKeys()
              .hasOnly(['status', 'updatedAt', 'statusChangedBy', 'resolvedAt'])
         && validTransition(resource.data.status, request.resource.data.status)
+        // A retired incident is closed for good (src/ingest/retire.ts): no more triage.
+        && resource.data.get('retired', false) != true
         && request.resource.data.statusChangedBy == request.auth.uid
         && request.resource.data.updatedAt == request.time
         && (request.resource.data.status == 'resolved'
@@ -227,7 +244,8 @@ service cloud.firestore {
     //                         could move it could make the engine skip or re-read stretches of logs.
     // Clients never write either. A guest reads last_run only for the demo environment, like incidents.
     match /starfish_runs/last_run {
-      allow read: if isOperator() || (isGuest() && resource.data.environment == 'demo');
+      allow get: if isOperator() || guestGet();
+      allow list: if isOperator() || guestList();
       allow write: if false;
     }
 
@@ -239,11 +257,13 @@ service cloud.firestore {
     // writes: the lease is what stops two workers acting on a cycle, and a client that could touch
     // it could make the engine act twice or not at all. Events hold redacted, bounded text.
     match /starfish_cycles/{cycleId} {
-      allow read: if isOperator() || (isGuest() && resource.data.environment == 'demo');
+      allow get: if isOperator() || guestGet();
+      allow list: if isOperator() || guestList();
       allow write: if false;
 
       match /events/{seq} {
-        allow read: if isOperator() || (isGuest() && resource.data.environment == 'demo');
+        allow get: if isOperator() || guestGet();
+        allow list: if isOperator() || guestList();
         allow write: if false;
       }
     }

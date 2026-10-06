@@ -46,20 +46,33 @@ describe("scripts/deploy-gcp.sh", () => {
       expect(r.out).not.toContain("--allow-unauthenticated");
     });
 
-    it("deploys a public service from the ingest job's image, as the engine's own account, with no new role", () => {
+    it("deploys a public service from the ingest job's image, under its OWN account (#146)", () => {
       const r = deploy(admin);
       expect(r.status).toBe(0);
       const line = r.out.split("\n").find((l) => l.includes("gcloud run deploy starfish-admin")) ?? "";
       expect(line).toContain("--image=<the ingest job's image>");
       expect(line).not.toContain("--source");
-      expect(line).toContain("--service-account=starfish-engine@star-proj.iam.gserviceaccount.com");
+      expect(line).toContain("--service-account=starfish-admin-api@star-proj.iam.gserviceaccount.com");
+      expect(line).not.toContain("starfish-engine");
+      expect(line).not.toContain("--update-secrets");
       expect(line).toContain("--args=node,--import,tsx,src/adminApiCli.ts");
       expect(line).toContain("--allow-unauthenticated");
       expect(line).toContain("--max-instances=2");
       expect(line).toContain("STARFISH_ADMIN_API_ORIGINS=https://site.web.app");
-      // The same grants as without it: the service gets nothing the engine's account did not already have.
-      const grants = (out) => out.split("\n").filter((l) => l.includes("add-iam-policy-binding")).length;
-      expect(grants(r.out)).toBe(grants(deploy(dry).out));
+      expect(r.out).toContain("gcloud iam service-accounts create starfish-admin-api");
+      expect(deploy({ ...admin, ADMIN_SA_NAME: "ops-admin-api" }).out).toContain("--service-account=ops-admin-api@star-proj.iam.gserviceaccount.com");
+    });
+
+    it("gives the admin API's account what one ingest run needs and nothing else: no Gemini, no secret", () => {
+      const r = deploy({ ...admin, WATCHED_PROJECT_ID: "app-proj" });
+      const member = "--member=serviceAccount:starfish-admin-api@star-proj.iam.gserviceaccount.com";
+      const lines = r.out.split("\n").filter((l) => l.includes(member));
+      expect(lines.map((l) => l.match(/--role=(\S+)/)?.[1]).sort()).toEqual(["roles/datastore.user", "roles/logging.viewer"]);
+      expect(lines.find((l) => l.includes("roles/logging.viewer"))).toContain("add-iam-policy-binding app-proj");
+      expect(lines.find((l) => l.includes("roles/datastore.user"))).toContain('resource.name == "projects/star-proj/databases/starfish"');
+      // The engine's account gains nothing from it.
+      const engine = (out) => out.split("\n").filter((l) => l.includes("--member=serviceAccount:starfish-engine@")).length;
+      expect(engine(r.out)).toBe(engine(deploy({ ...dry, WATCHED_PROJECT_ID: "app-proj" }).out));
     });
 
     it("keeps the service's own errors out of ingest, in the job and the agent", () => {
@@ -109,6 +122,22 @@ describe("scripts/deploy-gcp.sh", () => {
     expect(r.status).not.toBe(0);
     expect(r.out).toContain("(default)");
     expect(r.out).not.toContain("firestore deploy");
+  });
+
+  it("deploys the rules and indexes to the configured database, not the one firebase.json names (#148)", () => {
+    const r = deploy({ ...dry, STARFISH_DATABASE_ID: "ops-store" });
+    expect(r.status).toBe(0);
+    expect(r.out).toContain('(write .firebase-deploy.json: firebase.json with "database": "ops-store")');
+    expect(r.out).toContain("firebase-tools@14 deploy --only firestore --project star-proj --config .firebase-deploy.json");
+    expect(r.out).toContain("gcloud firestore databases create --database=ops-store");
+    expect(r.out).toContain('resource.name == "projects/star-proj/databases/ops-store"');
+    // The default goes through the same copy, so there is one path.
+    expect(deploy(dry).out).toContain('"database": "starfish"');
+    for (const bad of ["Ops", "abc", "1abc", "abc-", "a_bc", 'ab"c', "a".repeat(64)]) {
+      const b = deploy({ ...dry, STARFISH_DATABASE_ID: bad });
+      expect(b.status, bad).not.toBe(0);
+      expect(b.out, bad).toContain("STARFISH_DATABASE_ID must");
+    }
   });
 
   it("prints the whole plan and calls neither gcloud nor anything else", () => {
@@ -185,15 +214,16 @@ describe("scripts/deploy-gcp.sh", () => {
     expect(r.out).toContain("--update-env-vars=^@^");
   });
 
-  it("mounts the secret only once it has a value, and never prints the value", () => {
-    const without = deploy(dry);
-    expect(without.out).not.toContain("--update-secrets");
-    expect(without.out).toContain("has no version yet");
-
+  it("stores the token without printing it, and neither mounts it on the ingest job nor lets the engine read it (#146)", () => {
     const withToken = deploy({ ...dry, STARFISH_GITHUB_TOKEN: "ghp_THIS_MUST_NOT_APPEAR" });
-    expect(withToken.out).toContain("--update-secrets=STARFISH_GITHUB_TOKEN=starfish-github-token:latest");
     expect(withToken.out).toContain("gcloud secrets versions add starfish-github-token --data-file=-");
     expect(withToken.out).not.toContain("ghp_THIS_MUST_NOT_APPEAR");
+    expect(withToken.out).not.toContain("--update-secrets");
+    expect(withToken.out).not.toContain("secrets add-iam-policy-binding");
+    // What an earlier version granted and mounted is taken back.
+    const ingest = withToken.out.split("\n").find((l) => l.includes("gcloud run jobs deploy starfish-ingest")) ?? "";
+    expect(ingest).toContain("--remove-secrets=STARFISH_GITHUB_TOKEN");
+    expect(withToken.out).toContain("remove-iam-policy-binding starfish-github-token: secretAccessor of starfish-engine@star-proj.iam.gserviceaccount.com");
   });
 
   it("creates a budget alert only when asked, and only with a billing account", () => {
@@ -280,18 +310,20 @@ describe("scripts/deploy-gcp.sh: the agent and its isolated verify job (#74), VE
       "roles/datastore.user",
       "roles/iam.serviceAccountTokenCreator",
       "roles/logging.viewer",
-      "roles/run.invoker",
+      "roles/run.jobsExecutorWithOverrides",
       "roles/secretmanager.secretAccessor",
       "roles/storage.objectAdmin",
     ]);
     // Each narrow grant is on the thing it is for, not on the project.
     expect(line(r.out, "buckets add-iam-policy-binding")).toContain("gs://star-proj-starfish-verify");
+    // Starting the job with the request as a container override takes run.jobs.runWithOverrides, which run.invoker lacks (#149).
     expect(line(r.out, "run jobs add-iam-policy-binding starfish-verify")).toContain(sa("starfish-agent"));
+    expect(line(r.out, "run jobs add-iam-policy-binding starfish-verify")).toContain("--role=roles/run.jobsExecutorWithOverrides");
     expect(line(r.out, "roles/iam.serviceAccountTokenCreator")).toContain("service-accounts add-iam-policy-binding starfish-agent@star-proj");
     const store = line(r.out, "roles/datastore.user");
     expect(store).toContain('resource.name == "projects/star-proj/databases/starfish"');
-    // The ingest's account keeps its three roles and gains nothing from the agent.
-    expect(grants(r.out, sa("starfish-engine"))).toEqual(["roles/aiplatform.user", "roles/datastore.user", "roles/logging.viewer", "roles/secretmanager.secretAccessor"]);
+    // The ingest's account keeps its three roles and gains nothing from the agent, not even the token (#146).
+    expect(grants(r.out, sa("starfish-engine"))).toEqual(["roles/aiplatform.user", "roles/datastore.user", "roles/logging.viewer"]);
     expect(r.out).not.toMatch(/roles\/(owner|editor|admin)/i);
   });
 
@@ -316,6 +348,45 @@ describe("scripts/deploy-gcp.sh: the agent and its isolated verify job (#74), VE
       expect(r.out).not.toContain("gcloud run jobs deploy");
     }
     expect(deploy({ ...agent, AGENT_EXTRA_ENV_VARS: "MY_STARFISH_VERIFY_JOB_NOTE=1" }).status).toBe(0);
+  });
+
+  it("refuses the same through EXTRA_ENV_VARS, which the agent job gets too (#147)", () => {
+    for (const key of ["STARFISH_VERIFY_ISOLATION=in-process", "STARFISH_VERIFY_JOB=other", "STARFISH_VERIFY_COMMAND=x", "STARFISH_VERIFY_REQUEST=x"]) {
+      const r = deploy({ ...agent, EXTRA_ENV_VARS: `STARFISH_LOOKBACK_HOURS=2@${key}` });
+      expect(r.status, key).not.toBe(0);
+      expect(r.out).toContain("EXTRA_ENV_VARS may not set STARFISH_VERIFY_*");
+      expect(r.out).not.toContain("gcloud ");
+    }
+    // The issue's reproduction: both overrides at once.
+    const r = deploy({ ...agent, EXTRA_ENV_VARS: "STARFISH_VERIFY_ISOLATION=in-process@STARFISH_DRY_RUN=false" });
+    expect(r.status).not.toBe(0);
+    // Without the agent, the ingest job ignores them, so nothing is refused.
+    expect(deploy({ ...dry, EXTRA_ENV_VARS: "STARFISH_VERIFY_ISOLATION=in-process" }).status).toBe(0);
+  });
+
+  it("turns the dry run off only through AGENT_EXTRA_ENV_VARS, never through EXTRA_ENV_VARS (#147)", () => {
+    const r = deploy({ ...agent, EXTRA_ENV_VARS: "STARFISH_DRY_RUN=false" });
+    expect(r.status).not.toBe(0);
+    expect(r.out).toContain("set it in AGENT_EXTRA_ENV_VARS");
+    expect(r.out).not.toContain("gcloud ");
+  });
+
+  it("puts its own safety values after the extra settings, and refuses a name set twice before changing anything (#147)", () => {
+    const job = line(deploy({ ...agent, EXTRA_ENV_VARS: "STARFISH_LOOKBACK_HOURS=2", AGENT_EXTRA_ENV_VARS: "STARFISH_MAX_CYCLES_PER_PASS=1" }).out, "gcloud run jobs deploy starfish-agent");
+    const env = job.slice(job.indexOf("--update-env-vars="));
+    expect(env.indexOf("STARFISH_MAX_CYCLES_PER_PASS=1")).toBeLessThan(env.indexOf("STARFISH_VERIFY_ISOLATION=cloud-run-job"));
+    expect(env.indexOf("STARFISH_VERIFY_ISOLATION=cloud-run-job")).toBeLessThan(env.indexOf("STARFISH_DRY_RUN=true"));
+    for (const [extra, agentExtra, name] of [
+      ["STARFISH_LOOKBACK_HOURS=2", "STARFISH_LOOKBACK_HOURS=6", "STARFISH_LOOKBACK_HOURS"],
+      ["", "STARFISH_DATABASE_ID=other", "STARFISH_DATABASE_ID"],
+      ["", "STARFISH_DRY_RUN=false@STARFISH_DRY_RUN=true", "STARFISH_DRY_RUN"],
+      ["GOOGLE_CLOUD_PROJECT=elsewhere", "", "GOOGLE_CLOUD_PROJECT"],
+    ]) {
+      const r = deploy({ ...agent, EXTRA_ENV_VARS: extra, AGENT_EXTRA_ENV_VARS: agentExtra });
+      expect(r.status, name).not.toBe(0);
+      expect(r.out, name).toContain(`${name} is set twice`);
+      expect(r.out, name).not.toContain("== APIs");
+    }
   });
 
   it("makes the bucket private, with a one-day lifecycle", () => {

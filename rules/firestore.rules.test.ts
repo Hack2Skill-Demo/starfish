@@ -151,6 +151,23 @@ describe("incidents: triage writes", () => {
     await assertFails(triage("op1", { status: "deleted" }));
   });
 
+  it("can't change the status of a retired incident: retiring closes it for good", async () => {
+    await env.withSecurityRulesDisabled((ctx) =>
+      setDoc(doc(ctx.firestore(), "incidents/i1"), { functionName: "mailDrainer", status: "resolved", retired: true, updatedAt: Timestamp.now() })
+    );
+    await assertFails(triage("op1", { status: "ignored", resolvedAt: deleteField() }));
+    await env.withSecurityRulesDisabled((ctx) =>
+      setDoc(doc(ctx.firestore(), "incidents/i1"), { functionName: "mailDrainer", status: "new", retired: true, updatedAt: Timestamp.now() })
+    );
+    await assertFails(triage("op1"));
+    await assertFails(triage("admin1"));
+    // retired: false is an ordinary incident.
+    await env.withSecurityRulesDisabled((ctx) =>
+      setDoc(doc(ctx.firestore(), "incidents/i1"), { functionName: "mailDrainer", status: "new", retired: false, updatedAt: Timestamp.now() })
+    );
+    await assertSucceeds(triage("op1"));
+  });
+
   it("a user without a role can't triage", async () => {
     await assertFails(triage("nobody"));
   });
@@ -563,6 +580,14 @@ describe("guests (anonymous sessions)", () => {
     await assertFails(getDoc(doc(guest(), "incidents/i1"))); // i1 has no environment at all
   });
 
+  it("gets an incident that doesn't exist as missing, not as a refusal (#142)", async () => {
+    const snap = await assertSucceeds(getDoc(doc(guest(), "incidents/no-such-incident")));
+    expect(snap.exists()).toBe(false);
+    // Still nothing for a visitor with no session or an account with no role.
+    await assertFails(getDoc(doc(anon(), "incidents/no-such-incident")));
+    await assertFails(getDoc(doc(emailNoRole(), "incidents/no-such-incident")));
+  });
+
   it("reads the operator copy of the settings, so the UI knows which environment to ask for", async () => {
     await assertSucceeds(getDoc(doc(guest(), "starfish_settings_public/current")));
   });
@@ -640,6 +665,17 @@ describe("ingest run records", () => {
     await assertFails(getDoc(doc(guest(), "starfish_runs/last_run")));
   });
 
+  it("a guest reads a last run that was never recorded as missing, not as a refusal (#142)", async () => {
+    await env.withSecurityRulesDisabled((ctx) => deleteDoc(doc(ctx.firestore(), "starfish_runs/last_run")));
+    const snap = await assertSucceeds(getDoc(doc(guest(), "starfish_runs/last_run")));
+    expect(snap.exists()).toBe(false);
+    await assertFails(getDoc(doc(anon(), "starfish_runs/last_run")));
+    await assertFails(getDoc(doc(as("nobody"), "starfish_runs/last_run")));
+    // The checkpoint stays closed whether or not it exists.
+    await env.withSecurityRulesDisabled((ctx) => deleteDoc(doc(ctx.firestore(), "starfish_runs/state")));
+    await assertFails(getDoc(doc(guest(), "starfish_runs/state")));
+  });
+
   it("nobody else reads it: not an unauthenticated visitor, not a signed-in account with no role", async () => {
     await assertFails(getDoc(doc(anon(), "starfish_runs/last_run")));
     await assertFails(getDoc(doc(as("nobody"), "starfish_runs/last_run")));
@@ -700,6 +736,21 @@ describe("agent cycles and their run events", () => {
     await assertFails(
       getDocs(query(collection(guest(), "starfish_cycles"), where("environment", "==", "prod"), orderBy("updatedAt", "desc"), limit(50)))
     );
+  });
+
+  it("a guest gets a cycle or event that doesn't exist as missing, not as a refusal (#142)", async () => {
+    // Every demo incident the agent never reached: the evidence page must say "Not reached".
+    const cycle = await assertSucceeds(getDoc(doc(guest(), "starfish_cycles/never-run_r0")));
+    expect(cycle.exists()).toBe(false);
+    const event = await assertSucceeds(getDoc(doc(guest(), `${CYCLE}/events/999999`)));
+    expect(event.exists()).toBe(false);
+    // Lists stay constrained: a missing-document allowance is not a way around the environment filter.
+    await assertFails(getDocs(collection(guest(), "starfish_cycles")));
+    await assertFails(getDocs(collection(guest(), "starfish_cycles/inc2_r0/events")));
+    await assertFails(getDocs(query(collection(guest(), "starfish_cycles/inc2_r0/events"), where("environment", "==", "prod"))));
+    for (const db of [anon(), as("nobody")]) {
+      await assertFails(getDoc(doc(db, "starfish_cycles/never-run_r0")));
+    }
   });
 
   it("nobody else reads them: not an unauthenticated visitor, not an account with no role", async () => {

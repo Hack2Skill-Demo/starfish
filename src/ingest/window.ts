@@ -26,6 +26,25 @@ export function windowOf(start: Date, end: Date): IngestWindow {
   return { start, end, id: `${start.toISOString()}..${end.toISOString()}` };
 }
 
+/**
+ * The part of `window` a capped read covered in full, or null when there is no such part (#127).
+ *
+ * A read capped at N entries (oldest first) whose last entry is at `lastReadAt` has read every entry
+ * at or before `lastReadAt - 1 ms`, all of them strictly before that last one. Not `lastReadAt` itself:
+ * Cloud Logging keeps nanoseconds and the client rounds them away, so more entries than the cap let
+ * through can share that millisecond. The narrowed window (start, lastReadAt - 1 ms] then holds fewer
+ * entries than the cap, so replaying it reads all of it; the rest of the original window is planned
+ * after it, from its end, like any other window.
+ *
+ * Null when that bound is not after `start` (more entries than the cap in the window's first
+ * millisecond), or not before `end`: the window cannot be narrowed.
+ */
+export function narrowWindow(window: IngestWindow, lastReadAt: Date): IngestWindow | null {
+  const end = lastReadAt.getTime() - 1;
+  if (!Number.isFinite(end) || end <= window.start.getTime() || end >= window.end.getTime()) return null;
+  return windowOf(window.start, new Date(end));
+}
+
 export interface WindowPlan {
   /** Where the last completed window ended; undefined on the first run. */
   checkpoint: Date | undefined;

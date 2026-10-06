@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { loadChildProcessBasics, loadConfig, loadGithubToken, loadSlackOnCallWebhook, loadVerifyRunnerRequest } from "./config.js";
+import { loadChildProcessBasics, loadConfig, loadGithubToken, loadSlackOnCallWebhook, loadVerifyCommandBasics, loadVerifyRunnerRequest, usingFirestoreEmulator } from "./config.js";
 
 // Env vars that loadConfig reads; cleared first so the developer's own .env/shell can't leak in.
 const KEYS = [
@@ -70,6 +70,18 @@ describe("loadConfig: ingest windows", () => {
   it.each(["0", "-3", "abc", "NaN", "Infinity"])("refuses %s, which would stall or break the window", (bad) => {
     vi.stubEnv("STARFISH_INGEST_MAX_WINDOW_HOURS", bad);
     expect(() => loadConfig()).toThrow("STARFISH_INGEST_MAX_WINDOW_HOURS");
+  });
+
+  it("reads the lookback, 24 hours by default", () => {
+    vi.stubEnv("STARFISH_LOOKBACK_HOURS", "");
+    expect(loadConfig().defaultLookbackHours).toBe(24);
+    vi.stubEnv("STARFISH_LOOKBACK_HOURS", "48");
+    expect(loadConfig().defaultLookbackHours).toBe(48);
+  });
+
+  it.each(["0", "-1", "24h", "abc", "Infinity"])("refuses a lookback of %s, which would leave every run idle (#129)", (bad) => {
+    vi.stubEnv("STARFISH_LOOKBACK_HOURS", bad);
+    expect(() => loadConfig()).toThrow("STARFISH_LOOKBACK_HOURS");
   });
 });
 
@@ -237,6 +249,22 @@ describe("loadConfig: the pull-request target", () => {
     vi.stubEnv("HOME", "/home/x");
     vi.stubEnv("STARFISH_GITHUB_TOKEN", "sekret");
     expect(loadChildProcessBasics()).toEqual({ PATH: "/bin", HOME: "/home/x" });
+  });
+
+  it("hands the verify command only PATH and LANG, with a default locale", () => {
+    vi.stubEnv("PATH", "/bin");
+    vi.stubEnv("LANG", "de_DE.UTF-8");
+    vi.stubEnv("STARFISH_GITHUB_TOKEN", "sekret");
+    expect(loadVerifyCommandBasics()).toEqual({ PATH: "/bin", LANG: "de_DE.UTF-8" });
+    vi.stubEnv("LANG", undefined);
+    expect(loadVerifyCommandBasics().LANG).toBe("C.UTF-8");
+  });
+
+  it("knows when the Firestore emulator is in use", () => {
+    vi.stubEnv("FIRESTORE_EMULATOR_HOST", "localhost:8080");
+    expect(usingFirestoreEmulator()).toBe(true);
+    vi.stubEnv("FIRESTORE_EMULATOR_HOST", "");
+    expect(usingFirestoreEmulator()).toBe(false);
   });
 });
 

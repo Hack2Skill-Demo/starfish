@@ -13,15 +13,18 @@
 #   WATCHED_PROJECT_ID   project whose Cloud Logging is read. Default PROJECT_ID
 #   VERTEX_PROJECT_ID    project Gemini runs in and is billed to. Default PROJECT_ID
 #   STARFISH_ENV         the environment label stamped on incidents. Default dev
-#   STARFISH_DATABASE_ID Starfish's named Firestore database. Default starfish; "(default)" is refused
+#   STARFISH_DATABASE_ID Starfish's named Firestore database. Default starfish; "(default)" is refused. The rules and
+#                        indexes go to this database: firebase.json's own "database" is replaced in a temporary copy (#148)
 #   FIRESTORE_LOCATION   where the database is created if it does not exist. Default REGION
 #   SCHEDULE             cron for the ingest tick. Default "0 * * * *" (hourly); "*/5 * * * *" for a demo
 #   SCHEDULE_TIME_ZONE   Default Etc/UTC
 #   EXTRA_ENV_VARS       more engine settings for the job, "@"-separated: "STARFISH_MODEL=x@STARFISH_LOOKBACK_HOURS=6"
-#                        (see .env.example for every name; "@" so a value can hold commas)
+#                        (see .env.example for every name; "@" so a value can hold commas). Each name once: a name the
+#                        script already sets, or one set twice, is refused. Added to the agent's and the admin API's too
 #   STARFISH_GITHUB_TOKEN  if set, stored as a new version of the starfish-github-token secret. Not
 #                        GITHUB_TOKEN: that name is the Actions workflow's own token, and many shells export a
-#                        personal one, neither of which should reach Secret Manager by accident
+#                        personal one, neither of which should reach Secret Manager by accident. Only the agent's
+#                        account may read it and only the agent job mounts it (#146): the ingest never uses it
 #   STARFISH_SLACK_WEBHOOK_ONCALL  with DEPLOY_AGENT=1: the Slack incoming-webhook URL the agent posts "needs a human" to
 #                        (#17). The URL is the credential: stored over stdin as a version of the starfish-slack-oncall
 #                        secret, readable by the agent's account only, mounted on the agent job only, never printed.
@@ -51,10 +54,13 @@
 #   VERIFY_BUCKET        cloud-run-job: the bucket for bundles and results (objects deleted after a day). Default <PROJECT_ID>-starfish-verify
 #   AGENT_BASE_BRANCH    the branch the agent checks out. Default: the engine's own default (main)
 #   AGENT_SCHEDULE       cron for the agent tick. Default "30 * * * *" (hourly, after the ingest tick)
-#   AGENT_EXTRA_ENV_VARS more settings for the agent job, "@"-separated like EXTRA_ENV_VARS
+#   AGENT_EXTRA_ENV_VARS more settings for the agent job, "@"-separated like EXTRA_ENV_VARS. The only place to turn the
+#                        agent's dry run off (STARFISH_DRY_RUN=false); neither list may set STARFISH_VERIFY_* (#147)
 #   DEPLOY_ADMIN_API=1   also deploy the admin API (#63, #65): a Cloud Run SERVICE, public on the network on purpose, that
 #                        runs ingest now and retires an incident for a caller holding a Firebase ID token AND the admin
-#                        role. It reuses the ingest job's image and the engine's account (no second build, no new role)
+#                        role. It reuses the ingest job's image (no second build) and runs as its OWN account (#146),
+#                        which holds what an ingest run needs (the watched project's logs, Starfish's database) and no secret
+#   ADMIN_SA_NAME        the admin API's service account. Default starfish-admin-api
 #   ADMIN_API_ORIGINS    the operator UI's origin(s), comma-separated, allowed to call it from a browser, e.g.
 #                        https://my-site.web.app. Empty: no browser may (a server-side caller is not affected)
 #   ADMIN_SERVICE_NAME   Default starfish-admin (never ingested: it is added to STARFISH_EXCLUDED_SERVICES)
@@ -110,6 +116,7 @@ AGENT_SA_NAME="${AGENT_SA_NAME:-starfish-agent}"
 AGENT_SCHEDULER_JOB_NAME="${AGENT_SCHEDULER_JOB_NAME:-$AGENT_JOB_NAME-tick}"
 VERIFY_JOB_NAME="${VERIFY_JOB_NAME:-starfish-verify}"
 VERIFIER_SA_NAME="${VERIFIER_SA_NAME:-starfish-verifier}"
+ADMIN_SA_NAME="${ADMIN_SA_NAME:-starfish-admin-api}"
 
 die() { echo "deploy-gcp: $*" >&2; exit 1; }
 
@@ -127,6 +134,14 @@ for var in EXTRA_ENV_VARS AGENT_EXTRA_ENV_VARS; do
 done
 [ "$STARFISH_DATABASE_ID" != "(default)" ] ||
   die "STARFISH_DATABASE_ID=(default) is refused: deploying firestore.rules to the default database would replace the watched app's own rules"
+# A Firestore database id: 4 to 63 lowercase letters, digits and hyphens, starting with a letter. It is written into the
+# temporary firebase config and into IAM conditions, so nothing else may reach them.
+case "$STARFISH_DATABASE_ID" in
+  [a-z]*[a-z0-9]) case "$STARFISH_DATABASE_ID" in *[!a-z0-9-]*) die "STARFISH_DATABASE_ID must be lowercase letters, digits and hyphens: $STARFISH_DATABASE_ID" ;; esac ;;
+  *) die "STARFISH_DATABASE_ID must start with a letter and end with a letter or digit: $STARFISH_DATABASE_ID" ;;
+esac
+[ "${#STARFISH_DATABASE_ID}" -ge 4 ] && [ "${#STARFISH_DATABASE_ID}" -le 63 ] ||
+  die "STARFISH_DATABASE_ID must be 4 to 63 characters: $STARFISH_DATABASE_ID"
 if [ "$DEPLOY_AGENT" = "1" ]; then
   [ -n "$AGENT_REPO" ] || die "DEPLOY_AGENT=1 needs AGENT_REPO (owner/name): the agent has no repository to work on without it"
   case "$AGENT_REPO" in
@@ -157,10 +172,17 @@ if [ "$DEPLOY_AGENT" = "1" ]; then
   esac
   [ "$VERIFY_TIMEOUT_SECONDS" -le 3000 ] || die "VERIFY_TIMEOUT_SECONDS may not exceed 3000: the runner gets that plus a few minutes of its own to start and report, and a verify result is waited for no longer than one hour"
   # The script owns how the agent's verify step is isolated: a person's extra setting must not point it elsewhere,
-  # least of all at running the command in the agent's own process.
-  case "@$AGENT_EXTRA_ENV_VARS" in
-    *@STARFISH_VERIFY_ISOLATION=*|*@STARFISH_VERIFY_CHECKS=*|*@STARFISH_VERIFY_JOB=*|*@STARFISH_VERIFY_BUCKET=*|*@STARFISH_VERIFY_COMMAND=*|*@STARFISH_VERIFY_JOB_REGION=*|*@STARFISH_VERIFY_TIMEOUT_SECONDS=*)
-      die "AGENT_EXTRA_ENV_VARS may not set STARFISH_VERIFY_*: DEPLOY_AGENT sets them (isolation, checks, job, bucket, command, timeout)" ;;
+  # least of all at running the command in the agent's own process. EXTRA_ENV_VARS reaches the agent job too (#147).
+  for var in EXTRA_ENV_VARS AGENT_EXTRA_ENV_VARS; do
+    case "@${!var}" in
+      *@STARFISH_VERIFY_*)
+        die "$var may not set STARFISH_VERIFY_*: DEPLOY_AGENT sets them (isolation, checks, job, bucket, command, timeout)" ;;
+    esac
+  done
+  # Turning the agent's dry run off is a decision about the agent alone, so it is made in AGENT_EXTRA_ENV_VARS (or by an
+  # admin on the Settings page), never as a side effect of a setting meant for the ingest job.
+  case "@$EXTRA_ENV_VARS" in
+    *@STARFISH_DRY_RUN=*) die "EXTRA_ENV_VARS may not set STARFISH_DRY_RUN with DEPLOY_AGENT=1: set it in AGENT_EXTRA_ENV_VARS, which only the agent job gets" ;;
   esac
 fi
 if [ -n "$BUDGET_USD" ]; then
@@ -177,8 +199,90 @@ ENGINE_SA="$ENGINE_SA_NAME@$PROJECT_ID.iam.gserviceaccount.com"
 SCHEDULER_SA="$SCHEDULER_SA_NAME@$PROJECT_ID.iam.gserviceaccount.com"
 AGENT_SA="$AGENT_SA_NAME@$PROJECT_ID.iam.gserviceaccount.com"
 VERIFIER_SA="$VERIFIER_SA_NAME@$PROJECT_ID.iam.gserviceaccount.com"
+ADMIN_SA="$ADMIN_SA_NAME@$PROJECT_ID.iam.gserviceaccount.com"
 
 step() { printf '\n== %s\n' "$*"; }
+
+# Each name at most once in a job's "@"-separated settings (#147). What gcloud does with a repeated name is not something
+# to rely on: were the last one kept, an extra setting would silently replace one this script set on purpose.
+unique_names() { # unique_names <what> <list>
+  local seen="@" entry name entries=()
+  IFS='@' read -ra entries <<<"$2"
+  for entry in ${entries[@]+"${entries[@]}"}; do
+    name="${entry%%=*}"
+    case "$seen" in
+      *"@$name@"*) die "$name is set twice for $1: the script sets some names itself (see its header), and EXTRA_ENV_VARS and AGENT_EXTRA_ENV_VARS are added together for the agent; set each name once" ;;
+    esac
+    seen="$seen$name@"
+  done
+}
+
+# Every job's settings are composed here, before anything is changed, so a list that would be refused (a name set
+# twice) stops the deploy before it starts.
+ENV_VARS="GOOGLE_CLOUD_PROJECT=$PROJECT_ID@STARFISH_WATCHED_PROJECT_ID=$WATCHED_PROJECT_ID@STARFISH_VERTEX_PROJECT_ID=$VERTEX_PROJECT_ID"
+ENV_VARS="$ENV_VARS@GOOGLE_CLOUD_LOCATION=$REGION@STARFISH_ENV=$STARFISH_ENV@STARFISH_DATABASE_ID=$STARFISH_DATABASE_ID"
+# The job is told its own schedule only so the UI can say when the next run is expected (#38).
+ENV_VARS="$ENV_VARS@STARFISH_INGEST_SCHEDULE=$SCHEDULE"
+# With the admin API, its service name is never ingested either: its errors would otherwise become incidents.
+ADMIN_EXCLUDED=""
+[ "$DEPLOY_ADMIN_API" != "1" ] || ADMIN_EXCLUDED=",$ADMIN_SERVICE_NAME"
+# An explicit list replaces the default, so it must name the admin service too (or cover it with a prefix like starfish-*).
+if [ "$DEPLOY_ADMIN_API" = "1" ]; then
+  case "@$EXTRA_ENV_VARS" in
+    *@STARFISH_EXCLUDED_SERVICES=*)
+      case "$EXTRA_ENV_VARS" in
+        *"$ADMIN_SERVICE_NAME"*|*starfish-\**) ;;
+        *) echo "warning: EXTRA_ENV_VARS sets STARFISH_EXCLUDED_SERVICES without $ADMIN_SERVICE_NAME: the admin API's own errors would be ingested" >&2 ;;
+      esac ;;
+  esac
+fi
+# The deployed job's own name is never ingested (STARFISH_EXCLUDED_SERVICES, matched on the exact name, not a
+# prefix): were it ever added to the log resource types, the engine would otherwise read its own failures and
+# the fixer could be asked to patch Starfish itself (#32). An explicit value in EXTRA_ENV_VARS wins.
+case "@$EXTRA_ENV_VARS" in
+  *@STARFISH_EXCLUDED_SERVICES=*) ;;
+  *) ENV_VARS="$ENV_VARS@STARFISH_EXCLUDED_SERVICES=starfish,$JOB_NAME${ADMIN_EXCLUDED}" ;;
+esac
+[ -z "$EXTRA_ENV_VARS" ] || ENV_VARS="$ENV_VARS@$EXTRA_ENV_VARS"
+unique_names "the ingest job" "$ENV_VARS"
+if [ "$DEPLOY_AGENT" = "1" ]; then
+  AGENT_ENV="GOOGLE_CLOUD_PROJECT=$PROJECT_ID@STARFISH_WATCHED_PROJECT_ID=$WATCHED_PROJECT_ID@STARFISH_VERTEX_PROJECT_ID=$VERTEX_PROJECT_ID"
+  AGENT_ENV="$AGENT_ENV@GOOGLE_CLOUD_LOCATION=$REGION@STARFISH_ENV=$STARFISH_ENV@STARFISH_DATABASE_ID=$STARFISH_DATABASE_ID"
+  AGENT_ENV="$AGENT_ENV@STARFISH_GITHUB_REPO=$AGENT_REPO"
+  [ -z "$AGENT_BASE_BRANCH" ] || AGENT_ENV="$AGENT_ENV@STARFISH_GITHUB_BASE_BRANCH=$AGENT_BASE_BRANCH"
+  AGENT_EXCLUDED="starfish,$JOB_NAME,$AGENT_JOB_NAME${ADMIN_EXCLUDED}"
+  [ "$VERIFY_ISOLATION" != "cloud-run-job" ] || AGENT_EXCLUDED="$AGENT_EXCLUDED,$VERIFY_JOB_NAME"
+  case "@$EXTRA_ENV_VARS@$AGENT_EXTRA_ENV_VARS" in
+    *@STARFISH_EXCLUDED_SERVICES=*) ;;
+    *) AGENT_ENV="$AGENT_ENV@STARFISH_EXCLUDED_SERVICES=$AGENT_EXCLUDED" ;;
+  esac
+  [ -z "$EXTRA_ENV_VARS" ] || AGENT_ENV="$AGENT_ENV@$EXTRA_ENV_VARS"
+  [ -z "$AGENT_EXTRA_ENV_VARS" ] || AGENT_ENV="$AGENT_ENV@$AGENT_EXTRA_ENV_VARS"
+  # The safety values come last (#147): where the verify step runs, and the dry run. Neither extra list may set the
+  # first (checked above), and unique_names refuses any name set twice, so none can be replaced by a later entry.
+  AGENT_ENV="$AGENT_ENV@STARFISH_VERIFY_ISOLATION=$VERIFY_ISOLATION@STARFISH_VERIFY_TIMEOUT_SECONDS=$VERIFY_TIMEOUT_SECONDS"
+  AGENT_WAIT_SECONDS=$((VERIFY_TIMEOUT_SECONDS + 600))
+  if [ "$VERIFY_ISOLATION" = "github-actions" ]; then
+    AGENT_ENV="$AGENT_ENV@STARFISH_VERIFY_CHECKS=$VERIFY_CHECKS"
+  else
+    AGENT_ENV="$AGENT_ENV@STARFISH_VERIFY_JOB=$VERIFY_JOB_NAME@STARFISH_VERIFY_BUCKET=$VERIFY_BUCKET@STARFISH_VERIFY_JOB_REGION=$REGION@STARFISH_VERIFY_COMMAND=$VERIFY_COMMAND"
+    AGENT_WAIT_SECONDS=$((VERIFY_TIMEOUT_SECONDS + 300))
+  fi
+  # The dry run stays on until a person turns it off on purpose (an admin on the Settings page, or AGENT_EXTRA_ENV_VARS).
+  # A dry run opens no pull request, files no issue and posts nothing to Slack, but it is not silent: with
+  # github-actions isolation it still pushes the model-written patch to a starfish/<cycle> branch of AGENT_REPO, and
+  # that repository's CI runs it (src/agent/preflight.ts). With cloud-run-job the patch goes to the verify job's bucket.
+  case "@$AGENT_EXTRA_ENV_VARS" in
+    *@STARFISH_DRY_RUN=*) ;;
+    *) AGENT_ENV="$AGENT_ENV@STARFISH_DRY_RUN=true" ;;
+  esac
+  unique_names "the agent job" "$AGENT_ENV"
+fi
+if [ "$DEPLOY_ADMIN_API" = "1" ]; then
+  ADMIN_ENV="$ENV_VARS"
+  [ -z "$ADMIN_API_ORIGINS" ] || ADMIN_ENV="$ADMIN_ENV@STARFISH_ADMIN_API_ORIGINS=$ADMIN_API_ORIGINS"
+  unique_names "the admin API" "$ADMIN_ENV"
+fi
 
 # Print the command (single-quoted where it needs it) in a dry run, run it otherwise.
 run() {
@@ -287,16 +391,33 @@ if ! exists gcloud firestore databases describe --database="$STARFISH_DATABASE_I
     --location="$FIRESTORE_LOCATION" --type=firestore-native --project="$PROJECT_ID"
 fi
 if [ "$SKIP_FIRESTORE_RULES" != "1" ]; then
-  # firebase.json names the database, so this deploys to it and to no other.
-  run pnpm dlx firebase-tools@14 deploy --only firestore --project "$PROJECT_ID"
+  # firebase.json names a database ("starfish"), and the rules and indexes go to the database it names. So they are
+  # deployed from a temporary copy that names STARFISH_DATABASE_ID instead (#148): with any other id, firebase.json
+  # itself would send them to a database this deploy did not create or scope its grants to. The copy sits beside
+  # firebase.json because the CLI resolves the rules and indexes paths from the config file's directory.
+  FIREBASE_CONFIG=".firebase-deploy.json"
+  if [ "$DRY_RUN" = "1" ]; then
+    echo "+ (write $FIREBASE_CONFIG: firebase.json with \"database\": \"$STARFISH_DATABASE_ID\")"
+  else
+    trap 'rm -f "$FIREBASE_CONFIG"' EXIT
+    command -v node >/dev/null || die "node is needed to write the firebase config for database $STARFISH_DATABASE_ID"
+    STARFISH_DATABASE_ID="$STARFISH_DATABASE_ID" node -e '
+      const fs = require("fs");
+      const config = JSON.parse(fs.readFileSync("firebase.json", "utf8"));
+      const entries = [].concat(config.firestore ?? []);
+      if (entries.length !== 1) throw new Error("firebase.json must hold exactly one firestore entry");
+      config.firestore = [{ ...entries[0], database: process.env.STARFISH_DATABASE_ID }];
+      fs.writeFileSync(process.argv[1], JSON.stringify(config, null, 2));
+    ' "$FIREBASE_CONFIG" || die "could not write $FIREBASE_CONFIG from firebase.json"
+  fi
+  run pnpm dlx firebase-tools@14 deploy --only firestore --project "$PROJECT_ID" --config "$FIREBASE_CONFIG"
+  [ "$DRY_RUN" = "1" ] || rm -f "$FIREBASE_CONFIG"
 fi
 
-step "Secret Manager: $GITHUB_SECRET (the credential the pull-request step will need)"
+step "Secret Manager: $GITHUB_SECRET (the agent's credential: only its account may read it, granted with DEPLOY_AGENT)"
 if ! exists gcloud secrets describe "$GITHUB_SECRET" --project="$PROJECT_ID"; then
   run gcloud secrets create "$GITHUB_SECRET" --replication-policy=automatic --project="$PROJECT_ID"
 fi
-retry gcloud secrets add-iam-policy-binding "$GITHUB_SECRET" --project="$PROJECT_ID" \
-  --member="serviceAccount:$ENGINE_SA" --role=roles/secretmanager.secretAccessor --quiet --format=none
 SECRET_VERSION=0
 if [ -n "${STARFISH_GITHUB_TOKEN:-}" ]; then
   # The value comes from the environment and goes to Secret Manager over stdin: never an argument
@@ -312,45 +433,27 @@ elif has_secret_version; then
 fi
 
 step "Cloud Run job '$JOB_NAME' (image built from the Dockerfile)"
-ENV_VARS="GOOGLE_CLOUD_PROJECT=$PROJECT_ID@STARFISH_WATCHED_PROJECT_ID=$WATCHED_PROJECT_ID@STARFISH_VERTEX_PROJECT_ID=$VERTEX_PROJECT_ID"
-ENV_VARS="$ENV_VARS@GOOGLE_CLOUD_LOCATION=$REGION@STARFISH_ENV=$STARFISH_ENV@STARFISH_DATABASE_ID=$STARFISH_DATABASE_ID"
-# The job is told its own schedule only so the UI can say when the next run is expected (#38).
-ENV_VARS="$ENV_VARS@STARFISH_INGEST_SCHEDULE=$SCHEDULE"
-# With the admin API, its service name is never ingested either: its errors would otherwise become incidents.
-ADMIN_EXCLUDED=""
-[ "$DEPLOY_ADMIN_API" != "1" ] || ADMIN_EXCLUDED=",$ADMIN_SERVICE_NAME"
-# An explicit list replaces the default, so it must name the admin service too (or cover it with a prefix like starfish-*).
-if [ "$DEPLOY_ADMIN_API" = "1" ]; then
-  case "@$EXTRA_ENV_VARS" in
-    *@STARFISH_EXCLUDED_SERVICES=*)
-      case "$EXTRA_ENV_VARS" in
-        *"$ADMIN_SERVICE_NAME"*|*starfish-\**) ;;
-        *) echo "warning: EXTRA_ENV_VARS sets STARFISH_EXCLUDED_SERVICES without $ADMIN_SERVICE_NAME: the admin API's own errors would be ingested" >&2 ;;
-      esac ;;
-  esac
-fi
-# The deployed job's own name is never ingested (STARFISH_EXCLUDED_SERVICES, matched on the exact name, not a
-# prefix): were it ever added to the log resource types, the engine would otherwise read its own failures and
-# the fixer could be asked to patch Starfish itself (#32). An explicit value in EXTRA_ENV_VARS wins.
-case "@$EXTRA_ENV_VARS" in
-  *@STARFISH_EXCLUDED_SERVICES=*) ;;
-  *) ENV_VARS="$ENV_VARS@STARFISH_EXCLUDED_SERVICES=starfish,$JOB_NAME${ADMIN_EXCLUDED}" ;;
-esac
-[ -z "$EXTRA_ENV_VARS" ] || ENV_VARS="$ENV_VARS@$EXTRA_ENV_VARS"
 DEPLOY_ARGS=(
   gcloud run jobs deploy "$JOB_NAME" --source . --region="$REGION" --project="$PROJECT_ID" --quiet
   --service-account="$ENGINE_SA"
   --max-retries=0 --task-timeout=600s --cpu=1 --memory=512Mi
   --update-env-vars="^@^$ENV_VARS"
 )
-# Cloud Run mounts the secret as an environment variable; it fails the deploy if the secret has no
-# version, so it is mounted only once there is one.
-if [ "$SECRET_VERSION" = "1" ]; then
-  DEPLOY_ARGS+=(--update-secrets="STARFISH_GITHUB_TOKEN=$GITHUB_SECRET:latest")
-else
-  echo "  ($GITHUB_SECRET has no version yet: not mounted. Re-run with STARFISH_GITHUB_TOKEN set to add one.)"
+# No secret is mounted on the ingest job (#146). An existing job may carry the token an earlier version of this script
+# mounted: take it off. A new job has nothing to remove, so the flag is only passed to one that exists.
+if [ "$DRY_RUN" = "1" ] || exists gcloud run jobs describe "$JOB_NAME" --region="$REGION" --project="$PROJECT_ID"; then
+  DEPLOY_ARGS+=(--remove-secrets=STARFISH_GITHUB_TOKEN)
 fi
 run "${DEPLOY_ARGS[@]}"
+# The ingest never reads the token (#146), yet an earlier version of this script let its account read it. Take that
+# back, AFTER the job no longer mounts it (an execution cannot start while it mounts a secret it may not read). On a
+# project where it was never granted there is nothing to remove, which is not an error.
+if [ "$DRY_RUN" = "1" ]; then
+  echo "+ (if an earlier deploy granted it) gcloud secrets remove-iam-policy-binding $GITHUB_SECRET: secretAccessor of $ENGINE_SA"
+else
+  gcloud secrets remove-iam-policy-binding "$GITHUB_SECRET" --project="$PROJECT_ID" \
+    --member="serviceAccount:$ENGINE_SA" --role=roles/secretmanager.secretAccessor --quiet --format=none >/dev/null 2>&1 || true
+fi
 # The scheduler may start this job and nothing else.
 retry gcloud run jobs add-iam-policy-binding "$JOB_NAME" --region="$REGION" --project="$PROJECT_ID" \
   --member="serviceAccount:$SCHEDULER_SA" --role=roles/run.invoker --quiet --format=none
@@ -442,35 +545,12 @@ if [ "$DEPLOY_AGENT" = "1" ]; then
       --member="serviceAccount:$AGENT_SA" --role=roles/storage.objectAdmin --quiet --format=none
     retry gcloud iam service-accounts add-iam-policy-binding "$AGENT_SA" --project="$PROJECT_ID" \
       --member="serviceAccount:$AGENT_SA" --role=roles/iam.serviceAccountTokenCreator --quiet --format=none
+    # The agent starts the job with its request as a container override (src/agent/cloudRunJob.ts), which takes
+    # run.jobs.runWithOverrides, which roles/run.invoker does not hold (#149). This role holds it and run.jobs.run, on this job only.
     retry gcloud run jobs add-iam-policy-binding "$VERIFY_JOB_NAME" --region="$REGION" --project="$PROJECT_ID" \
-      --member="serviceAccount:$AGENT_SA" --role=roles/run.invoker --quiet --format=none
+      --member="serviceAccount:$AGENT_SA" --role=roles/run.jobsExecutorWithOverrides --quiet --format=none
   fi
 
-  AGENT_ENV="GOOGLE_CLOUD_PROJECT=$PROJECT_ID@STARFISH_WATCHED_PROJECT_ID=$WATCHED_PROJECT_ID@STARFISH_VERTEX_PROJECT_ID=$VERTEX_PROJECT_ID"
-  AGENT_ENV="$AGENT_ENV@GOOGLE_CLOUD_LOCATION=$REGION@STARFISH_ENV=$STARFISH_ENV@STARFISH_DATABASE_ID=$STARFISH_DATABASE_ID"
-  AGENT_ENV="$AGENT_ENV@STARFISH_GITHUB_REPO=$AGENT_REPO"
-  [ -z "$AGENT_BASE_BRANCH" ] || AGENT_ENV="$AGENT_ENV@STARFISH_GITHUB_BASE_BRANCH=$AGENT_BASE_BRANCH"
-  AGENT_ENV="$AGENT_ENV@STARFISH_VERIFY_ISOLATION=$VERIFY_ISOLATION@STARFISH_VERIFY_TIMEOUT_SECONDS=$VERIFY_TIMEOUT_SECONDS"
-  AGENT_EXCLUDED="starfish,$JOB_NAME,$AGENT_JOB_NAME${ADMIN_EXCLUDED}"
-  AGENT_WAIT_SECONDS=$((VERIFY_TIMEOUT_SECONDS + 600))
-  if [ "$VERIFY_ISOLATION" = "github-actions" ]; then
-    AGENT_ENV="$AGENT_ENV@STARFISH_VERIFY_CHECKS=$VERIFY_CHECKS"
-  else
-    AGENT_ENV="$AGENT_ENV@STARFISH_VERIFY_JOB=$VERIFY_JOB_NAME@STARFISH_VERIFY_BUCKET=$VERIFY_BUCKET@STARFISH_VERIFY_JOB_REGION=$REGION@STARFISH_VERIFY_COMMAND=$VERIFY_COMMAND"
-    AGENT_EXCLUDED="$AGENT_EXCLUDED,$VERIFY_JOB_NAME"
-    AGENT_WAIT_SECONDS=$((VERIFY_TIMEOUT_SECONDS + 300))
-  fi
-  # Nothing leaves Starfish until a person turns the dry run off on purpose (an admin on the Settings page, or here).
-  case "@$AGENT_EXTRA_ENV_VARS" in
-    *@STARFISH_DRY_RUN=*) ;;
-    *) AGENT_ENV="$AGENT_ENV@STARFISH_DRY_RUN=true" ;;
-  esac
-  case "@$EXTRA_ENV_VARS@$AGENT_EXTRA_ENV_VARS" in
-    *@STARFISH_EXCLUDED_SERVICES=*) ;;
-    *) AGENT_ENV="$AGENT_ENV@STARFISH_EXCLUDED_SERVICES=$AGENT_EXCLUDED" ;;
-  esac
-  [ -z "$EXTRA_ENV_VARS" ] || AGENT_ENV="$AGENT_ENV@$EXTRA_ENV_VARS"
-  [ -z "$AGENT_EXTRA_ENV_VARS" ] || AGENT_ENV="$AGENT_ENV@$AGENT_EXTRA_ENV_VARS"
   # Room for a pass of three cycles, each waiting for a verify run, and no retry: the lease resumes a cycle.
   AGENT_DEPLOY_ARGS=(
     gcloud run jobs deploy "$AGENT_JOB_NAME" --source . --region="$REGION" --project="$PROJECT_ID" --quiet
@@ -480,8 +560,13 @@ if [ "$DEPLOY_AGENT" = "1" ]; then
     --update-env-vars="^@^$AGENT_ENV"
   )
   # One flag with a comma-separated list: a repeated --update-secrets would keep only the last.
+  # Cloud Run fails a deploy that mounts a secret with no version, so the token is mounted only once there is one.
   AGENT_SECRETS=""
-  [ "$SECRET_VERSION" != "1" ] || AGENT_SECRETS="STARFISH_GITHUB_TOKEN=$GITHUB_SECRET:latest"
+  if [ "$SECRET_VERSION" = "1" ]; then
+    AGENT_SECRETS="STARFISH_GITHUB_TOKEN=$GITHUB_SECRET:latest"
+  else
+    echo "  ($GITHUB_SECRET has no version yet: not mounted. Re-run with STARFISH_GITHUB_TOKEN set to add one.)"
+  fi
   [ "$SLACK_MOUNT" != "1" ] || AGENT_SECRETS="${AGENT_SECRETS:+$AGENT_SECRETS,}STARFISH_SLACK_WEBHOOK_ONCALL=$SLACK_SECRET:latest"
   [ -z "$AGENT_SECRETS" ] || AGENT_DEPLOY_ARGS+=(--update-secrets="$AGENT_SECRETS")
   run "${AGENT_DEPLOY_ARGS[@]}"
@@ -513,13 +598,21 @@ if [ "$DEPLOY_ADMIN_API" = "1" ]; then
       --format='value(spec.template.spec.template.spec.containers[0].image)')"
     [ -n "$ADMIN_IMAGE" ] || die "could not read the image of job $JOB_NAME"
   fi
-  ADMIN_ENV="$ENV_VARS"
-  [ -z "$ADMIN_API_ORIGINS" ] || ADMIN_ENV="$ADMIN_ENV@STARFISH_ADMIN_API_ORIGINS=$ADMIN_API_ORIGINS"
+  # Its own account (#146): a public service should not share an identity with anything else. It holds what one ingest
+  # run and a retire need (src/adminApiCli.ts: Firebase Auth's public keys need no role; the watched project's logs;
+  # Starfish's database, read and write) and nothing more: no Gemini (ingest makes no model call), no secret.
+  if ! exists gcloud iam service-accounts describe "$ADMIN_SA" --project="$PROJECT_ID"; then
+    run gcloud iam service-accounts create "$ADMIN_SA_NAME" --project="$PROJECT_ID" \
+      --display-name="Starfish admin API (run ingest now, retire)"
+  fi
+  bind "$WATCHED_PROJECT_ID" "$ADMIN_SA" roles/logging.viewer
+  bind "$PROJECT_ID" "$ADMIN_SA" roles/datastore.user \
+    "resource.name == \"$DB_RESOURCE\" || resource.name.startsWith(\"$DB_RESOURCE/\")"
   # --allow-unauthenticated: a browser must reach it, so Cloud Run's own IAM check cannot be the gate. An organisation
   # policy that forbids public services will refuse this line, and then the admin API cannot serve a browser.
   # Capped instances and a cheap token check are the only limits on a stranger who calls it.
   run gcloud run deploy "$ADMIN_SERVICE_NAME" --image="$ADMIN_IMAGE" --region="$REGION" --project="$PROJECT_ID" --quiet \
-    --service-account="$ENGINE_SA" \
+    --service-account="$ADMIN_SA" \
     --args=node,--import,tsx,src/adminApiCli.ts \
     --allow-unauthenticated --max-instances=2 --concurrency=8 --timeout=900 --cpu=1 --memory=512Mi \
     --update-env-vars="^@^$ADMIN_ENV"

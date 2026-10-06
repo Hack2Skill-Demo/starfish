@@ -21,7 +21,7 @@ describe("scrubDocument", () => {
   });
 
   it("redacts every text field the store redacts, and nothing else", () => {
-    const result = scrubDocument(legacy({ requestId: "req-123", tenantId: "t1" }))!;
+    const result = scrubDocument(legacy({ requestId: "req-123", tenantId: "t1", service: "mail", errorCode: "E42" }))!;
     expect(Object.keys(result.updates).sort()).toEqual(["errorDetail", "errorMessage", "errorName", "stackTrace"]);
     const written = JSON.stringify(result);
     for (const needle of ["bob@y.org", "hunter2", ...Object.values(SEEDED_SECRETS)]) {
@@ -56,6 +56,33 @@ describe("scrubDocument", () => {
 
   it("is idempotent: scrubbing a scrubbed record changes nothing", () => {
     const first = scrubDocument(legacy())!;
+    const after = { ...legacy(), ...first.updates, fingerprint: first.fingerprint };
+    expect(scrubDocument(after)).toBeNull();
+  });
+
+  it("redacts and bounds the identifier fields the store now redacts (#130)", () => {
+    const result = scrubDocument(
+      legacy({
+        tenantId: "bob@y.org",
+        errorCode: `E_${SEEDED_SECRETS.github}`,
+        service: `svc?token=abc123`,
+        requestId: "r".repeat(1000),
+      })
+    )!;
+    expect(result.updates.tenantId).toBe("[redacted-email]");
+    expect(result.updates.errorCode).not.toContain(SEEDED_SECRETS.github);
+    expect(result.updates.service).toBe("svc?token=[redacted-secret]");
+    expect(result.updates.requestId).toHaveLength(256);
+    const after = { ...legacy(), ...result.updates, fingerprint: result.fingerprint };
+    expect(scrubDocument(after)).toBeNull();
+  });
+
+  it("is idempotent on a credential in a URL query parameter: no `]` gained per run (#128)", () => {
+    const message = "bad callback example.com/hook?key=abc and ?api_key=XYZ&token=t";
+    const first = scrubDocument(legacy({ errorMessage: message }))!;
+    expect(first.updates.errorMessage).toBe(
+      "bad callback example.com/hook?key=[redacted-secret] and ?api_key=[redacted-secret]&token=[redacted-secret]"
+    );
     const after = { ...legacy(), ...first.updates, fingerprint: first.fingerprint };
     expect(scrubDocument(after)).toBeNull();
   });

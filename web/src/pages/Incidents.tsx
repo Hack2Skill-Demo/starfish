@@ -6,8 +6,9 @@
  *    a fixed list, so the filter lists what's present.
  *  - The expanded row shows the underlying cause (`errorDetail`) and the
  *    engine's triage state.
- *  - GitHub issue / PR links appear when those fields exist. Nothing writes them
- *    yet: GitHub integration is design-only (docs/design/auto-merge-policy.md).
+ *  - GitHub issue / PR links appear when those fields exist, and only as https
+ *    URLs. Nothing writes them onto the incident yet: the agent's issue and PR
+ *    opener (src/integrations/githubPr.ts) records its results on the cycle.
  */
 import { Fragment, useState } from "react";
 import { Link, useSearchParams } from "react-router";
@@ -31,6 +32,7 @@ import {
 } from "lucide-react";
 import { EmptyState } from "../components/ui/EmptyState";
 import PageMeta from "../components/PageMeta";
+import SettingsUnavailableNotice from "../components/SettingsUnavailableNotice";
 import { EngineStatus } from "../components/EngineStatus";
 import { RunIngestButton } from "../components/AdminActions";
 import { toast } from "../components/ui/toast";
@@ -39,6 +41,7 @@ import { asFilterValue } from "../lib/urlFilters";
 import { formatDateTime, formatRelativeTime } from "../lib/formatters";
 import { buildCloudLoggingUrl } from "../lib/cloudLoggingUrl";
 import { useEnvironment } from "../lib/useSettings";
+import { safeUrl } from "../lib/runsModel";
 import {
   INCIDENT_STATUSES,
   SCAN_LIMIT,
@@ -181,16 +184,7 @@ export default function Incidents() {
     <>
       <PageMeta title="Incidents | Starfish" description="Browse and triage production incidents" />
       <div className="space-y-6">
-        {settingsUnavailable && (
-          <p
-            role="status"
-            className="rounded-lg border border-warning-200 bg-warning-50 px-4 py-3 text-sm text-warning-800 dark:border-warning-500/30 dark:bg-warning-500/10 dark:text-warning-200"
-          >
-            Couldn&apos;t read the runtime settings, so incidents are filtered by this build&apos;s environment label (
-            <span className="font-mono">{environment}</span>). If an admin has changed the label, this list may be empty or
-            out of date.
-          </p>
-        )}
+        {settingsUnavailable && <SettingsUnavailableNotice environment={environment} subject="incidents" />}
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Incidents</h1>
@@ -333,6 +327,10 @@ export default function Incidents() {
                     const busy = pendingId === row.id && mutation.isPending;
                     const isExpanded = expandedIds.has(row.id);
                     const hasDetail = Boolean(row.stackTrace || row.errorName || row.errorDetail || row.triageState);
+                    // Stored links are data: shown only when they are https URLs, as on Runs and the evidence page.
+                    const issueUrl = safeUrl(row.githubIssueUrl);
+                    const prUrl = safeUrl(row.githubPrUrl);
+                    const previousIssueUrl = safeUrl(row.previousIssueUrl);
                     const logsUrl = buildCloudLoggingUrl({
                       functionName: row.functionName,
                       projectId: row.sourceProjectId,
@@ -382,9 +380,9 @@ export default function Incidents() {
                                       Logs
                                     </a>
                                   )}
-                                  {row.githubIssueUrl && (
+                                  {issueUrl && (
                                     <a
-                                      href={row.githubIssueUrl}
+                                      href={issueUrl}
                                       target="_blank"
                                       rel="noopener noreferrer"
                                       className="inline-flex items-center gap-1 text-xs font-medium text-info-800 hover:underline dark:text-info-500"
@@ -393,9 +391,9 @@ export default function Incidents() {
                                       {row.githubIssueNumber ? `#${row.githubIssueNumber}` : "Issue"}
                                     </a>
                                   )}
-                                  {row.githubPrUrl && (
+                                  {prUrl && (
                                     <a
-                                      href={row.githubPrUrl}
+                                      href={prUrl}
                                       target="_blank"
                                       rel="noopener noreferrer"
                                       className={`inline-flex items-center gap-1 text-xs font-medium hover:underline ${PR_STYLES[row.githubPrState ?? "open"]}`}
@@ -453,9 +451,9 @@ export default function Incidents() {
                                 {row.recurrenceCount === 1 ? "Regression" : `Regression ×${row.recurrenceCount}`}
                               </p>
                             )}
-                            {row.recurrenceCount > 0 && row.previousIssueUrl && (
+                            {row.recurrenceCount > 0 && previousIssueUrl && (
                               <a
-                                href={row.previousIssueUrl}
+                                href={previousIssueUrl}
                                 target="_blank"
                                 rel="noopener noreferrer"
                                 className="text-xs font-medium text-orange-700 hover:underline dark:text-orange-400"

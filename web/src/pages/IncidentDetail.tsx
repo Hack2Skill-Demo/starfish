@@ -8,6 +8,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Link, useParams } from "react-router";
 import { ArrowLeft, Check, CircleDashed, ExternalLink, Minus } from "lucide-react";
 import PageMeta from "../components/PageMeta";
+import SettingsUnavailableNotice from "../components/SettingsUnavailableNotice";
 import { Badge, type BadgeTone } from "../components/ui/Badge";
 import { RetireControl } from "../components/AdminActions";
 import { HourlyBars } from "../components/HourlyBars";
@@ -32,7 +33,7 @@ function when(value: string): string {
 
 export default function IncidentDetail() {
   const { id = "" } = useParams();
-  const { environment, ready } = useEnvironment();
+  const { environment, ready, settingsUnavailable } = useEnvironment();
 
   const incident = useQuery({
     queryKey: ["incident", environment, id],
@@ -56,6 +57,7 @@ export default function IncidentDetail() {
       <Link to="/incidents" className="inline-flex items-center gap-1 text-sm font-medium text-brand-700 hover:underline dark:text-brand-400">
         <ArrowLeft className="h-4 w-4" aria-hidden /> Incidents
       </Link>
+      {settingsUnavailable && <SettingsUnavailableNotice environment={environment} subject="the incident and its run" />}
 
       {incident.isPending || !ready ? (
         <p className="text-sm text-gray-600 dark:text-gray-400">Loading…</p>

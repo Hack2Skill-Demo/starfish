@@ -40,7 +40,7 @@ export interface Checkout {
 
 export type CheckoutFn = () => Promise<Checkout>;
 
-export type CheckoutConfig = Pick<StarfishConfig, "githubRepo" | "githubBaseBranch" | "githubRemoteUrl">;
+export type CheckoutConfig = Pick<StarfishConfig, "githubRepo" | "githubBaseBranch" | "githubRemoteUrl" | "githubApiUrl">;
 
 export interface CheckoutDeps {
   /** Absent for a public or local remote: no credential is sent. */
@@ -54,7 +54,7 @@ export interface CheckoutDeps {
 /** A shallow clone of the configured repository's base branch, at its current tip. */
 export function createGitCheckout(cfg: CheckoutConfig, deps: CheckoutDeps): CheckoutFn {
   const remote = cfg.githubRemoteUrl !== "" ? cfg.githubRemoteUrl : `https://github.com/${cfg.githubRepo}.git`;
-  const env = deps.token ? gitAuthEnv(remote, deps.token, deps.env) : gitBaseEnv(deps.env);
+  const env = deps.token ? gitAuthEnv(remote, deps.token, deps.env, cfg.githubApiUrl) : gitBaseEnv(deps.env);
   const runGit = deps.runGit ?? defaultRunGit;
   return async () => {
     const dir = await mkdtemp(join(deps.tmpDir ?? tmpdir(), "starfish-src-"));

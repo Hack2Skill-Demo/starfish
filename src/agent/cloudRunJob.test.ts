@@ -40,7 +40,7 @@ describe("createCloudRunJobStarter", () => {
     const e = await createCloudRunJobStarter(cfg, { token: async () => "tok", fetch: fetchStub(403).f })(request).catch((err: Error) => err);
     expect(e).toBeInstanceOf(VerifyRunnerError);
     expect((e as Error).message).toContain("403");
-    expect((e as Error).message).toContain("roles/run.invoker");
+    expect((e as Error).message).toContain("roles/run.jobsExecutorWithOverrides");
     expect((e as Error).message).not.toMatch(/SECRET|googleapis\.com\/b/);
   });
 

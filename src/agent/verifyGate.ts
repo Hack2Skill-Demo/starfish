@@ -14,7 +14,9 @@
  *      to an excluded path (CI, secrets, whatever defines the verify command or the tests), a new
  *      or changed symlink, a changed file mode, and a patch that touches too many files;
  *   4. only then runs the configured command, with a scrubbed environment, a timeout and bounded,
- *      redacted output. Exit 0 is the only pass.
+ *      redacted output. Exit 0 is the only pass. The wait ends when the command exits or times out, even
+ *      if something it started outside its process group still holds the output open; that process is
+ *      left running.
  * The result carries the SHA-256 of the exact patch and the revision it was based on, so evidence
  * ("the tests passed") can never be shown for a patch other than the one that was tested.
  *
@@ -30,7 +32,7 @@ import { createHash } from "node:crypto";
 import { cp, lstat, mkdir, mkdtemp, readdir, readFile, readlink, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { StarfishConfig } from "../config.js";
+import { loadVerifyCommandBasics, type StarfishConfig } from "../config.js";
 import { redactPii } from "../ingest/redact.js";
 
 export type VerifyConfig = Pick<StarfishConfig, "verifyCommand" | "verifyTimeoutSeconds" | "patchExcludedPaths">;
@@ -79,8 +81,11 @@ export interface VerifyRequest {
   patch: string;
   baseRevision?: string;
   config: VerifyConfig;
-  /** Names of environment variables to pass to the command (everything else is dropped). */
-  passEnv?: string[];
+  /**
+   * Extra variables to give the command, by value. The caller reads them through config.ts, the only reader of the
+   * environment; nothing else from this process's environment reaches the command but PATH and LANG.
+   */
+  extraEnv?: Readonly<Record<string, string>>;
   /**
    * Run the verify command as this unprivileged user instead of this process's own. Used by the verify
    * runner (verifyRunner.ts), which starts as root: the command then cannot read the runner's memory or
@@ -171,17 +176,15 @@ function changedBetween(before: Map<string, Entry>, after: Map<string, Entry>): 
 }
 
 /** A deliberately small environment: nothing from this process's own credentials reaches the command. */
-function scrubbedEnv(home: string, passEnv: readonly string[]): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = {
-    PATH: process.env.PATH,
-    LANG: process.env.LANG ?? "C.UTF-8",
+function scrubbedEnv(home: string, extraEnv: Readonly<Record<string, string>>): NodeJS.ProcessEnv {
+  return {
+    ...extraEnv,
+    ...loadVerifyCommandBasics(),
     TERM: "dumb",
     CI: "1",
     HOME: home,
     TMPDIR: join(home, "tmp"),
   };
-  for (const name of passEnv) if (process.env[name] !== undefined) env[name] = process.env[name];
-  return env;
 }
 
 function run(
@@ -215,16 +218,33 @@ function run(
         child.kill("SIGKILL");
       }
     }, opts.timeoutMs);
-    child.on("error", (err) => {
+    // Settle on the child's EXIT, not on `close`: `close` waits for every process holding the output pipes, and one
+    // that left the process group (`setsid sleep infinity &`) survives the group kill and holds them for as long as it
+    // likes, so the timeout bounded nothing (#135). After exit, the pipes get a short grace to drain what the command
+    // already wrote, then are destroyed. A process that escaped the group is NOT killed: this is not a sandbox.
+    let settled = false;
+    let grace: NodeJS.Timeout | undefined;
+    const settle = (result: { code: number | null; timedOut: boolean; output: string }) => {
+      if (settled) return;
+      settled = true;
       clearTimeout(timer);
-      resolve({ code: null, timedOut: false, output: `${output}\n${err.name}` });
-    });
-    child.on("close", (code) => {
+      clearTimeout(grace);
+      child.stdout.destroy();
+      child.stderr.destroy();
+      resolve(result);
+    };
+    child.on("error", (err) => settle({ code: null, timedOut: false, output: `${output}\n${err.name}` }));
+    child.on("exit", (code) => {
+      // The command finished on its own (or was killed): a timer firing during the grace must not call it a timeout.
       clearTimeout(timer);
-      resolve({ code, timedOut, output });
+      grace = setTimeout(() => settle({ code, timedOut, output }), EXIT_GRACE_MS);
     });
+    child.on("close", (code) => settle({ code, timedOut, output }));
   });
 }
+
+/** How long the output pipes may stay open after the command itself has exited. */
+const EXIT_GRACE_MS = 1000;
 
 const tail = (text: string) => redactPii(text.slice(-MAX_OUTPUT_CHARS));
 
@@ -273,7 +293,7 @@ export async function verifyPatch(req: VerifyRequest): Promise<VerifyResult> {
       return done("rejected", "setup-failed", "The scratch copy could not be read.");
     }
 
-    const env = scrubbedEnv(home, req.passEnv ?? []);
+    const env = scrubbedEnv(home, req.extraEnv ?? {});
     const applied = await run("git", ["apply", "--whitespace=nowarn", "-"], { cwd: tree, env, stdin: req.patch, timeoutMs: 30_000 });
     if (applied.code !== 0) {
       return done("rejected", "patch-does-not-apply", "The patch does not apply to the checkout.", { output: tail(applied.output) });
@@ -286,7 +306,10 @@ export async function verifyPatch(req: VerifyRequest): Promise<VerifyResult> {
       return done("rejected", "tree-too-large", "The patched tree is too large to inspect.");
     }
     const changedFiles = changedBetween(before, after);
-    const refuse = (rule: VerifyRule, reason: string) => done("rejected", rule, reason, { changedFiles });
+    // A refusal lists at most MAX_CHANGED_FILES + 1 paths: enough to show "too many", and no more than
+    // `parseRunnerResult` accepts. Listing all of them made a too-many-files refusal from the verify job a
+    // protocol error, so the fixer never heard why its patch was refused (#135).
+    const refuse = (rule: VerifyRule, reason: string) => done("rejected", rule, reason, { changedFiles: changedFiles.slice(0, MAX_CHANGED_FILES + 1) });
 
     if (changedFiles.length === 0) return refuse("empty-patch", "The patch changes nothing.");
     if (changedFiles.length > MAX_CHANGED_FILES) return refuse("too-many-files", `The patch changes more than ${MAX_CHANGED_FILES} files.`);

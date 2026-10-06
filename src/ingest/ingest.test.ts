@@ -189,6 +189,22 @@ describe("parseLogEntry", () => {
     expect(parsed?.errorDetail).toBeUndefined();
   });
 
+  it("reads an object-valued message instead of titling it [object Object] (#131)", () => {
+    const a = parseLogEntry({ ...base, data: { message: { code: 5, text: "boom" } } });
+    const b = parseLogEntry({ ...base, data: { message: { code: 7, text: "other" } } });
+    expect(a?.errorMessage).toBe('{"code":5,"text":"boom"}');
+    // Two unrelated errors from one function must not share a title, and so a fingerprint.
+    expect(a?.errorMessage).not.toBe(b?.errorMessage);
+    const withMessage = parseLogEntry({ ...base, data: { message: { message: "inner", code: 1 } } });
+    expect(withMessage?.errorMessage).toBe("inner");
+  });
+
+  it("titles a string, number or array message exactly as before, so no fingerprint moves", () => {
+    expect(parseLogEntry({ ...base, data: { message: "boom" } })?.errorMessage).toBe("boom");
+    expect(parseLogEntry({ ...base, data: { message: 42 } })?.errorMessage).toBe("42");
+    expect(parseLogEntry({ ...base, data: { message: ["a", "b"] } })?.errorMessage).toBe("a,b");
+  });
+
   it("stringifies a structured error rather than dropping it", () => {
     const parsed = parseLogEntry({ ...base, data: { message: "rpc failed", error: { code: 9 } } });
     expect(parsed?.errorDetail).toBe('{"code":9}');

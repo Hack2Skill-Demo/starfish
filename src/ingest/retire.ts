@@ -25,7 +25,7 @@ import type { Firestore } from "firebase-admin/firestore";
 import type { StarfishConfig } from "../config.js";
 import { hasAdminRole, isValidUid } from "../adminAuth.js";
 import { computeErrorFingerprint } from "./fingerprint.js";
-import { redactPii } from "./redact.js";
+import { redactPii, sliceWellFormed, toWellFormed } from "./redact.js";
 import { incidentKeyId } from "./store.js";
 import type { StoredIncident } from "../types.js";
 
@@ -81,7 +81,8 @@ export async function retireIncident(
       fingerprint,
       actorUid,
       at: Timestamp.fromDate(now),
-      reason: redactPii(String(reason)).slice(0, MAX_REASON),
+      // Never a lone surrogate (#126): Firestore would reject the whole retire over its audit reason.
+      reason: sliceWellFormed(toWellFormed(redactPii(String(reason))), MAX_REASON),
       before: { status: data.status },
       after: { status: wasOpen ? "resolved" : data.status, retired: true },
     });

@@ -371,6 +371,24 @@ describe("createPullRequestOpener: secrets and the commands it runs", () => {
     expect(Object.keys(gitAuthEnv("/p", TOKEN, basics)).sort()).toEqual(["GIT_CONFIG_GLOBAL", "GIT_CONFIG_NOSYSTEM", "GIT_TERMINAL_PROMPT", "HOME", "PATH"]);
   });
 
+  // #141: a misconfigured remote elsewhere must not receive the token.
+  it("sends the credential only to github.com or the configured API's host", () => {
+    const basics = { PATH: "/bin", HOME: "/h" };
+    const hasAuth = (remote: string, api?: string) => gitAuthEnv(remote, TOKEN, basics, api).GIT_CONFIG_VALUE_0 !== undefined;
+    expect(hasAuth("https://github.com/acme/shop.git")).toBe(true);
+    expect(hasAuth("https://GitHub.com/acme/shop.git")).toBe(true);
+    expect(hasAuth("https://gitlab.example/acme/shop.git")).toBe(false);
+    expect(hasAuth("https://github.com.evil.example/acme/shop.git")).toBe(false);
+    expect(hasAuth("https://evil.example/github.com/acme/shop.git")).toBe(false);
+    expect(hasAuth("http://github.com/acme/shop.git")).toBe(false);
+    expect(hasAuth("not a url")).toBe(false);
+    // GitHub Enterprise Server: one host for git and the API. GHE.com: api.<x>.ghe.com serves <x>.ghe.com.
+    expect(hasAuth("https://ghe.example/acme/shop.git", "https://ghe.example/api/v3")).toBe(true);
+    expect(hasAuth("https://acme.ghe.com/acme/shop.git", "https://api.acme.ghe.com")).toBe(true);
+    expect(hasAuth("https://ghe.example/acme/shop.git")).toBe(false);
+    expect(hasAuth("https://ghe.example/acme/shop.git", "not a url")).toBe(false);
+  });
+
   it("does not leave the token in the scratch clone's git config", async () => {
     let configText = "";
     const real: RunGit = async (args, o) => {
@@ -632,6 +650,87 @@ describe("issueText", () => {
     expect(body.length).toBeLessThanOrEqual(12_000);
     // the incident id is not a plain id, so no link to it is built
     expect(body).not.toContain("/incidents/");
+  });
+});
+
+// #140: model text saying "fixes #1" must not close issue 1 when a person merges the pull request.
+const CLOSER = "fixes #1, closes acme/shop#2 and resolves GH-3; see https://github.com/acme/shop/issues/4";
+const CLOSING_RE = /\b(close|fix|resolve)[sd]?\s*:?\s+(#\d|[\w.-]+\/[\w.-]+#\d|gh-\d|https?:\/\/)/gi;
+const ANY_REF_RE = /#\d|[\w.-]+\/[\w.-]+#\d|\bgh-\d/gi;
+
+describe("issue references in model text (#140)", () => {
+  it("leave no closing keyword in the pull request but the one Starfish writes, and no reference in its title", () => {
+    const { title, body } = pullRequestText(
+      request({
+        issueNumber: 9,
+        rootCause: CLOSER,
+        risk: CLOSER,
+        verify: { status: CLOSER as never, rule: CLOSER as never, changedFiles: [], output: "" },
+        review: { verdict: CLOSER as never, attacks: [{ attack: CLOSER, outcome: CLOSER as never, detail: CLOSER }] },
+      })
+    );
+    expect(body.match(CLOSING_RE)).toEqual(["Closes #9"]);
+    expect(body.match(ANY_REF_RE)).toEqual(["#9", "#9"]); // "- Issue: #9" and "Closes #9"
+    expect(body.trimEnd().endsWith("Closes #9")).toBe(true);
+    expect(title.match(ANY_REF_RE)).toBeNull();
+    expect(title).not.toContain("://");
+    expect(body).toContain("fixes #\u200b1"); // still readable
+  });
+
+  it("leave none in the commit message a squash merge keeps", async () => {
+    await opener()(request({ rootCause: CLOSER }));
+    const message = git(bare, "log", "-1", "--format=%B", "refs/heads/starfish/inc1_r0");
+    expect(message.match(ANY_REF_RE)).toBeNull();
+    expect(message.match(CLOSING_RE)).toBeNull();
+    expect(message).toMatch(/^Starfish: fixes #\u200b1/);
+  });
+
+  it("leave none in the issue's title or body", () => {
+    const { title, body } = issueText(issueRequest({ functionName: CLOSER, errorType: "GH-5", reason: CLOSER, suspectedCause: CLOSER }));
+    expect(title.match(ANY_REF_RE)).toBeNull();
+    // Code spans are not parsed for references; everything outside them is checked.
+    expect(body.replace(/`[^`]*`/g, "").match(ANY_REF_RE)).toBeNull();
+    expect(body.replace(/`[^`]*`/g, "").match(CLOSING_RE)).toBeNull();
+  });
+});
+
+describe("pullRequestText: a body over the cap (#141)", () => {
+  it("cuts the variable sections, never the evidence, the no-merge line or Closes, and leaves no fence open", () => {
+    const { body } = pullRequestText(
+      request({
+        issueNumber: 9,
+        rootCause: "&".repeat(1500),
+        risk: "<".repeat(1000),
+        verify: { status: "passed", rule: "command-passed", changedFiles: Array.from({ length: 60 }, (_, i) => `src/${"f".repeat(150)}${i}.ts`), output: "o\n".repeat(5000) },
+        review: { verdict: "approve", attacks: Array.from({ length: 30 }, () => ({ attack: "&".repeat(200), outcome: "held", detail: "&".repeat(300) })) },
+      })
+    );
+    expect(body.length).toBeLessThanOrEqual(12_000);
+    expect(body).toContain("cut to fit");
+    expect(body).toContain(`- Patch SHA-256: \`${request().patchSha256}\``);
+    expect(body).toContain(`- Base revision: \``);
+    expect(body).toContain("It does not merge or deploy: a person decides.");
+    expect(body.trimEnd().endsWith("Closes #9")).toBe(true);
+    expect(body.split("\n").filter((l) => l === "```").length % 2).toBe(0);
+  });
+
+  it("closes a fence the cut leaves open, so the footer is not swallowed into a code block", () => {
+    const { body } = pullRequestText(
+      // About 10.5k of head before the output's fence opens; the output (3000) does not fit after it.
+      request({ issueNumber: 9, rootCause: "&".repeat(1500), risk: "&".repeat(600), verify: { status: "passed", rule: "command-passed", changedFiles: [], output: "o".repeat(3000) } })
+    );
+    expect(body.length).toBeLessThanOrEqual(12_000);
+    const lines = body.split("\n");
+    const fences = lines.map((l, i) => (l === "```" ? i : -1)).filter((i) => i >= 0);
+    expect(fences).toHaveLength(2);
+    expect(fences[1]!).toBe(fences[0]! + 1); // nothing of the output fitted: an empty, closed block
+    expect(lines[fences[1]! + 2]).toContain("cut to fit"); // the fence we closed sits right before the note
+    expect(lines.indexOf("## Evidence")).toBeGreaterThan(fences[1]!);
+    expect(body.trimEnd().endsWith("Closes #9")).toBe(true);
+  });
+
+  it("is unchanged when it fits", () => {
+    expect(pullRequestText(request({ issueNumber: 9 })).body).not.toContain("cut to fit");
   });
 });
 

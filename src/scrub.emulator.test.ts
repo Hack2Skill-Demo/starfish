@@ -79,7 +79,9 @@ describe("scrubCollection on the emulator", () => {
     const report = await scrubCollection(db, store, { apply: false });
 
     expect(report).toMatchObject({ scanned: 1, changed: 1, refingerprinted: 1, keysRemoved: 0, applied: false });
-    expect(report.byField).toEqual({ errorMessage: 1, errorDetail: 1, stackTrace: 1, errorName: 0 });
+    expect(report.byField).toEqual({
+      errorMessage: 1, errorDetail: 1, stackTrace: 1, errorName: 0, service: 0, errorCode: 0, tenantId: 0, requestId: 0,
+    });
     expect(await everything()).toBe(before);
   });
 

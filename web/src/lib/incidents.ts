@@ -3,9 +3,10 @@
  *
  * Reads the collection the engine writes (src/ingest/store.ts) through the
  * Firebase client SDK; firestore.rules is what enforces who may do what. The
- * query is a single range + order on `lastOccurredAt` — served by the
- * automatic single-field index, so no composite index is needed. Status,
- * service and function filters apply client-side over that window.
+ * query is an equality on `environment` plus a range + order on `lastOccurredAt`,
+ * served by the composite index in firestore.indexes.json (the environment filter
+ * is also what lets the rules serve a guest's query). Status, service and function
+ * filters apply client-side over that window.
  */
 import {
   collection,
@@ -71,10 +72,13 @@ export interface IncidentRow {
 
 const MS_PER_HOUR = 3600_000;
 
-/** Sum the epoch-hour buckets inside the last `hours`. Mirrors src/ingest/buckets.ts countInWindow. */
+/**
+ * Sum the epoch-hour buckets of the last `hours` hours, the current one included: 24 buckets for 24h,
+ * the same window as the Overview's hourlySeries (overviewModel.ts), so the two pages agree (#144).
+ */
 export function countInWindow(buckets: Record<string, number> | undefined, hours: number, nowMs = Date.now()): number {
   if (!buckets) return 0;
-  const cutoff = Math.floor(nowMs / MS_PER_HOUR) - hours;
+  const cutoff = Math.floor(nowMs / MS_PER_HOUR) - hours + 1;
   let total = 0;
   for (const [k, v] of Object.entries(buckets)) {
     const hour = Number(k);

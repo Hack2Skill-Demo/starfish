@@ -7,17 +7,28 @@ vi.mock("./firebase", () => ({ firestore: vi.fn() }));
 vi.mock("./config", () => ({ webConfig: () => ({ incidentCollection: "incidents" }) }));
 
 import { Timestamp } from "firebase/firestore";
-import { countInWindow, getIncident, listIncidents, nextStatus, toRow } from "./incidents";
+import { countInWindow, getIncident, listIncidents, nextStatus, toRow, type IncidentRow } from "./incidents";
+import { hourlySeries } from "./overviewModel";
 
 const HOUR = 3600_000;
 const now = Date.parse("2026-09-24T12:00:00.000Z");
 const hour = (ms: number) => String(Math.floor(ms / HOUR));
 
-describe("countInWindow (mirrors the engine's buckets.ts)", () => {
+describe("countInWindow", () => {
   it("sums only buckets inside the window", () => {
     const buckets = { [hour(now)]: 3, [hour(now - 5 * HOUR)]: 2, [hour(now - 48 * HOUR)]: 9 };
     expect(countInWindow(buckets, 24, now)).toBe(5);
     expect(countInWindow(buckets, 72, now)).toBe(14);
+  });
+
+  it("counts exactly 24 hourly buckets for 24h, the same total as the Overview's hourly series (#144)", () => {
+    const at = now + 17 * 60_000; // mid-hour
+    const buckets: Record<string, number> = {};
+    for (let i = 0; i <= 30; i++) buckets[hour(at - i * HOUR)] = 1;
+    expect(countInWindow(buckets, 24, at)).toBe(24);
+    const row = { occurrencesByHour: buckets } as unknown as IncidentRow;
+    const series = hourlySeries([row], at, 24);
+    expect(series.reduce((sum, b) => sum + b.count, 0)).toBe(countInWindow(buckets, 24, at));
   });
 
   it("ignores malformed keys and values", () => {

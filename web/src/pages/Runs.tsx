@@ -11,6 +11,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router";
 import { Check, CircleDashed, ExternalLink, Loader2, Workflow } from "lucide-react";
 import PageMeta from "../components/PageMeta";
+import SettingsUnavailableNotice from "../components/SettingsUnavailableNotice";
 import { EngineStatus } from "../components/EngineStatus";
 import { Badge } from "../components/ui/Badge";
 import { EmptyState } from "../components/ui/EmptyState";
@@ -44,7 +45,7 @@ function useNow(): number {
 }
 
 export default function Runs() {
-  const { environment, ready } = useEnvironment();
+  const { environment, ready, settingsUnavailable } = useEnvironment();
   const [params, setParams] = useSearchParams();
   const now = useNow();
   const [cycles, setCycles] = useState<CycleRow[] | null>(null);
@@ -81,6 +82,7 @@ export default function Runs() {
   return (
     <div className="space-y-4">
       <PageMeta title="Runs | Starfish" description="Watch the agent work through each incident, step by step" />
+      {settingsUnavailable && <SettingsUnavailableNotice environment={environment} subject="runs" />}
       <div>
         <h1 className="text-xl font-semibold text-gray-900 dark:text-white">Runs</h1>
         <p className="mt-1 text-sm text-gray-600 dark:text-gray-400">

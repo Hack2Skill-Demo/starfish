@@ -51,6 +51,22 @@ describe("Overview page", () => {
     vi.clearAllMocks();
     mocks.cyclesCb = mocks.cyclesErr = undefined;
     mocks.listIncidents.mockResolvedValue({ rows: [], capped: false });
+    mocks.env = { environment: "demo", ready: true, settingsUnavailable: false };
+  });
+
+  it("says the settings couldn't be read, so empty counts aren't taken for a quiet day (#143)", async () => {
+    mocks.env = { environment: "build-label", ready: true, settingsUnavailable: true };
+    renderPage();
+    act(() => mocks.cyclesCb!([], false));
+    const notice = screen.getByText(/Couldn't read the runtime settings/);
+    expect(notice).toHaveTextContent("build-label");
+    expect(await screen.findByText(/No logged errors in the last 24 hours/)).toBeInTheDocument();
+  });
+
+  it("shows no settings notice when the settings read succeeded", () => {
+    renderPage();
+    act(() => mocks.cyclesCb!([], false));
+    expect(screen.queryByText(/Couldn't read the runtime settings/)).toBeNull();
   });
 
   it("says nothing is recorded, instead of reading an empty store as good news", async () => {

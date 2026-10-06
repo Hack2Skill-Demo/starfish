@@ -1,7 +1,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
-import { buildNeedsHumanMessage, createSlackNotifier, deliverToSlack, type NotifyRequest } from "./slack.js";
+import { buildNeedsHumanMessage, createSlackNotifier, deliverToSlack, slackEscape, type NotifyRequest } from "./slack.js";
 import { SEEDED_SECRETS } from "../ingest/testSecrets.js";
 
 const req: NotifyRequest = {
@@ -79,6 +79,22 @@ describe("buildNeedsHumanMessage", () => {
     // the attacker's text is inert plain text; the only thing a person can click is the two links this module built
     const clickable = (m.blocks as Array<{ elements?: Array<{ url?: string }> }>).flatMap((b) => (b.elements ?? []).map((e) => e.url));
     expect(clickable).toEqual(["https://starfish.example/incidents/inc1", "https://starfish.example/runs?run=inc1_r0"]);
+  });
+
+  // #141: Slack reads `<!channel>` in the top-level text (the notification and fallback) as a control sequence.
+  it("escapes &, < and > in the top-level text, so incident text cannot ping a channel or make a link there", () => {
+    const m = buildNeedsHumanMessage({ ...req, functionName: "<!channel> a&b", errorType: "<https://evil.example|x>" }, UI);
+    expect(m.text).not.toMatch(/[<>]/);
+    expect(m.text).toContain("&lt;!channel&gt; a&amp;b");
+    expect(m.text).toContain("&lt;https://evil.example|x&gt;");
+    expect(m.text.replace(/&(amp|lt|gt);/g, "")).not.toContain("&");
+  });
+});
+
+describe("slackEscape", () => {
+  it("escapes & first, so an escape is not escaped twice", () => {
+    expect(slackEscape("<&>")).toBe("&lt;&amp;&gt;");
+    expect(slackEscape("plain")).toBe("plain");
   });
 });
 

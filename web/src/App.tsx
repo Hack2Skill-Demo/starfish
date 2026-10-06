@@ -1,7 +1,8 @@
 /**
  * Routes. Public: sign-in and access-denied. Everything else sits behind
  * RequireRole inside the Starfish layout. A guest (an anonymous, read-only session on the
- * public demo) may see the layout, Incidents and a view-only Settings.
+ * public demo) may see the layout, Overview, Incidents, incident evidence, Runs and a
+ * view-only Settings, all limited to the demo environment by firestore.rules.
  */
 import { lazy, Suspense } from "react";
 import { Navigate, Route, Routes } from "react-router";

@@ -19,9 +19,10 @@ const db = getFirestore(config.databaseId);
 const loader = new RuntimeConfigLoader(config);
 
 const handle = createAdminApi({
-  // A signature and expiry check against Google's public keys; revocation is not checked here (it would need a
-  // lookup per call), because what an admin may do is read fresh from the operator record on every action.
-  verifyToken: async (token) => ({ uid: (await getAuth().verifyIdToken(token)).uid }),
+  // A signature and expiry check against Google's public keys, and `checkRevoked` (#141): one Auth lookup per call, so
+  // an account that is disabled, or whose tokens were revoked, is cut off at once rather than when its token expires (up
+  // to an hour). Any failure here, a lookup that could not be made included, is the one 401 (adminApi.ts).
+  verifyToken: async (token) => ({ uid: (await getAuth().verifyIdToken(token, true)).uid }),
   runIngest: (uid) => triggerIngest(db, config, loader, uid),
   retire: (id, uid, reason) => retireIncident(db, config, id, uid, reason, new Date()),
   allowedOrigins: config.adminApiOrigins,

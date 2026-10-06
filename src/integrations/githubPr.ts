@@ -168,10 +168,43 @@ export function gitBaseEnv(basics: { PATH?: string; HOME?: string }): NodeJS.Pro
   };
 }
 
-/** The environment that gives git its credential: an extra header for an https remote, nothing for any other. */
-export function gitAuthEnv(remoteUrl: string, token: string, basics: { PATH?: string; HOME?: string }): NodeJS.ProcessEnv {
+/**
+ * The hosts the token may be sent to over git: github.com, and the host of the configured API (with its `api.` prefix
+ * dropped, so `api.<x>.ghe.com` also allows `<x>.ghe.com`; a GitHub Enterprise Server serves both from one host).
+ */
+function gitHostsFor(apiUrl: string): Set<string> {
+  const hosts = new Set(["github.com"]);
+  try {
+    const host = new URL(apiUrl).hostname.toLowerCase();
+    hosts.add(host);
+    if (host.startsWith("api.")) hosts.add(host.slice("api.".length));
+  } catch {
+    // An unparseable API URL adds nothing: github.com only.
+  }
+  return hosts;
+}
+
+/**
+ * The environment that gives git its credential: an extra header for an https remote on GitHub (github.com, or the
+ * configured API's host), nothing for any other. A remote elsewhere is a misconfiguration, and the token must not go
+ * to it (#141). `apiUrl` defaults to github.com's API.
+ */
+export function gitAuthEnv(
+  remoteUrl: string,
+  token: string,
+  basics: { PATH?: string; HOME?: string },
+  apiUrl = "https://api.github.com"
+): NodeJS.ProcessEnv {
   const base = gitBaseEnv(basics);
-  if (!remoteUrl.startsWith("https://")) return base;
+  let host: string;
+  try {
+    const u = new URL(remoteUrl);
+    if (u.protocol !== "https:") return base;
+    host = u.hostname.toLowerCase();
+  } catch {
+    return base;
+  }
+  if (!gitHostsFor(apiUrl).has(host)) return base;
   const basic = Buffer.from(`x-access-token:${token}`).toString("base64");
   return { ...base, GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "http.extraheader", GIT_CONFIG_VALUE_0: `Authorization: Basic ${basic}` };
 }
@@ -195,23 +228,68 @@ export function pushRefspec(branch: string): string {
 const fence = (text: string) => text.replace(/`{3,}/g, "``");
 const clip = (text: string, max: number) => redactPii(String(text ?? "")).slice(0, max);
 const oneLine = (text: string, max: number) => clip(text, max).replace(/\s+/g, " ").trim();
+/**
+ * Break every issue reference GitHub would act on (#140): `#123`, `owner/repo#123` and `GH-123` each get a zero-width
+ * space, so model text saying "fixes #1" can neither close issue 1 when the pull request (or its squashed commit)
+ * lands, nor cross-reference it. A full issue URL is broken by `inert`'s `:` + zero-width space + `//`, and by `noUrl`
+ * in plain text. Applied to model and incident text only: the `Closes #N` Starfish writes itself is left whole.
+ */
+const noRefs = (text: string) =>
+  text
+    .replace(/#(?=\d)/g, "#\u200b")
+    .replace(/\b(GH)-(?=\d)/gi, "$1\u200b-");
+const noUrl = (text: string) => text.replace(/:\/\//g, ":\u200b//");
+/** One line of free text for a title or a commit message: plain text, so no markdown escaping, but no references. */
+const plainLine = (text: string, max: number) => noUrl(noRefs(oneLine(text, max)));
 const code = (text: string, max: number) => oneLine(text, max).replace(/`/g, "");
 /**
  * Free text from an incident or the model, made inert in markdown: GitHub would otherwise notify whoever an `@name` or
  * `@org/team` names, render `[text](url)` as a link, autolink a bare URL and pass HTML through. The characters stay readable;
- * a zero-width space or a backslash is all that changes. Used on every free-text line that is not inside a code span or fence.
+ * a zero-width space or a backslash is all that changes. An issue reference (`#1`, `o/r#1`, `GH-1`) is broken too, so it
+ * cannot close or cross-reference an issue (#140). Used on every free-text line that is not inside a code span or fence.
  */
 export const inert = (text: string, max: number): string =>
-  clip(text, max)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/[[\]]/g, "\\$&")
-    .replace(/@(?=[A-Za-z0-9_-])/g, "@\u200b")
-    .replace(/:\/\//g, ":\u200b//");
+  noUrl(
+    noRefs(
+      clip(text, max)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/[[\]]/g, "\\$&")
+        .replace(/@(?=[A-Za-z0-9_-])/g, "@\u200b")
+    )
+  );
+/** `inert`, on one line. */
+const inertLine = (text: string, max: number): string => inert(text, max).replace(/\s+/g, " ").trim();
+
+const CUT_NOTE = "_\u2026 cut to fit; the full record is in Starfish._";
+
+/**
+ * `head` then `footer`, at most MAX_BODY characters, cutting only the head (#141): the footer carries what must never be
+ * lost (the evidence, the "does not merge" line, `Closes #N`, the cycle marker). The head is cut at a line, and a code
+ * fence it leaves open is closed, so the footer is never swallowed into a code block.
+ */
+function fitBody(head: string[], footer: string[]): string {
+  const tail = footer.join("\n");
+  const whole = [...head, ...footer].join("\n");
+  if (whole.length <= MAX_BODY) return whole;
+  // Room for the head, the closing fence, the note and their newlines.
+  const budget = MAX_BODY - tail.length - CUT_NOTE.length - "\n```\n\n\n".length;
+  const kept: string[] = [];
+  let used = 0;
+  let inFence = false;
+  for (const line of head) {
+    if (used + line.length + 1 > budget) break;
+    kept.push(line);
+    used += line.length + 1;
+    if (line === "```") inFence = !inFence;
+  }
+  if (inFence) kept.push("```");
+  return [...kept, "", CUT_NOTE, ...footer].join("\n").slice(0, MAX_BODY);
+}
 
 /** The pull request's title and body. Redacted and bounded; fenced text cannot close its own fence. */
 export function pullRequestText(req: PullRequestRequest): { title: string; body: string } {
-  const title = `Starfish: ${oneLine(req.rootCause, 70) || "proposed fix"}`;
+  const title = `Starfish: ${plainLine(req.rootCause, 70) || "proposed fix"}`;
   const lines: string[] = [
     "## What",
     "",
@@ -223,7 +301,7 @@ export function pullRequestText(req: PullRequestRequest): { title: string; body:
     "",
     "## Verify gate",
     "",
-    `Result: **${oneLine(req.verify.status, 40)}** (${oneLine(req.verify.rule, 80)}).`,
+    `Result: **${inertLine(req.verify.status, 40)}** (${inertLine(req.verify.rule, 80)}).`,
   ];
   if (req.verify.changedFiles.length > 0) {
     lines.push("", "Files changed:", "");
@@ -235,15 +313,15 @@ export function pullRequestText(req: PullRequestRequest): { title: string; body:
   }
   lines.push("", "## Adversarial review", "");
   if (req.review) {
-    lines.push(`Verdict: **${oneLine(req.review.verdict, 40)}**.`, "");
+    lines.push(`Verdict: **${inertLine(req.review.verdict, 40)}**.`, "");
     for (const a of req.review.attacks.slice(0, MAX_ATTACKS_IN_BODY)) {
-      lines.push(`- **${oneLine(a.outcome, 20)}**: ${inert(a.attack, 200).replace(/\s+/g, " ").trim()}: ${inert(a.detail, 300).replace(/\s+/g, " ").trim()}`);
+      lines.push(`- **${inertLine(a.outcome, 20)}**: ${inertLine(a.attack, 200)}: ${inertLine(a.detail, 300)}`);
     }
     if (req.review.attacks.length > MAX_ATTACKS_IN_BODY) lines.push(`- … and ${req.review.attacks.length - MAX_ATTACKS_IN_BODY} more`);
   } else {
     lines.push("No review was required for this change.");
   }
-  lines.push(
+  const footer = [
     "",
     "## Evidence",
     "",
@@ -255,9 +333,9 @@ export function pullRequestText(req: PullRequestRequest): { title: string; body:
     "",
     "Opened by Starfish. It does not merge or deploy: a person decides.",
     ...(req.issueNumber !== undefined && Number.isInteger(req.issueNumber) && req.issueNumber > 0 ? ["", `Closes #${req.issueNumber}`] : []),
-    ""
-  );
-  return { title, body: lines.join("\n").slice(0, MAX_BODY) };
+    "",
+  ];
+  return { title, body: fitBody(lines, footer) };
 }
 
 /** The marker that finds an issue again by cycle. HTML comment: invisible on GitHub, not part of any text we redact. */
@@ -265,7 +343,7 @@ const issueMarker = (cycleId: string) => `<!-- ${ISSUE_MARKER_PREFIX}${cycleId} 
 
 /** The issue's title and body. Redacted and bounded; incident text cannot close a fence or add a link. */
 export function issueText(req: IssueRequest): { title: string; body: string } {
-  const title = `[Starfish] ${oneLine(req.functionName, 60) || "unknown function"}: ${oneLine(req.errorType, 40) || "error"}`;
+  const title = `[Starfish] ${plainLine(req.functionName, 60) || "unknown function"}: ${plainLine(req.errorType, 40) || "error"}`;
   const lines: string[] = [
     "## What is failing",
     "",
@@ -279,9 +357,9 @@ export function issueText(req: IssueRequest): { title: string; body: string } {
     "",
     ...(req.fingerprint ? [`- Fingerprint: \`${code(req.fingerprint, 64)}\``] : []),
     req.counterCheck
-      ? `- Independent log counter-check: ${req.counterCheck.capped ? "at least " : ""}${req.counterCheck.count} error entries for this function over ${oneLine(req.counterCheck.window, 20)}.`
+      ? `- Independent log counter-check: ${req.counterCheck.capped ? "at least " : ""}${req.counterCheck.count} error entries for this function over ${inertLine(req.counterCheck.window, 20)}.`
       : "- Independent log counter-check: not available.",
-    ...(req.suspectedCause ? [`- Suspected cause: ${inert(req.suspectedCause, 400).replace(/\s+/g, " ").trim()}`] : []),
+    ...(req.suspectedCause ? [`- Suspected cause: ${inertLine(req.suspectedCause, 400)}`] : []),
     "",
     "## What Starfish will do",
     "",
@@ -296,8 +374,7 @@ export function issueText(req: IssueRequest): { title: string; body: string } {
     if (incident) lines.push(`- [The incident in Starfish](${incident})`);
     if (run) lines.push(`- [The run](${run})`);
   }
-  lines.push("", `Run: \`${code(req.cycleId, 128)}\``, "", issueMarker(req.cycleId), "");
-  return { title, body: lines.join("\n").slice(0, MAX_BODY) };
+  return { title, body: fitBody(lines, ["", `Run: \`${code(req.cycleId, 128)}\``, "", issueMarker(req.cycleId), ""]) };
 }
 
 /** Build the opener the agent loop is given. Throws at once for a configuration that could act on the wrong target. */
@@ -437,7 +514,7 @@ export function createGithubClient(cfg: GithubPrConfig, deps: GithubPrDeps): Git
   async function buildAndPush(req: PatchBranchRequest, branch: string, replace = false): Promise<string> {
     const dir = await mkdtemp(join(deps.tmpDir ?? tmpdir(), "starfish-pr-"));
     const env = {
-      ...gitAuthEnv(remote, deps.token, deps.env),
+      ...gitAuthEnv(remote, deps.token, deps.env, cfg.githubApiUrl),
       GIT_AUTHOR_NAME: cfg.githubCommitName,
       GIT_AUTHOR_EMAIL: cfg.githubCommitEmail,
       GIT_COMMITTER_NAME: cfg.githubCommitName,
@@ -493,7 +570,7 @@ export function createGithubClient(cfg: GithubPrConfig, deps: GithubPrDeps): Git
         await removeBranch(branch);
       }
 
-      await git(["commit", "--quiet", "--no-gpg-sign", "-m", `Starfish: ${oneLine(req.rootCause, 70) || "proposed fix"}\n\nRun: ${code(req.cycleId, 128)}\nPatch SHA-256: ${req.patchSha256}`]);
+      await git(["commit", "--quiet", "--no-gpg-sign", "-m", `Starfish: ${plainLine(req.rootCause, 70) || "proposed fix"}\n\nRun: ${code(req.cycleId, 128)}\nPatch SHA-256: ${req.patchSha256}`]);
       await git(["push", "--quiet", "origin", pushRefspec(branch)]);
       return (await git(["rev-parse", "HEAD"])).trim();
     } finally {
