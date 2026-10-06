@@ -16,9 +16,10 @@
  * user, with its network and filesystem. Run it where nothing worth stealing is held.
  */
 import { createHash } from "node:crypto";
-import { cp, lstat, mkdtemp, readdir, readFile, rm } from "node:fs/promises";
+import { constants } from "node:fs";
+import { copyFile, cp, lstat, mkdir, mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { runUnpatched, verifyPatch, type VerifyConfig, type VerifyResult } from "../agent/verifyGate.js";
 
 /** A case's private ground truth: files laid over the snapshot, and the command that judges the result. */
@@ -70,8 +71,12 @@ async function withEvaluationTree<T>(c: CheckoutUnderTest, fn: (tree: string) =>
   try {
     const tree = join(scratch, "tree");
     await cp(c.repoDir, tree, { recursive: true, verbatimSymlinks: true, filter: (src) => !SKIP.has(src.split("/").pop() ?? "") });
-    // errorOnExist + force:false: an evaluator file that shadows a snapshot file is a corpus mistake, not something to overwrite.
-    await cp(c.evaluator.dir, tree, { recursive: true, force: false, errorOnExist: true });
+    // File by file, each copy exclusive: an evaluator file that shadows a snapshot file is a corpus mistake, not something
+    // to overwrite. (`cp` with errorOnExist also refuses the existing tree directory itself on newer Node versions.)
+    for (const rel of await listFiles(c.evaluator.dir)) {
+      await mkdir(dirname(join(tree, rel)), { recursive: true });
+      await copyFile(join(c.evaluator.dir, rel), join(tree, rel), constants.COPYFILE_EXCL);
+    }
     return await fn(tree);
   } finally {
     await rm(scratch, { recursive: true, force: true });
