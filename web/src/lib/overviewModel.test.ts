@@ -1,5 +1,17 @@
 import { describe, expect, it } from "vitest";
-import { countCycles, countIncidents, countUntriaged, errorRate, headline, hourlySeries, runKpis } from "./overviewModel";
+import {
+  countCycles,
+  countIncidents,
+  countUntriaged,
+  errorRate,
+  headline,
+  hourlySeries,
+  latestActivity,
+  parseActivity,
+  runKpis,
+  stageTitle,
+  type ActivityRow,
+} from "./overviewModel";
 import type { IncidentRow } from "./incidents";
 import { parseCycle, type CycleRow } from "./runsModel";
 
@@ -153,5 +165,50 @@ describe("errorRate", () => {
 
   it("is null when there is no earlier hour to compare with", () => {
     expect(errorRate(hourlySeries([], NOW, 1))).toBeNull();
+  });
+});
+
+describe("latest activity", () => {
+  const event = (over: Record<string, unknown> = {}) => ({ seq: 1, environment: "demo", stage: "triage", type: "decision", summary: "act", at: ts(NOW), ...over });
+
+  it("takes the cycle id from a cycle's events path", () => {
+    expect(parseActivity("starfish_cycles", "demo", "starfish_cycles/inc1_r0/events/000001", event())).toMatchObject({
+      cycleId: "inc1_r0",
+      id: "000001",
+      seq: 1,
+      stage: "triage",
+      type: "decision",
+      summary: "act",
+      at: new Date(NOW),
+    });
+  });
+
+  it("drops an events document that is not a cycle's: the collection-group query matches any `events`", () => {
+    expect(parseActivity("starfish_cycles", "demo", "incidents/i1/events/e1", event())).toBeNull();
+    expect(parseActivity("my_cycles", "demo", "starfish_cycles/c/events/000001", event())).toBeNull();
+    expect(parseActivity("starfish_cycles", "demo", "a/b/starfish_cycles/c/events/000001", event())).toBeNull();
+    expect(parseActivity("starfish_cycles", "demo", "starfish_cycles/c/notes/000001", event())).toBeNull();
+  });
+
+  it("drops an event of another environment, or one missing what the feed needs", () => {
+    const path = "starfish_cycles/c/events/000001";
+    expect(parseActivity("starfish_cycles", "demo", path, event({ environment: "prod" }))).toBeNull();
+    expect(parseActivity("starfish_cycles", "demo", path, event({ environment: undefined }))).toBeNull();
+    expect(parseActivity("starfish_cycles", "demo", path, event({ at: "yesterday" }))).toBeNull();
+    expect(parseActivity("starfish_cycles", "demo", path, event({ stage: "" }))).toBeNull();
+    expect(parseActivity("starfish_cycles", "demo", path, event({ seq: "1" }))).toBeNull();
+  });
+
+  it("orders newest first, the later event first on a tie, and keeps at most the limit", () => {
+    const row = (cycleId: string, seq: number, atMs: number): ActivityRow =>
+      parseActivity("starfish_cycles", "demo", `starfish_cycles/${cycleId}/events/${seq}`, event({ seq, at: ts(atMs) }))!;
+    const rows = [row("a", 1, NOW - 2000), row("b", 1, NOW), row("a", 2, NOW), row("c", 1, NOW - 5000)];
+    expect(latestActivity(rows, 3).map((r) => `${r.cycleId}:${r.seq}`)).toEqual(["a:2", "b:1", "a:1"]);
+  });
+
+  it("names a stage the way the Runs page does, and shows an unknown one as stored", () => {
+    expect(stageTitle("fix")).toBe("Draft a fix");
+    expect(stageTitle("cycle")).toBe("Run");
+    expect(stageTitle("notify")).toBe("notify");
   });
 });

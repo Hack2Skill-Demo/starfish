@@ -4,7 +4,7 @@
  * and what the engine does not record (a run "healed on its own", the next scheduled run) has no field.
  */
 import type { IncidentRow } from "./incidents";
-import { runStatus, type CyclePath, type CycleRow } from "./runsModel";
+import { KNOWN_STAGES, parseEvent, runStatus, type CyclePath, type CycleRow, type EventRow } from "./runsModel";
 
 export interface CycleCounts {
   /** Cycles waiting for a person: a pull request, a notification, a stuck verify... */
@@ -147,4 +147,41 @@ export function errorRate(series: readonly HourBucket[]): ErrorRate | null {
   const current = series[series.length - 1]!;
   const before = series.slice(0, -1);
   return { thisHour: current.count, baseline: before.reduce((sum, b) => sum + b.count, 0) / before.length };
+}
+
+// ---- Latest activity -----------------------------------------------------------------------------
+
+/** One run event in the Overview's feed, with the cycle it belongs to (from the document's path). */
+export interface ActivityRow extends EventRow {
+  cycleId: string;
+}
+
+/**
+ * A feed entry from an event document found by the collection-group query, or null (never throws). A
+ * collection-group query matches every collection named `events`, so only a document at
+ * `{cycleCollection}/{cycleId}/events/{seq}` counts, and only one of the environment the page shows: the
+ * query already filters on it, and a row from anywhere else would be shown under the wrong run.
+ */
+export function parseActivity(
+  cycleCollection: string,
+  environment: string,
+  path: string,
+  d: Record<string, unknown>
+): ActivityRow | null {
+  const parts = path.split("/");
+  if (parts.length !== 4 || parts[0] !== cycleCollection || parts[2] !== "events" || !parts[1] || !parts[3]) return null;
+  if (d.environment !== environment) return null;
+  const event = parseEvent(parts[3], d);
+  return event && { ...event, cycleId: parts[1] };
+}
+
+/** Newest first, ties broken by the later sequence number; at most `max` rows. */
+export function latestActivity(rows: readonly ActivityRow[], max: number): ActivityRow[] {
+  return [...rows].sort((a, b) => b.at.getTime() - a.at.getTime() || b.seq - a.seq).slice(0, max);
+}
+
+/** The words the Runs page uses for a stage; `cycle` is the loop's own bookkeeping; anything else as stored. */
+export function stageTitle(stage: string): string {
+  if (stage === "cycle") return "Run";
+  return KNOWN_STAGES.find((s) => s.stage === stage)?.title ?? stage;
 }

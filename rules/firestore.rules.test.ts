@@ -13,6 +13,7 @@ import {
 } from "@firebase/rules-unit-testing";
 import {
   collection,
+  collectionGroup,
   deleteDoc,
   deleteField,
   doc,
@@ -758,6 +759,48 @@ describe("agent cycles and their run events", () => {
       await assertFails(getDoc(doc(db, CYCLE)));
       await assertFails(getDoc(doc(db, EVENT)));
     }
+  });
+
+  // The Overview's activity feed (subscribeLatestEvents in web/src/lib/runs.ts): one collection-group query.
+  const feed = (db: ReturnType<typeof guest>, environment?: string) =>
+    getDocs(
+      environment === undefined
+        ? query(collectionGroup(db, "events"), orderBy("at", "desc"), limit(10))
+        : query(collectionGroup(db, "events"), where("environment", "==", environment), orderBy("at", "desc"), limit(10))
+    );
+
+  it("an operator lists the newest events across cycles", async () => {
+    await env.withSecurityRulesDisabled(async (ctx) => {
+      const db = ctx.firestore();
+      await setDoc(doc(db, EVENT), { seq: 1, environment: "demo", stage: "triage", type: "decision", summary: "declined", at: Timestamp.fromMillis(1000) });
+      await setDoc(doc(db, "starfish_cycles/inc3_r0"), { incidentId: "inc3", environment: "demo", state: "done", updatedAt: Timestamp.now() });
+      await setDoc(doc(db, "starfish_cycles/inc3_r0/events/000001"), { seq: 1, environment: "demo", stage: "fix", summary: "y", at: Timestamp.fromMillis(2000) });
+    });
+    for (const uid of ["op1", "admin1"]) {
+      const listed = await assertSucceeds(feed(as(uid), "demo"));
+      expect(listed.docs.map((d) => d.ref.path)).toEqual(["starfish_cycles/inc3_r0/events/000001", EVENT]);
+      await assertSucceeds(feed(as(uid), "prod"));
+    }
+  });
+
+  it("a guest lists the feed only filtered to the demo environment", async () => {
+    await assertSucceeds(feed(guest(), "demo"));
+    await assertFails(feed(guest()));
+    await assertFails(feed(guest(), "prod"));
+  });
+
+  it("nobody else lists the feed: not an unauthenticated visitor, not an account with no role", async () => {
+    for (const db of [anon(), as("nobody")]) {
+      await assertFails(feed(db, "demo"));
+      await assertFails(feed(db));
+    }
+  });
+
+  it("the feed's rule grants a list, never a single read of an events document outside a cycle", async () => {
+    await env.withSecurityRulesDisabled((ctx) =>
+      setDoc(doc(ctx.firestore(), "incidents/i1/events/e1"), { environment: "demo", at: Timestamp.now() })
+    );
+    for (const db of [as("op1"), guest()]) await assertFails(getDoc(doc(db, "incidents/i1/events/e1")));
   });
 
   it("no client writes a cycle, its lease or its events, an admin included", async () => {

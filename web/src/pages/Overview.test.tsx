@@ -4,11 +4,14 @@ import { MemoryRouter } from "react-router";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { IncidentRow } from "../lib/incidents";
 import { parseCycle, type CycleRow } from "../lib/runsModel";
+import { parseActivity, type ActivityRow } from "../lib/overviewModel";
 
 const mocks = vi.hoisted(() => ({
   env: { environment: "demo", ready: true, settingsUnavailable: false },
   cyclesCb: undefined as undefined | ((rows: unknown[], capped: boolean) => void),
   cyclesErr: undefined as undefined | ((e: Error) => void),
+  eventsCb: undefined as undefined | ((rows: unknown[]) => void),
+  eventsErr: undefined as undefined | ((e: Error) => void),
   unsub: vi.fn(),
   listIncidents: vi.fn(),
 }));
@@ -20,6 +23,11 @@ vi.mock("../lib/runs", async (orig) => ({
   subscribeCycles: (_e: string, ok: (rows: CycleRow[], capped: boolean) => void, err: (e: Error) => void) => {
     mocks.cyclesCb = ok as never;
     mocks.cyclesErr = err;
+    return mocks.unsub;
+  },
+  subscribeLatestEvents: (_e: string, ok: (rows: ActivityRow[]) => void, err: (e: Error) => void) => {
+    mocks.eventsCb = ok as never;
+    mocks.eventsErr = err;
     return mocks.unsub;
   },
 }));
@@ -49,7 +57,7 @@ const tile = (label: string) => screen.getByTestId(`tile-${label}`);
 describe("Overview page", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mocks.cyclesCb = mocks.cyclesErr = undefined;
+    mocks.cyclesCb = mocks.cyclesErr = mocks.eventsCb = mocks.eventsErr = undefined;
     mocks.listIncidents.mockResolvedValue({ rows: [], capped: false });
     mocks.env = { environment: "demo", ready: true, settingsUnavailable: false };
   });
@@ -125,7 +133,7 @@ describe("Overview page", () => {
   it("links the latest runs to their pages", () => {
     renderPage();
     act(() => mocks.cyclesCb!([cycle("inc-a_r0", { incidentId: "inc-a" })], false));
-    const latest = screen.getByRole("region", { name: "Latest activity" });
+    const latest = screen.getByRole("region", { name: "Latest runs" });
     expect(within(latest).getByRole("link", { name: "inc-a" })).toHaveAttribute("href", "/runs?run=inc-a_r0");
   });
 
@@ -141,5 +149,53 @@ describe("Overview page", () => {
     renderPage();
     act(() => mocks.cyclesCb!([cycle("a")], true));
     expect(screen.getByText(/most recently updated runs only/)).toBeInTheDocument();
+  });
+});
+
+describe("Overview latest activity", () => {
+  const activity = (cycleId: string, seq: number, over: Record<string, unknown> = {}): ActivityRow =>
+    parseActivity("starfish_cycles", "demo", `starfish_cycles/${cycleId}/events/${String(seq).padStart(6, "0")}`, {
+      seq,
+      environment: "demo",
+      stage: "triage",
+      type: "decision",
+      summary: "act: the error is new and recurring",
+      at: ts(now - 120_000),
+      ...over,
+    })!;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.cyclesCb = mocks.cyclesErr = mocks.eventsCb = mocks.eventsErr = undefined;
+    mocks.listIncidents.mockResolvedValue({ rows: [], capped: false });
+  });
+
+  it("lists the newest run events with their stage, type, summary and time, each linking to its run", () => {
+    renderPage();
+    act(() => mocks.eventsCb!([activity("inc-b_r1", 3, { stage: "verify", type: "passed", summary: "pnpm test passed" }), activity("inc-a_r0", 1)]));
+    const feed = screen.getByRole("region", { name: "Latest activity" });
+    const links = within(feed).getAllByRole("link");
+    expect(links).toHaveLength(2);
+    expect(links[0]).toHaveAttribute("href", "/runs?run=inc-b_r1");
+    expect(links[0]).toHaveTextContent("Verify gate · passed");
+    expect(links[0]).toHaveTextContent("pnpm test passed");
+    expect(links[1]).toHaveAttribute("href", "/runs?run=inc-a_r0");
+    expect(links[1]).toHaveTextContent("Triage · decision");
+    expect(within(feed).getAllByText("2 minutes ago")).toHaveLength(2);
+  });
+
+  it("says no events are recorded rather than showing an empty list", () => {
+    renderPage();
+    expect(within(screen.getByRole("region", { name: "Latest activity" })).getByText("Loading…")).toBeInTheDocument();
+    act(() => mocks.eventsCb!([]));
+    expect(screen.getByText("No run events are recorded for this environment.")).toBeInTheDocument();
+  });
+
+  it("says the events couldn't be read, and not that there are none", () => {
+    renderPage();
+    act(() => mocks.eventsErr!(new Error("failed-precondition: needs an index")));
+    const feed = screen.getByRole("region", { name: "Latest activity" });
+    expect(within(feed).getByRole("alert")).toHaveTextContent("Couldn't read the run events.");
+    expect(within(feed).queryByText(/No run events/)).not.toBeInTheDocument();
   });
 });
