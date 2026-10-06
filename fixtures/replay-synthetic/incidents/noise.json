@@ -1,0 +1,10 @@
+{
+  "id": "synthetic-noise",
+  "environment": "synthetic",
+  "functionName": "health-probe",
+  "service": "platform",
+  "errorType": "UnknownError",
+  "occurrenceCount": 2,
+  "logCounterCheck": { "window": "24h", "count": 1 },
+  "message": "SYNTHETIC: a single probe timed out once during a deploy"
+}

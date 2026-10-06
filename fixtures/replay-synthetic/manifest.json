@@ -1,0 +1,49 @@
+{
+  "corpusVersion": "synthetic-test-corpus-1",
+  "appRevision": "synthetic",
+  "synthetic": true,
+  "note": "SYNTHETIC test corpus for src/scoreboard/replay.test.ts. Not real incidents; nothing measured over it is a result.",
+  "cases": [
+    {
+      "caseId": "order-total",
+      "split": "held-out",
+      "path": "code-fix",
+      "expectedTriage": "act",
+      "caseHash": "ad012c5597f9ed4fbd10490ec5f7178d7dececcafdf06bd7039214a45fcbc033",
+      "incident": "incidents/order-total.json",
+      "repo": "snapshots/shop",
+      "files": ["src/total.mjs"],
+      "verifyCommand": "node test/visible.mjs",
+      "evaluator": { "dir": "evaluators/order-total", "command": "node .evaluator/order-total.check.mjs" }
+    },
+    {
+      "caseId": "probe-noise",
+      "split": "tuning",
+      "path": "decline",
+      "expectedTriage": "decline",
+      "incident": "incidents/noise.json"
+    },
+    {
+      "caseId": "mail-quota",
+      "split": "tuning",
+      "path": "notify",
+      "expectedTriage": "notify",
+      "incident": "incidents/quota.json"
+    },
+    {
+      "caseId": "order-total-planted",
+      "split": "tuning",
+      "path": "bad-patch",
+      "incident": "incidents/order-total.json",
+      "repo": "snapshots/shop",
+      "files": ["src/total.mjs"],
+      "verifyCommand": "node test/visible.mjs",
+      "evaluator": { "dir": "evaluators/order-total", "command": "node .evaluator/order-total.check.mjs" },
+      "plantedPatch": "patches/bad-drops-qty.diff",
+      "claimed": {
+        "rootCause": "The loop skipped the first line item.",
+        "risk": "None: the loop now covers every item."
+      }
+    }
+  ]
+}

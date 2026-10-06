@@ -360,12 +360,14 @@ src/
   config.ts          every deployment-specific value lives here, and only here
   vertex.ts          Vertex AI client
   spike.ts           the fix-quality spike
-  scoreboard/        the results format and aggregation behind `pnpm scoreboard` (no run recorded yet: see scoreboard/FORMAT.md)
+  scoreboard/        the results format and aggregation behind `pnpm scoreboard`, and the replay harness behind `pnpm replay`
+                     (tested with a stub model only; no run recorded yet: see scoreboard/FORMAT.md)
   ingest/            logs -> classified, deduped incidents + counter-check
   agent/             triage, fixer, verify gate, reviewer, cycle state and the loop: run by the agent job (`pnpm agent`), deployable and never run
 web/                 operator UI: sign-in, incidents, settings
 firestore.rules      what the UI may read and change (tested on the emulator)
 fixtures/incidents/   spike fixtures (synthetic; see docs/spike.md)
+fixtures/replay-synthetic/  a SYNTHETIC replay corpus the harness's tests run over (not results)
 docs/
   design/            the auto-merge policy, UI mockups (mockups.md, screens/, html/), the demo app proposal
   research/          self-healing systems: the literature, and where Starfish sits
@@ -384,6 +386,7 @@ pnpm dev:emulated       # the UI against seeded local emulators, no GCP project 
 pnpm seed-demo          # dry run: the synthetic demo history it would write (--apply / --remove; demo environment only)
 pnpm spike              # fix-quality spike (needs Vertex AI access)
 pnpm scoreboard         # scoreboard/RESULTS.md from scoreboard/results/*.json; says so and writes nothing with no runs
+pnpm replay --check-corpus  # is the replay corpus fit to run (no model); `pnpm replay` scores one run (needs Vertex AI access)
 ```
 
 ### Synthetic demo history

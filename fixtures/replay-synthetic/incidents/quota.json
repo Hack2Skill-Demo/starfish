@@ -1,0 +1,11 @@
+{
+  "id": "synthetic-quota",
+  "environment": "synthetic",
+  "functionName": "mail-sendReceipt",
+  "service": "mail",
+  "errorType": "QuotaError",
+  "errorCode": "RESOURCE_EXHAUSTED",
+  "occurrenceCount": 120,
+  "logCounterCheck": { "window": "24h", "count": 120 },
+  "message": "SYNTHETIC: daily email quota exhausted"
+}

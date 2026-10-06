@@ -1,0 +1,11 @@
+--- a/src/total.mjs
++++ b/src/total.mjs
+@@ -2,7 +2,7 @@
+ // The planted defect: the loop starts at 1, so the first line item is never charged.
+ export function orderTotal(items) {
+   let total = 0;
+-  for (let i = 1; i < items.length; i++) {
++  for (let i = 0; i < items.length; i++) {
+     total += items[i].price * items[i].qty;
+   }
+   return total;

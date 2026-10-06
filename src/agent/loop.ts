@@ -138,10 +138,11 @@ export type LoopResult =
 /** Thrown inside the loop when a fenced write is refused; turned into `lease-lost` at the top. */
 class LeaseLost extends Error {}
 
-const MAX_REVISIONS = 1;
+/** How many revisions one cycle may make, shared between a failed verify and a blocking review. */
+export const MAX_REVISIONS = 1;
 
 /** Fixer errors that are the model's patch, not a failed call: retrying would most likely repeat them (#137). */
-const UNFIT_PATCH_RULES: ReadonlySet<FixRule> = new Set<FixRule>(["patch-malformed", "patch-too-large", "patch-contains-secret-shape"]);
+export const UNFIT_PATCH_RULES: ReadonlySet<FixRule> = new Set<FixRule>(["patch-malformed", "patch-too-large", "patch-contains-secret-shape"]);
 
 /** How many rejected alternatives and review attacks the run record keeps (each value is bounded by cycle.ts). */
 export const MAX_RECORDED_ALTERNATIVES = 5;

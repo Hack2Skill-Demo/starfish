@@ -420,6 +420,30 @@ export function loadVerifyCommandBasics(): { PATH?: string; LANG: string } {
   return { PATH: process.env.PATH, LANG: process.env.LANG ?? "C.UTF-8" };
 }
 
+/** Where the replay harness (`pnpm replay`, src/scoreboard/replay.ts, #10) reads its corpus and writes its results. */
+export interface ReplayConfig {
+  /** The corpus directory: a `manifest.json` and the files it names. */
+  corpusDir: string;
+  /** Where the results file is written: the directory `pnpm scoreboard` reads. */
+  resultsDir: string;
+  /** The longest one case may take before it is recorded as a timeout (a timeout counts against the agent). */
+  caseTimeoutSeconds: number;
+}
+
+/**
+ * The replay harness's own settings. Separate from `loadConfig()` because they are about the evaluation, not the
+ * deployment; the model, the verify timeout, the excluded paths and the budgets come from `loadConfig()` as for
+ * the agent, so a replay measures the configuration the agent would run with.
+ */
+export function loadReplayConfig(): ReplayConfig {
+  loadDotEnv();
+  return {
+    corpusDir: (process.env.STARFISH_REPLAY_CORPUS ?? "").trim() || "scoreboard/corpus",
+    resultsDir: (process.env.STARFISH_REPLAY_RESULTS_DIR ?? "").trim() || "scoreboard/results",
+    caseTimeoutSeconds: positiveNumber(process.env.STARFISH_REPLAY_CASE_TIMEOUT_SECONDS, 1800, "STARFISH_REPLAY_CASE_TIMEOUT_SECONDS"),
+  };
+}
+
 /** True when the Firestore Admin SDK is pointed at the emulator (FIRESTORE_EMULATOR_HOST), for CLIs that say so. */
 export function usingFirestoreEmulator(): boolean {
   return Boolean(process.env.FIRESTORE_EMULATOR_HOST);

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { loadChildProcessBasics, loadConfig, loadGithubToken, loadSlackOnCallWebhook, loadVerifyCommandBasics, loadVerifyRunnerRequest, usingFirestoreEmulator } from "./config.js";
+import { loadChildProcessBasics, loadConfig, loadGithubToken, loadReplayConfig, loadSlackOnCallWebhook, loadVerifyCommandBasics, loadVerifyRunnerRequest, usingFirestoreEmulator } from "./config.js";
 
 // Env vars that loadConfig reads; cleared first so the developer's own .env/shell can't leak in.
 const KEYS = [
@@ -338,6 +338,22 @@ describe("loadVerifyRunnerRequest", () => {
     expect(loadVerifyRunnerRequest()).toBeUndefined();
     vi.stubEnv("STARFISH_VERIFY_REQUEST", '{"v":1}');
     expect(loadVerifyRunnerRequest()).toBe('{"v":1}');
+  });
+});
+
+describe("loadReplayConfig", () => {
+  afterEach(() => vi.unstubAllEnvs());
+  it("defaults to the committed corpus and results directories, and refuses a timeout that is not above zero", () => {
+    vi.stubEnv("STARFISH_REPLAY_CORPUS", "");
+    vi.stubEnv("STARFISH_REPLAY_RESULTS_DIR", "");
+    vi.stubEnv("STARFISH_REPLAY_CASE_TIMEOUT_SECONDS", "");
+    expect(loadReplayConfig()).toEqual({ corpusDir: "scoreboard/corpus", resultsDir: "scoreboard/results", caseTimeoutSeconds: 1800 });
+    vi.stubEnv("STARFISH_REPLAY_CORPUS", "/c");
+    vi.stubEnv("STARFISH_REPLAY_RESULTS_DIR", "/r");
+    vi.stubEnv("STARFISH_REPLAY_CASE_TIMEOUT_SECONDS", "60");
+    expect(loadReplayConfig()).toEqual({ corpusDir: "/c", resultsDir: "/r", caseTimeoutSeconds: 60 });
+    vi.stubEnv("STARFISH_REPLAY_CASE_TIMEOUT_SECONDS", "0");
+    expect(() => loadReplayConfig()).toThrow(/STARFISH_REPLAY_CASE_TIMEOUT_SECONDS/);
   });
 });
 
