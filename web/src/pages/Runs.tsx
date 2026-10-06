@@ -21,6 +21,7 @@ import { useEnvironment } from "../lib/useSettings";
 import { CYCLE_LIMIT, subscribeCycles, subscribeEvents } from "../lib/runs";
 import {
   PATH_LABELS,
+  indexRuntimeView,
   buildWaterfall,
   formatDuration,
   prStateView,
@@ -204,6 +205,7 @@ function RunDetail({ cycle, environment, now }: { cycle: CycleRow; environment: 
   const rule = triageRule(cycle);
   const prUrl = safeUrl(cycle.summary.pr?.url);
   const prNow = prStateView(cycle, now);
+  const indexNow = indexRuntimeView(cycle);
   const water = useMemo(() => (events ? buildWaterfall(cycle, events, now) : null), [cycle, events, now]);
 
   return (
@@ -231,6 +233,15 @@ function RunDetail({ cycle, environment, now }: { cycle: CycleRow; environment: 
             <>
               <dt className="text-gray-600 dark:text-gray-400">Outcome</dt>
               <dd>{cycle.outcome}</dd>
+            </>
+          )}
+          {indexNow && (
+            <>
+              <dt className="text-gray-600 dark:text-gray-400">Index at runtime</dt>
+              <dd>
+                <Badge tone={indexNow.tone}>{indexNow.text}</Badge>
+                {indexNow.until && <span className="ml-2 text-xs text-gray-600 dark:text-gray-400">until {indexNow.until.toISOString()}</span>}
+              </dd>
             </>
           )}
           {prNow && (

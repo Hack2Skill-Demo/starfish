@@ -46,7 +46,7 @@ Where it currently holds, and where it doesn't:
 | Collection names in `firestore.rules` | ⚠️ hardcoded `incidents` / `starfish_users`; rules can't read config, so a renamed collection means editing the rules file |
 | Dry run, review required, model-call budget, automation kill switch | ⚠️ environment defaults (`STARFISH_DRY_RUN` on by default, `STARFISH_REVIEW_REQUIRED`, `STARFISH_MODEL_CALL_BUDGET`, `STARFISH_AUTOMATION_ENABLED` on by default) that an admin can override on the Settings page (first row); the loop reads them; the agent job that runs it is deployable (`DEPLOY_AGENT=1`) and has never run. The kill switch is read fresh before every stage (`src/agent/automationSwitch.ts`) and fails closed: if the settings cannot be resolved and nothing good is known, it reads as off |
 | GitHub target (repository, base branch, API and remote URL, commit identity) and token | ⚠️ environment only (`STARFISH_GITHUB_REPO` empty by default, so nothing can be opened; `STARFISH_GITHUB_BASE_BRANCH`, `_API_URL`, `_REMOTE_URL`, `_COMMIT_NAME`, `_COMMIT_EMAIL`); the token is read on its own from `STARFISH_GITHUB_TOKEN` and is not part of the config object. One repository per deployment |
-| Where a missing index may be created, and whether | ⚠️ environment only (`STARFISH_INDEX_ALLOWED_TARGETS`, empty by default: nothing allowed; `STARFISH_INDEX_AUTO_APPLY`, off by default; `STARFISH_INDEX_DAILY_CAP`, 3 per target per UTC day; a malformed value stops startup). The executor that would create one is written and tested against fakes, **called by nothing and never run** |
+| Where a missing index may be created, and whether | ⚠️ environment only (`STARFISH_INDEX_ALLOWED_TARGETS`, empty by default: nothing allowed and the index path not wired; `STARFISH_INDEX_AUTO_APPLY`, off by default; `STARFISH_INDEX_DAILY_CAP`, 3 per target per UTC day; `STARFISH_INDEX_PROBES`, the failing queries, empty by default so nothing can be created; `STARFISH_INDEX_FILE`, `STARFISH_INDEX_WAIT_MINUTES`, `STARFISH_INDEX_OBSERVE_MINUTES`; a malformed value stops startup). Run by `pnpm agent` when a target is allowed; tested against fakes and the emulator, **never run against Google** |
 | Verify isolation, cycles per agent pass | ⚠️ environment only (`STARFISH_VERIFY_ISOLATION`, default `none`: the agent will not start; `in-process` is not a sandbox; `github-actions` (the demo's choice) pushes the patch to a `starfish/<cycle>` branch and lets the target's own CI judge it, with `STARFISH_VERIFY_CHECKS` naming the checks; `cloud-run-job` runs the command in a separate job whose service account holds no roles, with `STARFISH_VERIFY_JOB`, `_BUCKET`, `_JOB_REGION` (both written, never run, #74); `STARFISH_MAX_CYCLES_PER_PASS`, default 3; `STARFISH_MAX_CYCLES_PER_DAY`, default 30 per UTC day; reconsidering a declined incident: `STARFISH_RECONSIDER_COOLDOWN_MINUTES` 30, `_MAX_PER_DAY` 3, `_BURST_OCCURRENCES` 20) |
 | Agent cycle collection, lease length, cycle deadline, attempts | ⚠️ environment only (`STARFISH_CYCLE_COLLECTION`, `STARFISH_LEASE_SECONDS`, `STARFISH_CYCLE_DEADLINE_MINUTES`, `STARFISH_MAX_CYCLE_ATTEMPTS`); the rules name `starfish_cycles` too |
 | Ingest lag, longest window, run-record collection | ⚠️ environment only (`STARFISH_INGEST_LAG_MINUTES`, `STARFISH_INGEST_MAX_WINDOW_HOURS`, `STARFISH_RUN_COLLECTION`); the rules name `starfish_runs` too |
@@ -140,7 +140,8 @@ demo runs.
   as in progress. **The agent job that would fill it is deployable (`DEPLOY_AGENT=1`) and has never run, so on a real
   deployment the page is empty** unless the synthetic demo history (`pnpm seed-demo`, badged "Synthetic") was written; it is exercised against the emulator with seeded data. The header shows the path, the
   triage rule, progress (steps recorded) and the engine's last run. The GitHub-issue and Slack steps appear when a run
-  recorded them. Not built: the index, deploy, phone and recovery steps (the
+  recorded them. A missing-index run shows its own steps (the index, then its evidence pull request) and where the
+  index stands at runtime (watching, healed, recurred). Not built: the deploy, phone and recovery steps (the
   loop has no code for them), and the four MVP cases observed end to end (#33 stays open).
 - **Incident evidence:** a first version is built: `/incidents/:id`, linked from the incidents table
   and from the Runs page, shows what was detected and, from the agent's run record, the triage,
@@ -347,25 +348,39 @@ a GitHub App's permission cannot be scoped to a branch prefix. **Slack (#17), bu
 `SequentialAgent`, the class #8 names, is deprecated in favour of `Workflow`, which is marked
 experimental, so wrapping the loop in ADK is a decision still open.
 
-**Missing-index heal (#11): the deterministic front end and an executor exist; nothing calls the executor and nothing has run.** `src/indexheal/createIndexUrl.ts`
+**Missing-index heal (#11): written end to end and tested against fakes and the emulator; it has never run against Google.** `src/indexheal/createIndexUrl.ts`
 finds the create-index URL in an error message, decodes it strictly into a spec (project, database,
 collection group, scope, plain ascending or descending fields; array, vector and anything unknown are
 refused and left to a person), checks the target against `STARFISH_INDEX_ALLOWED_TARGETS` (empty by
 default, so nothing is allowed; Starfish's own database is refused even if listed), and compares the spec
 with the repository's `firestore.indexes.json` (an unreadable file is "unknown", never "absent"). It is
 tested on URLs **built here from the documented `Index` message, not captured from a real error**, which is
-the first thing to check before wiring it to anything. **The executor** (`src/indexheal/heal.ts`, with the
+the first thing to check on the demo project. **The executor** (`src/indexheal/heal.ts`, with the
 Firestore Admin REST adapter in `src/indexheal/firestoreAdmin.ts`) runs the gates in order (parse, target guard,
-`indexAutoApply` on and `dryRun` off and the automation switch on, the live inventory, the daily cap, the switches
-again right before the one create), creates a single index, hands the operation's name to a callback before waiting,
-and waits a bounded time for it. An equal index that already exists or is still building is waited on, never created
-twice, which is also how a crash after a create is recovered; a dry run reads and reports and creates nothing. It
-never deploys a file and never deletes. It is tested against fakes only: **the REST calls have never been made
-against Google**, and the response shapes are from the documentation. Ingest does classify a missing index as its own class,
-`MissingIndexError` (a failed precondition whose text carries Google's create-index URL: the code and the URL, never the
-words alone), but **nothing calls the executor on that class, so no cycle reaches it. Not built:** the persistence of the operation,
-the per-target counter behind the daily cap, the replay of the failing query (the URL alone does not capture it),
-the observation window before "healed", and the evidence PR.
+`indexAutoApply` on and `dryRun` off and the automation switch on, the live inventory, an operation an earlier attempt
+recorded, the daily cap, the deterministic probe, the switches again right before the one create), creates a single
+index and waits a bounded time for it. An equal index that already exists or is still building is waited on, never
+created twice; a dry run reads the inventory, replays the query and creates nothing. It never deploys a file and never
+deletes. **The loop wires it in** (`src/agent/indexPath.ts`) only when `STARFISH_INDEX_ALLOWED_TARGETS` lists a target:
+a `MissingIndexError` incident (ingest's class for a failed precondition carrying Google's create-index URL) then skips
+triage and the model. The create attempt is recorded under the cycle's lease *before* the call (that record is what the
+per-target daily cap counts, so a crash after the create still counts), and the operation's name right after it; a
+resumed attempt polls that operation instead of creating again, and one that recorded an attempt but no usable
+operation creates nothing and goes to a person. **The failing query is configured, not guessed:** the URL does not
+carry the query, so an operator writes it down (`STARFISH_INDEX_PROBES`, empty by default, so nothing can be created),
+and `src/indexheal/probe.ts` replays it read-only with a limit of one: before the create it must fail with Google's
+error naming exactly this index, and after READY it must pass. Then the run record says `runtime: observing`, and the
+evidence pull request adds the same entry to the repository's index file (`STARFISH_INDEX_FILE`) through the same
+opener as a code fix: the diff is computed and self-checked in code (`src/indexheal/indexFilePatch.ts`; every existing
+entry kept) and the text is a fixed template, no model. Merging it is left to a person. After the pass, the job checks
+earlier heals (`src/indexheal/observe.ts`): **healed** only when no occurrence was recorded since READY through
+`STARFISH_INDEX_OBSERVE_MINUTES` (plus the ingest lag) and the query still passes at the end; otherwise recurred,
+query-failing or unverified. Starfish does not measure the traffic in that window (the replayed query stands in for
+it), and it never resolves the incident itself. Runs and the incident page show the index stage and its runtime state.
+Refusals, the daily cap, a failed build, a query still failing after READY, and an index file it cannot extend go to a
+person (Slack when configured). **Never run:** none of the Admin REST calls, the probe's Firestore query or a real
+create-index URL has met Google; the response shapes are from the documentation. Not built: a quota or index-limit
+check beyond the daily cap, and Gemini writing the PR's explanation (the template does).
 
 The pieces that act are written and tested, not run: assembling an incident's inputs (`src/agent/assemble.ts`), the
 incident's GitHub issue, and the isolated verify step (`github-actions` or `cloud-run-job`, above) have never run against

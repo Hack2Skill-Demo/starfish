@@ -48,6 +48,9 @@ export interface IndexAdmin {
 const ROOT = "https://firestore.googleapis.com/v1";
 const OPERATION_RE = /^projects\/[a-z][a-z0-9-]{4,28}[a-z0-9]\/databases\/(?:\(default\)|[a-z][a-z0-9-]{0,61}[a-z0-9])\/operations\/[A-Za-z0-9_=.-]+$/;
 
+/** Whether a value read back from a record is a Firestore Admin operation name (what `getOperation` accepts). */
+export const isOperationName = (v: unknown): v is string => typeof v === "string" && v.length <= 300 && OPERATION_RE.test(v);
+
 const parentOf = (s: Pick<IndexSpec, "project" | "database" | "collectionGroup">) =>
   `${ROOT}/projects/${encodeURIComponent(s.project)}/databases/${encodeURIComponent(s.database)}/collectionGroups/${encodeURIComponent(s.collectionGroup)}/indexes`;
 

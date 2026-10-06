@@ -11,7 +11,7 @@
  * Not stored, and said so on the page rather than faked: the patch text (only its SHA-256 is recorded).
  */
 import type { IncidentRow } from "./incidents";
-import { prStateView, safeUrl, type CycleRow } from "./runsModel";
+import { indexRuntimeView, isIndexCycle, prStateView, safeUrl, type CycleRow } from "./runsModel";
 
 export type EvidenceStatus = "recorded" | "not-reached" | "not-stored";
 
@@ -24,7 +24,7 @@ export interface EvidenceField {
 }
 
 export interface EvidenceStage {
-  id: "detected" | "counter-check" | "triage" | "fix" | "verify" | "review" | "pr";
+  id: "detected" | "counter-check" | "triage" | "fix" | "verify" | "review" | "pr" | "index";
   title: string;
   status: EvidenceStatus;
   /** What to say when there is nothing to show. */
@@ -130,22 +130,67 @@ export function buildEvidence(row: IncidentRow, cycle: CycleRow | null, nowMs = 
   };
 
   const prUrl = safeUrl(rec.pr?.url);
+  const detected: EvidenceStage = {
+    id: "detected",
+    title: "Detected",
+    status: "recorded",
+    fields: [
+      { label: "Function", value: row.functionName },
+      { label: "Service", value: row.service },
+      { label: "Environment", value: row.environment },
+      { label: "Error", value: row.errorType },
+      { label: "Occurrences", value: String(row.occurrenceCount) },
+      { label: "First seen", value: row.firstOccurredAt },
+      { label: "Last seen", value: row.lastOccurredAt },
+      ...(row.recurrenceCount > 0 ? [{ label: "Regressions", value: String(row.recurrenceCount) }] : []),
+    ].filter((f) => f.value !== ""),
+  };
+  const prStage = later(
+    "pr",
+    "Pull request",
+    [
+      ["opened", "Opened"],
+      ["reason", "Why not"],
+      ["number", "Number"],
+      ["patchSha256", "Patch SHA-256", true],
+    ],
+    [...(prUrl ? [{ label: "Link", value: prUrl, href: prUrl }] : []), ...prNowFields(cycle, nowMs)]
+  );
+
+  // The missing-index path (#11): no model, no draft, no verify gate or review; the index, then its evidence PR.
+  if (cycle && isIndexCycle(cycle)) {
+    const runtime = indexRuntimeView(cycle);
+    const index = later(
+      "index",
+      "Missing index",
+      [
+        ["state", "State"],
+        ["rule", "Rule", true],
+        ["reason", "Reason"],
+        ["project", "Project", true],
+        ["database", "Database", true],
+        ["collectionGroup", "Collection group", true],
+        ["queryScope", "Scope", true],
+        ["fields", "Fields", true],
+        ["created", "Created by this run"],
+        ["operation", "Create operation", true],
+        ["live", "Live inventory (dry run)"],
+        ["probe", "Configured query replayed"],
+        ["repoFile", "In the repository's index file"],
+        ["readyAt", "READY and the query passed at"],
+        ["observeUntil", "Watched until"],
+        ["runtimeCheckedAt", "Decided at"],
+        ["runtimeBasis", "Decided on"],
+      ],
+      runtime ? [{ label: "Runtime", value: runtime.text }] : []
+    );
+    index.note = "No model wrote this fix: the index is the one Google's error named. Healed is decided only after the quiet window.";
+    if (prStage.status === "recorded") prStage.note = "The pull request only records the index in the repository; the index already exists in production.";
+    return { stages: [detected, index, prStage], cycleId: cycle.id, samePatch: null };
+  }
+
   const stages: EvidenceStage[] = [
-    {
-      id: "detected",
-      title: "Detected",
-      status: "recorded",
-      fields: [
-        { label: "Function", value: row.functionName },
-        { label: "Service", value: row.service },
-        { label: "Environment", value: row.environment },
-        { label: "Error", value: row.errorType },
-        { label: "Occurrences", value: String(row.occurrenceCount) },
-        { label: "First seen", value: row.firstOccurredAt },
-        { label: "Last seen", value: row.lastOccurredAt },
-        ...(row.recurrenceCount > 0 ? [{ label: "Regressions", value: String(row.recurrenceCount) }] : []),
-      ].filter((f) => f.value !== ""),
-    },
+    detected,
     counterCheckStage(rec.triage, row.occurrenceCount, noRun),
     later("triage", "Triage", [
       ["decision", "Decision"],
@@ -190,17 +235,7 @@ export function buildEvidence(row: IncidentRow, cycle: CycleRow | null, nowMs = 
       ],
       numberedFields(rec.review, "attack", "Attack")
     ),
-    later(
-      "pr",
-      "Pull request",
-      [
-        ["opened", "Opened"],
-        ["reason", "Why not"],
-        ["number", "Number"],
-        ["patchSha256", "Patch SHA-256", true],
-      ],
-      [...(prUrl ? [{ label: "Link", value: prUrl, href: prUrl }] : []), ...prNowFields(cycle, nowMs)]
-    ),
+    prStage,
   ];
   // A merge is about the pull request, not the incident: say so wherever the PR's later state is shown.
   const pr = stages.find((s) => s.id === "pr")!;

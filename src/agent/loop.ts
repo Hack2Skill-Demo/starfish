@@ -61,6 +61,7 @@ import { reviewPatch, type Attack, type ReviewVerdict } from "./reviewer.js";
 import { triageIncident, type AskJson, type TriageSubject } from "./triage.js";
 import { verifyPatch, type VerifyConfig, type VerifyRequest, type VerifyResult } from "./verifyGate.js";
 import { causeClass, type ReconsiderPolicy } from "./reconsider.js";
+import { isIndexIncident, runIndexPath, type IndexHealWiring } from "./indexPath.js";
 
 /** Everything about the incident the stages need, assembled by the caller (it owns the repo checkout). */
 export interface LoopSubject {
@@ -81,10 +82,32 @@ export interface PullRequestRequest {
   patchSha256: string;
   rootCause: string;
   risk: string;
-  verify: Pick<VerifyResult, "status" | "rule" | "changedFiles" | "output">;
+  /** The verify gate's result for a code fix. Absent for the index path's evidence PR, which has `index` instead. */
+  verify?: Pick<VerifyResult, "status" | "rule" | "changedFiles" | "output">;
   /** The incident's GitHub issue, when one was filed (#17): the pull request then says it closes it. */
   issueNumber?: number;
   review?: { verdict: ReviewVerdict; attacks: Attack[] };
+  /**
+   * Set for the missing-index heal's evidence pull request (#11): the index that already exists in production and the
+   * entry the patch adds to the repository's index file. The body is then a fixed template (no model text).
+   */
+  index?: IndexEvidence;
+}
+
+export interface IndexEvidence {
+  project: string;
+  database: string;
+  collectionGroup: string;
+  queryScope: string;
+  fields: { fieldPath: string; order: string }[];
+  /** True when this cycle created the index; false when it was found already there (and is only recorded). */
+  created: boolean;
+  operation?: string;
+  /** The repository's index file, and whether the patch creates it. */
+  indexFile: string;
+  fileCreated: boolean;
+  /** When the index was READY and the configured query passed again (ISO). */
+  readyAt: string;
 }
 
 export interface LoopDeps {
@@ -140,6 +163,11 @@ export interface LoopDeps {
    * reopens it in its own transaction. Absent: a declined cycle stays closed.
    */
   reconsider?: ReconsiderPolicy;
+  /**
+   * The missing-index heal (#11, indexPath.ts). Present: a `MissingIndexError` incident skips triage and the model and
+   * takes the index path. Absent (the default, and whenever no index target is allowed): it is triaged like any other.
+   */
+  indexHeal?: IndexHealWiring;
 }
 
 export type LoopResult =
@@ -283,7 +311,7 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
         data: { number: priorPr.number },
         record: { opened: true, number: priorPr.number, url: priorPr.url, ...(priorPr.patchSha256 !== undefined && { patchSha256: priorPr.patchSha256 }) },
       });
-      return await finish("done", "pr-opened", "pr");
+      return priorPr.index ? await finish("done", "index-pr-opened", "index") : await finish("done", "pr-opened", "pr");
     }
 
     // Asked before every stage and before anything is opened: a cycle stops at the next step after an
@@ -433,6 +461,29 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
     if (!loaded) {
       await note({ stage: "cycle", type: "stopped", summary: "The incident could not be loaded", data: { rule: "incident-gone" } });
       return await finish("failed", "incident-gone", "failed");
+    }
+
+    // ---- the index path (#11): Google's own error names the fix, so no model is asked anything ----------------
+    if (deps.indexHeal && isIndexIncident(loaded.subject.incident)) {
+      return await runIndexPath({
+        db,
+        cycleCollection: cfg.cycleCollection,
+        dryRun: cfg.dryRun,
+        cycleId: id,
+        incidentId: key.incidentId,
+        loaded,
+        now: deps.now,
+        wiring: deps.indexHeal,
+        note,
+        finish: (state, outcome, path) => finish(state, outcome, path),
+        release: (reason) => release(reason),
+        renew,
+        halted,
+        stopReason,
+        announce: (rule, reason) => announce(loaded, "human", rule, reason),
+        beat: keeper.beat,
+        ...(!cfg.dryRun && deps.openPullRequest && { openPullRequest: deps.openPullRequest }),
+      });
     }
 
     // ---- triage ---------------------------------------------------------------------------------
@@ -646,14 +697,18 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
 }
 
 /** The pull request this cycle already opened: recorded on the cycle, or found by the opener's own lookup. */
-async function openedPullRequest(deps: LoopDeps, id: string): Promise<{ number: number; url: string; patchSha256?: string } | null> {
+async function openedPullRequest(deps: LoopDeps, id: string): Promise<{ number: number; url: string; patchSha256?: string; index: boolean } | null> {
   const snap = await deps.db.collection(deps.config.cycleCollection).doc(id).get();
-  const pr = (snap.data()?.summary as { pr?: { opened?: unknown; number?: unknown; url?: unknown; patchSha256?: unknown } } | undefined)?.pr;
+  const summary = snap.data()?.summary as { pr?: { opened?: unknown; number?: unknown; url?: unknown; patchSha256?: unknown }; index?: unknown } | undefined;
+  // An index cycle's PR is its evidence PR: the cycle keeps the index path (and its runtime record) when it is resumed.
+  const index = summary?.index !== undefined;
+  const pr = summary?.pr;
   if (pr?.opened === true && typeof pr.number === "number" && typeof pr.url === "string") {
-    return { number: pr.number, url: pr.url, ...(typeof pr.patchSha256 === "string" && { patchSha256: pr.patchSha256 }) };
+    return { number: pr.number, url: pr.url, ...(typeof pr.patchSha256 === "string" && { patchSha256: pr.patchSha256 }), index };
   }
   if (deps.config.dryRun || !deps.openPullRequest || !deps.findPullRequest) return null;
-  return deps.findPullRequest(id);
+  const found = await deps.findPullRequest(id);
+  return found && { ...found, index };
 }
 
 /**

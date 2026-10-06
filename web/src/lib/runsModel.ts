@@ -14,8 +14,8 @@ export type CycleState = "running" | "waiting-human" | "done" | "declined" | "fa
 const CYCLE_STATES: readonly string[] = ["running", "waiting-human", "done", "declined", "failed"];
 
 /** Mirrors CyclePath in src/agent/cycle.ts. */
-export type CyclePath = "decline" | "notify" | "draft" | "pr" | "human" | "failed";
-const CYCLE_PATHS: readonly string[] = ["decline", "notify", "draft", "pr", "human", "failed"];
+export type CyclePath = "decline" | "notify" | "draft" | "pr" | "human" | "failed" | "index";
+const CYCLE_PATHS: readonly string[] = ["decline", "notify", "draft", "pr", "human", "failed", "index"];
 
 type Flat = Record<string, string | number | boolean | null>;
 
@@ -150,6 +150,7 @@ export const PATH_LABELS: Record<CyclePath, string> = {
   pr: "Pull request opened",
   human: "Handed to a person",
   failed: "Failed",
+  index: "Missing index: READY, evidence recorded",
 };
 
 /** The rule that chose the path, as triage recorded it, when it did. */
@@ -232,6 +233,38 @@ export const KNOWN_STAGES = [
   { stage: "pr", title: "Pull request" },
 ] as const;
 
+/**
+ * The stages of the missing-index path (#11, src/agent/indexPath.ts): no triage, draft, verify or review, so a cycle on
+ * that path does not show those as "not reached".
+ */
+export const INDEX_STAGES = [
+  { stage: "index", title: "Missing index" },
+  { stage: "pr", title: "Pull request" },
+] as const;
+
+/** Whether a cycle took the missing-index path: its path says so, or it recorded the index stage. */
+export const isIndexCycle = (c: CycleRow): boolean => c.path === "index" || c.summary.index !== undefined;
+
+const RUNTIME_TEXT: Record<string, { text: string; tone: RunTone }> = {
+  observing: { text: "READY and the query passes; watching for a recurrence", tone: "info" },
+  healed: { text: "Healed: quiet through the window, and the query passes", tone: "success" },
+  recurred: { text: "Recurred after the index was READY", tone: "warning" },
+  "query-failing": { text: "Quiet, but the query no longer passes", tone: "warning" },
+  unverified: { text: "Not verified: the query could not be replayed", tone: "neutral" },
+};
+
+/**
+ * Where a missing-index heal stands at runtime (`summary.index.runtime`), apart from its pull request: absent until the
+ * index was READY and the configured query passed. "Healed" is only ever what the engine recorded after the window.
+ */
+export function indexRuntimeView(c: CycleRow): { text: string; tone: RunTone; until?: Date } | undefined {
+  const r = c.summary.index;
+  const known = r && typeof r.runtime === "string" ? RUNTIME_TEXT[r.runtime] : undefined;
+  if (!r || !known) return undefined;
+  const until = typeof r.observeUntil === "string" && Number.isFinite(Date.parse(r.observeUntil)) ? new Date(r.observeUntil) : undefined;
+  return { ...known, ...(r.runtime === "observing" && until && { until }) };
+}
+
 /** `cycle` events are the loop's own bookkeeping (started, stopped, budget), shown as notes. */
 const NOTE_STAGE = "cycle";
 
@@ -267,7 +300,8 @@ export interface Waterfall {
  */
 const OPTIONAL_STAGE_TITLES: Record<string, string> = { issue: "GitHub issue", alert: "Alert the team", notify: "Tell a person" };
 
-const titleOf = (stage: string): string => KNOWN_STAGES.find((s) => s.stage === stage)?.title ?? OPTIONAL_STAGE_TITLES[stage] ?? stage;
+const titleOf = (stage: string): string =>
+  [...KNOWN_STAGES, ...INDEX_STAGES].find((s) => s.stage === stage)?.title ?? OPTIONAL_STAGE_TITLES[stage] ?? stage;
 
 /**
  * One row per stage that has an event, plus every known stage that has none, as "not reached", unless
@@ -284,7 +318,7 @@ export function buildWaterfall(cycle: CycleRow, events: readonly EventRow[], now
     byStage.set(e.stage, [...(byStage.get(e.stage) ?? []), e]);
   }
 
-  const known: string[] = KNOWN_STAGES.map((s) => s.stage);
+  const known: string[] = (isIndexCycle(cycle) || byStage.has("index") ? INDEX_STAGES : KNOWN_STAGES).map((s) => s.stage);
   const extra = [...byStage.keys()].filter((s) => !known.includes(s));
   const stages = [...known, ...extra];
 

@@ -4,6 +4,7 @@ import {
   buildWaterfall,
   prStateView,
   formatDuration,
+  indexRuntimeView,
   parseCycle,
   parseEvent,
   progressText,
@@ -236,5 +237,32 @@ describe("prStateView: the pull request as the engine last read it back (#17)", 
     expect(ago(NOW - 10_000, NOW)).toBe("just now");
     expect(ago(NOW - 5 * 60_000, NOW)).toBe("5 min ago");
     expect(ago(NOW + 60_000, NOW)).toBe("just now");
+  });
+});
+
+describe("the missing-index path (#11)", () => {
+  it("reads the index path and shows only its own stages, never triage or verify as not reached", () => {
+    const c = parseCycle("inc-1_r0", cycleDoc({ state: "done", path: "index", leaseExpiresAt: null, summary: { index: { state: "ready", runtime: "observing" } } }))!;
+    expect(c.path).toBe("index");
+    const w = buildWaterfall(c, [ev("index", "started", 100), ev("index", "ready", 2000), ev("pr", "opened", 3000)], T0 + 5000);
+    expect(w.steps.map((s) => [s.stage, s.title, s.status])).toEqual([
+      ["index", "Missing index", "done"],
+      ["pr", "Pull request", "done"],
+    ]);
+  });
+
+  it("an index cycle still running shows the pull request as the next step", () => {
+    const c = cycle({ summary: { index: { state: "building" } } });
+    const w = buildWaterfall(c, [ev("index", "building", 100)], T0 + 1000);
+    expect(w.steps.map((s) => s.status)).toEqual(["done", "running"]);
+  });
+
+  it("says where the heal stands at runtime, and only what the engine recorded", () => {
+    const at = (runtime: unknown, extra: Record<string, unknown> = {}) => cycle({ summary: { index: { runtime: runtime as string, ...extra } } as CycleRow["summary"] });
+    expect(indexRuntimeView(at("observing", { observeUntil: "2026-10-06T13:00:00.000Z" }))).toMatchObject({ tone: "info", until: new Date("2026-10-06T13:00:00.000Z") });
+    expect(indexRuntimeView(at("healed"))).toMatchObject({ tone: "success", text: expect.stringContaining("Healed") });
+    expect(indexRuntimeView(at("recurred"))?.tone).toBe("warning");
+    expect(indexRuntimeView(at("made-up"))).toBeUndefined();
+    expect(indexRuntimeView(cycle())).toBeUndefined();
   });
 });

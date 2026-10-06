@@ -14,7 +14,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import { loadChildProcessBasics } from "../config.js";
 import { SEEDED_SECRETS } from "../ingest/testSecrets.js";
 import type { PullRequestRequest } from "../agent/loop.js";
-import { GithubError, ISSUE_LABEL, branchFor, createGithubClient, createPullRequestOpener, gitAuthEnv, inert, issueText, pullRequestText, pushRefspec, type GithubPrConfig, type IssueRequest, type RunGit } from "./githubPr.js";
+import { GithubError, ISSUE_LABEL, branchFor, createGithubClient, createPullRequestOpener, gitAuthEnv, indexRootCause, inert, issueText, pullRequestText, pushRefspec, type GithubPrConfig, type IssueRequest, type RunGit } from "./githubPr.js";
 
 const TOKEN = SEEDED_SECRETS.github!;
 const REPO = "acme/shop";
@@ -885,5 +885,47 @@ describe("createGithubClient: reading a pull request back (#17)", () => {
       expect(err.rule).toBe(rule);
       expect(err.message).not.toContain(TOKEN);
     }
+  });
+});
+
+describe("pullRequestText: the missing-index evidence pull request (#11)", () => {
+  const index = {
+    project: "demo-app-1",
+    database: "(default)",
+    collectionGroup: "orders",
+    queryScope: "COLLECTION",
+    fields: [
+      { fieldPath: "status", order: "ASCENDING" },
+      { fieldPath: "createdAt", order: "DESCENDING" },
+    ],
+    created: true,
+    operation: "projects/demo-app-1/databases/(default)/operations/op1",
+    indexFile: "firestore.indexes.json",
+    fileCreated: false,
+    readyAt: "2026-10-06T12:00:00.000Z",
+  };
+
+  it("is a fixed template: what is already true, the index, what a deploy does, and no verify or review section", () => {
+    const { title, body } = pullRequestText(request({ index, verify: undefined, review: undefined, rootCause: indexRootCause(index) }));
+    expect(title).toBe("Starfish: add the missing Firestore index on orders (status asc, createdAt desc)");
+    expect(body).toContain("Starfish created that one index in `demo-app-1` / `(default)` with a single Admin API call");
+    expect(body).toContain("- Fields: `status` ASCENDING, `createdAt` DESCENDING");
+    expect(body).toContain("adds the same entry to `firestore.indexes.json`");
+    expect(body).toContain("Starfish does not estimate the amount");
+    expect(body).toContain("reverting this pull request does not remove the index");
+    expect(body).toContain("- Create operation: `projects/demo-app-1/databases/(default)/operations/op1`");
+    expect(body).toContain("It does not merge or deploy: a person decides.");
+    expect(body).not.toContain("## Verify gate");
+    expect(body).not.toContain("## Adversarial review");
+  });
+
+  it("says when the index was found rather than created, and when the file is new", () => {
+    const { body } = pullRequestText(request({ index: { ...index, created: false, fileCreated: true }, verify: undefined }));
+    expect(body).toContain("it was not created by this run");
+    expect(body).toContain("This pull request creates `firestore.indexes.json`");
+  });
+
+  it("a code fix without a verify result says so instead of inventing one", () => {
+    expect(pullRequestText(request({ verify: undefined })).body).toContain("## Verify gate\n\nNot run.");
   });
 });

@@ -48,7 +48,7 @@ This table is the first version of the **rules engine**: incident class → requ
 
 | Class | Blast radius | Certainty source | Allowed action |
 |---|---|---|---|
-| **Missing composite index** | Additive; can't grant access or break a read | Google's error names the exact index | **Auto-fix, auto-merge, auto-deploy** (below) |
+| **Missing composite index** | Additive; can't grant access or break a read | Google's error names the exact index | **Auto-fix, auto-merge, auto-deploy** (below). For the MVP the index is created by one Admin API call and its evidence PR is left for a human to merge: index-PR auto-merge is deferred (#11) |
 | Null/undefined guard, missing `await`, a Firestore `undefined` field | One function's handler | Stack trace, plus a test failing before the fix | **Auto-merge**; deploy stays with a human for now |
 | Security rules | Widens access; a wrong fix is a data leak | A denial is often the rule working correctly | **Draft PR only**, with an emulator test showing who gains access. A human approves. |
 | Config / infrastructure (e.g. an API not enabled) | Not code | A patch can't fix it | **Notify** in Slack with the exact console step |
@@ -91,16 +91,18 @@ are operational, not security:
 | Long build on a large collection | "Healed" only when the index reports READY, the same query succeeds, and the fingerprint stops recurring. |
 | Per-document index-entry limit (large array fields) can make writes fail | Array-field indexes go to a human; auto-heal plain field indexes only. |
 
-### Design sketch (not built)
+### Design sketch (built in code for the MVP, never run against Google: README, #11)
 
 1. **Classify** `FAILED_PRECONDITION` "requires an index" incidents as their own class. This
    depends on keeping `jsonPayload.error` intact, separate from the title: it's where the
    create-index URL lives.
 2. **Parse** the URL into an index spec: collection group, fields, order, query scope.
 3. **Dedupe** against the project's index file; flag array-field indexes.
-4. **Create** the index with one Admin API call; wait for READY; re-run the failing query.
-5. **Open and auto-merge** a PR adding the same entry to the index file, in whichever repo
-   owns the indexes, which is not always the repo that owns the query.
+4. **Create** the index with one Admin API call; wait for READY; re-run the failing query. The query
+   is not in the create-index URL, so it is configured (a deterministic probe), never guessed.
+5. **Open** a PR adding the same entry to the index file, in whichever repo owns the indexes, which
+   is not always the repo that owns the query. For the MVP a person merges it; auto-merging the
+   index PR is deferred, and "healed" is recorded separately from the PR (runtime healed, PR pending).
 6. Ship behind a `dryRun` config flag first.
 
 ## Configuration surface (planned)

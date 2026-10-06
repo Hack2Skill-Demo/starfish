@@ -334,9 +334,10 @@ export async function releaseLease(
 /**
  * Which way a finished cycle went, for whoever reads the record (the scenario runner, Live runs, the
  * scoreboard): declined, a person to be told, a patch drafted but nothing opened (dry run), a pull
- * request opened, handed to a person, or failed. Merge and index paths do not exist yet (#9, #11).
+ * request opened, handed to a person, or failed; or the missing-index path (#11), which created or found the index and
+ * recorded its evidence pull request (or why none). A merge path does not exist (#9).
  */
-export type CyclePath = "decline" | "notify" | "draft" | "pr" | "human" | "failed";
+export type CyclePath = "decline" | "notify" | "draft" | "pr" | "human" | "failed" | "index";
 
 /**
  * What a decline was decided on (#8), kept on the cycle as `decision` so a later pass can tell new evidence from the
