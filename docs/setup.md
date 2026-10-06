@@ -68,6 +68,10 @@ SMOKE_ACTOR_UID=<admin uid> scripts/smoke-gcp.sh
 
 # 5. The operator UI, on its own Hosting site (not the project's default one).
 scripts/deploy-web.sh                          # prints https://<project>-starfish.web.app
+# It links the site to the web app named starfish (registering it if missing), so the page's init.json has an appId.
+# An existing site with no app is linked with the Hosting REST API, which needs `gcloud` signed in; not yet run on a
+# real project. If the page says "init.json is missing appId": console → Project settings → Your apps → starfish →
+# "Link to a Firebase Hosting site" (#156, docs/deploy.md).
 ```
 
 Then open the URL, sign in with the link from step 3, and you should see the planted incident. `pnpm status`
