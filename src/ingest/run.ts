@@ -41,7 +41,12 @@ export interface RunSummary {
   windows: number;
   /** The last window attempted (the one that failed, on a failure). */
   window?: { start: Date; end: Date };
-  totals: Omit<AggregationResult, "capped" | "narrowedTo">;
+  totals: Omit<AggregationResult, "capped" | "narrowedTo" | "monitoring">;
+  /**
+   * The Cloud Monitoring signal over the run's windows (#19), absent when it is off. `unavailableWindows`
+   * counts windows whose read failed: their unlogged failures are unknown, not zero, and are not re-read.
+   */
+  monitoring?: { observations: number; annotated: number; monitoringOnly: number; unavailableWindows: number };
   /**
    * True if any window hit the read cap and could not be narrowed (see `narrowWindow`): part of it
    * was not read, so counts are a floor, not the truth. A capped read that was narrowed loses nothing.
@@ -141,6 +146,13 @@ export async function runIngest(
       summary.capped ||= result.capped;
       for (const key of Object.keys(summary.totals) as (keyof RunSummary["totals"])[]) {
         summary.totals[key] += result[key];
+      }
+      if (result.monitoring) {
+        const m = (summary.monitoring ??= { observations: 0, annotated: 0, monitoringOnly: 0, unavailableWindows: 0 });
+        m.observations += result.monitoring.observations;
+        m.annotated += result.monitoring.annotated;
+        m.monitoringOnly += result.monitoring.monitoringOnly;
+        if (result.monitoring.unavailable) m.unavailableWindows += 1;
       }
 
       await completeWindow(db, stateRef, target, window);
@@ -275,6 +287,8 @@ async function recordLastRun(
       ...(cronIntervalMinutes(config.ingestSchedule) !== null && { intervalMinutes: cronIntervalMinutes(config.ingestSchedule) }),
       ...(s.window && { windowStart: Timestamp.fromDate(s.window.start), windowEnd: Timestamp.fromDate(s.window.end) }),
       ...(s.error !== undefined && { error: s.error }),
+      // Counts only, like the totals: guests may read this record.
+      ...(s.monitoring && { monitoring: s.monitoring }),
     });
   } catch {
     // Nothing to do: the next run writes it again.

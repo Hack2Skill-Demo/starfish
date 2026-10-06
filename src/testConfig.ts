@@ -2,7 +2,7 @@
  * A complete StarfishConfig for tests, so a new setting is added in one place instead of in every
  * test file that builds one. Only tests import this.
  */
-import { DEFAULT_IGNORED_MESSAGES, DEFAULT_LOG_RESOURCE_TYPES, type StarfishConfig } from "./config.js";
+import { DEFAULT_IGNORED_MESSAGES, DEFAULT_LOG_RESOURCE_TYPES, DEFAULT_MONITORING_SIGNALS, type StarfishConfig } from "./config.js";
 
 export function testConfig(over: Partial<StarfishConfig> = {}): StarfishConfig {
   return {
@@ -60,6 +60,9 @@ export function testConfig(over: Partial<StarfishConfig> = {}): StarfishConfig {
     maxCycleAttempts: 3,
     logResourceTypes: [...DEFAULT_LOG_RESOURCE_TYPES],
     ignoredMessages: [...DEFAULT_IGNORED_MESSAGES],
+    monitoringEnabled: false,
+    monitoringSignals: DEFAULT_MONITORING_SIGNALS.map((s) => ({ ...s })),
+    monitoringMaxSeries: 500,
     ...over,
   };
 }

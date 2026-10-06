@@ -10,6 +10,7 @@ import { getFirestore, Timestamp, FieldValue } from "firebase-admin/firestore";
 import type { Firestore, Transaction } from "firebase-admin/firestore";
 import { upsertIncident, type IncidentInput, type UpsertOutcome } from "./store.js";
 import { hourBucketKey } from "./buckets.js";
+import type { MonitoringObservation } from "./monitoring.js";
 
 // Never let this suite reach a real project with ambient credentials.
 if (!process.env.FIRESTORE_EMULATOR_HOST) {
@@ -284,3 +285,57 @@ describe("upsertIncident replays on the emulator", () => {
   });
 });
 
+
+describe("upsertIncident: Monitoring readings (#19)", () => {
+  const reading = (windowId: string, failureCount: number): MonitoringObservation => ({
+    source: "cloud-monitoring",
+    metricType: "run.googleapis.com/request_count",
+    resourceType: "cloud_run_revision",
+    projectId: "watched-app-1",
+    functionName: "mailDrainer",
+    windowStart: new Date(base - HOUR),
+    windowEnd: new Date(base),
+    failureCount,
+    capped: false,
+    firstAt: new Date(base - HOUR),
+    lastAt: new Date(base),
+    description: `${windowId}: unused`,
+  });
+  // The SAME function and message as a log occurrence: only the namespace keeps them apart.
+  const monitoringOnly = (windowId: string, count: number): IncidentInput => ({
+    ...occurrence(base, count),
+    errorType: "UnloggedFailure",
+    signalSource: "monitoring",
+    monitoring: [reading(windowId, count)],
+    windowId,
+  });
+
+  it("a Monitoring-only incident never merges with a log incident of the same function and message", async () => {
+    expect(await upsert(occurrence(base, 2))).toBe("new");
+    expect(await upsert(monitoringOnly("w1", 7))).toBe("new");
+    expect(await upsert(monitoringOnly("w2", 3))).toBe("updated");
+    expect(await upsert(occurrence(base + 1000, 1))).toBe("updated");
+
+    const docs = Object.fromEntries((await incidents()).map((d) => [d.get("signalSource") ?? "log", d.data()]));
+    expect(docs.log).toMatchObject({ occurrenceCount: 3 });
+    expect(docs.log?.monitoringCount).toBeUndefined();
+    expect(docs.monitoring).toMatchObject({ occurrenceCount: 10, monitoringCount: 10 });
+    expect(String(docs.monitoring?.fingerprint)).toBe(`mon-${String(docs.log?.fingerprint)}`);
+    expect(await keys()).toHaveLength(2);
+  });
+
+  it("annotates a log incident once per window: a replay adds nothing", async () => {
+    const annotated = (windowId: string, failures: number): IncidentInput => ({
+      ...occurrence(base, 1),
+      windowId,
+      monitoring: [reading(windowId, failures)],
+    });
+    await upsert(annotated("w1", 4));
+    expect(await upsert(annotated("w1", 4))).toBe("duplicate");
+    await upsert(annotated("w2", 6));
+
+    const [doc] = await incidents();
+    expect(doc?.get("monitoringCount")).toBe(10);
+    expect(doc?.get("lastMonitoring")).toEqual([expect.objectContaining({ failureCount: 6, metricType: "run.googleapis.com/request_count" })]);
+  });
+});

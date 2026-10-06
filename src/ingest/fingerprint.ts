@@ -127,3 +127,23 @@ export function computeErrorFingerprint(functionName: string, errorMessage: stri
     .digest("hex")
     .substring(0, 16);
 }
+
+/**
+ * Prefix of every Monitoring-only incident's fingerprint (#19). A log fingerprint is 16 hex
+ * characters, so no log-derived incident can ever share a fingerprint, or an incident key, with a
+ * Monitoring-only one: the two signals never merge in the store.
+ */
+export const MONITORING_FINGERPRINT_PREFIX = "mon-";
+
+/** Where an incident came from. Absent on a stored record means Cloud Logging (every record before #19). */
+export type SignalSource = "log" | "monitoring";
+
+/**
+ * The fingerprint a record holds, recomputed from its content: the one place that knows a
+ * Monitoring-only record hashes into its own namespace. The store, retire and scrub all recompute
+ * through this, so none of them can confuse the two.
+ */
+export function fingerprintOf(functionName: string, errorMessage: string, signalSource?: unknown): string {
+  const base = computeErrorFingerprint(functionName, errorMessage);
+  return signalSource === "monitoring" ? `${MONITORING_FINGERPRINT_PREFIX}${base}` : base;
+}

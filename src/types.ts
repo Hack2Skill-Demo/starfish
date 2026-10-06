@@ -34,6 +34,31 @@ export interface Incident {
   message?: string;
   /** PII-redacted and length-bounded. */
   stackTrace?: string;
+  /**
+   * `monitoring`: a Monitoring-only incident (#19), opened because Cloud Monitoring counted failed
+   * invocations of a function that wrote no ERROR log in that window. Absent means Cloud Logging.
+   */
+  signalSource?: "log" | "monitoring";
+  /** Failed invocations Cloud Monitoring counted for this incident's function, summed over the windows read (#19). */
+  monitoringCount?: number;
+}
+
+/**
+ * One Cloud Monitoring reading folded into an incident (#19): where it came from (provenance) and
+ * what it counted, as stored.
+ */
+export interface StoredMonitoringObservation {
+  source: "cloud-monitoring";
+  metricType: string;
+  resourceType: string;
+  /** The project whose metric was read. */
+  projectId: string;
+  /** The observation window, (start, end]: the ingest window the reading was taken for. */
+  windowStart: Timestamp;
+  windowEnd: Timestamp;
+  failureCount: number;
+  /** True when the read stopped at its cap: the count is a floor. */
+  capped?: boolean;
 }
 
 /** An independent raw-log count for one function over a fixed window. */
@@ -113,6 +138,19 @@ export interface StoredIncident {
   tenantId?: string;
   requestId?: string;
   sourceProjectId?: string;
+  /**
+   * `monitoring` for a Monitoring-only incident (#19): its fingerprint lives in a namespace of its own
+   * (`fingerprintOf`), so it never merges with a log-derived incident. Absent means Cloud Logging.
+   */
+  signalSource?: "log" | "monitoring";
+  /**
+   * Failed invocations Cloud Monitoring counted for this incident's function, summed over the ingest
+   * windows that folded a reading in (#19). On a log incident it is an annotation (the function's
+   * failures in a window where this incident also logged), not extra occurrences of it.
+   */
+  monitoringCount?: number;
+  /** The readings from the latest window that folded one in. */
+  lastMonitoring?: StoredMonitoringObservation[];
   /** Uid of the operator who last changed `status` from the UI. */
   statusChangedBy?: string;
   /** Set when an operator resolves the incident; cleared on any other status. */

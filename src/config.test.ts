@@ -521,3 +521,39 @@ describe("loadConfig: self-exclusion (#32)", () => {
   });
 });
 
+
+describe("loadConfig: the Cloud Monitoring signal (#19)", () => {
+  beforeEach(() => {
+    vi.stubEnv("GOOGLE_CLOUD_PROJECT", "home-project");
+    delete process.env.STARFISH_MONITORING_ENABLED;
+    delete process.env.STARFISH_MONITORING_RESOURCE_TYPES;
+    delete process.env.STARFISH_MONITORING_MAX_SERIES;
+  });
+  afterEach(() => vi.unstubAllEnvs());
+
+  it("is off by default, with both built-in signals and a 500-series cap", () => {
+    const c = loadConfig();
+    expect(c.monitoringEnabled).toBe(false);
+    expect(c.monitoringSignals.map((s) => s.resourceType)).toEqual(["cloud_run_revision", "cloud_function"]);
+    expect(c.monitoringMaxSeries).toBe(500);
+  });
+
+  it("reads the switch, the resource types and the cap", () => {
+    vi.stubEnv("STARFISH_MONITORING_ENABLED", "true");
+    vi.stubEnv("STARFISH_MONITORING_RESOURCE_TYPES", "cloud_run_revision");
+    vi.stubEnv("STARFISH_MONITORING_MAX_SERIES", "50");
+    const c = loadConfig();
+    expect(c.monitoringEnabled).toBe(true);
+    expect(c.monitoringSignals.map((s) => s.metricType)).toEqual(["run.googleapis.com/request_count"]);
+    expect(c.monitoringMaxSeries).toBe(50);
+  });
+
+  it("refuses an unknown resource type, and on with no signal at all", () => {
+    vi.stubEnv("STARFISH_MONITORING_RESOURCE_TYPES", "gae_app");
+    expect(() => loadConfig()).toThrow("STARFISH_MONITORING_RESOURCE_TYPES");
+    vi.stubEnv("STARFISH_MONITORING_RESOURCE_TYPES", "");
+    expect(loadConfig().monitoringSignals).toEqual([]);
+    vi.stubEnv("STARFISH_MONITORING_ENABLED", "true");
+    expect(() => loadConfig()).toThrow("lists none");
+  });
+});

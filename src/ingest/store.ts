@@ -50,10 +50,16 @@ import { createHash } from "node:crypto";
 import { Timestamp, FieldValue } from "firebase-admin/firestore";
 import type { DocumentSnapshot, Firestore, Transaction } from "firebase-admin/firestore";
 import type { StarfishConfig } from "../config.js";
-import { computeErrorFingerprint } from "./fingerprint.js";
+import { fingerprintOf } from "./fingerprint.js";
+import type { MonitoringObservation } from "./monitoring.js";
 import { redactPii, sliceWellFormed } from "./redact.js";
 import { hourBucketKey, mergeOccurrenceBuckets } from "./buckets.js";
-import { OPEN_INCIDENT_STATUSES, type IncidentResolution, type StoredIncident } from "../types.js";
+import {
+  OPEN_INCIDENT_STATUSES,
+  type IncidentResolution,
+  type StoredIncident,
+  type StoredMonitoringObservation,
+} from "../types.js";
 
 export interface IncidentInput {
   functionName: string;
@@ -78,6 +84,17 @@ export interface IncidentInput {
    * same window applied twice counts once. Omit it and every call counts (nothing to dedupe).
    */
   windowId?: string;
+  /**
+   * `monitoring` for a Monitoring-only incident (#19): fingerprinted in its own namespace
+   * (`fingerprintOf`), so it never accrues onto, or is accrued onto by, a log-derived incident.
+   */
+  signalSource?: "monitoring";
+  /**
+   * Cloud Monitoring readings for this function in the same window (#19). On a log incident they
+   * annotate it; on a Monitoring-only one they are its evidence. Folded in once per window, like the
+   * occurrences: a replayed window is a "duplicate" and changes nothing.
+   */
+  monitoring?: MonitoringObservation[];
 }
 
 /**
@@ -137,6 +154,28 @@ function isBefore(date: Date, stored: unknown): boolean {
   return ms == null || date.getTime() < ms;
 }
 
+/** The most readings kept per window on a document: one per configured signal is all a window produces. */
+const MAX_STORED_OBSERVATIONS = 8;
+
+/** Readings as stored: provenance and count only, Firestore timestamps, no undefined. */
+function storedObservations(observations: readonly MonitoringObservation[]): StoredMonitoringObservation[] {
+  return observations.slice(0, MAX_STORED_OBSERVATIONS).map((o) => ({
+    source: o.source,
+    metricType: o.metricType,
+    resourceType: o.resourceType,
+    projectId: o.projectId,
+    windowStart: Timestamp.fromDate(o.windowStart),
+    windowEnd: Timestamp.fromDate(o.windowEnd),
+    failureCount: o.failureCount,
+    ...(o.capped && { capped: true }),
+  }));
+}
+
+/** The failures the readings counted, summed. */
+function observedFailures(observations: readonly MonitoringObservation[]): number {
+  return observations.reduce((sum, o) => sum + o.failureCount, 0);
+}
+
 /**
  * The fields every occurrence writes onto an existing document: lifetime and
  * hourly counts, recency, and a backfill of diagnostics.
@@ -170,6 +209,12 @@ function buildAccrualUpdate(data: StoredIncident, input: IncidentInput, now: Tim
     ...(input.stackTrace != null && { stackTrace: input.stackTrace }),
     ...(input.tenantId != null && { tenantId: input.tenantId }),
     ...(input.sourceProjectId != null && { sourceProjectId: input.sourceProjectId }),
+    // A window with Monitoring readings for this function: counted once (the window id guards a replay).
+    ...(input.monitoring != null &&
+      input.monitoring.length > 0 && {
+        monitoringCount: FieldValue.increment(observedFailures(input.monitoring)),
+        lastMonitoring: storedObservations(input.monitoring),
+      }),
   };
 }
 
@@ -262,7 +307,7 @@ export async function upsertIncident(
   now: Timestamp
 ): Promise<UpsertOutcome> {
   const input = redactInput(rawInput);
-  const fingerprint = computeErrorFingerprint(input.functionName, input.errorMessage);
+  const fingerprint = fingerprintOf(input.functionName, input.errorMessage, input.signalSource);
   const keyRef = db.collection(store.incidentKeyCollection).doc(incidentKeyId(input.environment, fingerprint));
 
   return db.runTransaction(
@@ -352,7 +397,7 @@ function isRetired(snap: DocumentSnapshot): boolean {
 function holdsFingerprint(snap: DocumentSnapshot, fingerprint: string): boolean {
   const d = snap.data() as Partial<StoredIncident> | undefined;
   if (d?.functionName == null || d.errorMessage == null) return false;
-  return computeErrorFingerprint(d.functionName, d.errorMessage) === fingerprint;
+  return fingerprintOf(d.functionName, d.errorMessage, d.signalSource) === fingerprint;
 }
 
 /** The incident the key points at, when it exists and still holds the fingerprint. */
@@ -468,5 +513,11 @@ function buildNewIncident(input: IncidentInput, fingerprint: string, now: Timest
     ...(input.tenantId != null && { tenantId: input.tenantId }),
     ...(input.requestId != null && { requestId: input.requestId }),
     ...(input.sourceProjectId != null && { sourceProjectId: input.sourceProjectId }),
+    ...(input.signalSource === "monitoring" && { signalSource: "monitoring" as const }),
+    ...(input.monitoring != null &&
+      input.monitoring.length > 0 && {
+        monitoringCount: observedFailures(input.monitoring),
+        lastMonitoring: storedObservations(input.monitoring),
+      }),
   };
 }

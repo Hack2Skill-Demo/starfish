@@ -11,7 +11,8 @@ import type { Firestore } from "firebase-admin/firestore";
 import type { StarfishConfig } from "../config.js";
 import { buildLogFilter, parseLogEntry, type RawLogEntry } from "./parseLogEntry.js";
 import { detectErrorType, extractErrorCode, detectService } from "./classify.js";
-import { computeErrorFingerprint } from "./fingerprint.js";
+import { canonicalFunctionName, computeErrorFingerprint } from "./fingerprint.js";
+import { createRestMonitoringReader, readMonitoringFailures, type MonitoringObservation, type MonitoringReader } from "./monitoring.js";
 import { sanitize } from "./redact.js";
 import { upsertIncident, type IncidentInput } from "./store.js";
 import { narrowWindow, type IngestWindow } from "./window.js";
@@ -53,6 +54,83 @@ export interface AggregationResult {
    * covered in full. The caller replays this narrower window in place of the one it asked for.
    */
   narrowedTo?: IngestWindow;
+  /**
+   * The Cloud Monitoring signal for this window (#19), absent when it is off. `unavailable` means the
+   * read failed: the window's failures without an ERROR log are UNKNOWN, not zero.
+   */
+  monitoring?: MonitoringSummary;
+}
+
+export interface MonitoringSummary {
+  /** Functions with failures that Monitoring reported. */
+  observations: number;
+  /** Log inputs annotated with a reading for their function. */
+  annotated: number;
+  /** Monitoring-only inputs: failures of a function that logged no ERROR in the window. */
+  monitoringOnly: number;
+  unavailable: boolean;
+}
+
+export interface AggregateDeps {
+  /** The Monitoring reader. Default: the REST adapter, created only when the signal is on. */
+  monitoring?: MonitoringReader;
+}
+
+/** The errorType of a Monitoring-only incident: there is no log to classify, only a count of failures. */
+export const MONITORING_ONLY_ERROR_TYPE = "UnloggedFailure";
+
+/**
+ * Folds one window's Monitoring readings into its log inputs (#19). A reading for a function that
+ * also LOGGED an error in this window annotates every log input of that function (`monitoring`); one
+ * for a function with no log input in the window becomes a Monitoring-only input, fingerprinted in its
+ * own namespace so it can never merge with a log incident. Returns the Monitoring-only inputs and how
+ * many log inputs were annotated (it sets `monitoring` on those in place).
+ *
+ * Correlation is per window and per function (canonical spelling), not per incident: Monitoring
+ * counts invocations, not error messages, so it cannot say which of a function's log incidents a
+ * failure belongs to. A log incident from an EARLIER window is not annotated; this window's failures
+ * without a log then open a Monitoring-only incident, which is the conservative direction (an extra
+ * incident, never a hidden failure).
+ */
+export function correlateMonitoring(
+  logInputs: IncidentInput[],
+  observations: readonly MonitoringObservation[],
+  config: Pick<StarfishConfig, "environment" | "servicePatterns">,
+  windowId: string
+): { monitoringOnly: IncidentInput[]; annotated: number } {
+  const byFunction = new Map<string, IncidentInput[]>();
+  for (const input of logInputs) {
+    const key = canonicalFunctionName(input.functionName);
+    byFunction.set(key, [...(byFunction.get(key) ?? []), input]);
+  }
+  const annotatedInputs = new Set<IncidentInput>();
+  const monitoringOnly: IncidentInput[] = [];
+  for (const obs of observations) {
+    const logged = byFunction.get(canonicalFunctionName(obs.functionName));
+    if (logged) {
+      for (const input of logged) {
+        input.monitoring = [...(input.monitoring ?? []), obs];
+        annotatedInputs.add(input);
+      }
+      continue;
+    }
+    monitoringOnly.push({
+      functionName: obs.functionName,
+      service: detectService(obs.functionName, config.servicePatterns),
+      environment: config.environment,
+      errorType: MONITORING_ONLY_ERROR_TYPE,
+      // Fixed text from the signal's definition, never data: it keys the fingerprint, so it must not vary.
+      errorMessage: obs.description,
+      occurrenceCount: obs.failureCount,
+      firstOccurredAt: obs.firstAt,
+      lastOccurredAt: obs.lastAt,
+      sourceProjectId: obs.projectId,
+      signalSource: "monitoring",
+      monitoring: [obs],
+      windowId,
+    });
+  }
+  return { monitoringOnly, annotated: annotatedInputs.size };
 }
 
 /**
@@ -63,7 +141,8 @@ export interface AggregationResult {
 export async function aggregateErrors(
   db: Firestore,
   config: StarfishConfig,
-  window: IngestWindow
+  window: IngestWindow,
+  deps: AggregateDeps = {}
 ): Promise<AggregationResult> {
   const result: AggregationResult = {
     entriesProcessed: 0,
@@ -95,7 +174,6 @@ export async function aggregateErrors(
   }
 
   result.entriesProcessed = entries.length;
-  if (entries.length === 0) return result;
 
   // Group by fingerprint before writing anything.
   const grouped = new Map<string, { input: IncidentInput }>();
@@ -153,12 +231,29 @@ export async function aggregateErrors(
     });
   }
 
+  // The Monitoring signal is read even when the logs were empty: a function that failed without an
+  // ERROR log is exactly what it is for. Only for a window that is going to be written (a narrowed
+  // read returned above), so its readings are folded in once, under this window's id.
+  const queue = [...grouped.values()].map((g) => g.input);
+  if (config.monitoringEnabled) {
+    const reader = deps.monitoring ?? createRestMonitoringReader();
+    const observations = await readMonitoringFailures(reader, config, window);
+    if (observations === null) {
+      result.monitoring = { observations: 0, annotated: 0, monitoringOnly: 0, unavailable: true };
+    } else {
+      const { monitoringOnly, annotated } = correlateMonitoring(queue, observations, config, window.id);
+      queue.push(...monitoringOnly);
+      result.monitoring = { observations: observations.length, annotated, monitoringOnly: monitoringOnly.length, unavailable: false };
+    }
+  }
+  if (queue.length === 0) return result;
+
   const now = Timestamp.now();
+  const total = queue.length;
 
   // One transaction per incident (see store.ts), a few at a time. Every upsert
   // is awaited before the run reports: a failure throws only after the rest
   // have settled, and the incidents that committed are accrued onto next run.
-  const queue = [...grouped.values()].map((g) => g.input);
   const failures: unknown[] = [];
   const worker = async () => {
     for (let input = queue.shift(); input; input = queue.shift()) {
@@ -175,7 +270,7 @@ export async function aggregateErrors(
   };
   await Promise.all(Array.from({ length: Math.min(UPSERT_CONCURRENCY, queue.length) }, worker));
   if (failures.length > 0) {
-    throw new AggregateError(failures, `${failures.length} of ${grouped.size} incident upserts failed`);
+    throw new AggregateError(failures, `${failures.length} of ${total} incident upserts failed`);
   }
 
   return result;

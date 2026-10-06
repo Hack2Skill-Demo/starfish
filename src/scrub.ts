@@ -22,7 +22,7 @@
  */
 import { FieldPath } from "firebase-admin/firestore";
 import type { Firestore } from "firebase-admin/firestore";
-import { computeErrorFingerprint } from "./ingest/fingerprint.js";
+import { fingerprintOf } from "./ingest/fingerprint.js";
 import { redactPii } from "./ingest/redact.js";
 import { incidentKeyId, redactShortField, type IncidentStoreConfig } from "./ingest/store.js";
 
@@ -70,7 +70,7 @@ export function scrubDocument(data: Record<string, unknown>): DocumentScrub | nu
   let fingerprint: string | undefined;
   const message = updates.errorMessage;
   if (message !== undefined && typeof data.functionName === "string") {
-    const next = computeErrorFingerprint(data.functionName, message);
+    const next = fingerprintOf(data.functionName, message, data.signalSource);
     if (next !== data.fingerprint) fingerprint = next;
   }
   return { updates, ...(fingerprint !== undefined && { fingerprint }) };

@@ -117,6 +117,9 @@ export function toIncident(id: string, d: Record<string, unknown>): Incident {
     ...(iso(d.lastOccurredAt) && { lastOccurredAt: iso(d.lastOccurredAt) }),
     ...(str(d.errorMessage) && { message: str(d.errorMessage) }),
     ...(str(d.stackTrace) && { stackTrace: str(d.stackTrace) }),
+    // Triage's evidence rules read these (#19): a Monitoring-only incident is judged differently.
+    ...(d.signalSource === "monitoring" && { signalSource: "monitoring" as const }),
+    ...(typeof d.monitoringCount === "number" && Number.isFinite(d.monitoringCount) && { monitoringCount: d.monitoringCount }),
   };
 }
 

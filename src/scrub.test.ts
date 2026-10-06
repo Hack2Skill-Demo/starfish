@@ -35,6 +35,11 @@ describe("scrubDocument", () => {
     expect(result.fingerprint).not.toBe(computeErrorFingerprint("mailDrainer", raw));
   });
 
+  it("recomputes a Monitoring-only record's fingerprint in its own namespace (#19)", () => {
+    const result = scrubDocument(legacy({ signalSource: "monitoring" }))!;
+    expect(result.fingerprint).toBe(`mon-${computeErrorFingerprint("mailDrainer", result.updates.errorMessage!)}`);
+  });
+
   it("leaves the fingerprint alone when only a field outside the fingerprint was dirty", () => {
     const result = scrubDocument(legacy({ errorMessage: "send failed", fingerprint: computeErrorFingerprint("mailDrainer", "send failed") }))!;
     expect(result.updates.errorMessage).toBeUndefined();

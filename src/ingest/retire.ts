@@ -24,7 +24,7 @@ import { Timestamp } from "firebase-admin/firestore";
 import type { Firestore } from "firebase-admin/firestore";
 import type { StarfishConfig } from "../config.js";
 import { hasAdminRole, isValidUid } from "../adminAuth.js";
-import { computeErrorFingerprint } from "./fingerprint.js";
+import { fingerprintOf } from "./fingerprint.js";
 import { redactPii, sliceWellFormed, toWellFormed } from "./redact.js";
 import { incidentKeyId } from "./store.js";
 import type { StoredIncident } from "../types.js";
@@ -58,7 +58,7 @@ export async function retireIncident(
     const data = snap.data() as StoredIncident;
     if (data.retired === true) return { ok: true, alreadyRetired: true };
 
-    const fingerprint = computeErrorFingerprint(data.functionName, data.errorMessage);
+    const fingerprint = fingerprintOf(data.functionName, data.errorMessage, data.signalSource);
     const keyRef = db.collection(cfg.incidentKeyCollection).doc(incidentKeyId(data.environment, fingerprint));
     const key = await tx.get(keyRef);
     const wasOpen = data.status !== "resolved" && data.status !== "ignored";
