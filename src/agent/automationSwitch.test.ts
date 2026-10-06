@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Firestore } from "firebase-admin/firestore";
-import { makeAutomationSwitch } from "./automationSwitch.js";
+import { makeAutomationSwitch, makeMergeSwitch } from "./automationSwitch.js";
 import { RuntimeConfigLoader, SETTINGS_DOC } from "../runtimeSettings.js";
 import type { ResolvedConfig } from "../runtimeSettings.js";
 import { testConfig } from "../testConfig.js";
@@ -62,5 +62,30 @@ describe("makeAutomationSwitch", () => {
     // Unreadable now, with a known-good copy from before: that copy decides. A fresh instance with none: off.
     failRead = true;
     expect(await makeAutomationSwitch(new RuntimeConfigLoader(testConfig({ automationEnabled: true })), fake)()).toBe(false);
+  });
+});
+
+describe("makeMergeSwitch (#9)", () => {
+  const allowed = testConfig({ dryRun: false, autoMerge: true, githubRepo: "acme/demo", autoMergeTargets: ["acme/demo"] });
+  const with_ = (over: Partial<ResolvedConfig> = {}, cfg = allowed): ResolvedConfig => ({ config: cfg, source: "settings", problems: [], actionsAllowed: true, ...over });
+
+  it("allows merging only when every switch does, read fresh each time", async () => {
+    let cfg = allowed;
+    const ask = makeMergeSwitch({ resolve: async () => with_({}, cfg) }, db);
+    expect(await ask()).toBeNull();
+    cfg = { ...allowed, mergeFreeze: true };
+    expect(await ask()).toBe("merge-freeze");
+  });
+
+  it("blocks with the engine's defaults: the switch is off and no target is allowed", async () => {
+    expect(await makeMergeSwitch({ resolve: async () => with_({}, testConfig({ githubRepo: "acme/demo" })) }, db)()).not.toBeNull();
+  });
+
+  it("fails closed: unusable or unreadable settings block merging", async () => {
+    expect(await makeMergeSwitch({ resolve: async () => with_({ actionsAllowed: false }) }, db)()).toBe("settings-unusable");
+    const resolve = vi.fn(async () => {
+      throw new Error("down");
+    });
+    expect(await makeMergeSwitch({ resolve }, db)()).toBe("settings-unreadable");
   });
 });

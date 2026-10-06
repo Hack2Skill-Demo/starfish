@@ -158,10 +158,10 @@ describe("buildWaterfall", () => {
   });
 
   it("puts the loop's own notes aside and keeps a stage it does not know, after the known ones", () => {
-    const w = buildWaterfall(cycle({ state: "done", leaseExpiresAt: null, updatedAt: new Date(T0 + 4000) }), [ev("cycle", "started", 0, "Attempt 1"), ev("merge", "merged", 4000)], T0 + 5000);
+    const w = buildWaterfall(cycle({ state: "done", leaseExpiresAt: null, updatedAt: new Date(T0 + 4000) }), [ev("cycle", "started", 0, "Attempt 1"), ev("canary", "passed", 4000)], T0 + 5000);
     expect(w.notes.map((n) => n.summary)).toEqual(["Attempt 1"]);
-    expect(w.steps.map((s) => s.stage).slice(-1)).toEqual(["merge"]);
-    expect(w.steps.find((s) => s.stage === "merge")).toMatchObject({ status: "done", title: "merge" });
+    expect(w.steps.map((s) => s.stage).slice(-1)).toEqual(["canary"]);
+    expect(w.steps.find((s) => s.stage === "canary")).toMatchObject({ status: "done", title: "canary" });
   });
 
   it("copes with events out of order and with clock skew (an event before the cycle began)", () => {

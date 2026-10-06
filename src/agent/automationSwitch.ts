@@ -10,6 +10,7 @@
  */
 import type { Firestore } from "firebase-admin/firestore";
 import type { RuntimeConfigLoader } from "./../runtimeSettings.js";
+import { mergeBlockedBy } from "./autoMerge.js";
 
 export function makeAutomationSwitch(loader: Pick<RuntimeConfigLoader, "resolve">, db: Firestore): () => Promise<boolean> {
   return async () => {
@@ -18,6 +19,23 @@ export function makeAutomationSwitch(loader: Pick<RuntimeConfigLoader, "resolve"
       return resolved.actionsAllowed && resolved.config.automationEnabled;
     } catch {
       return false;
+    }
+  };
+}
+
+/**
+ * The merge switches (#9), read FRESH each time like the kill switch: null when merging is allowed now, else why not
+ * (autoMerge.ts `mergeBlockedBy`: the kill switch, dry run, the merge freeze, `autoMerge`, the target allowlist). Fails
+ * closed: settings that cannot be read, or are unusable with nothing good known, block merging.
+ */
+export function makeMergeSwitch(loader: Pick<RuntimeConfigLoader, "resolve">, db: Firestore): () => Promise<string | null> {
+  return async () => {
+    try {
+      const resolved = await loader.resolve(db);
+      if (!resolved.actionsAllowed) return "settings-unusable";
+      return mergeBlockedBy(resolved.config);
+    } catch {
+      return "settings-unreadable";
     }
   };
 }

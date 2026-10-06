@@ -24,8 +24,13 @@
  *     opener) records it and stops (#134).
  *   - DRY RUN BY DEFAULT. With `dryRun` (the default) or no opener, a verified, reviewed patch ends the
  *     cycle waiting for a person and nothing is opened. Opening is an interface (`openPullRequest`)
- *     keyed by the cycle id so a retry after a timeout cannot open a second one; the loop never merges
+ *     keyed by the cycle id so a retry after a timeout cannot open a second one; the loop itself never merges
  *     and never deploys.
+ *   - AUTO-MERGE EVIDENCE (#9). Only where auto-merge could apply (`autoMergeAllowed`, dry run off), the loop runs
+ *     gate 1 on the proposed patch (blastRadius.ts), and, when it passes, runs the patch's TESTS ALONE on the base
+ *     revision through the same verifier, so the run record shows the test failing before the fix (`summary.before`).
+ *     When it opens the pull request it records the candidate (`summary.merge`); merging is the agent pass's
+ *     separate step (autoMerge.ts). A candidate that fails gate 1 is handed to a person at once.
  *
  * Infrastructure errors (the store, the opener) throw, as in cycle.ts: a worker that cannot reach what it
  * needs must not carry on. The lease then expires and the cycle is resumed.
@@ -62,6 +67,9 @@ import { triageIncident, type AskJson, type TriageSubject } from "./triage.js";
 import { verifyPatch, type VerifyConfig, type VerifyRequest, type VerifyResult } from "./verifyGate.js";
 import { causeClass, type ReconsiderPolicy } from "./reconsider.js";
 import { isIndexIncident, runIndexPath, type IndexHealWiring } from "./indexPath.js";
+import { assessBlastRadius, testOnlyPatch, type BlastRadius } from "./blastRadius.js";
+import { mergeRecordAtOpen } from "./autoMerge.js";
+import { sha256 } from "./reviewer.js";
 
 /** Everything about the incident the stages need, assembled by the caller (it owns the repo checkout). */
 export interface LoopSubject {
@@ -87,6 +95,8 @@ export interface PullRequestRequest {
   /** The incident's GitHub issue, when one was filed (#17): the pull request then says it closes it. */
   issueNumber?: number;
   review?: { verdict: ReviewVerdict; attacks: Attack[] };
+  /** Auto-merge could apply to this pull request (#9): its text then says Starfish may merge it itself. */
+  autoMerge?: boolean;
   /**
    * Set for the missing-index heal's evidence pull request (#11): the index that already exists in production and the
    * entry the patch adds to the repository's index file. The body is then a fixed template (no model text).
@@ -112,7 +122,9 @@ export interface IndexEvidence {
 
 export interface LoopDeps {
   db: Firestore;
-  config: Pick<StarfishConfig, "dryRun" | "reviewRequired" | "modelCallBudget" | "uiBaseUrl" | "model" | "incidentCollection"> & CycleConfig & VerifyConfig;
+  config: Pick<StarfishConfig, "dryRun" | "reviewRequired" | "modelCallBudget" | "uiBaseUrl" | "model" | "incidentCollection" | "autoMergeExcludedPaths"> &
+    CycleConfig &
+    VerifyConfig;
   /** This worker's identity, for the lease. */
   owner: string;
   now: () => Date;
@@ -133,7 +145,12 @@ export interface LoopDeps {
    */
   verify?: (req: VerifyRequest) => Promise<VerifyResult>;
   /** Opens (or finds, by `cycleId`) the pull request. Absent means nothing can be opened. */
-  openPullRequest?: (req: PullRequestRequest) => Promise<{ number: number; url: string }>;
+  openPullRequest?: (req: PullRequestRequest) => Promise<{ number: number; url: string; headSha?: string }>;
+  /**
+   * Auto-merge (#9): whether it could apply to this deployment's target right now, read fresh (the switches in
+   * autoMerge.ts `mergeBlockedBy`). Absent, or false: nothing about merging is prepared and the pull request is the end.
+   */
+  autoMergeAllowed?: () => Promise<boolean>;
   /**
    * The pull request this cycle already opened, or null (#134). Asked once at the start of an attempt that has none
    * recorded, so an attempt resumed after the open succeeded but its record did not stops there instead of redoing
@@ -334,6 +351,9 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
       return finish("declined", why, "decline");
     };
 
+    // Auto-merge could apply right now (#9): never in a dry run, never without the switches.
+    const autoMergeOn = async (): Promise<boolean> => !cfg.dryRun && deps.autoMergeAllowed !== undefined && (await deps.autoMergeAllowed());
+
     // The incident's GitHub issue: one per cycle Starfish acts on or escalates, none for a declined one. Recorded on the
     // cycle (`summary.issue`) so a resumed attempt reuses it, and so a failure is visible and not silent.
     let issue: { number: number; url: string } | undefined;
@@ -367,6 +387,7 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
           reason,
           suspectedCause: suspectedCause ?? null,
           uiBaseUrl: cfg.uiBaseUrl,
+          ...(path === "act" && (await autoMergeOn()) && { autoMerge: true }),
         });
       } catch (err) {
         const rule = typeof (err as { rule?: unknown })?.rule === "string" ? (err as { rule: string }).rule : "error";
@@ -570,6 +591,17 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
         return await finish("waiting-human", fix.rule, "human");
       }
 
+      // ---- auto-merge evidence (#9): gate 1, then the patch's tests alone on the base revision -----------------
+      let gate1: BlastRadius | undefined;
+      if (await autoMergeOn()) {
+        gate1 = assessBlastRadius(fix.patch, { excludedPaths: [...cfg.patchExcludedPaths, ...cfg.autoMergeExcludedPaths] });
+        if (gate1.allowed) {
+          stop = await halted();
+          if (stop) return stop;
+          await recordFailsBefore(deps, { id, loaded, heartbeat: keeper.beat, note, renew }, fix.patch);
+        }
+      }
+
       // The kill switch is asked again before verify: with `github-actions` verify pushes a branch to the target (#138).
       stop = await halted();
       if (stop) return stop;
@@ -678,6 +710,7 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
         verify: { status: verified.status, rule: verified.rule, changedFiles: verified.changedFiles, output: verified.output },
         ...(issue && { issueNumber: issue.number }),
         ...(review && { review }),
+        ...(gate1?.allowed === true && { autoMerge: true }),
       });
       await note({
         stage: "pr",
@@ -686,6 +719,21 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
         data: { number: pr.number, patchSha256: verified.patchSha256 },
         record: { opened: true, number: pr.number, url: pr.url, patchSha256: verified.patchSha256 },
       });
+      // The auto-merge candidate (#9): pending for the pass's merge step, or handed to a person now when gate 1 failed.
+      if (gate1) {
+        const record = mergeRecordAtOpen({ gate1, pr, patchSha256: verified.patchSha256, incident: loaded.subject.incident, now: deps.now() });
+        const pending = record.state === "pending";
+        await note({
+          stage: "merge",
+          type: String(record.state),
+          summary: pending ? "Auto-merge candidate: waiting for the required checks" : `Not auto-merged: ${String(record.reason)}`,
+          data: { gate1: gate1.allowed ? "pass" : "fail" },
+          record,
+        });
+        if (!pending) {
+          await announce(loaded, "human", "auto-merge-gate1", "The pull request is open, but Starfish may not merge it itself (gate 1, low blast radius, or its head is unknown). A person decides.");
+        }
+      }
       return await finish("done", "pr-opened", "pr");
     }
   } catch (err) {
@@ -694,6 +742,41 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
   } finally {
     keeper.stop();
   }
+}
+
+/**
+ * The "fails before" half of gate 2 (#9), recorded as `summary.before`: the patch's TEST files alone, on the base revision,
+ * through the same verifier the patch goes through. `failed` is the evidence wanted: the test fails without the fix. A
+ * patch with no test file, or a verifier that broke, is recorded as such, and gate 2 then fails: missing is not a failure
+ * of the test. With `github-actions` this is a commit on `starfish/<cycle>` that the target's CI judges, deleted again.
+ */
+async function recordFailsBefore(
+  deps: LoopDeps,
+  ctx: { id: string; loaded: LoopSubject; heartbeat: () => Promise<void>; note: (event: RunEvent) => Promise<void>; renew: () => Promise<void> },
+  patch: string
+): Promise<void> {
+  const forPatchSha256 = sha256(patch);
+  const tests = testOnlyPatch(patch);
+  if (tests === null) {
+    await ctx.note({ stage: "before", type: "unavailable", summary: "No test file in the patch: nothing can show it failing before the fix", record: { status: "unavailable", rule: "no-test-in-patch", forPatchSha256 } });
+    return;
+  }
+  await ctx.renew();
+  let ran: VerifyResult;
+  try {
+    ran = await (deps.verify ?? verifyPatch)({ cycleId: ctx.id, sourceDir: ctx.loaded.sourceDir, patch: tests, baseRevision: ctx.loaded.baseRevision, config: deps.config, heartbeat: ctx.heartbeat });
+  } catch (err) {
+    if (err instanceof LeaseLost) throw err;
+    await ctx.note({ stage: "before", type: "error", summary: "The run of the tests before the fix could not be completed", record: { status: "error", rule: "verifier-error", forPatchSha256 } });
+    return;
+  }
+  await ctx.note({
+    stage: "before",
+    type: ran.status,
+    summary: ran.status === "failed" ? "The patch's tests fail without the fix, as they should" : `The patch's tests alone: ${ran.reason}`,
+    data: { rule: ran.rule, exitCode: ran.exitCode ?? null },
+    record: { status: ran.status, rule: ran.rule, patchSha256: ran.patchSha256, forPatchSha256, exitCode: ran.exitCode ?? null },
+  });
 }
 
 /** The pull request this cycle already opened: recorded on the cycle, or found by the opener's own lookup. */

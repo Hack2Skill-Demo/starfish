@@ -1090,3 +1090,97 @@ describe("runCycle: a declined incident is reconsidered on new evidence (#8)", (
     expect(model.count("triage")).toBe(1);
   });
 });
+
+describe("runCycle: auto-merge evidence (#9)", () => {
+  const SRC_FILE = "functions/src/orders/createOrder.js";
+  const TEST_FILE = "functions/src/orders/createOrder.test.js";
+  const HEAD = "b".repeat(40);
+  const sourceHunk = (changed: string[]) => [`--- a/${SRC_FILE}`, `+++ b/${SRC_FILE}`, `@@ -1,${3 + changed.filter((l) => !l.startsWith("+")).length} +1,${3 + changed.filter((l) => !l.startsWith("-")).length} @@`, " function get(o) {", "   const x = o;", ...changed, " }"];
+  const testFile = [
+    `diff --git a/${TEST_FILE} b/${TEST_FILE}`,
+    "new file mode 100644",
+    "--- /dev/null",
+    `+++ b/${TEST_FILE}`,
+    "@@ -0,0 +1,2 @@",
+    '+const { get } = require("./createOrder.js");',
+    "+if (get(undefined) !== null) process.exit(1);",
+  ];
+  const FIX = [...sourceHunk(["+  if (!x) return null;", "   return x.total;"]), ...testFile, ""].join("\n");
+  // Correct, and tested, but not one of the allowed classes: a person merges it.
+  const OTHER_FIX = [...sourceHunk(["-  return x.total;", "+  return x ? x.total : null;"]), ...testFile, ""].join("\n");
+  const stackIncident: Incident = { ...incident, stackTrace: `TypeError: Cannot read properties of undefined\n    at get (/workspace/${SRC_FILE}:3:12)` };
+
+  function mergeDeps(model: ReturnType<typeof scripted>, allowed: boolean, extra: Partial<LoopDeps> = {}, opened: PullRequestRequest[] = []): LoopDeps {
+    mkdirSync(join(src, "functions/src/orders"), { recursive: true });
+    writeFileSync(join(src, SRC_FILE), "function get(o) {\n  const x = o;\n  return x.total;\n}\nmodule.exports = { get };\n");
+    cfgOver = { verifyCommand: `node ${TEST_FILE}`, ...cfgOver };
+    return {
+      ...deps(model, {}, opened),
+      load: async () => ({ subject: { incident: stackIncident, status: "new" }, files: [{ path: SRC_FILE, content: "" }], sourceDir: src, baseRevision: "rev1" }),
+      openPullRequest: async (req) => {
+        opened.push(req);
+        return { number: 7, url: "https://example.test/pull/7", headSha: HEAD };
+      },
+      autoMergeAllowed: async () => allowed,
+      ...extra,
+    };
+  }
+  const fixWithTest = fixOf(FIX, { testAdded: true });
+
+  it("where auto-merge may apply: runs the patch's tests alone first (they fail), and records a pending candidate", async () => {
+    const opened: PullRequestRequest[] = [];
+    const r = await runCycle(mergeDeps(scripted({ triage: [act], fix: [fixWithTest], review: [held] }), true, {}, opened), key);
+    expect(r).toMatchObject({ kind: "finished", state: "done", outcome: "pr-opened" });
+    expect(await kinds()).toEqual(["cycle:started", "triage:decision", "fix:proposed", "before:failed", "verify:passed", "review:approve", "pr:opened", "merge:pending"]);
+    const s = (await cycleDoc()).summary;
+    expect(s.before).toMatchObject({ status: "failed", rule: "command-failed", forPatchSha256: s.verify.patchSha256 });
+    expect(s.merge).toMatchObject({ state: "pending", number: 7, headSha: HEAD, gate1: "pass", fixClass: "null-guard", sourceFile: SRC_FILE, causeFrame: true, patchSha256: s.verify.patchSha256 });
+    expect(opened[0]!.autoMerge).toBe(true);
+  });
+
+  it("a non-demo target, or the switch off, prepares nothing: no before-run, no candidate, a plain PR", async () => {
+    const opened: PullRequestRequest[] = [];
+    await runCycle(mergeDeps(scripted({ triage: [act], fix: [fixWithTest], review: [held] }), false, {}, opened), key);
+    expect(await kinds()).toEqual(["cycle:started", "triage:decision", "fix:proposed", "verify:passed", "review:approve", "pr:opened"]);
+    const s = (await cycleDoc()).summary;
+    expect(s.before).toBeUndefined();
+    expect(s.merge).toBeUndefined();
+    expect(opened[0]!.autoMerge).toBeUndefined();
+  });
+
+  it("in a dry run prepares nothing, even with the switch on", async () => {
+    cfgOver = { dryRun: true };
+    await runCycle(mergeDeps(scripted({ triage: [act], fix: [fixWithTest], review: [held] }), true), key);
+    expect((await kinds()).some((k) => k.startsWith("before:") || k.startsWith("merge:"))).toBe(false);
+  });
+
+  it("a fix outside the allowed classes stays an open PR, and a person is told", async () => {
+    const calls: NotifyRequest[] = [];
+    const notify = async (req: NotifyRequest) => (calls.push(req), { state: "sent" as const, attempts: 1 });
+    const opened: PullRequestRequest[] = [];
+    await runCycle(mergeDeps(scripted({ triage: [act], fix: [fixOf(OTHER_FIX, { testAdded: true })], review: [held] }), true, { notify }, opened), key);
+    expect(await kinds()).toEqual(["cycle:started", "triage:decision", "fix:proposed", "verify:passed", "review:approve", "pr:opened", "merge:skipped", "notify:pending", "notify:sent"]);
+    expect((await cycleDoc()).summary.merge).toMatchObject({ state: "skipped", gate1: "fail" });
+    expect(opened[0]!.autoMerge).toBeUndefined();
+    expect(calls.at(-1)).toMatchObject({ path: "human", rule: "auto-merge-gate1" });
+  });
+
+  it("records that nothing can show 'fails before' when the patch has no test", async () => {
+    const noTest = [...sourceHunk(["+  if (!x) return null;", "   return x.total;"]), ""].join("\n");
+    cfgOver = { verifyCommand: "true" };
+    await runCycle(mergeDeps(scripted({ triage: [act], fix: [fixOf(noTest)], review: [held] }), true), key);
+    const s = (await cycleDoc()).summary;
+    expect(s.before).toMatchObject({ status: "unavailable", rule: "no-test-in-patch" });
+    expect(s.merge).toMatchObject({ state: "pending" }); // gate 2 refuses it in the merge step: "fails before" is not shown
+  });
+
+  it("a candidate whose head the opener cannot vouch for is handed to a person at once", async () => {
+    const calls: NotifyRequest[] = [];
+    const notify = async (req: NotifyRequest) => (calls.push(req), { state: "sent" as const, attempts: 1 });
+    const d = mergeDeps(scripted({ triage: [act], fix: [fixWithTest], review: [held] }), true, { notify });
+    d.openPullRequest = async () => ({ number: 7, url: "https://example.test/pull/7" });
+    await runCycle(d, key);
+    expect((await cycleDoc()).summary.merge).toMatchObject({ state: "skipped", reason: "head-unknown" });
+    expect(calls.at(-1)).toMatchObject({ path: "human", rule: "auto-merge-gate1" });
+  });
+});

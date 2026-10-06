@@ -492,6 +492,66 @@ describe("loadConfig: where a missing index may be created", () => {
   });
 });
 
+describe("loadConfig: auto-merge and fast-revert (#9)", () => {
+  const VARS = [
+    "STARFISH_AUTO_MERGE",
+    "STARFISH_MERGE_FREEZE",
+    "STARFISH_AUTO_MERGE_TARGETS",
+    "STARFISH_AUTO_MERGE_EXCLUDED_PATHS",
+    "STARFISH_MAX_MERGES_PER_DAY",
+    "STARFISH_MERGE_CHECK_WAIT_MINUTES",
+    "STARFISH_FAST_REVERT_MINUTES",
+    "STARFISH_FAST_REVERT_GRACE_MINUTES",
+  ];
+  beforeEach(() => {
+    vi.stubEnv("GOOGLE_CLOUD_PROJECT", "home-project");
+    for (const v of VARS) vi.stubEnv(v, undefined as unknown as string);
+  });
+  afterEach(() => vi.unstubAllEnvs());
+
+  it("merges nothing by default: the switch off, no target allowed", () => {
+    expect(loadConfig()).toMatchObject({
+      autoMerge: false,
+      mergeFreeze: false,
+      autoMergeTargets: [],
+      autoMergeExcludedPaths: [],
+      maxMergesPerDay: 3,
+      mergeCheckWaitMinutes: 120,
+      fastRevertMinutes: 60,
+      fastRevertGraceMinutes: 10,
+    });
+  });
+
+  it("reads every value", () => {
+    vi.stubEnv("STARFISH_AUTO_MERGE", "true");
+    vi.stubEnv("STARFISH_MERGE_FREEZE", "yes");
+    vi.stubEnv("STARFISH_AUTO_MERGE_TARGETS", "acme/demo-shop, acme/other");
+    vi.stubEnv("STARFISH_AUTO_MERGE_EXCLUDED_PATHS", "functions/src/legacy/");
+    vi.stubEnv("STARFISH_MAX_MERGES_PER_DAY", "1");
+    vi.stubEnv("STARFISH_MERGE_CHECK_WAIT_MINUTES", "30");
+    vi.stubEnv("STARFISH_FAST_REVERT_MINUTES", "45");
+    vi.stubEnv("STARFISH_FAST_REVERT_GRACE_MINUTES", "5");
+    expect(loadConfig()).toMatchObject({
+      autoMerge: true,
+      mergeFreeze: true,
+      autoMergeTargets: ["acme/demo-shop", "acme/other"],
+      autoMergeExcludedPaths: ["functions/src/legacy/"],
+      maxMergesPerDay: 1,
+      mergeCheckWaitMinutes: 30,
+      fastRevertMinutes: 45,
+      fastRevertGraceMinutes: 5,
+    });
+  });
+
+  it.each([["STARFISH_AUTO_MERGE", "maybe"], ["STARFISH_AUTO_MERGE_TARGETS", "demo-shop"], ["STARFISH_AUTO_MERGE_TARGETS", "a/b/c"], ["STARFISH_MAX_MERGES_PER_DAY", "0"], ["STARFISH_FAST_REVERT_MINUTES", "-1"]])(
+    "refuses %s=%s at startup",
+    (name, value) => {
+      vi.stubEnv(name, value);
+      expect(() => loadConfig()).toThrow(name);
+    }
+  );
+});
+
 describe("loadConfig: admin actions", () => {
   beforeEach(() => {
     vi.stubEnv("STARFISH_USERS_COLLECTION", "");

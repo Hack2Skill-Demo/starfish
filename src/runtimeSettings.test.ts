@@ -151,6 +151,14 @@ describe("validateSettings", () => {
     expect(validateSettings({ version: 1, modelCallBudget: 50 }).ok).toBe(true);
   });
 
+  it("accepts the merge switches (#9), and refuses anything but a boolean for them", () => {
+    expect(validateSettings({ version: 1, autoMerge: true, mergeFreeze: false })).toEqual({ ok: true, settings: { autoMerge: true, mergeFreeze: false } });
+    for (const bad of ["true", 1, null, "on"]) {
+      expect(validateSettings({ version: 1, autoMerge: bad }).ok).toBe(false);
+      expect(validateSettings({ version: 1, mergeFreeze: bad }).ok).toBe(false);
+    }
+  });
+
   it("rejects switches that aren't booleans and budgets that aren't whole numbers from 1 to 50", () => {
     for (const bad of ["false", 0, 1, null, "yes"]) {
       expect(validateSettings({ version: 1, dryRun: bad }).ok).toBe(false);
@@ -237,6 +245,13 @@ describe("applySettings", () => {
       modelCallBudget: 9,
     });
     expect(applySettings(safe, {})).toMatchObject({ dryRun: true, reviewRequired: true, automationEnabled: true, modelCallBudget: 6 });
+  });
+
+  it("overrides the merge switches, and never the target allowlist, which is the environment's alone (#9)", () => {
+    const base = testConfig({ autoMerge: false, mergeFreeze: false, autoMergeTargets: ["acme/demo"] });
+    expect(applySettings(base, { autoMerge: true, mergeFreeze: true })).toMatchObject({ autoMerge: true, mergeFreeze: true, autoMergeTargets: ["acme/demo"] });
+    expect(applySettings(base, {})).toMatchObject({ autoMerge: false, mergeFreeze: false });
+    expect(Object.isFrozen(applySettings(base, {}).autoMergeTargets)).toBe(true);
   });
 
   it("overrides the model and region, leaving the Vertex project and the verify job's region alone", () => {

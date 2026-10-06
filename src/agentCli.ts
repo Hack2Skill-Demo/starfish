@@ -12,9 +12,11 @@
  *
  * It reads the watched project's logs (counter-check and samples), the target repository (a shallow clone,
  * with STARFISH_GITHUB_TOKEN if one is set), writes Starfish's store, and calls Gemini. After the pass, with a GitHub
- * client, it reads back the pull requests earlier cycles opened (src/agent/reconcile.ts). Exits 1 when a cycle
- * threw, the pass stopped early or reading pull requests back stopped (credentials, rate limit), 2 when preflight
- * refused, 0 otherwise.
+ * client, it reads back the pull requests earlier cycles opened (src/agent/reconcile.ts), takes auto-merge candidates
+ * to merged or to a person (src/agent/autoMerge.ts, #9: only where an admin turned it on for an allowed target), and
+ * watches Starfish's own merges for the fast-revert (src/agent/fastRevert.ts). Exits 1 when a cycle threw, the pass
+ * stopped early, reading pull requests back stopped (credentials, rate limit) or a merge step failed as a whole, 2 when
+ * preflight refused, 0 otherwise.
  */
 import { randomUUID } from "node:crypto";
 import { hostname } from "node:os";
@@ -25,7 +27,9 @@ import { loadChildProcessBasics, loadConfig, loadGithubToken, loadSlackAlertsWeb
 import { RuntimeConfigLoader } from "./runtimeSettings.js";
 import { createAskJson } from "./vertex.js";
 import { redactPii } from "./ingest/redact.js";
-import { makeAutomationSwitch } from "./agent/automationSwitch.js";
+import { makeAutomationSwitch, makeMergeSwitch } from "./agent/automationSwitch.js";
+import { runAutoMergeStep } from "./agent/autoMerge.js";
+import { runFastRevertStep } from "./agent/fastRevert.js";
 import { createGitCheckout, createLoader } from "./agent/assemble.js";
 import { runCycle } from "./agent/loop.js";
 import { countCyclesStartedToday, runAgentPass, selectCandidates } from "./agent/pass.js";
@@ -136,6 +140,14 @@ if (indexHeal) {
 
 const owner = `agent-${hostname()}-${process.pid}-${randomUUID().slice(0, 8)}`;
 const automationEnabled = makeAutomationSwitch(settings, db);
+// The merge switches (#9), read fresh: the kill switch, dry run, the merge freeze, `autoMerge`, the target allowlist.
+const mergeBlocked = makeMergeSwitch(settings, db);
+const incidentStatus = async (id: string): Promise<IncidentStatus | null> => {
+  const snap = await db.collection(cfg.incidentCollection).doc(id).get();
+  const status = snap.data()?.status;
+  return snap.exists && INCIDENT_STATUSES.includes(status as IncidentStatus) ? (status as IncidentStatus) : null;
+};
+const notify = slackOnCall ? createSlackNotifier({ webhookUrl: slackOnCall, uiBaseUrl: cfg.uiBaseUrl }) : undefined;
 const deps = {
   db,
   config: cfg,
@@ -144,12 +156,10 @@ const deps = {
   // The model and region of this pass's snapshot: an admin's override on Settings reaches the call (#7).
   ask: createAskJson(cfg),
   load: loader.load,
-  incidentStatus: async (id: string): Promise<IncidentStatus | null> => {
-    const snap = await db.collection(cfg.incidentCollection).doc(id).get();
-    const status = snap.data()?.status;
-    return snap.exists && INCIDENT_STATUSES.includes(status as IncidentStatus) ? (status as IncidentStatus) : null;
-  },
+  incidentStatus,
   automationEnabled,
+  // Auto-merge evidence is prepared only while the merge switches allow it (#9); the loop itself never merges.
+  autoMergeAllowed: async () => (await mergeBlocked()) === null,
   reconsider: cfg,
   ...(indexHeal && { indexHeal }),
   ...(remoteVerify && { verify: remoteVerify }),
@@ -158,7 +168,7 @@ const deps = {
   // Given in a dry run too, so the cycle records that an issue would have been filed; the loop files nothing then.
   ...(github && { openIssue: github.openIssue }),
   // Given in a dry run too, so the cycle records that a person would have been told; the loop sends nothing then.
-  ...(slackOnCall && { notify: createSlackNotifier({ webhookUrl: slackOnCall, uiBaseUrl: cfg.uiBaseUrl }) }),
+  ...(notify && { notify }),
   // The optional #ops-alerts channel: one "new incident" message per cycle Starfish acts on or escalates. Dry run: none sent.
   ...(slackAlerts && { alert: createSlackAlerter({ webhookUrl: slackAlerts, uiBaseUrl: cfg.uiBaseUrl }) }),
 };
@@ -210,6 +220,22 @@ try {
       failed = failed || rec.stoppedBecause !== undefined;
     } catch (err) {
       console.error(`agent: reading pull requests back failed: ${redactPii(err instanceof Error ? err.message : String(err)).slice(0, 300)}`);
+      failed = true;
+    }
+
+    // Auto-merge (#9), then the fast-revert watch on Starfish's own merges. Each step re-reads the switches itself and
+    // does nothing while automation is off; with the switches off, a waiting candidate goes to a person. A dry run merges
+    // nothing (it is one of the switches) and tells nobody, like the loop.
+    const stepDeps = { db, config: cfg, client: github, now: () => new Date(), owner, blockedBy: mergeBlocked, ...(!cfg.dryRun && notify && { notify }) };
+    try {
+      const m = await runAutoMergeStep({ ...stepDeps, incidentStatus });
+      console.log(`agent: auto-merge: ${m.considered} candidate(s), ${m.merged} merged, ${m.skipped} handed to a person, ${m.waiting} waiting${m.paused ? " (automation off: paused)" : ""}`);
+      for (const e of m.errors) console.error(`  ${e.cycleId}: auto-merge: ${e.message}`);
+      const r = await runFastRevertStep(stepDeps);
+      console.log(`agent: fast-revert: ${r.considered} watched, ${r.cleared} cleared, ${r.opened} revert(s) opened, ${r.reverted} reverted, ${r.escalated} escalated${r.paused ? " (automation off: paused)" : ""}`);
+      for (const e of r.errors) console.error(`  ${e.cycleId}: fast-revert: ${e.message}`);
+    } catch (err) {
+      console.error(`agent: the merge steps failed: ${redactPii(err instanceof Error ? err.message : String(err)).slice(0, 300)}`);
       failed = true;
     }
   }

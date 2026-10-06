@@ -298,7 +298,14 @@ export interface Waterfall {
  * Stages that appear only on some cycles (a cycle Starfish acts on or escalates files an issue and alerts the team, one that ends waiting for a person tells one, #17), so they are not in
  * KNOWN_STAGES, which would show every cycle a "not reached" row for them. They get a readable title when present.
  */
-const OPTIONAL_STAGE_TITLES: Record<string, string> = { issue: "GitHub issue", alert: "Alert the team", notify: "Tell a person" };
+const OPTIONAL_STAGE_TITLES: Record<string, string> = {
+  issue: "GitHub issue",
+  alert: "Alert the team",
+  notify: "Tell a person",
+  // Auto-merge (#9): the patch's tests alone on the base revision, and the merge candidate.
+  before: "Test before the fix",
+  merge: "Auto-merge",
+};
 
 const titleOf = (stage: string): string =>
   [...KNOWN_STAGES, ...INDEX_STAGES].find((s) => s.stage === stage)?.title ?? OPTIONAL_STAGE_TITLES[stage] ?? stage;
