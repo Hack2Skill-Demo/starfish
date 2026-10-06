@@ -16,7 +16,15 @@ vi.mock("./config.js", () => ({
   loadConfig: () => ({ projectId: "store-project", vertexProjectId: "vertex-project", location: "l", model: "m" }),
 }));
 
-const { askJson } = await import("./vertex.js");
+const { askJson, UNTRUSTED_DATA_NOTICE } = await import("./vertex.js");
+
+describe("the untrusted-data notice", () => {
+  it("names every section of a prompt that carries untrusted text, the verify output of candidate code included (#138)", () => {
+    for (const section of ["INCIDENT", "SOURCE CONTEXT", "PATCH", "THE FIXER CLAIMS", "PREVIOUS ATTEMPT FAILED VERIFICATION"]) {
+      expect(UNTRUSTED_DATA_NOTICE.replace(/\s+/g, " ")).toContain(section);
+    }
+  });
+});
 
 describe("askJson", () => {
   it("redacts and bounds the model output quoted in its parse error", async () => {

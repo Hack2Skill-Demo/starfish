@@ -171,6 +171,24 @@ describe("releaseLease", () => {
     expect(await acquireLease(db, cfg, key, "c", at(4))).toEqual({ acquired: false, reason: "retries-exhausted" });
   });
 
+  it("released uncounted (the kill switch, #133), the next start is not another attempt, even at the cap; the next counted one is", async () => {
+    cfg = { ...cfg, maxCycleAttempts: 1 };
+    await acquireLease(db, cfg, key, "a", t0);
+    await releaseLease(db, cfg, "inc1_r0", "a", at(1), "automation-disabled", { uncounted: true });
+    expect(await cycle()).toMatchObject({ owner: null, resumeUncounted: true });
+    expect(await acquireLease(db, cfg, key, "b", at(2))).toMatchObject({ acquired: true, attempt: 1, resumed: true });
+    expect(await cycle()).toMatchObject({ attempts: 1, resumeUncounted: false });
+    await releaseLease(db, cfg, "inc1_r0", "b", at(3), "model-call-failed");
+    expect(await acquireLease(db, cfg, key, "c", at(4))).toEqual({ acquired: false, reason: "retries-exhausted" });
+  });
+
+  it("still ends at the deadline however often it is paused", async () => {
+    cfg = { ...cfg, cycleDeadlineMinutes: 10 };
+    await acquireLease(db, cfg, key, "a", t0);
+    await releaseLease(db, cfg, "inc1_r0", "a", at(1), "automation-disabled", { uncounted: true });
+    expect(await acquireLease(db, cfg, key, "b", new Date(t0.getTime() + 601_000))).toEqual({ acquired: false, reason: "deadline-passed" });
+  });
+
   it("is fenced: only the current holder can release", async () => {
     await acquireLease(db, cfg, key, "a", t0);
     expect(await releaseLease(db, cfg, "inc1_r0", "intruder", at(1), "x")).toEqual({ ok: false, reason: "lease-lost" });

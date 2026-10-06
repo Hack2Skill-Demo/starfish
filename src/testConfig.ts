@@ -51,7 +51,7 @@ export function testConfig(over: Partial<StarfishConfig> = {}): StarfishConfig {
     githubCommitName: "Starfish",
     githubCommitEmail: "starfish@users.noreply.github.com",
     leaseSeconds: 300,
-    cycleDeadlineMinutes: 60,
+    cycleDeadlineMinutes: 360,
     maxCycleAttempts: 3,
     logResourceTypes: [...DEFAULT_LOG_RESOURCE_TYPES],
     ignoredMessages: [...DEFAULT_IGNORED_MESSAGES],

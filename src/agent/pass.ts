@@ -164,6 +164,8 @@ export interface PassSummary {
   errors: { incidentId: string; message: string }[];
   /** The pass stopped early because the store or the opener kept failing. */
   aborted: boolean;
+  /** The pass did nothing at all: automation is off (or the switch could not be read, which reads as off). */
+  skipped?: "automation-disabled";
 }
 
 /** Stop after this many cycles in a row threw: the thing they depend on is probably down. */
@@ -176,6 +178,11 @@ export interface PassDeps {
   maxCycles: number;
   /** Redacts and bounds an error before it is kept. */
   describeError: (err: unknown) => string;
+  /**
+   * The kill switch, asked once before anything is selected (#133). Off: the pass starts no cycle at all, so no
+   * incident is touched while automation is off. Absent: on.
+   */
+  automationEnabled?: () => Promise<boolean>;
 }
 
 /**
@@ -186,6 +193,9 @@ export interface PassDeps {
  * Selecting candidates may throw: with nothing to select there is nothing to report, so the caller sees it.
  */
 export async function runAgentPass(deps: PassDeps): Promise<PassSummary> {
+  if (deps.automationEnabled && !(await deps.automationEnabled())) {
+    return { considered: 0, ran: 0, results: [], errors: [], aborted: false, skipped: "automation-disabled" };
+  }
   const candidates = await deps.select(deps.maxCycles);
   const summary: PassSummary = { considered: candidates.length, ran: 0, results: [], errors: [], aborted: false };
   let streak = 0;

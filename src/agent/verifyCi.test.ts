@@ -20,7 +20,7 @@ const request = (over: Partial<VerifyRequest> = {}): VerifyRequest => ({
 });
 const passedLocally: VerifyResult = { status: "passed", rule: "command-passed", reason: "ok", patchSha256: "x", changedFiles: ["a.ts"], output: "", durationMs: 1 };
 
-function harness(opts: { runs?: (poll: number) => CheckRun[]; local?: VerifyResult; annotations?: CheckAnnotation[] | Error; push?: () => Promise<{ branch: string; commit: string }>; deleteFails?: boolean; checks?: string[] } = {}) {
+function harness(opts: { runs?: (poll: number) => CheckRun[]; local?: VerifyResult; annotations?: CheckAnnotation[] | Error; push?: () => Promise<{ branch: string; commit: string }>; deleteFails?: boolean; checks?: string[]; dryRun?: boolean } = {}) {
   const calls: string[] = [];
   let poll = 0;
   let t = 0;
@@ -44,7 +44,7 @@ function harness(opts: { runs?: (poll: number) => CheckRun[]; local?: VerifyResu
     },
   };
   const verify = createCiVerifier(
-    { verifyTimeoutSeconds: 600, verifyChecks: opts.checks ?? ["verify"] },
+    { verifyTimeoutSeconds: 600, verifyChecks: opts.checks ?? ["verify"], dryRun: opts.dryRun ?? false },
     { client, check: async () => opts.local ?? passedLocally, now: () => t, sleep: async (ms) => void (t += ms), pollMs: 10_000 }
   );
   return { verify, calls, clock: () => t };
@@ -130,14 +130,36 @@ describe("createCiVerifier", () => {
     await expect(harness({ runs: () => [run({ status: "queued", conclusion: null })] }).verify(request())).rejects.toThrow(/not started .*"verify"/);
   });
 
-  it("lets a failed push escape, and still tries to remove what it may have left", async () => {
+  it("lets a refused push escape and never deletes a branch it did not push: an open pull request's head stays (#134)", async () => {
     const h = harness({
       push: async () => {
         throw new GithubError("branch-conflict", "A pull request already exists");
       },
     });
     await expect(h.verify(request())).rejects.toThrow("pull request already exists");
+    expect(h.calls.filter((c) => c.startsWith("delete:"))).toEqual([]);
+  });
+
+  it("deletes a passed branch in a dry run, where nothing will be opened from it (#138)", async () => {
+    const h = harness({ dryRun: true });
+    expect((await h.verify(request())).status).toBe("passed");
     expect(h.calls).toContain("delete:inc1_r0");
+  });
+
+  it("beats the heartbeat on every poll while it waits (#132)", async () => {
+    let beats = 0;
+    const h = harness({ runs: (n) => (n < 3 ? [run({ status: "in_progress", conclusion: null })] : [run()]) });
+    const r = await h.verify(request({ heartbeat: async () => void beats++ }));
+    expect(r.status).toBe("passed");
+    expect(beats).toBe(3);
+  });
+
+  it("stops at once when the heartbeat says the lease is lost, and leaves the branch to the cycle's new holder (#132)", async () => {
+    const h = harness({ runs: () => [run({ status: "in_progress", conclusion: null })] });
+    const lost = new Error("lease lost");
+    await expect(h.verify(request({ heartbeat: async () => Promise.reject(lost) }))).rejects.toBe(lost);
+    expect(h.calls.filter((c) => c.startsWith("list:"))).toHaveLength(1);
+    expect(h.calls.filter((c) => c.startsWith("delete:"))).toEqual([]);
   });
 
   it("does not let a failed branch deletion or failed annotations change the verdict", async () => {
@@ -160,6 +182,6 @@ describe("createCiVerifier", () => {
     await expect(h.verify(request({ cycleId: undefined }))).rejects.toThrow(VerifyRunnerError);
     await expect(h.verify(request({ baseRevision: undefined }))).rejects.toThrow(VerifyRunnerError);
     expect(h.calls).toEqual([]);
-    expect(() => createCiVerifier({ verifyTimeoutSeconds: 1, verifyChecks: [] }, { client: {} as CiClient })).toThrow(VerifyRunnerError);
+    expect(() => createCiVerifier({ verifyTimeoutSeconds: 1, verifyChecks: [], dryRun: false }, { client: {} as CiClient })).toThrow(VerifyRunnerError);
   });
 });

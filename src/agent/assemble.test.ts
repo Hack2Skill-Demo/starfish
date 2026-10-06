@@ -7,6 +7,7 @@ import type { Firestore } from "firebase-admin/firestore";
 import { loadChildProcessBasics } from "../config.js";
 import { createGitCheckout, createLoader, toIncident, type CheckoutFn } from "./assemble.js";
 import { agentPreflight } from "./preflight.js";
+import { testConfig } from "../testConfig.js";
 
 const ENV = { ...loadChildProcessBasics(), GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t", GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" };
 const git = (cwd: string, ...a: string[]) => execFileSync("git", a, { cwd, env: ENV, encoding: "utf8" }).trim();
@@ -124,7 +125,19 @@ describe("createLoader", () => {
 });
 
 describe("agentPreflight", () => {
-  const ok = { verifyIsolation: "in-process" as const, verifyCommand: "pnpm test", githubRepo: "a/b", dryRun: true, environment: "demo", verifyJobName: "", verifyBucket: "", verifyChecks: [] as string[] };
+  const ok = {
+    verifyIsolation: "in-process" as const,
+    verifyCommand: "pnpm test",
+    githubRepo: "a/b",
+    dryRun: true,
+    environment: "demo",
+    verifyJobName: "",
+    verifyBucket: "",
+    verifyChecks: [] as string[],
+    verifyTimeoutSeconds: 600,
+    leaseSeconds: 300,
+    cycleDeadlineMinutes: 360,
+  };
   it("lets a fully configured dry run start", () => expect(agentPreflight(ok, undefined)).toEqual([]));
   it("refuses with no isolation chosen, no command, no repo", () => {
     const p = agentPreflight({ ...ok, verifyIsolation: "none", verifyCommand: " ", githubRepo: "" }, undefined);
@@ -142,6 +155,25 @@ describe("agentPreflight", () => {
     expect(agentPreflight(ci, "t")).toEqual(["STARFISH_VERIFY_ISOLATION is github-actions but STARFISH_VERIFY_CHECKS is empty: name the check runs of the target's CI that must pass."]);
     expect(agentPreflight({ ...ci, verifyChecks: ["verify"] }, undefined)[0]).toMatch(/pushes a branch.*even in a dry run/);
     expect(agentPreflight({ ...ci, verifyChecks: ["verify"] }, "t")).toEqual([]);
+  });
+  it("lets the defaults start with every isolation (#137)", () => {
+    const d = testConfig();
+    for (const verifyIsolation of ["in-process", "cloud-run-job", "github-actions"] as const) {
+      const p = agentPreflight({ ...d, verifyIsolation, verifyCommand: "x", githubRepo: "a/b", verifyJobName: "j", verifyBucket: "b", verifyChecks: ["v"] }, "t");
+      expect(p).toEqual([]);
+    }
+  });
+  it("refuses a deadline shorter than twice one verify wait plus the lease, by where verify runs (#137)", () => {
+    // in-process: 2 * (600 + 300) s = 30 min. github-actions waits 600 s more for a runner: 50 min.
+    expect(agentPreflight({ ...ok, cycleDeadlineMinutes: 30 }, undefined)).toEqual([]);
+    expect(agentPreflight({ ...ok, cycleDeadlineMinutes: 29 }, undefined)[0]).toMatch(/STARFISH_CYCLE_DEADLINE_MINUTES is 29.*30 minutes/);
+    const ci = { ...ok, verifyIsolation: "github-actions" as const, verifyChecks: ["verify"] };
+    expect(agentPreflight({ ...ci, cycleDeadlineMinutes: 49 }, "t")[0]).toMatch(/50 minutes/);
+    expect(agentPreflight({ ...ci, cycleDeadlineMinutes: 60 }, "t")).toEqual([]);
+  });
+  it("refuses a lease too short to outlast a model call", () => {
+    expect(agentPreflight({ ...ok, leaseSeconds: 59 }, undefined)[0]).toMatch(/STARFISH_LEASE_SECONDS is 59/);
+    expect(agentPreflight({ ...ok, leaseSeconds: 60 }, undefined)).toEqual([]);
   });
   it("wants a token only when it is going to open pull requests", () => {
     expect(agentPreflight({ ...ok, dryRun: false }, undefined)).toHaveLength(1);

@@ -9,8 +9,12 @@
  *   2. The patch is pushed as one commit on `starfish/<cycle>` on top of the pinned revision (githubPr.ts).
  *   3. The named check runs on that exact commit are waited for. All of them must succeed. The commit is the evidence:
  *      checks belong to a commit, and the commit is the patch applied to the revision it was written against.
- *   4. A branch whose patch did not pass is deleted, so the next draft in the cycle can use the name; one that passed
- *      stays, and the pull request is opened from it (the opener finds it is exactly this change).
+ *   4. A branch THIS CALL pushed whose patch did not pass is deleted, so the next draft in the cycle can use the name;
+ *      one that passed stays, and the pull request is opened from it (the opener finds it is exactly this change). In a
+ *      dry run (`dryRun`) nothing will be opened from it, so a passed branch is deleted too; the check runs, and the
+ *      verdict recorded on the cycle, outlive it. A branch this call did not push (the push was refused because a pull
+ *      request already uses it, #134) is never deleted, and neither is one once the cycle's lease is lost: the cycle's
+ *      new holder may be using it.
  *
  * Verdicts. All named checks succeeded: `passed`. A named check finished any other way: `failed`, with what the checks
  * said (names, conclusions, their summaries, a few annotations) as the fixer's feedback; this is thinner than a test
@@ -21,6 +25,9 @@
  * Trust, plainly: the target's CI is now the judge and the sandbox. Its workflow runs the patch's code on a push to a
  * branch in the target repository, where that workflow's secrets are available to it; the workflow that judges Starfish's
  * patches must hold none (the deploy docs say so). A branch is pushed even in a dry run.
+ *
+ * While it waits it calls the request's `heartbeat` on every poll, which keeps the cycle's lease alive and throws once
+ * it is lost (#132).
  */
 import { createHash } from "node:crypto";
 import type { StarfishConfig } from "../config.js";
@@ -40,7 +47,7 @@ export interface CiVerifyDeps {
   pollMs?: number;
 }
 
-export type CiVerifyConfig = Pick<StarfishConfig, "verifyTimeoutSeconds" | "verifyChecks">;
+export type CiVerifyConfig = Pick<StarfishConfig, "verifyTimeoutSeconds" | "verifyChecks" | "dryRun">;
 
 /** Time for a runner to be assigned and start, on top of the limit for the checks themselves. */
 export const CI_SLACK_SECONDS = 600;
@@ -80,10 +87,23 @@ export function createCiVerifier(cfg: CiVerifyConfig, deps: CiVerifyDeps): (req:
       durationMs: now() - started,
     });
 
+    // Step 4 deletes only what this call pushed, and nothing once the lease is gone (#134, #132).
+    let pushed = false;
     let kept = false;
+    let leaseGone = false;
+    const beat = async (): Promise<void> => {
+      if (!req.heartbeat) return;
+      try {
+        await req.heartbeat();
+      } catch (err) {
+        leaseGone = true;
+        throw err;
+      }
+    };
     try {
       // Step 2.
       const { commit } = await client.pushPatchBranch({ cycleId: req.cycleId, baseRevision: req.baseRevision, patch: req.patch, patchSha256, rootCause: "a proposed fix, being verified" });
+      pushed = true;
       const where = commit.slice(0, 12);
       const names = cfg.verifyChecks;
 
@@ -96,7 +116,7 @@ export function createCiVerifier(cfg: CiVerifyConfig, deps: CiVerifyDeps): (req:
         if (missing.length === 0 && unfinished.length === 0) {
           const bad = runs.filter((r) => r.conclusion !== "success");
           if (bad.length === 0) {
-            kept = true;
+            kept = !cfg.dryRun;
             return done("passed", "command-passed", `The target's CI passed (${names.join(", ")}) on ${where}.`, summarize(runs, []), 0);
           }
           const details = await describeFailures(client, bad);
@@ -112,11 +132,12 @@ export function createCiVerifier(cfg: CiVerifyConfig, deps: CiVerifyDeps): (req:
               : `CI had not started ${unfinished.map((r) => `"${r.name}"`).join(", ")} on ${where} by the deadline (no runner?)`
           );
         }
+        await beat();
         await sleep(pollMs);
       }
     } finally {
       // Step 4. Best effort: a branch left behind is a nuisance, and the next push of this cycle replaces it.
-      if (!kept) await client.deleteBranch(req.cycleId).catch(() => undefined);
+      if (pushed && !kept && !leaseGone) await client.deleteBranch(req.cycleId).catch(() => undefined);
     }
   };
 }

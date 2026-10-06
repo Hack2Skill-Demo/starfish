@@ -129,7 +129,7 @@ describe("loadConfig: agent cycles", () => {
   afterEach(() => vi.unstubAllEnvs());
 
   it("defaults: starfish_cycles, a 5-minute lease, a 60-minute deadline, 3 starts", () => {
-    expect(loadConfig()).toMatchObject({ cycleCollection: "starfish_cycles", leaseSeconds: 300, cycleDeadlineMinutes: 60, maxCycleAttempts: 3 });
+    expect(loadConfig()).toMatchObject({ cycleCollection: "starfish_cycles", leaseSeconds: 300, cycleDeadlineMinutes: 360, maxCycleAttempts: 3 });
   });
 
   it("reads each from the environment", () => {

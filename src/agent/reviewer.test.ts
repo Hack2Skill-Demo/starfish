@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { MAX_ATTACKS, REVIEW_SCHEMA, renderForReview, reviewPatch, sha256, verdictOf, type Attack, type ReviewRequest } from "./reviewer.js";
+import { MAX_ATTACKS, MAX_REVIEW_PATCH_CHARS, REVIEW_SCHEMA, renderForReview, reviewPatch, sha256, verdictOf, type Attack, type ReviewRequest } from "./reviewer.js";
+import { MAX_FIX_PATCH_BYTES } from "./fixer.js";
 import type { AskJson } from "./triage.js";
 import type { VerifyResult } from "./verifyGate.js";
 import { SEEDED_SECRETS } from "../ingest/testSecrets.js";
@@ -92,6 +93,25 @@ describe("reviewPatch: a review", () => {
   it("flags without blocking", async () => {
     const r = await reviewPatch(request(), stub({ attacks: [attack("flagged")] }).ask);
     expect(r.verdict).toBe("approve-with-flags");
+  });
+
+  it("says in the prompt when the patch was cut, and then cannot approve it cleanly (#136)", async () => {
+    const big = PATCH + "+" + "x".repeat(MAX_REVIEW_PATCH_CHARS) + "\n";
+    const { ask, calls } = stub({ attacks: [attack("held")] });
+    const r = await reviewPatch(request({ patch: big, verify: verified(big) }), ask);
+    expect(calls[0]!.prompt).toContain(`PATCH (CUT: only the first ${MAX_REVIEW_PATCH_CHARS} of ${big.length} characters are shown`);
+    expect(r.verdict).toBe("approve-with-flags");
+    expect(r.attacks![0]).toMatchObject({ outcome: "flagged", attack: "Review the whole patch" });
+    expect(r.attacks![0]!.detail).toContain("the rest was not reviewed");
+  });
+
+  it("does not flag a patch it was shown whole, and the fixer's limit is what it can be shown (#136)", async () => {
+    const whole = PATCH + "+" + "x".repeat(MAX_REVIEW_PATCH_CHARS - PATCH.length - 2) + "\n";
+    expect(whole.length).toBe(MAX_REVIEW_PATCH_CHARS);
+    const { ask, calls } = stub({ attacks: [attack("held")] });
+    expect((await reviewPatch(request({ patch: whole, verify: verified(whole) }), ask)).verdict).toBe("approve");
+    expect(calls[0]!.prompt).not.toContain("CUT:");
+    expect(MAX_FIX_PATCH_BYTES).toBe(MAX_REVIEW_PATCH_CHARS);
   });
 
   it("ignores a verdict the model volunteers: the attacks decide", async () => {
