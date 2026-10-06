@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { loadChildProcessBasics, loadConfig, loadGithubToken, loadReplayConfig, loadSlackAlertsWebhook, loadSlackOnCallWebhook, loadVerifyCommandBasics, loadVerifyRunnerRequest, usingFirestoreEmulator } from "./config.js";
+import { loadChildProcessBasics, loadConfig, loadGithubToken, loadReplayConfig, loadSlackAlertsWebhook, loadSlackOnCallWebhook, loadTwilioCredentials, loadVerifyCommandBasics, loadVerifyRunnerRequest, usingFirestoreEmulator } from "./config.js";
 
 // Env vars that loadConfig reads; cleared first so the developer's own .env/shell can't leak in.
 const KEYS = [
@@ -648,5 +648,57 @@ describe("loadConfig: the Cloud Monitoring signal (#19)", () => {
     expect(loadConfig().monitoringSignals).toEqual([]);
     vi.stubEnv("STARFISH_MONITORING_ENABLED", "true");
     expect(() => loadConfig()).toThrow("lists none");
+  });
+});
+
+describe("phone escalation settings (#37)", () => {
+  const TWILIO = ["STARFISH_TWILIO_ACCOUNT_SID", "STARFISH_TWILIO_AUTH_TOKEN", "STARFISH_TWILIO_FROM_NUMBER"];
+  beforeEach(() => {
+    for (const k of [...KEYS, ...TWILIO, "STARFISH_PHONE_ESCALATION", "STARFISH_ONCALL_AUDIO_URL", "STARFISH_TWILIO_WEBHOOK_URL", "STARFISH_TWILIO_API_URL"]) vi.stubEnv(k, "");
+    vi.stubEnv("GOOGLE_CLOUD_PROJECT", "home-project");
+  });
+  afterEach(() => vi.unstubAllEnvs());
+
+  it("is off by default, with no audio file and nowhere for Twilio to call back", () => {
+    const c = loadConfig();
+    expect(c.phoneEscalation).toBe(false);
+    expect(c.onCallAudioUrl).toBe("");
+    expect(c.twilioWebhookUrl).toBe("");
+    expect(c.twilioApiUrl).toBe("https://api.twilio.com");
+    expect(c.onCallPeopleCollection).toBe("starfish_oncall_people");
+  });
+
+  it("takes an https audio file and an exact https origin for the webhooks, and refuses anything else", () => {
+    vi.stubEnv("STARFISH_PHONE_ESCALATION", "true");
+    vi.stubEnv("STARFISH_ONCALL_AUDIO_URL", "https://storage.googleapis.com/my-bucket/oncall.mp3");
+    vi.stubEnv("STARFISH_TWILIO_WEBHOOK_URL", "https://admin.example.test");
+    const c = loadConfig();
+    expect(c.phoneEscalation).toBe(true);
+    expect(c.onCallAudioUrl).toBe("https://storage.googleapis.com/my-bucket/oncall.mp3");
+    expect(c.twilioWebhookUrl).toBe("https://admin.example.test");
+    vi.stubEnv("STARFISH_ONCALL_AUDIO_URL", "http://storage.example/a.mp3");
+    expect(() => loadConfig()).toThrow(/STARFISH_ONCALL_AUDIO_URL/);
+    vi.stubEnv("STARFISH_ONCALL_AUDIO_URL", "");
+    vi.stubEnv("STARFISH_TWILIO_WEBHOOK_URL", "https://admin.example.test/twilio");
+    expect(() => loadConfig()).toThrow(/STARFISH_TWILIO_WEBHOOK_URL/);
+  });
+
+  it("reads Twilio's credentials as secrets: all three or none, each of its shape, refused by name without echoing", () => {
+    expect(loadTwilioCredentials()).toBeUndefined();
+    const sid = `AC${"0".repeat(32)}`;
+    const token = "a".repeat(32);
+    vi.stubEnv("STARFISH_TWILIO_ACCOUNT_SID", sid);
+    expect(() => loadTwilioCredentials()).toThrow(/must be set together/);
+    vi.stubEnv("STARFISH_TWILIO_AUTH_TOKEN", token);
+    vi.stubEnv("STARFISH_TWILIO_FROM_NUMBER", "+15550001111");
+    expect(loadTwilioCredentials()).toEqual({ accountSid: sid, authToken: token, fromNumber: "+15550001111" });
+    vi.stubEnv("STARFISH_TWILIO_AUTH_TOKEN", "not-a-token-zzzz");
+    try {
+      loadTwilioCredentials();
+      expect.unreachable();
+    } catch (err) {
+      expect((err as Error).message).toMatch(/STARFISH_TWILIO_AUTH_TOKEN/);
+      expect((err as Error).message).not.toContain("not-a-token-zzzz");
+    }
   });
 });

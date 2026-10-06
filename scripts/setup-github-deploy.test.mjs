@@ -88,6 +88,9 @@ describe("scripts/setup-github-deploy.sh", () => {
       const secrets = project.find((l) => roleOf(l) === "roles/secretmanager.admin");
       expect(secrets).toContain('resource.name == "projects/<project-number>/secrets/starfish-github-token"');
       expect(secrets).toContain('resource.name.startsWith("projects/<project-number>/secrets/starfish-slack-oncall/")');
+      for (const twilio of ["starfish-twilio-account-sid", "starfish-twilio-auth-token", "starfish-twilio-from-number"]) {
+        expect(secrets).toContain(`resource.name == "projects/<project-number>/secrets/${twilio}"`);
+      }
       expect(secrets).not.toMatch(/startsWith\("projects\/<project-number>\/secrets\/starfish-"\)/);
       const buckets = project.find((l) => roleOf(l) === "roles/storage.admin");
       expect(buckets).toContain('resource.name.startsWith("projects/_/buckets/run-sources-star-proj-")');

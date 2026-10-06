@@ -220,4 +220,60 @@ describe("admin API server", () => {
     const junk = await fetch(`${base}/api/incidents/i/retire`, { method: "POST", headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" }, body: "{not json" });
     expect(junk.status).toBe(200);
   });
+
+  it("hands Twilio's form body, raw query and signature header to the webhooks, and answers with their TwiML as it is", async () => {
+    const seen: unknown[] = [];
+    const base = await start({
+      twilioWebhooks: (req) => (seen.push(req), Promise.resolve({ status: 200, contentType: "text/xml", body: "<Response/>" })),
+    });
+    const r = await fetch(`${base}/twilio/gather?e=c1_r0&s=0`, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded", "X-Twilio-Signature": "sig=" },
+      body: new URLSearchParams({ Digits: "1", CallSid: "CA1" }).toString(),
+    });
+    expect(r.status).toBe(200);
+    expect(r.headers.get("content-type")).toBe("text/xml");
+    expect(await r.text()).toBe("<Response/>");
+    expect(seen).toEqual([{ method: "POST", path: "/twilio/gather", query: "e=c1_r0&s=0", form: { Digits: "1", CallSid: "CA1" }, signature: "sig=" }]);
+  });
+});
+
+describe("admin API: phone escalation (#37)", () => {
+  it("answers 404 for every on-call and Twilio route when Twilio is not wired", async () => {
+    const { api } = fakes();
+    expect((await api(post("/api/oncall/people/p1/send-code"))).status).toBe(404);
+    expect((await api(post("/api/oncall/people/p1/confirm", { body: { code: "123456" } }))).status).toBe(404);
+    expect((await api({ method: "POST", path: "/twilio/voice", query: "e=a&s=0", form: {} })).status).toBe(404);
+  });
+
+  it("needs the ID token for the opt-in routes, and passes the verified uid", async () => {
+    const calls: string[] = [];
+    const { api } = fakes({
+      sendOnCallCode: (id, uid) => (calls.push(`send:${id}:${uid}`), Promise.resolve({ ok: true })),
+      confirmOnCallNumber: (id, code, uid) => (calls.push(`confirm:${id}:${code}:${uid}`), Promise.resolve({ ok: true })),
+    });
+    expect((await api({ method: "POST", path: "/api/oncall/people/p1/send-code" })).status).toBe(401);
+    expect((await api(post("/api/oncall/people/p1/send-code"))).status).toBe(200);
+    expect((await api(post("/api/oncall/people/p1/confirm", { body: { code: "123456" } }))).status).toBe(200);
+    expect((await api(post("/api/oncall/people/p1/confirm", { body: { code: "12x456" } }))).status).toBe(400);
+    expect((await api(post("/api/oncall/people/p1/confirm"))).status).toBe(400);
+    expect(calls).toEqual(["send:p1:admin-1", "confirm:p1:123456:admin-1"]);
+  });
+
+  it("turns each refusal into a status and a short reason safe to show", async () => {
+    const { api } = fakes({
+      sendOnCallCode: () => Promise.resolve({ ok: false, reason: "not-admin" }),
+      confirmOnCallNumber: () => Promise.resolve({ ok: false, reason: "wrong-code" }),
+    });
+    expect((await api(post("/api/oncall/people/p1/send-code"))).status).toBe(403);
+    const wrong = await api(post("/api/oncall/people/p1/confirm", { body: { code: "123456" } }));
+    expect(wrong).toMatchObject({ status: 400, body: { error: "wrong code" } });
+  });
+
+  it("sends Twilio's routes to the webhooks WITHOUT an ID token (the signature is checked there), and hides their errors", async () => {
+    const { api } = fakes({ twilioWebhooks: () => Promise.reject(new Error("store down: secret details")) });
+    const r = await api({ method: "POST", path: "/twilio/status", query: "e=a&s=0", form: {} });
+    expect(r.status).toBe(500);
+    expect(r.text).toBe("server error");
+  });
 });

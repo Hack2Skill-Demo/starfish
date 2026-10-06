@@ -414,7 +414,7 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
       send: () => Promise<DeliveryResult>
     ): Promise<void> => {
       if (cfg.dryRun) {
-        await note({ stage, type: "dry-run", summary: words.dryRun, record: { state: "dry-run" } });
+        await note({ stage, type: "dry-run", summary: words.dryRun, record: { state: "dry-run", at: deps.now().toISOString() } });
         return;
       }
       const snap = await db.collection(cfg.cycleCollection).doc(id).get();
@@ -435,7 +435,8 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
         type: result.state,
         summary: result.state === "sent" ? words.sent : `${words.failed}: ${result.reason ?? "unknown"}`,
         data: { attempts: result.attempts },
-        record: { state: result.state, attempts: result.attempts, ...(result.reason !== undefined && { reason: result.reason }) },
+        // `at`: when a person was told, which the phone escalation (#37, src/oncall/escalation.ts) waits after.
+        record: { state: result.state, attempts: result.attempts, at: deps.now().toISOString(), ...(result.reason !== undefined && { reason: result.reason }) },
       });
     };
     const about = (loaded: LoopSubject) => {

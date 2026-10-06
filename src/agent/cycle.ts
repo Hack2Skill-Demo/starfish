@@ -29,7 +29,7 @@
  * Run by the agent job (`pnpm agent`).
  */
 import { FieldValue, Timestamp } from "firebase-admin/firestore";
-import type { DocumentReference, Firestore } from "firebase-admin/firestore";
+import type { DocumentReference, Firestore, Transaction } from "firebase-admin/firestore";
 import type { StarfishConfig } from "../config.js";
 import { isSensitiveKey, redactPii } from "../ingest/redact.js";
 import { MAX_DECISION_HISTORY, reconsiderTrigger, recentReconsiderations, utcDay, type ReconsiderPolicy, type ReconsiderTrigger } from "./reconsider.js";
@@ -297,6 +297,40 @@ export async function recordEvent(
     });
     return { ok: true, seq } as const;
   });
+}
+
+/**
+ * Append events to a cycle NO worker holds, inside the caller's transaction (#37: the phone escalation of a cycle that
+ * is waiting for a person). `d` is the cycle as read in that same transaction, so the sequence stays contiguous against
+ * every other writer, which all go through transactions on `eventCount`. Refused (false, nothing written) for a missing
+ * or running cycle: a running cycle's events belong to its lease holder. Same redaction and bounds as `recordEvent`;
+ * the last event's `record` becomes `summary.<stage>`. Writes only, so the caller must have done all its reads.
+ */
+export function appendEventsInTransaction(
+  tx: Transaction,
+  ref: DocumentReference,
+  d: Record<string, unknown> | undefined,
+  now: Date,
+  events: readonly RunEvent[]
+): boolean {
+  if (d === undefined || d.state === "running" || events.length === 0) return false;
+  let seq = Number(d.eventCount ?? 0);
+  let lastStage = "";
+  let lastRecord: Flat | undefined;
+  for (const event of events) {
+    const { record, ...eventFields } = sanitizeEvent(event);
+    seq += 1;
+    tx.create(ref.collection("events").doc(String(seq).padStart(6, "0")), { seq, environment: d.environment, at: Timestamp.fromDate(now), ...eventFields });
+    lastStage = eventFields.stage;
+    lastRecord = record;
+  }
+  tx.update(ref, {
+    eventCount: seq,
+    stage: lastStage,
+    updatedAt: Timestamp.fromDate(now),
+    ...(lastRecord && STAGE_RE.test(lastStage) && { [`summary.${lastStage}`]: lastRecord }),
+  });
+  return true;
 }
 
 /**

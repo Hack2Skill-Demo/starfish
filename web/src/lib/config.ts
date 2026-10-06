@@ -113,6 +113,12 @@ export interface WebConfig {
    */
   cycleCollection: string;
   /**
+   * The on-call policy ({onCallCollection}/policy) and people ({onCallPeopleCollection}/{id}), admins only (#37). Must
+   * match the engine's STARFISH_ONCALL_COLLECTION / STARFISH_ONCALL_PEOPLE_COLLECTION and firestore.rules.
+   */
+  onCallCollection: string;
+  onCallPeopleCollection: string;
+  /**
    * The engine counts as stopped when its last run finished longer ago than this. Set it to
    * about three times the schedule's interval: the engine does not know its own cadence.
    */
@@ -206,6 +212,8 @@ export function bootstrapWebConfig(
         settingsCollection: env.VITE_STARFISH_SETTINGS_COLLECTION || "starfish_settings",
         runCollection: env.VITE_STARFISH_RUN_COLLECTION || "starfish_runs",
         cycleCollection: env.VITE_STARFISH_CYCLE_COLLECTION || "starfish_cycles",
+        onCallCollection: env.VITE_STARFISH_ONCALL_COLLECTION || "starfish_oncall",
+        onCallPeopleCollection: env.VITE_STARFISH_ONCALL_PEOPLE_COLLECTION || "starfish_oncall_people",
         engineStaleMinutes: positiveMinutes(env.VITE_STARFISH_STALE_MINUTES, 90),
         adminApiUrl: normalizeAdminApiUrl(env.VITE_STARFISH_ADMIN_API_URL),
         environment: env.VITE_STARFISH_ENV || "dev",

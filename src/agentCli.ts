@@ -23,7 +23,7 @@ import { hostname } from "node:os";
 import { Logging } from "@google-cloud/logging";
 import { initializeApp } from "firebase-admin/app";
 import { getFirestore } from "firebase-admin/firestore";
-import { loadChildProcessBasics, loadConfig, loadGithubToken, loadSlackAlertsWebhook, loadSlackOnCallWebhook } from "./config.js";
+import { loadChildProcessBasics, loadConfig, loadGithubToken, loadSlackAlertsWebhook, loadSlackOnCallWebhook, loadTwilioCredentials } from "./config.js";
 import { RuntimeConfigLoader } from "./runtimeSettings.js";
 import { createAskJson } from "./vertex.js";
 import { redactPii } from "./ingest/redact.js";
@@ -47,11 +47,14 @@ import { observeIndexHeals } from "./indexheal/observe.js";
 import { createIndexProbe } from "./indexheal/probe.js";
 import { createFirestoreProbeRunner } from "./indexheal/probeFirestore.js";
 import type { IndexHealWiring } from "./agent/indexPath.js";
+import { runEscalationTick } from "./oncall/escalation.js";
+import { createTwilioClient } from "./oncall/twilio.js";
 
 const base = loadConfig();
 const token = loadGithubToken();
 const slackOnCall = loadSlackOnCallWebhook();
 const slackAlerts = loadSlackAlertsWebhook();
+const twilioCredentials = loadTwilioCredentials();
 
 const refused = agentPreflight(base, token);
 if (refused.length > 0) {
@@ -239,6 +242,18 @@ try {
       console.error(`agent: the merge steps failed: ${redactPii(err instanceof Error ? err.message : String(err)).slice(0, 300)}`);
       failed = true;
     }
+  }
+
+  // Phone escalation (#37): start a call sequence for an urgent cycle whose Slack message went unacknowledged, and take
+  // each open one a step further. Off unless STARFISH_PHONE_ESCALATION and the admin's switch are both on; a dry run
+  // places no call and records what it would have done.
+  try {
+    const twilio = twilioCredentials && createTwilioClient({ credentials: twilioCredentials, apiUrl: cfg.twilioApiUrl });
+    const t = await runEscalationTick({ db, config: cfg, now: () => new Date(), owner, ...(twilio && { twilio }) });
+    if (t.skipped !== "off") console.log(`agent: phone escalation: ${t.skipped === "policy-unreadable" ? "the on-call policy is invalid or unreadable; nothing done" : `${t.armed} armed, ${t.placed} call(s) placed, ${t.closed} closed`}`);
+  } catch (err) {
+    console.error(`agent: phone escalation failed: ${redactPii(err instanceof Error ? err.message : String(err)).slice(0, 300)}`);
+    failed = true;
   }
 } finally {
   await loader.disposeAll();

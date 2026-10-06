@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { retireIncident, runIngestNow, type AdminApiDeps } from "./adminApi";
+import { confirmOnCallNumber, retireIncident, runIngestNow, sendOnCallCode, type AdminApiDeps } from "./adminApi";
 
 vi.mock("./config", () => ({ webConfig: () => ({ adminApiUrl: "" }) }));
 vi.mock("./firebase", () => ({ firebaseAuth: vi.fn() }));
@@ -52,6 +52,23 @@ describe("runIngestNow", () => {
       throw new TypeError("Failed to fetch");
     }) as unknown as typeof fetch;
     expect(await runIngestNow(deps(f))).toEqual({ ok: false, message: "Could not reach the admin service." });
+  });
+});
+
+describe("on-call opt-in (#37)", () => {
+  it("asks for a code and confirms one, on the person's own route", async () => {
+    const f = reply(200, { ok: true });
+    expect(await sendOnCallCode(deps(f), "p1")).toEqual({ ok: true, value: null });
+    expect(await confirmOnCallNumber(deps(f), "p1", "123456")).toEqual({ ok: true, value: null });
+    const calls = (f as unknown as ReturnType<typeof vi.fn>).mock.calls as [string, RequestInit][];
+    expect(calls.map((c) => c[0])).toEqual(["https://admin.example/api/oncall/people/p1/send-code", "https://admin.example/api/oncall/people/p1/confirm"]);
+    expect(calls[1]![1].body).toBe(JSON.stringify({ code: "123456" }));
+  });
+
+  it("shows the server's short reason for a refusal about the code, and the usual words for the session or the role", async () => {
+    expect(await confirmOnCallNumber(deps(reply(400, { error: "wrong code" })), "p1", "123456")).toEqual({ ok: false, message: "Wrong code." });
+    expect(await sendOnCallCode(deps(reply(409, { error: "phone escalation is off on this deployment" })), "p1")).toEqual({ ok: false, message: "Phone escalation is off on this deployment." });
+    expect(await sendOnCallCode(deps(reply(403, { error: "admins only" })), "p1")).toEqual({ ok: false, message: "Only admins can do this." });
   });
 });
 

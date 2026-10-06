@@ -338,6 +338,8 @@ const OPTIONAL_STAGE_TITLES: Record<string, string> = {
   // Auto-merge (#9): the patch's tests alone on the base revision, and the merge candidate.
   before: "Test before the fix",
   merge: "Auto-merge",
+  // Phone escalation (#37): the calls to the on-call people when the Slack message went unacknowledged.
+  escalation: "Phone the on-call",
 };
 
 const titleOf = (stage: string): string =>
