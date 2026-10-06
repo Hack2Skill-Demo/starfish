@@ -20,7 +20,7 @@ about that product (names, project IDs, code) belongs in this repo.
 
 Every deployment-specific value lives in `src/config.ts` and nowhere else. `src/config.ts`
 is the only file in `src/` allowed to read `process.env` — enforced at edit time by
-`.claude/hooks/config-boundary-guard.sh`. New setting → a `StarfishConfig` field, its env
+`.claude/hooks/config-boundary-guard.sh` and on every file by lint (`eslint.config.js`; tests exempt). New setting → a `StarfishConfig` field, its env
 var and default in `loadConfig()`, and a line in `.env.example`. The README's genericity
 table tracks what still isn't configurable; keep it honest.
 
