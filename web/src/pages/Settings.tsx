@@ -39,14 +39,16 @@ export const CONNECTIONS: Connection[] = [
     icon: GitBranch,
     state: "planned",
     purpose: "File an issue per incident, open fix PRs, and sync status back when they close.",
-    detail: "The pull-request opener is built and tested against a local remote and a fake GitHub API; it has never run against real GitHub. Filing issues and syncing status back are not built.",
+    detail:
+      "The pull-request opener and the incident's issue are built, tested against a local remote and a fake GitHub API, and have never run against real GitHub. Syncing status back when a PR merges or its CI finishes is not built.",
   },
   {
     name: "Slack",
     icon: MessageSquare,
     state: "planned",
     purpose: "Notify on incidents, escalate what needs a human, report what healed.",
-    detail: "Design only.",
+    detail:
+      "The \"needs a human\" message is built, tested over local HTTP against a fake webhook, and has never run against real Slack. The #ops-alerts and #ops-log messages are not built.",
   },
   {
     name: "Rules & feedback engines",

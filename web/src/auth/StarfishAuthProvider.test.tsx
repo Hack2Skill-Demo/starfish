@@ -222,15 +222,38 @@ describe("StarfishAuthProvider", () => {
       expect(state()).toHaveTextContent('"roles":["admin"]');
     });
 
-    it("starts a guest session on request, once however often it is asked", async () => {
+    it("starts a guest session on request, once however often it is asked while that attempt is in flight", async () => {
+      let finish: (() => void) | undefined;
+      mocks.signInAnonymously.mockImplementation(() => new Promise((res) => (finish = () => res({ user: { uid: "guest-1" } }))));
       renderProvider();
       await act(() => mocks.tokenListener!(null));
       const user = userEvent.setup();
       await user.click(screen.getByText("Enter as guest"));
       await user.click(screen.getByText("Enter as guest"));
+      expect(mocks.signInAnonymously).toHaveBeenCalledTimes(1);
+      await act(async () => finish?.());
       await waitFor(() => expect(guestResult()).toHaveTextContent("true"));
       expect(mocks.signInAnonymously).toHaveBeenCalledTimes(1);
       expect(mocks.signInAnonymously).toHaveBeenCalledWith(mocks.auth);
+    });
+
+    it("tries again after an unplanned sign-out, instead of answering with the old attempt's `true` (#144)", async () => {
+      // A guest signs in with email; a failed roles read then signs them out without their asking.
+      renderProvider();
+      await act(() => mocks.tokenListener!(null));
+      const user = userEvent.setup();
+      await user.click(screen.getByText("Enter as guest"));
+      await waitFor(() => expect(guestResult()).toHaveTextContent("true"));
+      await act(() => mocks.tokenListener!({ uid: "guest-1", isAnonymous: true }));
+      mocks.resolveRoles.mockRejectedValueOnce({ code: "permission-denied" });
+      await act(() => mocks.tokenListener!({ uid: "op-1", isAnonymous: false }));
+      expect(mocks.authSignOut).toHaveBeenCalled();
+      await act(() => mocks.tokenListener!(null));
+
+      guestResult().textContent = "";
+      await user.click(screen.getByText("Enter as guest"));
+      await waitFor(() => expect(guestResult()).toHaveTextContent("true"));
+      expect(mocks.signInAnonymously).toHaveBeenCalledTimes(2);
     });
 
     it("reports false, without throwing, when Anonymous sign-in is off for the project", async () => {

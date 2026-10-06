@@ -144,22 +144,32 @@ export function StarfishAuthProvider({
     return () => document.removeEventListener("visibilitychange", handleVisibilityChange);
   }, [auth]);
 
-  // One guest attempt per page load, and none after a deliberate sign-out: someone who just
-  // signed out is heading to the sign-in page, not asking to be a guest again.
+  // One guest attempt at a time, and none after a deliberate sign-out: someone who just
+  // signed out is heading to the sign-in page, not asking to be a guest again. Only the
+  // attempt in flight is shared. A settled one is not kept: a visitor who was a guest, signed
+  // in with email and was then signed out without meaning to (a failed focus token check or
+  // roles read, above) must get a fresh attempt, not the old `true` with nobody signed in,
+  // which left RequireRole on "Loading..." until a reload (#144).
   const guestAttempt = useRef<Promise<boolean> | null>(null);
   const signedOutOnPurpose = useRef(false);
 
   const enterAsGuest = useCallback(async (): Promise<boolean> => {
     if (signedOutOnPurpose.current) return false;
-    guestAttempt.current ??= signInAnonymously(auth).then(
-      () => true,
-      (error: unknown) => {
-        // Anonymous sign-in is simply off (a private deployment), or the network failed.
-        console.debug("[StarfishAuthProvider] guest sign-in unavailable:", error);
-        return false;
-      }
-    );
-    return guestAttempt.current;
+    if (guestAttempt.current) return guestAttempt.current;
+    const attempt = signInAnonymously(auth)
+      .then(
+        () => true,
+        (error: unknown) => {
+          // Anonymous sign-in is simply off (a private deployment), or the network failed.
+          console.debug("[StarfishAuthProvider] guest sign-in unavailable:", error);
+          return false;
+        }
+      )
+      .finally(() => {
+        if (guestAttempt.current === attempt) guestAttempt.current = null;
+      });
+    guestAttempt.current = attempt;
+    return attempt;
   }, [auth]);
 
   const signOut = useMemo(() => {

@@ -6,8 +6,9 @@
  *    a fixed list, so the filter lists what's present.
  *  - The expanded row shows the underlying cause (`errorDetail`) and the
  *    engine's triage state.
- *  - GitHub issue / PR links appear when those fields exist. Nothing writes them
- *    yet: GitHub integration is design-only (docs/design/auto-merge-policy.md).
+ *  - GitHub issue / PR links appear when those fields exist, and only as https
+ *    URLs. Nothing writes them onto the incident yet: the agent's issue and PR
+ *    opener (src/integrations/githubPr.ts) records its results on the cycle.
  */
 import { Fragment, useState } from "react";
 import { Link, useSearchParams } from "react-router";
@@ -40,6 +41,7 @@ import { asFilterValue } from "../lib/urlFilters";
 import { formatDateTime, formatRelativeTime } from "../lib/formatters";
 import { buildCloudLoggingUrl } from "../lib/cloudLoggingUrl";
 import { useEnvironment } from "../lib/useSettings";
+import { safeUrl } from "../lib/runsModel";
 import {
   INCIDENT_STATUSES,
   SCAN_LIMIT,
@@ -325,6 +327,10 @@ export default function Incidents() {
                     const busy = pendingId === row.id && mutation.isPending;
                     const isExpanded = expandedIds.has(row.id);
                     const hasDetail = Boolean(row.stackTrace || row.errorName || row.errorDetail || row.triageState);
+                    // Stored links are data: shown only when they are https URLs, as on Runs and the evidence page.
+                    const issueUrl = safeUrl(row.githubIssueUrl);
+                    const prUrl = safeUrl(row.githubPrUrl);
+                    const previousIssueUrl = safeUrl(row.previousIssueUrl);
                     const logsUrl = buildCloudLoggingUrl({
                       functionName: row.functionName,
                       projectId: row.sourceProjectId,
@@ -374,9 +380,9 @@ export default function Incidents() {
                                       Logs
                                     </a>
                                   )}
-                                  {row.githubIssueUrl && (
+                                  {issueUrl && (
                                     <a
-                                      href={row.githubIssueUrl}
+                                      href={issueUrl}
                                       target="_blank"
                                       rel="noopener noreferrer"
                                       className="inline-flex items-center gap-1 text-xs font-medium text-info-800 hover:underline dark:text-info-500"
@@ -385,9 +391,9 @@ export default function Incidents() {
                                       {row.githubIssueNumber ? `#${row.githubIssueNumber}` : "Issue"}
                                     </a>
                                   )}
-                                  {row.githubPrUrl && (
+                                  {prUrl && (
                                     <a
-                                      href={row.githubPrUrl}
+                                      href={prUrl}
                                       target="_blank"
                                       rel="noopener noreferrer"
                                       className={`inline-flex items-center gap-1 text-xs font-medium hover:underline ${PR_STYLES[row.githubPrState ?? "open"]}`}
@@ -445,9 +451,9 @@ export default function Incidents() {
                                 {row.recurrenceCount === 1 ? "Regression" : `Regression ×${row.recurrenceCount}`}
                               </p>
                             )}
-                            {row.recurrenceCount > 0 && row.previousIssueUrl && (
+                            {row.recurrenceCount > 0 && previousIssueUrl && (
                               <a
-                                href={row.previousIssueUrl}
+                                href={previousIssueUrl}
                                 target="_blank"
                                 rel="noopener noreferrer"
                                 className="text-xs font-medium text-orange-700 hover:underline dark:text-orange-400"

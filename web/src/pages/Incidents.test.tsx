@@ -113,6 +113,27 @@ describe("Incidents page", () => {
     expect(await screen.findByText("No incidents")).toBeInTheDocument();
   });
 
+  it("links a stored issue or PR only when it is an https URL (#144)", async () => {
+    mocks.listIncidents.mockResolvedValue({
+      rows: [
+        { ...base, githubIssueUrl: "https://github.com/o/r/issues/7", githubIssueNumber: 7, githubPrUrl: "javascript:alert(1)", githubPrNumber: 8 },
+        {
+          ...base,
+          id: "2",
+          functionName: "orders-updateOrder",
+          recurrenceCount: 1,
+          previousIssueUrl: "http://example.com/issues/3",
+          previousIssueNumber: 3,
+        },
+      ],
+      capped: false,
+    });
+    renderPage();
+    expect(await screen.findByRole("link", { name: "#7" })).toHaveAttribute("href", "https://github.com/o/r/issues/7");
+    expect(screen.queryByRole("link", { name: /PR #8/ })).toBeNull();
+    expect(screen.queryByRole("link", { name: /was #3/ })).toBeNull();
+  });
+
   it("shows no such notice when the settings simply don't exist", async () => {
     renderPage();
     await screen.findByText("mailDrainer");

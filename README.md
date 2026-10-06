@@ -145,7 +145,7 @@ demo runs.
 
 The Incidents page opens with a line saying whether the engine is running (from the engine's last-run record: failed, stopped past a configurable threshold, read capped, or never recorded), so a quiet list can't pass for good news; nothing writes that record in production until the ingest job is deployed and scheduled: `scripts/deploy-gcp.sh` does both but has not been run against a real project yet (#6).
 
-The public demo needs no sign-in: a visitor is signed in anonymously and sees the incidents and a view-only Settings page, with no triage buttons (#12). That needs Anonymous sign-in enabled in the Firebase project and only `demo`-labelled data; App Check, the seeded evidence history and the uptime check are not built. A private deployment leaves Anonymous sign-in disabled and still requires an operator account.
+The public demo needs no sign-in: a visitor is signed in anonymously and sees the Overview, the incidents and their evidence, the Runs page and a view-only Settings page, all for the `demo` environment only, with no triage buttons (#12). That needs Anonymous sign-in enabled in the Firebase project and only `demo`-labelled data; App Check, the seeded evidence history and the uptime check are not built. A private deployment leaves Anonymous sign-in disabled and still requires an operator account.
 
 ![Live runs: a missing-index fault, from first error to an evidence PR waiting for a human](docs/design/screens/live-runs-index.png)
 
