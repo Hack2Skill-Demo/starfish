@@ -115,6 +115,7 @@ export async function aggregateErrors(
           sourceErrorClass: parsed.sourceErrorClass,
           errorCode: parsed.errorCode,
           httpStatus: parsed.httpStatus,
+          errorDetail: parsed.errorDetail,
         }),
         errorMessage,
         occurrenceCount: 1,

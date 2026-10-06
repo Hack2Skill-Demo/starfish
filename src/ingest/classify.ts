@@ -1,3 +1,5 @@
+import { findCreateIndexUrl } from "../indexheal/createIndexUrl.js";
+
 /**
  * Error classification.
  *
@@ -27,12 +29,30 @@ export interface ClassificationHints {
   errorCode?: string;
   /** Numeric transport status, e.g. a provider 401. */
   httpStatus?: number;
+  /** The cause kept apart from the title (`jsonPayload.error`), where Firestore puts its create-index URL. */
+  errorDetail?: string;
+}
+
+/** gRPC's spelling (`9 FAILED_PRECONDITION: ...`) and the Firebase one (`failed-precondition`). */
+const FAILED_PRECONDITION_RE = /\bfailed[-_]precondition\b/i;
+
+/**
+ * A missing composite index (#11): Firestore refuses the query with FAILED_PRECONDITION and names the exact
+ * index to create in a console URL. Both parts are structure, not keywords: the code (structured, or as gRPC
+ * prints it), and Google's own create-index URL. A message that only says "requires an index" is not enough.
+ */
+function isMissingIndex(errorMessage: string, hints?: ClassificationHints): boolean {
+  const text = `${errorMessage}\n${hints?.errorDetail ?? ""}`;
+  const code = hints?.errorCode?.toLowerCase();
+  const precondition = code === "failed-precondition" || code === "9" || (code === undefined && FAILED_PRECONDITION_RE.test(text));
+  return precondition && findCreateIndexUrl(text) !== null;
 }
 
 /**
  * Preference order, most trustworthy first:
  *   1. source-asserted class
- *   2. structured error code
+ *   2. structured error code (a failed precondition carrying Google's create-index URL is a
+ *      MissingIndexError, the one class whose fix Google itself specifies)
  *   3. numeric HTTP status
  *   4. message keywords
  *
@@ -47,6 +67,8 @@ export function detectErrorType(errorMessage: string, hints?: ClassificationHint
     ? SOURCE_CLASS_TO_TYPE[hints.sourceErrorClass]
     : undefined;
   if (typeof fromClass === "string") return fromClass;
+
+  if (isMissingIndex(errorMessage, hints)) return "MissingIndexError";
 
   const code = hints?.errorCode?.toLowerCase();
   if (code) {

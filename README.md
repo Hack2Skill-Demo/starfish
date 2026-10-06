@@ -120,8 +120,9 @@ demo runs.
   each one's steps (triage, fix, verify, review, pull request) from the events the engine records,
   live. A step with no event reads "not reached", and a run with no worker holding it is not shown
   as in progress. **The agent job that would fill it is deployable (`DEPLOY_AGENT=1`) and has never run, so on a real
-  deployment the page is empty;** it is exercised against the emulator with seeded data. Not built: the mockup's header
-  (path rule, engine health), the Slack, GitHub-issue, index, deploy, phone and recovery steps (the
+  deployment the page is empty;** it is exercised against the emulator with seeded data. The header shows the path, the
+  triage rule, progress (steps recorded) and the engine's last run. The GitHub-issue and Slack steps appear when a run
+  recorded them. Not built: the index, deploy, phone and recovery steps (the
   loop has no code for them), and the four MVP cases observed end to end (#33 stays open).
 - **Incident evidence:** a first version is built: `/incidents/:id`, linked from the incidents table
   and from the Runs page, shows what was detected and, from the agent's run record, the triage,
@@ -135,7 +136,7 @@ demo runs.
   human, runs in progress, open incidents, regressions, errors per hour (from the incidents' hourly
   buckets), key figures (pull requests opened and failed runs, each as "n of N finished runs"; median run length; untriaged open incidents; errors this hour against the hours before it), what the agent did by path (each row opens the Runs list filtered to runs that ended that way), the latest runs and the engine's status. Every figure is a
   count or median of stored records, not an accuracy score (no run has been scored; see `scoreboard/FORMAT.md`). It does **not** show a run "healed on its own" or merged (nothing records
-  one), the next scheduled run (the engine does not know its cadence), or run events as a feed
+  one), or run events as a feed
   (it lists the latest runs); on a real deployment the run counts are zero until a job runs the agent
   loop (#38 stays open).
 - **Slack messages and GitHub issue/PR bodies:** what Starfish posts elsewhere.
@@ -336,8 +337,9 @@ again right before the one create), creates a single index, hands the operation'
 and waits a bounded time for it. An equal index that already exists or is still building is waited on, never created
 twice, which is also how a crash after a create is recovered; a dry run reads and reports and creates nothing. It
 never deploys a file and never deletes. It is tested against fakes only: **the REST calls have never been made
-against Google**, and the response shapes are from the documentation. **Not built:** nothing calls the executor, so
-no error is classified as its own "needs an index" class and no cycle reaches it; the persistence of the operation,
+against Google**, and the response shapes are from the documentation. Ingest does classify a missing index as its own class,
+`MissingIndexError` (a failed precondition whose text carries Google's create-index URL: the code and the URL, never the
+words alone), but **nothing calls the executor on that class, so no cycle reaches it. Not built:** the persistence of the operation,
 the per-target counter behind the daily cap, the replay of the failing query (the URL alone does not capture it),
 the observation window before "healed", and the evidence PR.
 

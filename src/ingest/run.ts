@@ -25,6 +25,7 @@ import type { StarfishConfig } from "../config.js";
 import type { ConfigSource, ResolvedConfig } from "../runtimeSettings.js";
 import { aggregateErrors, type AggregationResult } from "./aggregate.js";
 import { planWindow, windowOf, type IngestWindow, type WindowPlan } from "./window.js";
+import { cronIntervalMinutes } from "./cadence.js";
 
 export const STATE_DOC = "state";
 export const LAST_RUN_DOC = "last_run";
@@ -234,6 +235,8 @@ async function recordLastRun(
       configSource: s.configSource,
       actionsAllowed: s.actionsAllowed,
       problems: s.problems.slice(0, 20),
+      // How often a run is started, so the UI can say when the next is expected. Absent when not known.
+      ...(cronIntervalMinutes(config.ingestSchedule) !== null && { intervalMinutes: cronIntervalMinutes(config.ingestSchedule) }),
       ...(s.window && { windowStart: Timestamp.fromDate(s.window.start), windowEnd: Timestamp.fromDate(s.window.end) }),
       ...(s.error !== undefined && { error: s.error }),
     });

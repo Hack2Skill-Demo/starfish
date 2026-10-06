@@ -62,11 +62,12 @@ run() {
 set_schedule() { # set_schedule <cron> [lag minutes]
   step "Cloud Scheduler '$SCHEDULER_JOB_NAME': $1"
   run gcloud scheduler jobs update http "$SCHEDULER_JOB_NAME" --project="$PROJECT_ID" --location="$REGION" --schedule="$1"
-  if [ -n "${2:-}" ]; then
-    step "Job '$JOB_NAME': STARFISH_INGEST_LAG_MINUTES=$2"
-    run gcloud run jobs update "$JOB_NAME" --project="$PROJECT_ID" --region="$REGION" \
-      --update-env-vars="STARFISH_INGEST_LAG_MINUTES=$2"
-  fi
+  # The job is told its schedule (so the UI can say when the next run is expected, #38), and the lag when one is given.
+  local env="STARFISH_INGEST_SCHEDULE=$1"
+  [ -z "${2:-}" ] || env="$env@STARFISH_INGEST_LAG_MINUTES=$2"
+  step "Job '$JOB_NAME': ${env//@/, }"
+  run gcloud run jobs update "$JOB_NAME" --project="$PROJECT_ID" --region="$REGION" \
+    --update-env-vars="^@^$env"
 }
 
 case "$MODE" in

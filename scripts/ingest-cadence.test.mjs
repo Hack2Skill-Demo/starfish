@@ -44,7 +44,8 @@ describe("scripts/ingest-cadence.sh", () => {
     expect(r.ran).toBe(false);
     expect(r.out).toMatch(/gcloud scheduler jobs update http starfish-ingest-tick .*--schedule=\* \* \* \* \*/);
     expect(r.out).not.toContain("STARFISH_INGEST_LAG_MINUTES=");
-    expect(r.out).not.toContain("gcloud run jobs update");
+    // The job is told its new schedule, so the UI's "next run expected" follows it (#38).
+    expect(r.out).toMatch(/gcloud run jobs update starfish-ingest .*--update-env-vars=.*STARFISH_INGEST_SCHEDULE=/);
     // It says how to put things back, with the schedule that would be restored.
     expect(r.out).toContain("scripts/ingest-cadence.sh restore");
     expect(r.out).toContain("NORMAL_SCHEDULE='0 * * * *'");
@@ -52,16 +53,17 @@ describe("scripts/ingest-cadence.sh", () => {
 
   it("changes the lag only when asked, and says to restore it too", () => {
     const r = cadence(["recording"], { ...dry, RECORDING_LAG_MINUTES: "2" });
-    expect(r.out).toContain("--update-env-vars=STARFISH_INGEST_LAG_MINUTES=2");
+    expect(r.out).toMatch(/--update-env-vars=.*STARFISH_INGEST_SCHEDULE=.*@STARFISH_INGEST_LAG_MINUTES=2/);
     expect(r.out).toContain("NORMAL_LAG_MINUTES=");
   });
 
   it("restore puts the schedule back, and the lag only when given one", () => {
     const plain = cadence(["restore"], { ...dry, NORMAL_SCHEDULE: "*/15 * * * *" });
     expect(plain.out).toMatch(/--schedule=\*\/15 \* \* \* \*/);
-    expect(plain.out).not.toContain("gcloud run jobs update");
+    expect(plain.out).not.toContain("STARFISH_INGEST_LAG_MINUTES=");
+    expect(plain.out).toMatch(/--update-env-vars=.*STARFISH_INGEST_SCHEDULE=\S*15/);
     const lagged = cadence(["restore"], { ...dry, NORMAL_LAG_MINUTES: "5" });
-    expect(lagged.out).toContain("--update-env-vars=STARFISH_INGEST_LAG_MINUTES=5");
+    expect(lagged.out).toMatch(/--update-env-vars=.*@STARFISH_INGEST_LAG_MINUTES=5/);
   });
 
   it("targets the job and scheduler names of the deploy, and honours the deploy's overrides", () => {

@@ -275,3 +275,12 @@ export function formatDuration(ms: number): string {
   const m = Math.floor(s / 60);
   return m < 60 ? `${m} min ${s % 60} s` : `${Math.floor(m / 60)} h ${m % 60} min`;
 }
+
+/**
+ * "3 of 5 steps recorded": the run header's progress (#33). Counts only steps with an event, out of the loop's
+ * stages plus any optional ones this run recorded; a step in flight or never reached is not counted as done.
+ */
+export function progressText(steps: readonly Pick<Step, "status">[]): string {
+  const done = steps.filter((s) => s.status === "done").length;
+  return `${done} of ${steps.length} steps recorded`;
+}

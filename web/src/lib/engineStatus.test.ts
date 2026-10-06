@@ -10,7 +10,7 @@ vi.mock("firebase/firestore", () => ({
   },
 }));
 
-import { judgeRun, readLastRun, type LastRun } from "./engineStatus";
+import { judgeRun, nextRunAt, readLastRun, type LastRun } from "./engineStatus";
 
 const NOW = Date.parse("2026-10-04T12:00:00.000Z");
 const ts = (ms: number) => ({ toDate: () => new Date(ms) });
@@ -44,6 +44,15 @@ describe("readLastRun", () => {
     mocks.data = stored();
     await readLastRun({} as Firestore, "my_runs");
     expect(mocks.path).toEqual(["my_runs", "last_run"]);
+  });
+
+  it("reads when the run started and how often runs are started, and ignores an interval that is not a positive number", async () => {
+    mocks.data = stored({ startedAt: ts(NOW - 11 * 60_000), intervalMinutes: 5 });
+    expect(await readLastRun({} as Firestore, "r")).toMatchObject({ startedAt: new Date(NOW - 11 * 60_000), intervalMinutes: 5 });
+    for (const bad of [0, -5, "5", Number.NaN]) {
+      mocks.data = stored({ intervalMinutes: bad });
+      expect((await readLastRun({} as Firestore, "r"))?.intervalMinutes).toBeUndefined();
+    }
   });
 
   it("returns the run's outcome, time and counts", async () => {
@@ -112,5 +121,17 @@ describe("judgeRun", () => {
     expect(judge(null)).toBe("never");
     expect(judge(run({ environment: "prod" }), "demo")).toBe("never");
     expect(judgeRun(run({ environment: "prod" }), "demo", NOW, 90).run).toBeNull();
+  });
+});
+
+describe("nextRunAt", () => {
+  const started = new Date("2026-10-05T12:00:00.000Z");
+  it("is the last start plus the schedule's interval", () => {
+    expect(nextRunAt({ startedAt: started, intervalMinutes: 5 })?.toISOString()).toBe("2026-10-05T12:05:00.000Z");
+  });
+  it("says nothing when the engine did not say how often it runs", () => {
+    expect(nextRunAt({ startedAt: started })).toBeNull();
+    expect(nextRunAt({ intervalMinutes: 5 })).toBeNull();
+    expect(nextRunAt(null)).toBeNull();
   });
 });

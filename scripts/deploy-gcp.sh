@@ -314,6 +314,8 @@ fi
 step "Cloud Run job '$JOB_NAME' (image built from the Dockerfile)"
 ENV_VARS="GOOGLE_CLOUD_PROJECT=$PROJECT_ID@STARFISH_WATCHED_PROJECT_ID=$WATCHED_PROJECT_ID@STARFISH_VERTEX_PROJECT_ID=$VERTEX_PROJECT_ID"
 ENV_VARS="$ENV_VARS@GOOGLE_CLOUD_LOCATION=$REGION@STARFISH_ENV=$STARFISH_ENV@STARFISH_DATABASE_ID=$STARFISH_DATABASE_ID"
+# The job is told its own schedule only so the UI can say when the next run is expected (#38).
+ENV_VARS="$ENV_VARS@STARFISH_INGEST_SCHEDULE=$SCHEDULE"
 # With the admin API, its service name is never ingested either: its errors would otherwise become incidents.
 ADMIN_EXCLUDED=""
 [ "$DEPLOY_ADMIN_API" != "1" ] || ADMIN_EXCLUDED=",$ADMIN_SERVICE_NAME"
