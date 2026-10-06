@@ -165,9 +165,11 @@ demo runs.
 - **Overview:** a first version is built and is the page the app opens on: how many runs wait on a
   human, runs in progress, open incidents, regressions, errors per hour (from the incidents' hourly
   buckets), key figures (pull requests opened and failed runs, each as "n of N finished runs"; median run length; untriaged open incidents; errors this hour against the hours before it), what the agent did by path (each row opens the Runs list filtered to runs that ended that way), the latest runs, the latest activity (the newest run events across all runs, each opening its run) and the engine's status. Every figure is a
-  count or median of stored records, not an accuracy score (no run has been scored; see `scoreboard/FORMAT.md`). It does **not** show a run "healed on its own" or merged (the auto-merge step records a merge on
-  the cycle, `summary.merge`, but the Overview does not count it, and nothing has merged); on a real deployment the run counts are zero until a job runs the agent
-  loop (#38 stays open).
+  count or median of stored records, not an accuracy score (no run has been scored; see `scoreboard/FORMAT.md`). "Healed on its own" counts
+  only missing-index runs the engine recorded as healed after their quiet window (`src/indexheal/observe.ts`) and opens the Runs list filtered
+  to them; a merged pull request is never counted as healed (the auto-merge step records a merge on the cycle, `summary.merge`, but the
+  Overview does not count it), and nothing has been healed or merged on a real project. On a real deployment the run
+  counts are zero until a job runs the agent loop.
 - **Slack messages and GitHub issue/PR bodies:** what Starfish posts elsewhere.
 - **Pre-recorded phone call:** to the on-call person when Slack goes unanswered.
 - **Settings:** connections, the engine's rules and on-call.
@@ -390,8 +392,12 @@ query-failing or unverified. Starfish does not measure the traffic in that windo
 it), and it never resolves the incident itself. Runs and the incident page show the index stage and its runtime state.
 Refusals, the daily cap, a failed build, a query still failing after READY, and an index file it cannot extend go to a
 person (Slack when configured). **Never run:** none of the Admin REST calls, the probe's Firestore query or a real
-create-index URL has met Google; the response shapes are from the documentation. Not built: a quota or index-limit
-check beyond the daily cap, and Gemini writing the PR's explanation (the template does).
+create-index URL has met Google; the response shapes are from the documentation. **Also built, same status:** the
+database's index limit (before a create, the Admin API's inventory of every collection group is counted; at or above
+`STARFISH_INDEX_MAX_PER_DATABASE`, default 100, nothing is created and a person decides; a count that cannot be read
+creates nothing), and the incident's GitHub issue, filed for every index cycle through the same opener as a triaged
+incident's (idempotent by cycle, nothing filed in a dry run); the evidence pull request links that issue but does not
+close it, since whether the heal held is a person's call. Not built: Gemini writing the PR's explanation (the template does).
 
 The pieces that act are written and tested, not run: assembling an incident's inputs (`src/agent/assemble.ts`), the
 incident's GitHub issue, and the isolated verify step (`github-actions` or `cloud-run-job`, above) have never run against

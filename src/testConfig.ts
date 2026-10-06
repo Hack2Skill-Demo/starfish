@@ -50,6 +50,7 @@ export function testConfig(over: Partial<StarfishConfig> = {}): StarfishConfig {
     indexAllowedTargets: [],
     indexAutoApply: false,
     indexDailyCap: 3,
+    indexMaxPerDatabase: 100,
     indexProbes: [],
     indexFilePath: "firestore.indexes.json",
     indexWaitMinutes: 10,

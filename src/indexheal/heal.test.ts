@@ -55,12 +55,13 @@ const SETTINGS: HealSettings = {
   autoApply: true,
   dryRun: false,
   dailyCap: 3,
+  maxIndexes: 100,
   pollMs: 10,
   maxWaitMs: 100,
 };
 
 function harness(
-  over: { list?: LiveIndex[][]; ops?: { done: boolean; error?: { code: number; message: string } }[]; automation?: boolean[]; created?: number; file?: unknown; probe?: ProbeVerdict[] } = {}
+  over: { list?: LiveIndex[][]; ops?: { done: boolean; error?: { code: number; message: string } }[]; automation?: boolean[]; created?: number; existing?: number | Error; file?: unknown; probe?: ProbeVerdict[] } = {}
 ) {
   const lists = [...(over.list ?? [[]])];
   const ops = [...(over.ops ?? [{ done: true }])];
@@ -78,6 +79,11 @@ function harness(
     create: vi.fn(async () => {
       calls.push("create");
       return { operation: "projects/demo-app-1/databases/(default)/operations/op1" };
+    }),
+    countIndexes: vi.fn(async () => {
+      calls.push("count");
+      if (over.existing instanceof Error) throw over.existing;
+      return over.existing ?? 10;
     }),
     getOperation: vi.fn(async () => {
       calls.push("op");
@@ -196,6 +202,36 @@ describe("healIndex: creating", () => {
     const h = harness({ created: 3 });
     expect(await healIndex(ERROR(), SETTINGS, h.deps)).toMatchObject({ outcome: "cap-reached", created: 3, cap: 3 });
     expect(h.admin.create).not.toHaveBeenCalled();
+  });
+
+  it("stops at the configured index limit for the database, before the probe and the create", async () => {
+    const h = harness({ existing: 100 });
+    expect(await healIndex(ERROR(), SETTINGS, h.deps)).toMatchObject({ outcome: "index-limit", existing: 100, limit: 100 });
+    expect(h.admin.create).not.toHaveBeenCalled();
+    expect(h.deps.onCreating).not.toHaveBeenCalled();
+    expect(h.calls).not.toContain("probe");
+  });
+
+  it("creates one under the limit, counting the database before it does", async () => {
+    const h = harness({ existing: 99 });
+    expect(await healIndex(ERROR(), SETTINGS, h.deps)).toMatchObject({ outcome: "ready", created: true });
+    expect(h.calls.indexOf("count")).toBeLessThan(h.calls.indexOf("create"));
+  });
+
+  it("creates nothing when the index count cannot be read: unknown is never room to spare", async () => {
+    const h = harness({ existing: new Error("HTTP 403") });
+    await expect(healIndex(ERROR(), SETTINGS, h.deps)).rejects.toThrow("HTTP 403");
+    expect(h.admin.create).not.toHaveBeenCalled();
+    expect(h.deps.onCreating).not.toHaveBeenCalled();
+  });
+
+  it("does not count the database for a dry run or for an index that already exists", async () => {
+    const dry = harness();
+    await healIndex(ERROR(), { ...SETTINGS, dryRun: true }, dry.deps);
+    const ready = harness({ list: [[live("READY")]], existing: 500 });
+    expect(await healIndex(ERROR(), SETTINGS, ready.deps)).toMatchObject({ outcome: "ready", created: false });
+    expect(dry.admin.countIndexes).not.toHaveBeenCalled();
+    expect(ready.admin.countIndexes).not.toHaveBeenCalled();
   });
 
   it("reports a failed build, with Google's reason, and never retries the create", async () => {

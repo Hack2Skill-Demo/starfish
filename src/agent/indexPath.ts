@@ -12,6 +12,11 @@
  *     pull request (a fixed template, the entry added to the repository's index file) is opened through the same opener
  *     as a code fix. Whether the heal held is decided later, after a quiet window (src/indexheal/observe.ts).
  *
+ * The incident's GitHub issue is filed first (the loop's `fileIssue`: the same opener, idempotency and dry-run behaviour as
+ * a triaged incident's), since every index cycle either acts or goes to a person. The evidence pull request references
+ * it but does not close it: merging the index file changes nothing in production, and whether the heal held (and the
+ * incident is resolved) stays a person's call.
+ *
  * Every refusal or failure that needs a person ends the cycle waiting for one, and tells them (the loop's `announce`).
  * A wait that runs out releases the lease, counted, so a later pass resumes polling; the cycle's attempt cap and
  * deadline bound that, and the loop tells a person when either gives the cycle up. Nothing here deletes an index.
@@ -103,6 +108,11 @@ export interface IndexPathContext {
   halted: () => Promise<LoopResult | null>;
   stopReason: () => Promise<string | null>;
   announce: (rule: string, reason: string) => Promise<void>;
+  /**
+   * Files (or finds again) the incident's GitHub issue: the loop's own path, recorded as `summary.issue`, nothing filed in
+   * a dry run, a failure recorded and never fatal. Resolves to the issue's number, or undefined when none is filed.
+   */
+  fileIssue: (reason: string) => Promise<number | undefined>;
   /** Proves the lease is still held (throws when it is lost) and renews it when due. */
   beat: () => Promise<void>;
   openPullRequest?: (req: PullRequestRequest) => Promise<{ number: number; url: string }>;
@@ -136,6 +146,12 @@ export async function runIndexPath(ctx: IndexPathContext): Promise<LoopResult> {
   const priorOperation = isOperationName(mark.operation) && mark.operation.startsWith(opPrefix) ? mark.operation : undefined;
 
   await ctx.note({ stage: "index", type: "started", summary: "Missing index: healed by the index path, without a model", record: record({ state: "checking" }) });
+  // Before any gate: a refusal tells a person, and their message links the issue. Only fixed words and the parsed spec.
+  const issueNumber = await ctx.fileIssue(
+    spec
+      ? `Firestore refused a query on the collection group ${spec.collectionGroup} (fields: ${fieldsText(spec)}) because a composite index is missing. Google's error names the index, so no model writes a fix.`
+      : "Firestore refused a query because a composite index is missing, but the error's create-index URL could not be used, so a person decides."
+  );
 
   const outcome = await healIndex(
     errorText,
@@ -199,6 +215,13 @@ export async function runIndexPath(ctx: IndexPathContext): Promise<LoopResult> {
         record: record({ state: "dry-run", live: outcome.live, probe: outcome.probe, repoFile: outcome.repoFile }),
       });
       return ctx.finish("waiting-human", "index-dry-run", "draft");
+    case "index-limit":
+      return human(
+        "index-limit",
+        "The database is at the configured index limit",
+        `The target database already holds ${outcome.existing} composite indexes; the configured limit is ${outcome.limit}, so nothing was created.`,
+        { state: "index-limit", existing: outcome.existing, limit: outcome.limit }
+      );
     case "build-failed":
       return human("build-failed", "The index did not build", outcome.reason, { state: "build-failed" });
     case "timeout":
@@ -260,6 +283,7 @@ export async function runIndexPath(ctx: IndexPathContext): Promise<LoopResult> {
     cycleId: ctx.cycleId,
     incidentId: ctx.incidentId,
     baseRevision: ctx.loaded.baseRevision,
+    ...(issueNumber !== undefined && { issueNumber }),
     patch: patch.patch,
     patchSha256,
     rootCause: indexRootCause({ collectionGroup: spec2.collectionGroup, fields: spec2.fields }),

@@ -464,6 +464,15 @@ describe("loadConfig: where a missing index may be created", () => {
     expect(loadConfig()).toMatchObject({ indexAutoApply: false, indexDailyCap: 3 });
   });
 
+  it("refuses a create at 100 existing indexes by default, and reads the limit", () => {
+    vi.stubEnv("STARFISH_INDEX_MAX_PER_DATABASE", "");
+    expect(loadConfig()).toMatchObject({ indexMaxPerDatabase: 100 });
+    vi.stubEnv("STARFISH_INDEX_MAX_PER_DATABASE", "150");
+    expect(loadConfig()).toMatchObject({ indexMaxPerDatabase: 150 });
+    vi.stubEnv("STARFISH_INDEX_MAX_PER_DATABASE", "0");
+    expect(() => loadConfig()).toThrow("STARFISH_INDEX_MAX_PER_DATABASE");
+  });
+
   it("reads the switch and the cap, and refuses a typo at startup", () => {
     vi.stubEnv("STARFISH_INDEX_AUTO_APPLY", "true");
     vi.stubEnv("STARFISH_INDEX_DAILY_CAP", "5");

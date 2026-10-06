@@ -502,6 +502,10 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
         halted,
         stopReason,
         announce: (rule, reason) => announce(loaded, "human", rule, reason),
+        fileIssue: async (reason) => {
+          await fileIssue(loaded, "index", reason, undefined);
+          return issue?.number;
+        },
         beat: keeper.beat,
         ...(!cfg.dryRun && deps.openPullRequest && { openPullRequest: deps.openPullRequest }),
       });

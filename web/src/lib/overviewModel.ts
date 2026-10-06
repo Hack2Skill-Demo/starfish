@@ -1,10 +1,11 @@
 /**
  * What the Overview page counts, from the records it reads: the agent's cycles (`runsModel`) and the
- * incidents' hourly buckets. Pure. A number here is a count of stored documents; nothing is estimated,
- * and what the engine does not record (a run "healed on its own", the next scheduled run) has no field.
+ * incidents' hourly buckets. Pure. A number here is a count of stored documents; nothing is estimated.
+ * "Healed on its own" counts only what the engine recorded as healed: a missing-index heal that held through its
+ * window (`isHealedRun`); a merged pull request is not a heal.
  */
 import type { IncidentRow } from "./incidents";
-import { KNOWN_STAGES, parseEvent, runStatus, type CyclePath, type CycleRow, type EventRow } from "./runsModel";
+import { KNOWN_STAGES, isHealedRun, parseEvent, runStatus, type CyclePath, type CycleRow, type EventRow } from "./runsModel";
 
 export interface CycleCounts {
   /** Cycles waiting for a person: a pull request, a notification, a stuck verify... */
@@ -13,20 +14,24 @@ export interface CycleCounts {
   inProgress: number;
   /** Cycles with no worker on them: running by state, but the lease ran out. */
   stalled: number;
+  /** Missing-index heals the engine recorded as held after their window (`isHealedRun`); nothing else. */
+  healed: number;
   /** Finished or waiting cycles by the path they took. */
   byPath: Record<CyclePath, number>;
   /** Cycles counted. */
   total: number;
 }
 
-const PATHS: CyclePath[] = ["decline", "notify", "draft", "pr", "human", "failed"];
+const PATHS: CyclePath[] = ["decline", "notify", "draft", "pr", "human", "failed", "index"];
 
 export function countCycles(cycles: readonly CycleRow[], nowMs: number): CycleCounts {
   const byPath = Object.fromEntries(PATHS.map((p) => [p, 0])) as Record<CyclePath, number>;
   let waitingHuman = 0;
   let inProgress = 0;
   let stalled = 0;
+  let healed = 0;
   for (const c of cycles) {
+    if (isHealedRun(c)) healed += 1;
     if (c.state === "waiting-human") waitingHuman += 1;
     if (c.state === "running") {
       if (runStatus(c, nowMs).live) inProgress += 1;
@@ -34,7 +39,7 @@ export function countCycles(cycles: readonly CycleRow[], nowMs: number): CycleCo
     }
     if (c.path) byPath[c.path] += 1;
   }
-  return { waitingHuman, inProgress, stalled, byPath, total: cycles.length };
+  return { waitingHuman, inProgress, stalled, healed, byPath, total: cycles.length };
 }
 
 /** The sentence at the top. It claims nothing about what is "handled": the data does not say. */

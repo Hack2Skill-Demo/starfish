@@ -163,6 +163,12 @@ export interface StarfishConfig {
   /** The most indexes Starfish creates per target in one UTC day; the Firestore per-database index limit is why. */
   indexDailyCap: number;
   /**
+   * The most composite indexes the target database may already hold for Starfish to add one (#11): at or above it,
+   * nothing is created and a person decides. Read live from the Admin API before each create. The default (100) stays
+   * well under Firestore's own per-database limit (see its quotas page), which counts indexes nobody here made.
+   */
+  indexMaxPerDatabase: number;
+  /**
    * The failing queries, written down by an operator, that the heal replays (src/indexheal/probe.ts): before creating an
    * index one must fail naming exactly it, and after READY they must pass. Empty by default, so no index is created:
    * a create-index URL alone does not say what the query was.
@@ -461,6 +467,7 @@ export function loadConfig(): StarfishConfig {
     indexAllowedTargets: validIndexTargets(parseList(process.env.STARFISH_INDEX_ALLOWED_TARGETS, ",") ?? []),
     indexAutoApply: parseBoolean(process.env.STARFISH_INDEX_AUTO_APPLY, false, "STARFISH_INDEX_AUTO_APPLY"),
     indexDailyCap: positiveNumber(process.env.STARFISH_INDEX_DAILY_CAP, 3, "STARFISH_INDEX_DAILY_CAP"),
+    indexMaxPerDatabase: positiveNumber(process.env.STARFISH_INDEX_MAX_PER_DATABASE, 100, "STARFISH_INDEX_MAX_PER_DATABASE"),
     indexProbes: parseIndexProbes(process.env.STARFISH_INDEX_PROBES),
     indexFilePath: validIndexFilePath(process.env.STARFISH_INDEX_FILE),
     indexWaitMinutes: positiveNumber(process.env.STARFISH_INDEX_WAIT_MINUTES, 10, "STARFISH_INDEX_WAIT_MINUTES"),
