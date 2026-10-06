@@ -38,6 +38,7 @@ let placed: { to: string; voiceUrl: string; statusUrl: string }[];
 let texts: { to: string; body: string }[];
 let twilio: TwilioClient;
 let refuseCalls: boolean;
+let refuseTexts: boolean;
 
 beforeEach(async () => {
   const p = randomUUID().slice(0, 8);
@@ -51,6 +52,7 @@ beforeEach(async () => {
     onCallPeopleCollection: `people_${p}`,
     escalationCollection: `esc_${p}`,
     usersCollection: `users_${p}`,
+    auditCollection: `audit_${p}`,
     onCallAudioUrl: AUDIO,
     twilioWebhookUrl: BASE,
     uiBaseUrl: UI,
@@ -59,6 +61,7 @@ beforeEach(async () => {
   placed = [];
   texts = [];
   refuseCalls = false;
+  refuseTexts = false;
   let n = 0;
   twilio = {
     placeCall: (to, urls) => {
@@ -68,7 +71,7 @@ beforeEach(async () => {
     },
     sendSms: (to, body) => {
       texts.push({ to, body });
-      return Promise.resolve({ ok: true });
+      return Promise.resolve(refuseTexts ? { ok: false, reason: "http-400:21211" } : { ok: true });
     },
   };
   await seed();
@@ -242,6 +245,67 @@ describe("opt-in", () => {
     expect(await confirmNumber(db, cfg, "p0", "424242", "admin1", T0)).toEqual({ ok: false, reason: "wrong-code" });
     for (let i = 0; i < 4; i++) await confirmNumber(db, cfg, "p0", "000000", "admin1", T0);
     expect(await confirmNumber(db, cfg, "p0", "424242", "admin1", T0)).toEqual({ ok: false, reason: "too-many-tries" });
+  });
+
+  it("records every send-code and confirm attempt in the audit collection, refusals included, without the number or the code (#172)", async () => {
+    await db.collection(cfg.usersCollection).doc("admin1").set({ roles: ["admin"] });
+    await db.collection(cfg.usersCollection).doc("op1").set({ roles: ["operator"] });
+    await seedPeople([
+      { id: "p0", role: "primary", state: "pending", phone: PHONES.pending, created: 1 },
+      { id: "p1", role: "secondary", state: "pending", phone: PHONES.p1, created: 2 },
+    ]);
+    const outcomes: string[] = [];
+    const send = (person: string, uid: string, now: Date, c = cfg) => sendConfirmationCode(db, c, twilio, person, uid, now, () => "424242");
+    const confirm = (person: string, code: string, uid: string, now: Date) => confirmNumber(db, cfg, person, code, uid, now);
+    const run = async (expected: string, attempt: () => Promise<unknown>) => {
+      await attempt();
+      outcomes.push(expected);
+    };
+    await run("off", () => send("p0", "admin1", T0, { ...cfg, phoneEscalation: false }));
+    await run("not-admin", () => send("p0", "op1", T0));
+    await run("no-such-person", () => send("nobody", "admin1", T0));
+    await run("no-code", () => confirm("p0", "424242", "admin1", T0));
+    await run("sent", () => send("p0", "admin1", T0));
+    await run("too-soon", () => send("p0", "admin1", at(0.5)));
+    await run("wrong-code", () => confirm("p0", "111111", "admin1", T0));
+    await run("not-admin", () => confirm("p0", "424242", "op1", T0));
+    await run("expired", () => confirm("p0", "424242", "admin1", at(11)));
+    await run("confirmed", () => confirm("p0", "424242", "admin1", T0));
+    await run("already-confirmed", () => confirm("p0", "424242", "admin1", T0));
+    await run("already-confirmed", () => send("p0", "admin1", at(5)));
+    refuseTexts = true;
+    await run("send-failed", () => send("p1", "admin1", T0));
+    await db.collection(cfg.onCallPeopleCollection).doc("p1").update({ codeTries: 5 });
+    await run("too-many-tries", () => confirm("p1", "424242", "admin1", T0));
+
+    const docs = (await db.collection(cfg.auditCollection).get()).docs.map((d) => d.data());
+    expect(docs).toHaveLength(outcomes.length);
+    // `at` alone does not order entries written at the same instant, so compare as multisets.
+    expect(docs.map((d) => d.outcome as string).sort()).toEqual([...outcomes].sort());
+    for (const d of docs) {
+      expect(Object.keys(d).sort()).toEqual(["action", "actorUid", "at", "outcome", "personId"]);
+      expect(["oncall-send-code", "oncall-confirm"]).toContain(d.action);
+      // Not even the masked tail (`at` is left out of the check: its digits are a time, not a number).
+      const text = JSON.stringify({ ...d, at: null });
+      for (const secret of [...Object.values(PHONES), "424242", "111111", "0999", "0101"]) expect(text).not.toContain(secret);
+    }
+    expect(docs.filter((d) => d.outcome === "sent")).toEqual([expect.objectContaining({ action: "oncall-send-code", actorUid: "admin1", personId: "p0" })]);
+    expect(docs.filter((d) => d.outcome === "confirmed")).toEqual([expect.objectContaining({ action: "oncall-confirm", actorUid: "admin1", personId: "p0" })]);
+  });
+
+  it("a send-code's entry is on record before the text goes out", async () => {
+    await db.collection(cfg.usersCollection).doc("admin1").set({ roles: ["admin"] });
+    await seedPeople([{ id: "p0", role: "primary", state: "pending", phone: PHONES.pending, created: 1 }]);
+    let seenAtSend: unknown[] = [];
+    const watching: TwilioClient = {
+      ...twilio,
+      sendSms: async (to, body) => {
+        seenAtSend = (await db.collection(cfg.auditCollection).get()).docs.map((d) => d.data());
+        return twilio.sendSms(to, body);
+      },
+    };
+    expect(await sendConfirmationCode(db, cfg, watching, "p0", "admin1", T0, () => "424242")).toEqual({ ok: true });
+    expect(seenAtSend).toEqual([expect.objectContaining({ action: "oncall-send-code", personId: "p0", outcome: "sending" })]);
   });
 });
 
