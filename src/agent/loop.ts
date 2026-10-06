@@ -54,7 +54,7 @@ import {
   type RunEvent,
 } from "./cycle.js";
 import type { IssueRequest } from "../integrations/githubPr.js";
-import type { DeliveryResult, NotifyRequest } from "../integrations/slack.js";
+import type { AlertRequest, DeliveryResult, NotifyRequest } from "../integrations/slack.js";
 import { proposeFix, type FixRequest, type FixRule, type SourceFile } from "./fixer.js";
 import { reviewPatch, type Attack, type ReviewVerdict } from "./reviewer.js";
 import { triageIncident, type AskJson, type TriageSubject } from "./triage.js";
@@ -127,6 +127,12 @@ export interface LoopDeps {
    * run nothing is sent and the record says so.
    */
   notify?: (req: NotifyRequest) => Promise<DeliveryResult>;
+  /**
+   * Posts the "new incident" message (the `#ops-alerts` channel, src/integrations/slack.ts) once for a cycle Starfish
+   * acts on or escalates. Absent means no such channel. Never throws; recorded like `notify` (`summary.alert`); in a
+   * dry run nothing is sent and the record says so.
+   */
+  alert?: (req: AlertRequest) => Promise<DeliveryResult>;
 }
 
 export type LoopResult =
@@ -332,44 +338,68 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
     // A cycle that ends waiting for a person says so, once. Recorded before and after the send, so a crash between the
     // two leaves `pending` and the next attempt posts again (at-least-once: a missed escalation is worse than a repeat),
     // while a recorded `sent` or `failed` is never sent again.
-    const announce = async (loaded: LoopSubject, path: NotifyRequest["path"], rule: string, reason: string): Promise<void> => {
-      if (!deps.notify) return;
+    // The same pattern serves the `#ops-alerts` "new incident" message (`summary.alert`).
+    const deliverOnce = async (
+      stage: "notify" | "alert",
+      words: { dryRun: string; pending: string; sent: string; failed: string },
+      send: () => Promise<DeliveryResult>
+    ): Promise<void> => {
       if (cfg.dryRun) {
-        await note({ stage: "notify", type: "dry-run", summary: "A person would be told here; nothing sent (dry run)", record: { state: "dry-run" } });
+        await note({ stage, type: "dry-run", summary: words.dryRun, record: { state: "dry-run" } });
         return;
       }
       const snap = await db.collection(cfg.cycleCollection).doc(id).get();
-      const prior = (snap.data()?.summary as { notify?: { state?: unknown } } | undefined)?.notify?.state;
+      const prior = (snap.data()?.summary as Record<string, { state?: unknown } | undefined> | undefined)?.[stage]?.state;
       if (prior === "sent" || prior === "failed") return;
       if ((await stopReason()) !== null) return;
       await renew();
-      await note({ stage: "notify", type: "pending", summary: "Telling a person", record: { state: "pending", attempts: 0 } });
-      const incident = loaded.subject.incident;
+      await note({ stage, type: "pending", summary: words.pending, record: { state: "pending", attempts: 0 } });
       let result: DeliveryResult;
       try {
-        result = await deps.notify({
-          cycleId: id,
-          incidentId: key.incidentId,
-          functionName: incident.functionName ?? "unknown function",
-          service: incident.service ?? "unknown",
-          errorType: incident.errorType ?? "unknown",
-          occurrenceCount: incident.occurrenceCount ?? null,
-          path,
-          rule,
-          reason,
-          ...(issue && { issueUrl: issue.url }),
-        });
+        result = await send();
       } catch {
-        // The notifier promises not to throw; if it does anyway, that is a failed delivery and not a lost cycle.
+        // The sender promises not to throw; if it does anyway, that is a failed delivery and not a lost cycle.
         result = { state: "failed", attempts: 1, reason: "notifier-error" };
       }
       await note({
-        stage: "notify",
+        stage,
         type: result.state,
-        summary: result.state === "sent" ? "A person was told" : `A person could not be told: ${result.reason ?? "unknown"}`,
+        summary: result.state === "sent" ? words.sent : `${words.failed}: ${result.reason ?? "unknown"}`,
         data: { attempts: result.attempts },
         record: { state: result.state, attempts: result.attempts, ...(result.reason !== undefined && { reason: result.reason }) },
       });
+    };
+    const about = (loaded: LoopSubject) => {
+      const incident = loaded.subject.incident;
+      return {
+        cycleId: id,
+        incidentId: key.incidentId,
+        functionName: incident.functionName ?? "unknown function",
+        service: incident.service ?? "unknown",
+        errorType: incident.errorType ?? "unknown",
+        occurrenceCount: incident.occurrenceCount ?? null,
+        ...(issue && { issueUrl: issue.url }),
+      };
+    };
+    const announce = async (loaded: LoopSubject, path: NotifyRequest["path"], rule: string, reason: string): Promise<void> => {
+      const notify = deps.notify;
+      if (!notify) return;
+      await deliverOnce(
+        "notify",
+        { dryRun: "A person would be told here; nothing sent (dry run)", pending: "Telling a person", sent: "A person was told", failed: "A person could not be told" },
+        () => notify({ ...about(loaded), path, rule, reason })
+      );
+    };
+    // The `#ops-alerts` "new incident" message: once for every cycle Starfish acts on or escalates, after its issue is
+    // filed so the message can link to it. A declined incident gets none, as it gets no issue.
+    const alertTeam = async (loaded: LoopSubject, path: AlertRequest["path"], reason: string): Promise<void> => {
+      const alert = deps.alert;
+      if (!alert) return;
+      await deliverOnce(
+        "alert",
+        { dryRun: "The team would be alerted here; nothing sent (dry run)", pending: "Alerting the team", sent: "The team was alerted", failed: "The team could not be alerted" },
+        () => alert({ ...about(loaded), path, reason })
+      );
     };
 
     let modelCalls = 0;
@@ -408,6 +438,7 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
     // An issue for every incident Starfish acts on or escalates; a declined, skipped or deferred one gets none.
     if (triage.decision === "act" || triage.decision === "notify") {
       await fileIssue(loaded, triage.decision, triage.reason, triage.suspectedCause);
+      await alertTeam(loaded, triage.decision, triage.reason);
     }
     switch (triage.decision) {
       case "skip":

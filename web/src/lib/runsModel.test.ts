@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+  ago,
   buildWaterfall,
+  prStateView,
   formatDuration,
   parseCycle,
   parseEvent,
@@ -196,5 +198,43 @@ describe("progressText", () => {
   it("counts only steps with an event as recorded", () => {
     expect(progressText([{ status: "done" }, { status: "running" }, { status: "not-reached" }])).toBe("1 of 3 steps recorded");
     expect(progressText([])).toBe("0 of 0 steps recorded");
+  });
+});
+
+describe("prStateView: the pull request as the engine last read it back (#17)", () => {
+  const NOW = Date.UTC(2026, 9, 6, 12, 0, 0);
+  const opened = { opened: true, number: 7, url: "https://github.com/o/r/pull/7" };
+  const at = (msAgo: number) => new Date(NOW - msAgo).toISOString();
+  const withPr = (prState?: Record<string, string | number | null>) => cycle({ state: "done", summary: { pr: opened, ...(prState && { prState }) } });
+
+  it("is absent for a cycle that opened no pull request", () => {
+    expect(prStateView(cycle(), NOW)).toBeUndefined();
+    expect(prStateView(cycle({ summary: { pr: { opened: false, reason: "dry-run" } } }), NOW)).toBeUndefined();
+  });
+
+  it("says it was never checked rather than guessing", () => {
+    expect(prStateView(withPr(), NOW)).toEqual({ text: "Not checked since it was opened", tone: "neutral" });
+    expect(prStateView(withPr({ state: "open", checks: "passed", checkedAt: "garbage" }), NOW)?.text).toBe("Not checked since it was opened");
+  });
+
+  it("reads merged, closed and open, each with its checks", () => {
+    expect(prStateView(withPr({ state: "merged", mergedAt: at(2 * 3600_000), checks: "passed", checkedAt: at(60_000) }), NOW)).toEqual({
+      text: "merged 2h ago · checks passed",
+      tone: "success",
+      checkedAt: new Date(NOW - 60_000),
+    });
+    expect(prStateView(withPr({ state: "closed", closedAt: at(3 * 86_400_000), checks: "missing", checkedAt: at(0) }), NOW)?.text).toBe("closed without merging 3d ago · checks not reported");
+    expect(prStateView(withPr({ state: "open", checks: "pending", checkedAt: at(0) }), NOW)).toMatchObject({ text: "open · checks still running", tone: "info" });
+    expect(prStateView(withPr({ state: "open", checks: "failed", failedChecks: "verify, lint", checkedAt: at(0) }), NOW)).toMatchObject({
+      text: "open · checks failed (verify, lint)",
+      tone: "warning",
+    });
+    expect(prStateView(withPr({ state: "merged", mergedAt: null, checks: "not-configured", checkedAt: at(0) }), NOW)?.text).toBe("merged · no required checks named");
+  });
+
+  it("formats short relative times", () => {
+    expect(ago(NOW - 10_000, NOW)).toBe("just now");
+    expect(ago(NOW - 5 * 60_000, NOW)).toBe("5 min ago");
+    expect(ago(NOW + 60_000, NOW)).toBe("just now");
   });
 });

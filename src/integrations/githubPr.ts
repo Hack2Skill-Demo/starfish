@@ -37,7 +37,9 @@
  * It also files the incident's GITHUB ISSUE (#17), one per cycle Starfish acts on or escalates, found again by a marker in
  * its body so a retry after a crash or timeout reuses it instead of filing a second (`openIssue`, below).
  *
- * Not built here: reconciling a later merge or CI result. Its only caller is the agent job (`pnpm agent`), a dry run by default.
+ * It READS a pull request back (`readPullRequest`, plus `listCheckRuns` on its head) for the reconcile step
+ * (src/agent/reconcile.ts), which records a later merge, close or CI result on the cycle. Its only caller is the agent
+ * job (`pnpm agent`), a dry run by default.
  */
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -404,8 +406,25 @@ export interface CheckAnnotation {
   message: string;
 }
 
+/** A pull request as it stands on GitHub now, reduced to what reconciling it needs (#17, src/agent/reconcile.ts). */
+export interface PullRequestState {
+  number: number;
+  state: "open" | "closed" | "merged";
+  /** ISO times from GitHub, or null. */
+  mergedAt: string | null;
+  closedAt: string | null;
+  /** The full commit id of the PR's head: the check runs that matter are on it. */
+  headSha: string;
+}
+
 export interface GithubClient {
   openPullRequest: (req: PullRequestRequest) => Promise<PullRequestResult>;
+  /**
+   * Read ONE pull request this cycle opened: open, closed or merged, and its head commit. Read-only. Refuses (throws) a
+   * pull request that is not from `starfish/<cycleId>` into the configured repository, so a wrong number recorded on a
+   * cycle can never make another PR's state look like this cycle's.
+   */
+  readPullRequest: (cycleId: string, number: number) => Promise<PullRequestState>;
   /**
    * File the incident's issue, or return the one this cycle already filed (found by the marker in its body among the
    * newest issues carrying the `starfish` label, so a retry after a crash or a timeout does not file a second).
@@ -678,6 +697,40 @@ export function createGithubClient(cfg: GithubPrConfig, deps: GithubPrDeps): Git
     throw failure(created.status, created.headers, created.json);
   }
 
+  async function readPullRequest(cycleId: string, number: number): Promise<PullRequestState> {
+    const branch = branchFor(cycleId);
+    if (branch === null) throw new GithubError("invalid-request", "The cycle id is not a plain id, so it cannot name a branch.");
+    if (!Number.isInteger(number) || number < 1) throw new GithubError("invalid-request", "A pull request number is a positive integer.");
+    const r = await call("GET", `/repos/${cfg.githubRepo}/pulls/${number}`);
+    if (r.status !== 200) throw failure(r.status, r.headers, r.json);
+    const j = r.json as {
+      number?: unknown;
+      state?: unknown;
+      merged?: unknown;
+      merged_at?: unknown;
+      closed_at?: unknown;
+      head?: { ref?: unknown; sha?: unknown; repo?: { full_name?: unknown } | null } | null;
+      base?: { repo?: { full_name?: unknown } | null } | null;
+    } | null;
+    const sameRepo = (v: unknown) => typeof v === "string" && v.toLowerCase() === cfg.githubRepo.toLowerCase();
+    // Both ends: Starfish pushes its branch to the repository itself, so a PR from a fork's `starfish/<id>` is not its.
+    if (!sameRepo(j?.base?.repo?.full_name) || !sameRepo(j?.head?.repo?.full_name)) {
+      throw new GithubError("wrong-repository", "The pull request is not in the configured repository.");
+    }
+    if (j?.number !== number || j.head?.ref !== branch) {
+      throw new GithubError("unexpected-response", `Pull request #${number} is not from ${branch}.`);
+    }
+    const headSha = j.head.sha;
+    if (typeof headSha !== "string" || !/^[0-9a-f]{40}$/.test(headSha)) throw new GithubError("unexpected-response", "GitHub gave no head commit for the pull request.");
+    const iso = (v: unknown): string | null => (typeof v === "string" && Number.isFinite(Date.parse(v)) ? new Date(v).toISOString() : null);
+    const mergedAt = iso(j.merged_at);
+    // `merged_at` is set only on a merge; `merged` says the same where the API gives it.
+    const merged = mergedAt !== null || j.merged === true;
+    const state = merged ? "merged" : j.state === "open" ? "open" : j.state === "closed" ? "closed" : null;
+    if (state === null) throw new GithubError("unexpected-response", "GitHub gave the pull request no state.");
+    return { number, state, mergedAt, closedAt: iso(j.closed_at), headSha };
+  }
+
   async function openIssue(req: IssueRequest): Promise<PullRequestResult> {
     if (!CYCLE_RE.test(req.cycleId)) throw new GithubError("invalid-request", "The cycle id is not a plain id, so it cannot name an issue.");
     await checkTarget();
@@ -703,5 +756,5 @@ export function createGithubClient(cfg: GithubPrConfig, deps: GithubPrDeps): Git
     return issue;
   }
 
-  return { openPullRequest, openIssue, pushPatchBranch, deleteBranch, findPullRequest, listCheckRuns, annotations };
+  return { openPullRequest, readPullRequest, openIssue, pushPatchBranch, deleteBranch, findPullRequest, listCheckRuns, annotations };
 }

@@ -73,6 +73,11 @@ export interface StarfishConfig {
   /** The most cycles one agent pass starts. */
   maxCyclesPerPass: number;
   /**
+   * The most opened pull requests one agent pass reads back from GitHub (#17, src/agent/reconcile.ts): their state
+   * (open, closed, merged) and the `verifyChecks` runs on their head, recorded on the cycle as `summary.prState`.
+   */
+  maxPrChecksPerPass: number;
+  /**
    * Paths a proposed patch may never touch: the built-in `DEFAULT_PATCH_EXCLUDED_PATHS` (CI, secrets, the package
    * manifest and lockfiles, common test, type-check and lint configs) plus whatever the deployment lists, which
    * should name any other file that defines the verify command or the tests that judge it. A trailing `/` is a directory; `*` and `**` are globs; a
@@ -320,6 +325,7 @@ export function loadConfig(): StarfishConfig {
     verifyBucket: (process.env.STARFISH_VERIFY_BUCKET ?? "").trim(),
     verifyJobRegion: (process.env.STARFISH_VERIFY_JOB_REGION ?? "").trim() || process.env.GOOGLE_CLOUD_LOCATION || "us-central1",
     maxCyclesPerPass: positiveNumber(process.env.STARFISH_MAX_CYCLES_PER_PASS, 3, "STARFISH_MAX_CYCLES_PER_PASS"),
+    maxPrChecksPerPass: positiveNumber(process.env.STARFISH_MAX_PR_CHECKS_PER_PASS, 10, "STARFISH_MAX_PR_CHECKS_PER_PASS"),
     patchExcludedPaths: [
       ...DEFAULT_PATCH_EXCLUDED_PATHS,
       ...(parseList(process.env.STARFISH_PATCH_EXCLUDED_PATHS, ",") ?? []),
@@ -386,10 +392,23 @@ const SLACK_WEBHOOK_RE = /^(https:\/\/hooks\.slack\.com\/services\/[A-Za-z0-9_/-
  * of StarfishConfig, and a bad value is refused by NAME, never echoed. Mounted from Secret Manager on Cloud Run.
  */
 export function loadSlackOnCallWebhook(): string | undefined {
-  const url = (process.env.STARFISH_SLACK_WEBHOOK_ONCALL ?? "").trim();
+  return slackWebhook("STARFISH_SLACK_WEBHOOK_ONCALL");
+}
+
+/**
+ * The Slack incoming-webhook URL the "new incident" message is posted to (the design's `#ops-alerts`), or undefined.
+ * Optional and separate from the on-call one: another channel, another credential. Same rules as the on-call one.
+ */
+export function loadSlackAlertsWebhook(): string | undefined {
+  return slackWebhook("STARFISH_SLACK_WEBHOOK_ALERTS");
+}
+
+/** A Slack incoming-webhook URL from `name`, or undefined. A bad value is refused by NAME, never echoed. */
+function slackWebhook(name: "STARFISH_SLACK_WEBHOOK_ONCALL" | "STARFISH_SLACK_WEBHOOK_ALERTS"): string | undefined {
+  const url = (process.env[name] ?? "").trim();
   if (url === "") return undefined;
   if (!SLACK_WEBHOOK_RE.test(url)) {
-    throw new Error("STARFISH_SLACK_WEBHOOK_ONCALL is not a Slack incoming-webhook URL (https://hooks.slack.com/services/...)");
+    throw new Error(`${name} is not a Slack incoming-webhook URL (https://hooks.slack.com/services/...)`);
   }
   return url;
 }

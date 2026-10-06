@@ -8,7 +8,7 @@ import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { deleteApp, initializeApp } from "firebase-admin/app";
 import { getFirestore } from "firebase-admin/firestore";
 import type { Firestore } from "firebase-admin/firestore";
-import { acquireLease, cycleId, finishCycle, recordEvent, releaseLease, renewLease, sanitizeEvent, type CycleConfig, type CycleKey } from "./cycle.js";
+import { acquireLease, cycleId, finishCycle, recordEvent, recordPrState, releaseLease, renewLease, sanitizeEvent, type CycleConfig, type CycleKey, type PrStateRecord } from "./cycle.js";
 import { SEEDED_SECRETS } from "../ingest/testSecrets.js";
 
 if (!process.env.FIRESTORE_EMULATOR_HOST) {
@@ -311,5 +311,90 @@ describe("sanitizeEvent", () => {
     expect(clean.data).not.toHaveProperty("n");
     expect(String(clean.data.big).length).toBeLessThanOrEqual(300);
     expect(Object.keys(clean.data).length).toBeLessThanOrEqual(20);
+  });
+});
+
+describe("recordPrState: a finished cycle's pull request, read back later (#17)", () => {
+  const SHA = "b".repeat(40);
+  const obs = (over: Partial<PrStateRecord> = {}): PrStateRecord => ({
+    number: 7,
+    state: "open",
+    mergedAt: null,
+    closedAt: null,
+    headSha: SHA,
+    checks: "pending",
+    checksPassed: 0,
+    checksRequired: 1,
+    checkedAt: at(100).toISOString(),
+    ...over,
+  });
+  /** A cycle that opened PR #7 and finished. */
+  const prCycle = async () => {
+    const r = await acquireLease(db, cfg, key, "a", t0);
+    if (!r.acquired) throw new Error("no lease");
+    await recordEvent(db, cfg, r.cycleId, "a", at(1), { stage: "pr", type: "opened", summary: "opened", record: { opened: true, number: 7, url: "https://github.com/acme/shop/pull/7" } });
+    await finishCycle(db, cfg, r.cycleId, "a", at(2), "done", "pr-opened", "pr");
+    return r.cycleId;
+  };
+
+  it("records the state on the run record and changes nothing else about the cycle", async () => {
+    const id = await prCycle();
+    const before = await cycle();
+    expect(await recordPrState(db, cfg, id, obs({ checks: "failed", failedChecks: "verify" }))).toEqual({ ok: true, applied: true });
+    const after = await cycle();
+    expect(after.summary.prState).toEqual(obs({ checks: "failed", failedChecks: "verify" }));
+    for (const k of ["state", "outcome", "path", "owner", "attempts", "eventCount"]) expect(after[k], k).toEqual(before[k]);
+    expect(after.updatedAt.toMillis()).toBe(before.updatedAt.toMillis());
+    expect(after.summary.pr).toEqual(before.summary.pr);
+    expect(await events()).toHaveLength(1);
+  });
+
+  it("ignores an observation no newer than the recorded one: a duplicate, or a slow reader landing late", async () => {
+    const id = await prCycle();
+    await recordPrState(db, cfg, id, obs({ state: "closed", checkedAt: at(200).toISOString() }));
+    expect(await recordPrState(db, cfg, id, obs({ state: "closed", checkedAt: at(200).toISOString() }))).toEqual({ ok: true, applied: false, reason: "stale" });
+    expect(await recordPrState(db, cfg, id, obs({ state: "open", checkedAt: at(150).toISOString() }))).toEqual({ ok: true, applied: false, reason: "stale" });
+    expect((await cycle()).summary.prState.state).toBe("closed");
+    // A closed PR may really be reopened: a newer read says so.
+    expect(await recordPrState(db, cfg, id, obs({ state: "open", checkedAt: at(300).toISOString() }))).toEqual({ ok: true, applied: true });
+  });
+
+  it("never takes a merged pull request back to open or closed, but keeps updating its checks", async () => {
+    const id = await prCycle();
+    await recordPrState(db, cfg, id, obs({ state: "merged", mergedAt: at(150).toISOString(), checkedAt: at(200).toISOString() }));
+    expect(await recordPrState(db, cfg, id, obs({ state: "open", checkedAt: at(300).toISOString() }))).toEqual({ ok: true, applied: false, reason: "merged-is-final" });
+    const later = obs({ state: "merged", mergedAt: at(150).toISOString(), checks: "passed", checksPassed: 1, checkedAt: at(400).toISOString() });
+    expect(await recordPrState(db, cfg, id, later)).toEqual({ ok: true, applied: true });
+    expect((await cycle()).summary.prState).toMatchObject({ state: "merged", checks: "passed" });
+  });
+
+  it("lands the newest of many concurrent observations, whatever order the writes commit in", async () => {
+    const id = await prCycle();
+    const seen = [
+      obs({ checkedAt: at(110).toISOString() }),
+      obs({ state: "merged", mergedAt: at(100).toISOString(), checkedAt: at(130).toISOString() }),
+      obs({ state: "closed", checkedAt: at(120).toISOString() }),
+    ];
+    await Promise.all([...seen, ...seen].map((o) => recordPrState(db, cfg, id, o)));
+    expect((await cycle()).summary.prState).toMatchObject({ state: "merged", checkedAt: at(130).toISOString() });
+  });
+
+  it("writes only to a done cycle that recorded opening THIS pull request", async () => {
+    expect(await recordPrState(db, cfg, "inc1_r0", obs())).toEqual({ ok: false, reason: "no-such-cycle" });
+    const r = await acquireLease(db, cfg, key, "a", t0);
+    expect(await recordPrState(db, cfg, "inc1_r0", obs())).toEqual({ ok: false, reason: "not-a-pr-cycle" }); // still running
+    if (r.acquired) await finishCycle(db, cfg, r.cycleId, "a", at(1), "waiting-human", "dry-run", "draft");
+    expect(await recordPrState(db, cfg, "inc1_r0", obs())).toEqual({ ok: false, reason: "not-a-pr-cycle" }); // opened none
+    expect((await cycle()).summary).toBeUndefined();
+  });
+
+  it("refuses another PR's number and a malformed observation, writing nothing", async () => {
+    const id = await prCycle();
+    expect(await recordPrState(db, cfg, id, obs({ number: 8 }))).toEqual({ ok: false, reason: "not-a-pr-cycle" });
+    for (const bad of [obs({ headSha: "nope" }), obs({ checkedAt: "yesterday" }), obs({ state: "healed" as never }), obs({ number: 0 })]) {
+      expect(await recordPrState(db, cfg, id, bad), JSON.stringify(bad)).toEqual({ ok: false, reason: "invalid" });
+    }
+    expect(await recordPrState(db, cfg, "a/b", obs())).toEqual({ ok: false, reason: "invalid" });
+    expect((await cycle()).summary.prState).toBeUndefined();
   });
 });

@@ -63,6 +63,8 @@ Without a webhook nothing Slack-shaped is created. The agent is a dry run by def
 record says `dry-run`. To post for real, turn dry run off (`STARFISH_DRY_RUN=false` in `AGENT_EXTRA_ENV_VARS`, or an admin on the Settings page; `EXTRA_ENV_VARS` may not set it, #147), which also lets a configured GitHub client open pull requests.
 A failed delivery is recorded on the cycle (`summary.notify`: `failed`, the status and Slack's short error code, never the URL) and the cycle still
 finishes. Delivery is at-least-once: after a crash between the post and its record a resumed cycle posts again. Never run against real Slack.
+The optional `#ops-alerts` "new incident" webhook, `STARFISH_SLACK_WEBHOOK_ALERTS`, is handled exactly the same way in a secret of its own,
+`starfish-slack-alerts` (agent's account, agent job, the same `--update-secrets` flag), and recorded as `summary.alert`.
 
 `loadGithubToken()` (`src/config.ts`) reads that variable, and the pull-request opener
 (`src/integrations/githubPr.ts`) is its only user. The opener is tested against a local git remote

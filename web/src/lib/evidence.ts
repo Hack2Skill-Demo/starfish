@@ -11,7 +11,7 @@
  * Not stored, and said so on the page rather than faked: the patch text (only its SHA-256 is recorded).
  */
 import type { IncidentRow } from "./incidents";
-import { safeUrl, type CycleRow } from "./runsModel";
+import { prStateView, safeUrl, type CycleRow } from "./runsModel";
 
 export type EvidenceStatus = "recorded" | "not-reached" | "not-stored";
 
@@ -106,7 +106,19 @@ function counterCheckStage(triage: Record<string, string | number | boolean | nu
   };
 }
 
-export function buildEvidence(row: IncidentRow, cycle: CycleRow | null): Evidence {
+/** The pull request as the engine last read it back from GitHub (#17), or that it never was. */
+function prNowFields(cycle: CycleRow | null, nowMs: number): EvidenceField[] {
+  const view = cycle ? prStateView(cycle, nowMs) : undefined;
+  if (!view) return [];
+  const headSha = cycle?.summary.prState?.headSha;
+  return [
+    { label: "State now", value: view.text },
+    ...(view.checkedAt ? [{ label: "Read from GitHub", value: view.checkedAt.toISOString() }] : []),
+    ...(view.checkedAt && typeof headSha === "string" && headSha !== "" ? [{ label: "Head commit", value: headSha, mono: true }] : []),
+  ];
+}
+
+export function buildEvidence(row: IncidentRow, cycle: CycleRow | null, nowMs = Date.now()): Evidence {
   const rec = cycle?.summary ?? {};
   const noRun = cycle === null;
   const later = (id: EvidenceStage["id"], title: string, spec: [string, string, boolean?][], extra: EvidenceField[] = []): EvidenceStage => {
@@ -187,9 +199,12 @@ export function buildEvidence(row: IncidentRow, cycle: CycleRow | null): Evidenc
         ["number", "Number"],
         ["patchSha256", "Patch SHA-256", true],
       ],
-      prUrl ? [{ label: "Link", value: prUrl, href: prUrl }] : []
+      [...(prUrl ? [{ label: "Link", value: prUrl, href: prUrl }] : []), ...prNowFields(cycle, nowMs)]
     ),
   ];
+  // A merge is about the pull request, not the incident: say so wherever the PR's later state is shown.
+  const pr = stages.find((s) => s.id === "pr")!;
+  if (cycle && prStateView(cycle, nowMs)) pr.note = "A merged pull request is not proof the incident is healed: that needs the error to stop in production.";
 
   const hashes = (["verify", "review", "pr"] as const)
     .map((k) => rec[k]?.patchSha256)

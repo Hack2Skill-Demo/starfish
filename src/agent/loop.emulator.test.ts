@@ -12,7 +12,7 @@ import { deleteApp, initializeApp } from "firebase-admin/app";
 import { getFirestore } from "firebase-admin/firestore";
 import type { Firestore } from "firebase-admin/firestore";
 import { runCycle, type LoopDeps, type LoopSubject, type PullRequestRequest } from "./loop.js";
-import type { NotifyRequest } from "../integrations/slack.js";
+import type { AlertRequest, NotifyRequest } from "../integrations/slack.js";
 import type { IssueRequest } from "../integrations/githubPr.js";
 import { acquireLease } from "./cycle.js";
 import { selectCandidates } from "./pass.js";
@@ -815,6 +815,71 @@ describe("runCycle: the incident's GitHub issue (#17)", () => {
       await runCycle(deps(scripted({ triage: [act], fix: [fixOf(GOOD_PATCH)], review: [held] }), { openIssue }, opened), key);
       expect(calls, JSON.stringify(record)).toHaveLength(expectedCalls);
       expect(opened[0]!.issueNumber, JSON.stringify(record)).toBe(expectedCalls === 0 ? 7 : 12);
+    }
+  });
+});
+
+describe("runCycle: the #ops-alerts \"new incident\" message (#17)", () => {
+  const notifyDecision = { decision: "notify", reasoning: "The API is not enabled.", suspectedCause: "Translation API disabled" };
+  const ISSUE = { number: 12, url: "https://github.com/acme/shop/issues/12" };
+  const recorder = () => {
+    const calls: AlertRequest[] = [];
+    return { calls, alert: async (req: AlertRequest) => (calls.push(req), { state: "sent" as const, attempts: 1 }) };
+  };
+  const summaryAlert = async () => (await cycleDoc()).summary?.alert;
+
+  it("alerts once for an incident Starfish acts on, after its issue is filed and linking it, then goes on to the PR", async () => {
+    const { calls, alert } = recorder();
+    const openIssue = async () => ISSUE;
+    const r = await runCycle(deps(scripted({ triage: [act], fix: [fixOf(GOOD_PATCH)], review: [held] }), { alert, openIssue }), key);
+    expect(r).toEqual({ kind: "finished", state: "done", outcome: "pr-opened" });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({ cycleId: "inc1_r0", incidentId: "inc1", functionName: "orders-createOrder", path: "act", occurrenceCount: 42, issueUrl: ISSUE.url });
+    expect(calls[0]!.reason).toContain("A defect in the order code");
+    expect(await kinds()).toEqual(["cycle:started", "triage:decision", "issue:opened", "alert:pending", "alert:sent", "fix:proposed", "verify:passed", "review:approve", "pr:opened"]);
+    expect(await summaryAlert()).toEqual({ state: "sent", attempts: 1 });
+  });
+
+  it("alerts for an escalated incident too, beside the on-call message, and never for a declined one", async () => {
+    const { calls, alert } = recorder();
+    const notify = async () => ({ state: "sent" as const, attempts: 1 });
+    await runCycle(deps(scripted({ triage: [notifyDecision] }), { alert, notify }), key);
+    expect(calls.map((c) => c.path)).toEqual(["notify"]);
+    expect(await kinds()).toEqual(["cycle:started", "triage:decision", "alert:pending", "alert:sent", "notify:pending", "notify:sent"]);
+    cfg = randomUUID().slice(0, 8);
+    await runCycle(deps(scripted({ triage: [{ decision: "decline", reasoning: "Noise.", suspectedCause: "" }] }), { alert }), key);
+    expect(calls).toHaveLength(1);
+    expect(await summaryAlert()).toBeUndefined();
+  });
+
+  it("records a failed or throwing delivery and the cycle goes on", async () => {
+    const alert = async (): Promise<never> => {
+      throw new Error(`boom ${SEEDED_SECRETS.github}`);
+    };
+    const r = await runCycle(deps(scripted({ triage: [act], fix: [fixOf(GOOD_PATCH)], review: [held] }), { alert }), key);
+    expect(r).toMatchObject({ kind: "finished", state: "done" });
+    expect(await summaryAlert()).toMatchObject({ state: "failed", reason: "notifier-error" });
+    expect(JSON.stringify(await events())).not.toContain(SEEDED_SECRETS.github);
+  });
+
+  it("sends nothing in a dry run, and the record says so", async () => {
+    const { calls, alert } = recorder();
+    cfgOver = { dryRun: true };
+    await runCycle(deps(scripted({ triage: [notifyDecision] }), { alert }), key);
+    expect(calls).toHaveLength(0);
+    expect(await summaryAlert()).toEqual({ state: "dry-run" });
+  });
+
+  it("does not send again once recorded sent or failed, and sends again after a crash left it pending", async () => {
+    const { calls, alert } = recorder();
+    const outcomes: Array<[unknown, number]> = [[{ state: "sent", attempts: 1 }, 0], [{ state: "failed", attempts: 3, reason: "http-500" }, 0], [{ state: "pending", attempts: 0 }, 1]];
+    for (const [prior, expectedCalls] of outcomes) {
+      cfg = randomUUID().slice(0, 8);
+      calls.length = 0;
+      expect(await runCycle(deps(scripted({ triage: [new Error("boom")] }), { alert }), key)).toMatchObject({ kind: "released" });
+      await db.collection(`cycles_${cfg}`).doc("inc1_r0").update({ "summary.alert": prior });
+      await runCycle(deps(scripted({ triage: [notifyDecision] }), { alert }), key);
+      expect(calls, JSON.stringify(prior)).toHaveLength(expectedCalls);
     }
   });
 });

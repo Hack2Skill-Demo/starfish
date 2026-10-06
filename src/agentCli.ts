@@ -11,15 +11,17 @@
  * as a Cloud Run job with DEPLOY_AGENT=1 and the second isolation; neither has run against a real project.
  *
  * It reads the watched project's logs (counter-check and samples), the target repository (a shallow clone,
- * with STARFISH_GITHUB_TOKEN if one is set), writes Starfish's store, and calls Gemini. Exits 1 when a cycle
- * threw or the pass stopped early, 2 when preflight refused, 0 otherwise.
+ * with STARFISH_GITHUB_TOKEN if one is set), writes Starfish's store, and calls Gemini. After the pass, with a GitHub
+ * client, it reads back the pull requests earlier cycles opened (src/agent/reconcile.ts). Exits 1 when a cycle
+ * threw, the pass stopped early or reading pull requests back stopped (credentials, rate limit), 2 when preflight
+ * refused, 0 otherwise.
  */
 import { randomUUID } from "node:crypto";
 import { hostname } from "node:os";
 import { Logging } from "@google-cloud/logging";
 import { initializeApp } from "firebase-admin/app";
 import { getFirestore } from "firebase-admin/firestore";
-import { loadChildProcessBasics, loadConfig, loadGithubToken, loadSlackOnCallWebhook } from "./config.js";
+import { loadChildProcessBasics, loadConfig, loadGithubToken, loadSlackAlertsWebhook, loadSlackOnCallWebhook } from "./config.js";
 import { RuntimeConfigLoader } from "./runtimeSettings.js";
 import { createAskJson } from "./vertex.js";
 import { redactPii } from "./ingest/redact.js";
@@ -27,17 +29,19 @@ import { makeAutomationSwitch } from "./agent/automationSwitch.js";
 import { createGitCheckout, createLoader } from "./agent/assemble.js";
 import { runCycle } from "./agent/loop.js";
 import { runAgentPass, selectCandidates } from "./agent/pass.js";
+import { reconcilePullRequests } from "./agent/reconcile.js";
 import { agentPreflight } from "./agent/preflight.js";
 import { createCloudRunJobStarter, createGcsStore } from "./agent/cloudRunJob.js";
 import { createRemoteVerifier } from "./agent/verifyRemote.js";
 import { createCiVerifier } from "./agent/verifyCi.js";
 import { createGithubClient } from "./integrations/githubPr.js";
-import { createSlackNotifier } from "./integrations/slack.js";
+import { createSlackAlerter, createSlackNotifier } from "./integrations/slack.js";
 import { INCIDENT_STATUSES, type IncidentStatus } from "./types.js";
 
 const base = loadConfig();
 const token = loadGithubToken();
 const slackOnCall = loadSlackOnCallWebhook();
+const slackAlerts = loadSlackAlertsWebhook();
 
 const refused = agentPreflight(base, token);
 if (refused.length > 0) {
@@ -119,6 +123,8 @@ const deps = {
   ...(github && { openIssue: github.openIssue }),
   // Given in a dry run too, so the cycle records that a person would have been told; the loop sends nothing then.
   ...(slackOnCall && { notify: createSlackNotifier({ webhookUrl: slackOnCall, uiBaseUrl: cfg.uiBaseUrl }) }),
+  // The optional #ops-alerts channel: one "new incident" message per cycle Starfish acts on or escalates. Dry run: none sent.
+  ...(slackAlerts && { alert: createSlackAlerter({ webhookUrl: slackAlerts, uiBaseUrl: cfg.uiBaseUrl }) }),
 };
 
 let failed: boolean;
@@ -137,6 +143,23 @@ try {
   for (const e of summary.errors) console.error(`  ${e.incidentId}: threw: ${e.message}`);
   if (summary.aborted) console.error("agent: stopped early: cycles kept throwing.");
   failed = summary.errors.length > 0 || summary.aborted;
+
+  // Read back the pull requests earlier cycles opened (#17): merged, closed or open, and the named checks on their head,
+  // recorded on each cycle. Read-only on GitHub; never marks an incident healed. Needs the GitHub client.
+  if (github) {
+    try {
+      const rec = await reconcilePullRequests({ db, config: cfg, client: github, now: () => new Date() });
+      console.log(`agent: ${rec.considered} pull request(s) read back, ${rec.recorded} recorded, ${rec.unchanged} unchanged`);
+      for (const e of rec.errors) console.error(`  ${e.cycleId}: pull request not reconciled: ${e.message}`);
+      if (rec.stoppedBecause) console.error(`agent: stopped reading pull requests back: ${rec.stoppedBecause}`);
+      // One PR that cannot be read (deleted, say) is logged, not a failed run: it would fail every run after it. An error
+      // every PR would hit (credentials, rate limit) is.
+      failed = failed || rec.stoppedBecause !== undefined;
+    } catch (err) {
+      console.error(`agent: reading pull requests back failed: ${redactPii(err instanceof Error ? err.message : String(err)).slice(0, 300)}`);
+      failed = true;
+    }
+  }
 } finally {
   await loader.disposeAll();
 }

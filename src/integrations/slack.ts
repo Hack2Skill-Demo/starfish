@@ -1,5 +1,5 @@
 /**
- * Slack delivery (#17): the "needs a human" message, posted to ONE channel through an incoming webhook, and nothing else.
+ * Slack delivery (#17): the "needs a human" message, posted to ONE channel through an incoming webhook.
  * A cycle that ends waiting for a person (triage said notify, the fixer declined, the verify gate or the review would
  * not pass a second time) says so in Slack with the reason and links back to the incident and its run.
  *
@@ -23,8 +23,10 @@
  * `sent`/`failed` after and does not resend a recorded one; the gap in between is the duplicate we accept, since a
  * missed escalation is worse than a repeated one.
  *
- * Not built: the other two channels in the design (`#ops-alerts` for a new incident, `#ops-log` for a merged fix
- * and healed), the phone escalation (#37), and a message for an incident Starfish merely acts on. Never run against
+ * A second, optional channel (the design's `#ops-alerts`) gets the "new incident" message, `buildNewIncidentMessage`,
+ * through its own webhook: once per cycle Starfish acts on or escalates, recorded the same way (`summary.alert`).
+ *
+ * Not built: the `#ops-log` channel (a merged fix, healed) and the phone escalation (#37). Never run against
  * real Slack: tested over local HTTP against a fake webhook.
  */
 import { redactPii } from "../ingest/redact.js";
@@ -182,4 +184,49 @@ export async function deliverToSlack(deps: SlackDeps, payload: SlackPayload): Pr
 /** The notifier the loop calls. */
 export function createSlackNotifier(deps: SlackDeps): (req: NotifyRequest) => Promise<DeliveryResult> {
   return (req) => deliverToSlack(deps, buildNeedsHumanMessage(req, deps.uiBaseUrl));
+}
+
+/**
+ * What the "new incident" message (the design's `#ops-alerts`) is about: an incident Starfish acts on or escalates
+ * (triage said `act` or `notify`). Built by the loop from the stored incident and triage's reason, never from raw logs.
+ */
+export interface AlertRequest {
+  cycleId: string;
+  incidentId: string;
+  functionName: string;
+  service: string;
+  errorType: string;
+  /** null when the stored incident has no count: the message then says nothing about how often, never "0 times". */
+  occurrenceCount: number | null;
+  /** `act`: Starfish is drafting a fix. `notify`: no code change helps; a person is told on the on-call channel. */
+  path: "act" | "notify";
+  /** Triage's one-line reason. Redacted and cut here. */
+  reason: string;
+  issueUrl?: string;
+}
+
+/** The "new incident" message. Pure; the same escaping and plain-text rules as the needs-a-human one. */
+export function buildNewIncidentMessage(req: AlertRequest, uiBaseUrl: string): SlackPayload {
+  const what = `${clip(req.functionName, MAX_FIELD)} (${clip(req.errorType, 60)})`;
+  const next = req.path === "act" ? "Starfish is drafting a fix; it stops at a pull request." : "No code change helps; a person is being told.";
+  const blocks: unknown[] = [
+    { type: "header", text: plain("New incident") },
+    { type: "section", text: plain(`${clip(req.functionName, MAX_FIELD)} failed${req.occurrenceCount === null ? "" : ` ${req.occurrenceCount} times`}.\n${clip(req.reason, MAX_REASON)}`) },
+    {
+      type: "section",
+      fields: [plain(`Service: ${clip(req.service, 80)}`), plain(`Error type: ${clip(req.errorType, 60)}`), plain(`Next: ${next}`)],
+    },
+  ];
+  const links = [
+    { label: "Open the incident", url: incidentUrl(uiBaseUrl, req.incidentId) },
+    { label: "Watch the run", url: runUrl(uiBaseUrl, req.cycleId) },
+    { label: "Open the issue", url: safeHttpsUrl(req.issueUrl) },
+  ].filter((l): l is { label: string; url: string } => l.url !== null);
+  if (links.length > 0) blocks.push({ type: "actions", elements: links.map((l) => ({ type: "button", text: plain(l.label), url: l.url })) });
+  return { text: slackEscape(`New incident: ${what}. ${next}`), mrkdwn: false, blocks };
+}
+
+/** The alerter the loop calls: posts to the alerts channel's own webhook. */
+export function createSlackAlerter(deps: SlackDeps): (req: AlertRequest) => Promise<DeliveryResult> {
+  return (req) => deliverToSlack(deps, buildNewIncidentMessage(req, deps.uiBaseUrl));
 }

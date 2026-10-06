@@ -31,6 +31,7 @@ export function testConfig(over: Partial<StarfishConfig> = {}): StarfishConfig {
     verifyBucket: "",
     verifyJobRegion: "us-central1",
     maxCyclesPerPass: 3,
+    maxPrChecksPerPass: 10,
     patchExcludedPaths: [],
     ingestLagMinutes: 5,
     ingestMaxWindowHours: 6,

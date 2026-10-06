@@ -278,7 +278,6 @@ export async function releaseLease(
   });
 }
 
-/** End the owner's hold on the cycle: it is finished, or resting until a person acts. */
 /**
  * Which way a finished cycle went, for whoever reads the record (the scenario runner, Live runs, the
  * scoreboard): declined, a person to be told, a patch drafted but nothing opened (dry run), a pull
@@ -286,6 +285,7 @@ export async function releaseLease(
  */
 export type CyclePath = "decline" | "notify" | "draft" | "pr" | "human" | "failed";
 
+/** End the owner's hold on the cycle: it is finished, or resting until a person acts. */
 export async function finishCycle(
   db: Firestore,
   cfg: CycleConfig,
@@ -311,5 +311,74 @@ export async function finishCycle(
       updatedAt: Timestamp.fromDate(now),
     });
     return { ok: true } as const;
+  });
+}
+
+/**
+ * What the pull request a finished cycle opened looks like on GitHub now (#17, src/agent/reconcile.ts). Flat, so it is
+ * stored as the run record's `summary.prState` beside the stages. `checkedAt` is when GitHub was read, and orders
+ * observations: the newest one read wins, whatever order the writes land in.
+ */
+export interface PrStateRecord {
+  number: number;
+  state: "open" | "closed" | "merged";
+  mergedAt: string | null;
+  closedAt: string | null;
+  headSha: string;
+  /** The named required checks on `headSha`: all passed, one failed, some still running or not reported, or none named. */
+  checks: "passed" | "failed" | "pending" | "missing" | "not-configured";
+  checksPassed: number;
+  checksRequired: number;
+  /** The names of the checks that failed, comma-separated, when any did. */
+  failedChecks?: string;
+  checkedAt: string;
+}
+
+export type PrStateWrite =
+  | { ok: true; applied: true }
+  | { ok: true; applied: false; reason: "stale" | "merged-is-final" }
+  | { ok: false; reason: "no-such-cycle" | "not-a-pr-cycle" | "invalid" };
+
+const PR_STATES: readonly string[] = ["open", "closed", "merged"];
+const CHECK_STATES: readonly string[] = ["passed", "failed", "pending", "missing", "not-configured"];
+const isoMs = (v: unknown): number | null => (typeof v === "string" && Number.isFinite(Date.parse(v)) ? Date.parse(v) : null);
+
+/**
+ * Record a pull request's later state on its finished cycle. The cycle's own state, path, outcome and `updatedAt` are
+ * never changed (it is done: what happens to the PR afterwards is a fact about the PR, not a new outcome of the cycle),
+ * and the incident is never touched: a merged PR is not proof that the incident is healed.
+ *
+ * A finished cycle has no lease, so this is not fenced by one; it is safe without it because it writes only
+ * `summary.prState`, in a transaction, and only to a cycle that is `done` and recorded opening THIS pull request.
+ * Two readers racing, or a slow one landing late, cannot move it backwards:
+ *   - an observation read no later than the one recorded is ignored (`stale`; a duplicate is one of these);
+ *   - a merge is final: nothing read afterwards makes a merged PR open or closed again (`merged-is-final`).
+ */
+export async function recordPrState(db: Firestore, cfg: CycleConfig, id: string, observed: PrStateRecord): Promise<PrStateWrite> {
+  if (
+    !ID_RE.test(id) ||
+    !Number.isInteger(observed.number) ||
+    observed.number < 1 ||
+    !PR_STATES.includes(observed.state) ||
+    !CHECK_STATES.includes(observed.checks) ||
+    !/^[0-9a-f]{40}$/.test(observed.headSha) ||
+    isoMs(observed.checkedAt) === null
+  ) {
+    return { ok: false, reason: "invalid" };
+  }
+  const record = sanitizeFlat({ ...observed });
+  const ref = cycleRef(db, cfg, id);
+  return db.runTransaction(async (tx): Promise<PrStateWrite> => {
+    const snap = await tx.get(ref);
+    if (!snap.exists) return { ok: false, reason: "no-such-cycle" };
+    const d = snap.data() as Record<string, unknown>;
+    const summary = (d.summary ?? {}) as { pr?: { opened?: unknown; number?: unknown }; prState?: { state?: unknown; checkedAt?: unknown } };
+    if (d.state !== "done" || summary.pr?.opened !== true || summary.pr.number !== observed.number) return { ok: false, reason: "not-a-pr-cycle" };
+    const prior = summary.prState;
+    const priorAt = isoMs(prior?.checkedAt);
+    if (priorAt !== null && isoMs(observed.checkedAt)! <= priorAt) return { ok: true, applied: false, reason: "stale" };
+    if (prior?.state === "merged" && observed.state !== "merged") return { ok: true, applied: false, reason: "merged-is-final" };
+    tx.update(ref, { "summary.prState": record });
+    return { ok: true, applied: true };
   });
 }

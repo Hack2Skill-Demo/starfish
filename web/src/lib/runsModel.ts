@@ -169,6 +169,58 @@ export function safeUrl(v: unknown): string | undefined {
   }
 }
 
+// ---- The pull request afterwards (#17) ----------------------------------------------------------
+
+/** "just now", "5 min ago", "2h ago", "3d ago": short, for one line. */
+export function ago(ms: number, nowMs: number): string {
+  const s = Math.max(0, Math.round((nowMs - ms) / 1000));
+  if (s < 60) return "just now";
+  if (s < 3600) return `${Math.floor(s / 60)} min ago`;
+  if (s < 86_400) return `${Math.floor(s / 3600)}h ago`;
+  return `${Math.floor(s / 86_400)}d ago`;
+}
+
+const isoMs = (v: unknown): number | null => (typeof v === "string" && Number.isFinite(Date.parse(v)) ? Date.parse(v) : null);
+
+const CHECKS_TEXT: Record<string, string> = {
+  passed: "checks passed",
+  failed: "checks failed",
+  pending: "checks still running",
+  missing: "checks not reported",
+  "not-configured": "no required checks named",
+};
+
+export interface PrStateView {
+  /** "merged 2h ago · checks passed". */
+  text: string;
+  tone: RunTone;
+  /** When GitHub was last read, or absent when it never was. */
+  checkedAt?: Date;
+}
+
+/**
+ * What the pull request a cycle opened looks like now, as the engine last read it back from GitHub
+ * (`summary.prState`, src/agent/reconcile.ts). Absent for a cycle that opened none. A PR never read back says
+ * so, rather than guessing it is still open; a merge says nothing about the incident being healed.
+ */
+export function prStateView(c: CycleRow, nowMs: number): PrStateView | undefined {
+  if (c.summary.pr?.opened !== true) return undefined;
+  const s = c.summary.prState;
+  const checkedMs = isoMs(s?.checkedAt);
+  if (!s || checkedMs === null || !["open", "closed", "merged"].includes(String(s.state))) {
+    return { text: "Not checked since it was opened", tone: "neutral" };
+  }
+  const at = (v: unknown) => {
+    const ms = isoMs(v);
+    return ms === null ? "" : ` ${ago(ms, nowMs)}`;
+  };
+  const state = s.state === "merged" ? `merged${at(s.mergedAt)}` : s.state === "closed" ? `closed without merging${at(s.closedAt)}` : "open";
+  const failed = typeof s.failedChecks === "string" && s.failedChecks !== "" ? ` (${s.failedChecks})` : "";
+  const checks = `${CHECKS_TEXT[String(s.checks)] ?? "checks unknown"}${s.checks === "failed" ? failed : ""}`;
+  const tone: RunTone = s.checks === "failed" ? "warning" : s.state === "merged" ? "success" : s.state === "closed" ? "neutral" : "info";
+  return { text: `${state} · ${checks}`, tone, checkedAt: new Date(checkedMs) };
+}
+
 // ---- Waterfall ---------------------------------------------------------------------------------
 
 /** The stages the loop runs, in order, with the words the screen uses for them. */
@@ -210,10 +262,10 @@ export interface Waterfall {
 }
 
 /**
- * Stages that appear only on some cycles (a cycle Starfish acts on or escalates files an issue, one that ends waiting for a person tells one, #17), so they are not in
+ * Stages that appear only on some cycles (a cycle Starfish acts on or escalates files an issue and alerts the team, one that ends waiting for a person tells one, #17), so they are not in
  * KNOWN_STAGES, which would show every cycle a "not reached" row for them. They get a readable title when present.
  */
-const OPTIONAL_STAGE_TITLES: Record<string, string> = { issue: "GitHub issue", notify: "Tell a person" };
+const OPTIONAL_STAGE_TITLES: Record<string, string> = { issue: "GitHub issue", alert: "Alert the team", notify: "Tell a person" };
 
 const titleOf = (stage: string): string => KNOWN_STAGES.find((s) => s.stage === stage)?.title ?? OPTIONAL_STAGE_TITLES[stage] ?? stage;
 
