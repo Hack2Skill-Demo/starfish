@@ -269,7 +269,10 @@ React 19, Vite, Tailwind 4, react-router, TanStack Query; Starfish's own theme i
   anonymously on arrival (`RequireRole`/`enterAsGuest`) and sees Overview, Incidents, incident evidence,
   Runs and a view-only Settings with no triage or admin buttons; signing out does not re-enter guest, and if Anonymous sign-in is refused
   they land on /signin. The public demo (#12) uses this so a judge needs no account; a private
-  deployment just leaves Anonymous sign-in disabled. App Check is not built. Anonymous sign-in
+  deployment just leaves Anonymous sign-in disabled. App Check: the UI initialises it only when built with
+  `VITE_STARFISH_APPCHECK_SITE_KEY` (`lib/appCheck.ts`; absent = off, the UI and guests unchanged), and the admin API
+  requires its token only with `STARFISH_ADMIN_API_APPCHECK` (default off); Firestore enforcement is a console step,
+  not scripted (docs/deploy.md). Unit-tested; never run on a real project. Anonymous sign-in
   is project-wide, so see #32 before enabling it in a project shared with another app.
 - **Data:** the UI reads and triages incidents straight from Firestore, filtered to its own
   environment. `firestore.rules` is the security boundary and enforces the status

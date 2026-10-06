@@ -216,6 +216,12 @@ export interface StarfishConfig {
   /** The port the admin API listens on. Cloud Run sets `PORT`. */
   adminApiPort: number;
   /**
+   * Require a valid Firebase App Check token (`X-Firebase-AppCheck`) on the admin API's POST routes, on top of the ID
+   * token (#12). Off by default: turn it on only once the operator UI is built with an App Check site key
+   * (`VITE_STARFISH_APPCHECK_SITE_KEY`), or every admin call is refused with the same 401 as a bad ID token.
+   */
+  adminApiRequireAppCheck: boolean;
+  /**
    * The operator UI's origin, e.g. `https://my-site.web.app`, used to link a Slack message back to the incident and its
    * run (src/integrations/slack.ts). Empty means a message carries no links. Same rules as the admin API's origins.
    */
@@ -482,6 +488,7 @@ export function loadConfig(): StarfishConfig {
     fastRevertGraceMinutes: positiveNumber(process.env.STARFISH_FAST_REVERT_GRACE_MINUTES, 10, "STARFISH_FAST_REVERT_GRACE_MINUTES"),
     adminApiOrigins: validOrigins(parseList(process.env.STARFISH_ADMIN_API_ORIGINS, ",") ?? []),
     adminApiPort: positiveNumber(process.env.PORT, 8080, "PORT"),
+    adminApiRequireAppCheck: parseBoolean(process.env.STARFISH_ADMIN_API_APPCHECK, false, "STARFISH_ADMIN_API_APPCHECK"),
     uiBaseUrl: validOrigins(parseList(process.env.STARFISH_UI_URL, ",") ?? [], "STARFISH_UI_URL")[0] ?? "",
     githubCommitName: (process.env.STARFISH_GITHUB_COMMIT_NAME ?? "").trim() || "Starfish",
     githubCommitEmail: (process.env.STARFISH_GITHUB_COMMIT_EMAIL ?? "").trim() || "starfish@users.noreply.github.com",

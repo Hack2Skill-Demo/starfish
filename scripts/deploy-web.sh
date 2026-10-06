@@ -11,6 +11,17 @@
 #   STARFISH_DATABASE_ID  the named database the UI reads. Default starfish
 #   VITE_*                any other web setting (web/.env.example) is passed to the build as it is
 #   DRY_RUN=1             print the commands instead of running them
+#   VITE_STARFISH_APPCHECK_SITE_KEY  optional: build the UI with Firebase App Check (#12; web/.env.example). This only
+#                         makes the UI send tokens; turning ENFORCEMENT on is a separate, project-wide console step
+#                         (docs/setup.md), deliberately not done here. A debug token (VITE_STARFISH_APPCHECK_DEBUG_TOKEN),
+#                         in the environment or in web/.env*, is refused: it is a credential and would ship in the bundle
+#   UPTIME_CHECK=1        also create a Cloud Monitoring uptime check on the site (https, every 5 minutes, the page that
+#                         proves Hosting serves Starfish's config) and an alert policy that opens an incident when it
+#                         fails. Each is created only if none with its name exists. Written and dry-run tested, never run
+#   UPTIME_NOTIFICATION_CHANNELS  with UPTIME_CHECK=1, optional: comma-separated notification channels for the alert,
+#                         projects/<p>/notificationChannels/<id> (create one in the console: Monitoring → Alerting →
+#                         Edit notification channels). Without one the alert still opens incidents in the console, and
+#                         notifies nobody
 #
 # The bundle carries no Firebase project: at startup it reads /__/firebase/init.json, which Hosting serves
 # for the site, so this build can be served from any project. On a site other than the project's default one that
@@ -27,9 +38,27 @@ HOSTING_SITE="${HOSTING_SITE:-${PROJECT_ID:+$PROJECT_ID-starfish}}"
 STARFISH_ENV="${STARFISH_ENV:-dev}"
 STARFISH_DATABASE_ID="${STARFISH_DATABASE_ID:-starfish}"
 DRY_RUN="${DRY_RUN:-0}"
+UPTIME_CHECK="${UPTIME_CHECK:-0}"
+UPTIME_NOTIFICATION_CHANNELS="${UPTIME_NOTIFICATION_CHANNELS:-}"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 die() { echo "deploy-web: $*" >&2; exit 1; }
 [ -n "$PROJECT_ID" ] || die "PROJECT_ID is required"
+# An App Check debug token lets anyone holding it pass App Check. Vite inlines every VITE_* value of the build's
+# environment and of the .env files it loads for a production build, so one set anywhere there would ship in the bundle.
+[ -z "${VITE_STARFISH_APPCHECK_DEBUG_TOKEN:-}" ] || die "VITE_STARFISH_APPCHECK_DEBUG_TOKEN is set: a debug token is for local development only, never a deployed build"
+for f in .env .env.local .env.production .env.production.local; do
+  if [ -f "$REPO_ROOT/web/$f" ] && grep -Eq '^[[:space:]]*VITE_STARFISH_APPCHECK_DEBUG_TOKEN[[:space:]]*=[[:space:]]*["'\'']?[^[:space:]#"'\'']' "$REPO_ROOT/web/$f"; then
+    die "web/$f sets VITE_STARFISH_APPCHECK_DEBUG_TOKEN: a debug token is for local development only, never a deployed build"
+  fi
+done
+if [ "$UPTIME_CHECK" = "1" ] && [ -n "$UPTIME_NOTIFICATION_CHANNELS" ]; then
+  IFS=',' read -r -a CHANNELS <<< "$UPTIME_NOTIFICATION_CHANNELS"
+  for c in "${CHANNELS[@]}"; do
+    [[ "$c" =~ ^projects/[a-z0-9-]+/notificationChannels/[0-9]+$ ]] \
+      || die "UPTIME_NOTIFICATION_CHANNELS takes projects/<p>/notificationChannels/<id>, comma-separated: $c"
+  done
+fi
 [ "$STARFISH_DATABASE_ID" != "(default)" ] || die "the UI must read Starfish's own database, not (default)"
 case "$HOSTING_SITE" in
   *[!a-z0-9-]*|-*|*-) die "HOSTING_SITE must be lowercase letters, digits and hyphens, not starting or ending with one: $HOSTING_SITE" ;;
@@ -126,6 +155,80 @@ step "Deploy"
 # firebase.json calls the target "starfish"; this points it at the site (written to .firebaserc, not committed).
 run "${FIREBASE[@]}" target:apply hosting starfish "$HOSTING_SITE" --project "$PROJECT_ID"
 run "${FIREBASE[@]}" deploy --only hosting:starfish --project "$PROJECT_ID"
+
+if [ "$UPTIME_CHECK" = "1" ]; then
+  # #12: an uptime check and an alert on it. Not run on a real project yet. Cloud Monitoring bills uptime checks beyond
+  # a free monthly allotment; this one (every 5 minutes, from Monitoring's default regions) stays well inside it.
+  HOST="$HOSTING_SITE.web.app"
+  CHECK_NAME="starfish-web $HOSTING_SITE"
+  POLICY_NAME="starfish-web down: $HOSTING_SITE"
+  step "Uptime check '$CHECK_NAME' on https://$HOST, and the alert policy '$POLICY_NAME'"
+  run gcloud services enable monitoring.googleapis.com --project="$PROJECT_ID"
+
+  # /__/firebase/init.json, not /: Hosting answers / with index.html even for a site whose config is broken, while this
+  # file holds an appId only when the site is linked to Starfish's web app (#156), which is what the UI needs to start.
+  # The id of the uptime check named CHECK_NAME (the last part of projects/<p>/uptimeCheckConfigs/<id>), or nothing.
+  uptime_check_id() {
+    local name
+    name="$(gcloud monitoring uptime list-configs --project="$PROJECT_ID" \
+      --filter="displayName=\"$CHECK_NAME\"" --format='value(name)')" || die "could not list the uptime checks of $PROJECT_ID"
+    name="$(printf '%s\n' "$name" | head -n1)"
+    printf '%s' "${name##*/}"
+  }
+  CHECK_ID=""
+  [ "$DRY_RUN" = "1" ] || CHECK_ID="$(uptime_check_id)"
+  if [ -n "$CHECK_ID" ]; then
+    echo "  (uptime check exists: $CHECK_ID)"
+  else
+    run gcloud monitoring uptime create "$CHECK_NAME" --project="$PROJECT_ID" \
+      --resource-type=uptime-url --resource-labels="host=$HOST,project_id=$PROJECT_ID" \
+      --protocol=https --path=/__/firebase/init.json --validate-ssl=true --status-classes=2xx \
+      --matcher-type=contains-string --matcher-content='"appId"' --period=5 --timeout=10
+    if [ "$DRY_RUN" = "1" ]; then
+      CHECK_ID="<uptime-check-id>"
+    else
+      CHECK_ID="$(uptime_check_id)"
+      [ -n "$CHECK_ID" ] || die "created the uptime check but could not read its id back"
+    fi
+  fi
+
+  # The alert: Google's own uptime-check template. Fires when the check failed from more than one region in the last
+  # 20 minutes, so one flaky region does not page anyone. Monitoring REST API (alertPolicies), since gcloud has the
+  # alert-policy commands only in alpha/beta.
+  CHANNELS_JSON=""
+  if [ -n "$UPTIME_NOTIFICATION_CHANNELS" ]; then
+    CHANNELS_JSON="\"$(printf '%s' "$UPTIME_NOTIFICATION_CHANNELS" | sed 's/,/","/g')\""
+  fi
+  POLICY_JSON="$(cat <<JSON
+{"displayName":"$POLICY_NAME","combiner":"OR","notificationChannels":[$CHANNELS_JSON],
+"documentation":{"mimeType":"text/markdown","content":"The Starfish operator UI at https://$HOST failed its uptime check (/__/firebase/init.json) from more than one region. Check the Hosting site and its link to the starfish web app (docs/setup.md)."},
+"conditions":[{"displayName":"Uptime check failing: https://$HOST","conditionThreshold":{
+"filter":"metric.type=\"monitoring.googleapis.com/uptime_check/check_passed\" AND metric.label.check_id=\"$CHECK_ID\" AND resource.type=\"uptime_url\"",
+"aggregations":[{"alignmentPeriod":"1200s","perSeriesAligner":"ALIGN_NEXT_OLDER","crossSeriesReducer":"REDUCE_COUNT_FALSE","groupByFields":["resource.label.project_id","resource.label.host"]}],
+"comparison":"COMPARISON_GT","thresholdValue":1,"duration":"60s","trigger":{"count":1}}}]}
+JSON
+)"
+  POLICIES_URL="https://monitoring.googleapis.com/v3/projects/$PROJECT_ID/alertPolicies"
+  if [ "$DRY_RUN" = "1" ]; then
+    echo "+ curl -X POST -H 'Authorization: Bearer <gcloud access token>' -H 'x-goog-user-project: $PROJECT_ID' $POLICIES_URL"
+    printf '%s\n' "$POLICY_JSON"
+  else
+    token="$(gcloud auth print-access-token 2>/dev/null || gcloud auth application-default print-access-token 2>/dev/null)" \
+      || die "the alert policy needs an access token from gcloud; or create it in the console (docs/setup.md)"
+    # The token goes in on stdin (-H @-), never in curl's argv. Is there a policy by this name already? (pageSize caps the read.)
+    has_policy="$(printf 'Authorization: Bearer %s\n' "$token" | curl -fsS -H @- -H "x-goog-user-project: $PROJECT_ID" \
+      "$POLICIES_URL?pageSize=1000" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const v=JSON.parse(s);console.log((v.alertPolicies||[]).some(p=>p.displayName===process.argv[1])?"yes":"no")})' "$POLICY_NAME")" \
+      || die "could not list the alert policies of $PROJECT_ID"
+    if [ "$has_policy" = "yes" ]; then
+      echo "  (alert policy exists: $POLICY_NAME)"
+    else
+      printf 'Authorization: Bearer %s\n' "$token" | curl -fsS -X POST -H @- -H "x-goog-user-project: $PROJECT_ID" \
+        -H "Content-Type: application/json" -d "$POLICY_JSON" "$POLICIES_URL" >/dev/null \
+        || die "could not create the alert policy; create it in the console (docs/setup.md)"
+    fi
+    [ -n "$UPTIME_NOTIFICATION_CHANNELS" ] || echo "  (no UPTIME_NOTIFICATION_CHANNELS: the alert opens incidents in the console and notifies nobody)"
+  fi
+fi
 
 step "Done"
 if [ "$DRY_RUN" = "1" ]; then echo "Dry run: nothing was changed."; else echo "Live at https://$HOSTING_SITE.web.app"; fi

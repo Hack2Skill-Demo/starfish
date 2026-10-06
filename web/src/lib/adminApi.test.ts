@@ -70,3 +70,29 @@ describe("retireIncident", () => {
     expect(await retireIncident(deps(reply(404)), "x", "")).toEqual({ ok: false, message: "That incident no longer exists." });
   });
 });
+
+describe("App Check header (#12)", () => {
+  const headersOf = (f: typeof fetch) =>
+    ((f as unknown as ReturnType<typeof vi.fn>).mock.calls[0] as [string, RequestInit])[1].headers as Record<string, string>;
+
+  it("sends the App Check token as X-Firebase-AppCheck when there is one", async () => {
+    const f = reply(200, { ok: true });
+    await runIngestNow({ ...deps(f), getAppCheckToken: async () => "app-check-token" });
+    expect(headersOf(f)["x-firebase-appcheck"]).toBe("app-check-token");
+    expect(headersOf(f).authorization).toBe("Bearer tok");
+  });
+
+  it("sends no header, and still calls, when App Check is off, has no token, or fails", async () => {
+    const variants: (AdminApiDeps["getAppCheckToken"] | undefined)[] = [
+      undefined,
+      async () => null,
+      () => Promise.reject(new Error("recaptcha")),
+    ];
+    for (const getAppCheckToken of variants) {
+      const f = reply(200, { ok: true });
+      const r = await runIngestNow({ ...deps(f), ...(getAppCheckToken && { getAppCheckToken }) });
+      expect(r.ok).toBe(true);
+      expect("x-firebase-appcheck" in headersOf(f)).toBe(false);
+    }
+  });
+});

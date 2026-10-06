@@ -50,6 +50,7 @@ export const ALLOWED_NAMES = new Set([
   "elsewhere",
   "home-project",
   "hosted",
+  "star-proj-starfish",
   "star-proj",
   "starfish-admin-abc-uc",
   "starfish-home",

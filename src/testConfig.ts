@@ -65,6 +65,7 @@ export function testConfig(over: Partial<StarfishConfig> = {}): StarfishConfig {
     fastRevertGraceMinutes: 10,
     adminApiOrigins: [],
     adminApiPort: 8080,
+    adminApiRequireAppCheck: false,
     uiBaseUrl: "",
     githubCommitName: "Starfish",
     githubCommitEmail: "starfish@users.noreply.github.com",

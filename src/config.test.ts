@@ -386,6 +386,14 @@ describe("loadConfig: where a missing index may be created", () => {
     }
   });
 
+  it("requires App Check on the admin API only when asked (#12), and refuses a value that is not a boolean", () => {
+    expect(loadConfig().adminApiRequireAppCheck).toBe(false);
+    vi.stubEnv("STARFISH_ADMIN_API_APPCHECK", "true");
+    expect(loadConfig().adminApiRequireAppCheck).toBe(true);
+    vi.stubEnv("STARFISH_ADMIN_API_APPCHECK", "enforce");
+    expect(() => loadConfig()).toThrow(/STARFISH_ADMIN_API_APPCHECK/);
+  });
+
   it("reads the UI origin for Slack links: exact, https, empty by default", () => {
     expect(loadConfig().uiBaseUrl).toBe("");
     vi.stubEnv("STARFISH_UI_URL", "https://site.web.app/");

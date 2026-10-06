@@ -288,8 +288,52 @@ fix is the console: Project settings → Your apps → the `starfish` web app �
 
 **Repository variables** (nothing deployment-specific is in the workflow): the same three required ones, plus
 `STARFISH_ENV` (the label the page shows; **`demo` for the public page**), `STARFISH_DATABASE_ID`, and
-`STARFISH_WEB_HOSTING_SITE` (default `<project>-starfish`, its own site so the watched app's keeps the default).
+`STARFISH_WEB_HOSTING_SITE` (default `<project>-starfish`, its own site so the watched app's keeps the default), and
+optionally `STARFISH_WEB_APPCHECK_SITE_KEY` (App Check, below; unset = off).
 Anonymous sign-in is **not** turned on by the workflow: it is project-wide (see `setup.md`). Input: `dry_run`.
+
+### App Check and the uptime check (#12)
+
+**App Check (optional, off by default).** Build the UI with `VITE_STARFISH_APPCHECK_SITE_KEY=<reCAPTCHA site key>`
+(and `VITE_STARFISH_APPCHECK_PROVIDER=v3` for a reCAPTCHA v3 key; Enterprise is the default) and it initialises Firebase
+App Check before its first Firestore call (`web/src/lib/appCheck.ts`), so every read, a guest's included, carries a token
+from the registered web app; the admin API call carries one too, as `X-Firebase-AppCheck`. With no key nothing changes:
+App Check is not initialised and the UI, guests included, works as before. On the emulators it is skipped (they do not
+check tokens). For local development against a real project with enforcement on, `VITE_STARFISH_APPCHECK_DEBUG_TOKEN`
+(a registered debug token, or `true` to have the SDK print one) works in the dev server only; `scripts/deploy-web.sh`
+refuses to build with one set, in the environment or in `web/.env*`, because Vite would put it in the bundle.
+
+The admin API can require it too: `STARFISH_ADMIN_API_APPCHECK=true` (through `EXTRA_ENV_VARS`; default off). A POST
+then needs a valid App Check token as well as the ID token, checked with the Admin SDK (`getAppCheck().verifyToken`), and
+a missing or rejected one gets the same 401 as a bad ID token. Turn it on only after the site is built with a site key.
+
+**Enforcement is a console step, and deliberately not scripted.** Sending tokens protects nothing until Firestore
+*requires* them, and that switch is per product (Cloud Firestore), not per database as far as the console shows (the
+question in #12; not verified here). In a project shared with the watched app (#32), enforcing would refuse that app's
+Firestore clients too unless they also attest. So, by hand:
+
+1. Create a reCAPTCHA Enterprise key for the site's domain (Google Cloud console → Security → reCAPTCHA; a score-based
+   web key, domain `<site>.web.app`). reCAPTCHA Enterprise has a free monthly allotment of assessments and bills beyond
+   it: check its pricing before a public demo.
+2. Firebase console → App Check → Apps → the `starfish` web app → register it with that key.
+3. Redeploy the UI with `VITE_STARFISH_APPCHECK_SITE_KEY=<key> scripts/deploy-web.sh`.
+4. App Check → APIs → Cloud Firestore: watch the request metrics until the traffic you expect is verified (and the
+   watched app's, if it shares the project), then **Enforce**. Leave Authentication unenforced: anonymous guest sign-in
+   needs nothing more.
+
+> **Status: written and unit-tested (the UI's initialisation and token header with a stubbed SDK; the admin API's check
+> with stubs and over a local HTTP server). Never run against a real project, real reCAPTCHA, or enforcement.**
+
+**Uptime check and alert (optional).** `UPTIME_CHECK=1 scripts/deploy-web.sh` also enables Cloud Monitoring and creates,
+each only if none by its name exists: an uptime check `starfish-web <site>` (https, every 5 minutes, on
+`/__/firebase/init.json` and passing only when it contains `"appId"`, which is what the UI needs to start; `/` would pass
+even on a broken site, since Hosting answers it with `index.html`), and an alert policy `starfish-web down: <site>` (Google's
+uptime template: the check failing from more than one region in 20 minutes), created through the Monitoring REST API
+because `gcloud` has alert policies only in alpha/beta. `UPTIME_NOTIFICATION_CHANNELS=projects/<p>/notificationChannels/<id>,...`
+sends it somewhere; without one it opens incidents in the console and notifies nobody (make a channel in Monitoring →
+Alerting → Edit notification channels). Uptime checks are billed beyond a free monthly allotment; this one is well inside it.
+
+> **Status: written and dry-run tested (the plan, the policy's JSON, the channel validation). Never run on a real project.**
 
 ## The agent and where its tests run (#74)
 

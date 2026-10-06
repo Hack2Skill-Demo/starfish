@@ -4,6 +4,7 @@
  * record whether that person is an admin, so hiding the buttons from everyone else is a courtesy, not
  * the check. Nothing here throws: an answer is a typed result with a message safe to show.
  */
+import { appCheckToken } from "./appCheck";
 import { webConfig } from "./config";
 import { firebaseAuth } from "./firebase";
 
@@ -23,6 +24,8 @@ export type AdminResult<T> = { ok: true; value: T } | { ok: false; message: stri
 export interface AdminApiDeps {
   baseUrl: string;
   getToken: () => Promise<string | null>;
+  /** The App Check token to send as X-Firebase-AppCheck (#12), or null for none. Absent: none is sent. */
+  getAppCheckToken?: () => Promise<string | null>;
   fetchImpl?: typeof fetch;
 }
 
@@ -51,11 +54,22 @@ async function post(deps: AdminApiDeps, path: string, body?: unknown): Promise<A
     token = null;
   }
   if (!token) return { ok: false, message: "Your session has expired. Sign in again." };
+  // No App Check token is not a reason to stop: the server says whether it requires one.
+  let appCheck: string | null;
+  try {
+    appCheck = (await deps.getAppCheckToken?.()) ?? null;
+  } catch {
+    appCheck = null;
+  }
   let res: Response;
   try {
     res = await (deps.fetchImpl ?? fetch)(`${deps.baseUrl}${path}`, {
       method: "POST",
-      headers: { authorization: `Bearer ${token}`, ...(body !== undefined && { "content-type": "application/json" }) },
+      headers: {
+        authorization: `Bearer ${token}`,
+        ...(appCheck && { "x-firebase-appcheck": appCheck }),
+        ...(body !== undefined && { "content-type": "application/json" }),
+      },
       ...(body !== undefined && { body: JSON.stringify(body) }),
     });
   } catch {
@@ -98,5 +112,9 @@ export async function retireIncident(deps: AdminApiDeps, incidentId: string, rea
 
 /** The deps the app uses: the configured URL and the current user's fresh ID token. */
 export function appAdminApi(): AdminApiDeps {
-  return { baseUrl: webConfig().adminApiUrl, getToken: async () => (await firebaseAuth().currentUser?.getIdToken()) ?? null };
+  return {
+    baseUrl: webConfig().adminApiUrl,
+    getToken: async () => (await firebaseAuth().currentUser?.getIdToken()) ?? null,
+    getAppCheckToken: () => appCheckToken(),
+  };
 }
