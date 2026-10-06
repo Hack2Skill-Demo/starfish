@@ -112,6 +112,31 @@ describe("Overview page", () => {
     expect(within(did).getByText("Not finished")).toBeInTheDocument();
   });
 
+  it("counts healed on its own only from a missing-index run recorded as healed, and links the filtered list (#38)", () => {
+    renderPage();
+    act(() => mocks.cyclesCb!([], false));
+    expect(tile("Healed on its own")).toHaveTextContent("0");
+    expect(tile("Healed on its own").closest("a")).toHaveAttribute("href", "/runs?heal=healed");
+    expect(screen.getByText(/none recorded: only a missing-index heal that held/)).toBeInTheDocument();
+    act(() =>
+      mocks.cyclesCb!(
+        [
+          cycle("a", { path: "index", summary: { index: { runtime: "healed" } } }),
+          cycle("b", { path: "index", summary: { index: { runtime: "observing" } } }),
+          cycle("c", { path: "pr", summary: { prState: { state: "merged" } } }),
+          cycle("d", { path: "index", synthetic: true, summary: { index: { runtime: "healed" } } }),
+        ],
+        false
+      )
+    );
+    expect(tile("Healed on its own")).toHaveTextContent("1");
+    expect(tile("Waiting on a human").closest("a")).toHaveAttribute("href", "/runs?state=waiting-human");
+    expect(tile("Runs in progress").closest("a")).toHaveAttribute("href", "/runs?state=running");
+    // An index run is counted by its path too (it was missing from the list, which made the count NaN).
+    const did = screen.getByRole("region", { name: "What the agent did" });
+    expect(within(did).getByRole("link", { name: /Missing index/ })).toHaveTextContent("3");
+  });
+
   it("shows key figures that keep their denominators, and dashes when there is nothing to divide", async () => {
     const hour = String(Math.floor(now / 3_600_000));
     mocks.listIncidents.mockResolvedValue({

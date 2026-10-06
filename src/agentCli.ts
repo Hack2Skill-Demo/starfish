@@ -122,6 +122,7 @@ const indexHeal: IndexHealWiring | undefined =
           own: { project: cfg.projectId, database: cfg.databaseId },
           autoApply: cfg.indexAutoApply,
           dailyCap: cfg.indexDailyCap,
+          maxIndexes: cfg.indexMaxPerDatabase,
           pollMs: 15_000,
           maxWaitMs: cfg.indexWaitMinutes * 60_000,
         },

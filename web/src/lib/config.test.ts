@@ -1,5 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
-import { FIREBASE_INIT_PATH, bootstrapWebConfig, normalizeAdminApiUrl, resolveFirebaseConfig, webConfig } from "./config";
+import {
+  FIREBASE_INIT_PATH,
+  bootstrapWebConfig,
+  normalizeAdminApiUrl,
+  readAppCheckConfig,
+  resolveFirebaseConfig,
+  webConfig,
+} from "./config";
 
 const full = {
   VITE_FIREBASE_API_KEY: "k",
@@ -140,6 +147,36 @@ describe("bootstrapWebConfig: the engine's run record", () => {
   });
 });
 
+
+describe("readAppCheckConfig (#12)", () => {
+  it("is off by default: no site key, enterprise, no debug token", () => {
+    expect(readAppCheckConfig({})).toEqual({ siteKey: "", provider: "enterprise" });
+  });
+
+  it("reads the site key and the provider; an unknown provider is enterprise", () => {
+    expect(readAppCheckConfig({ VITE_STARFISH_APPCHECK_SITE_KEY: " key ", VITE_STARFISH_APPCHECK_PROVIDER: "V3" })).toEqual({
+      siteKey: "key",
+      provider: "v3",
+    });
+    expect(
+      readAppCheckConfig({ VITE_STARFISH_APPCHECK_SITE_KEY: "key", VITE_STARFISH_APPCHECK_PROVIDER: "v2" }).provider
+    ).toBe("enterprise");
+  });
+
+  it("honours a debug token only in the dev server, never in a production build", () => {
+    expect(readAppCheckConfig({ DEV: true, VITE_STARFISH_APPCHECK_DEBUG_TOKEN: "abc" }).debugToken).toBe("abc");
+    expect(readAppCheckConfig({ DEV: true, VITE_STARFISH_APPCHECK_DEBUG_TOKEN: "true" }).debugToken).toBe(true);
+    expect(readAppCheckConfig({ DEV: false, VITE_STARFISH_APPCHECK_DEBUG_TOKEN: "abc" })).not.toHaveProperty("debugToken");
+    expect(readAppCheckConfig({ VITE_STARFISH_APPCHECK_DEBUG_TOKEN: "abc" })).not.toHaveProperty("debugToken");
+  });
+
+  it("is part of the bootstrapped config", async () => {
+    vi.resetModules();
+    const fresh = await import("./config");
+    const cfg = await fresh.bootstrapWebConfig({ VITE_STARFISH_APPCHECK_SITE_KEY: "k" }, respond(served));
+    expect(cfg.appCheck).toEqual({ siteKey: "k", provider: "enterprise" });
+  });
+});
 
 describe("normalizeAdminApiUrl", () => {
   it("keeps an https URL without its trailing slash", () => {

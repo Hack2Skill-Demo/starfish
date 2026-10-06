@@ -11,6 +11,9 @@
  * cookie, so a page on another site cannot make the browser send it (no CSRF); CORS is an allowlist of the
  * operator UI's origin and nothing else.
  *
+ * Optionally (`STARFISH_ADMIN_API_APPCHECK`, off by default), a POST must also carry a Firebase App Check token in
+ * `X-Firebase-AppCheck` (#12): proof the call comes from the registered web app. It is refused with the same 401.
+ *
  * What it will not do. It never says why a token failed (one 401 for missing, malformed, expired, forged, revoked or disabled), never
  * returns an error's text from inside (a failed run's message is redacted and cut), reads at most 4 KB of body, and
  * runs one ingest at a time per instance: a second request while one runs is a 409, not a pile-up.
@@ -28,6 +31,8 @@ export interface ApiRequest {
   /** The path without the query string. */
   path: string;
   authorization?: string;
+  /** The `X-Firebase-AppCheck` header, when the browser sent one. */
+  appCheck?: string;
   origin?: string;
   /** The parsed JSON body, or undefined when there was none (or it was not JSON). */
   body?: unknown;
@@ -45,6 +50,12 @@ export interface AdminApiDeps {
   verifyToken(idToken: string): Promise<{ uid: string }>;
   runIngest(actorUid: string): Promise<TriggerResult>;
   retire(incidentId: string, actorUid: string, reason: string): Promise<RetireResult>;
+  /**
+   * When set, a POST must also carry a Firebase App Check token this accepts (throws for anything else): the call then
+   * has to come from the registered web app, not just from someone holding an ID token. Absent: no App Check check (the
+   * default; `STARFISH_ADMIN_API_APPCHECK`).
+   */
+  verifyAppCheck?(appCheckToken: string): Promise<void>;
   /** Exact origins allowed to call from a browser. */
   allowedOrigins: readonly string[];
 }
@@ -57,7 +68,7 @@ function corsHeaders(deps: AdminApiDeps, origin: string | undefined): Record<str
   return {
     "access-control-allow-origin": origin,
     "access-control-allow-methods": "GET, POST, OPTIONS",
-    "access-control-allow-headers": "authorization, content-type",
+    "access-control-allow-headers": "authorization, content-type, x-firebase-appcheck",
     "access-control-max-age": "600",
     vary: "Origin",
   };
@@ -82,10 +93,17 @@ export function createAdminApi(deps: AdminApiDeps): (req: ApiRequest) => Promise
     if (route === undefined) return reply(404, { error: "not found" });
     if (req.method !== "POST") return reply(405, { error: "method not allowed" });
 
-    // One answer for every way a token can be wrong: nothing here helps someone guess.
+    // One answer for every way a token can be wrong: nothing here helps someone guess. That includes the App Check
+    // token: a missing or rejected one is the same 401, and it is checked first, so a call from outside the web app
+    // never reaches the ID-token check (one Auth lookup per call, #141).
     const match = /^Bearer ([A-Za-z0-9._-]{20,4096})$/.exec(req.authorization ?? "");
     let uid: string;
     try {
+      if (deps.verifyAppCheck) {
+        const appCheck = /^[A-Za-z0-9._-]{20,4096}$/.exec(req.appCheck ?? "");
+        if (!appCheck) throw new Error("no app check token");
+        await deps.verifyAppCheck(appCheck[0]);
+      }
       if (!match) throw new Error("no token");
       uid = (await deps.verifyToken(match[1]!)).uid;
     } catch {

@@ -142,6 +142,51 @@ describe("buildEvidence", () => {
     expect(stage(buildEvidence({ ...row, recurrenceCount: 2 }, null), "detected").fields.find((f) => f.label === "Regressions")?.value).toBe("2");
   });
 
+  it("shows a log incident's Monitoring annotation, and nothing about Monitoring when there is none (#19)", () => {
+    const plain = stage(buildEvidence(row, null), "detected");
+    expect(plain.fields.some((f) => /Monitoring|Source/.test(f.label))).toBe(false);
+    expect(plain.note).toBeUndefined();
+
+    const annotated = stage(
+      buildEvidence(
+        {
+          ...row,
+          monitoringCount: 9,
+          lastMonitoring: [
+            {
+              metricType: "run.googleapis.com/request_count",
+              resourceType: "cloud_run_revision",
+              projectId: "app-proj",
+              windowStart: "2026-10-05T10:00:00.000Z",
+              windowEnd: "2026-10-05T11:00:00.000Z",
+              failureCount: 4,
+              capped: true,
+            },
+          ],
+        },
+        null
+      ),
+      "detected"
+    );
+    expect(annotated.fields.find((f) => f.label === "Failed invocations (Cloud Monitoring)")?.value).toBe("9");
+    expect(annotated.fields.find((f) => f.label === "Monitoring reading 1")?.value).toBe(
+      "at least 4 failed · run.googleapis.com/request_count on cloud_run_revision in app-proj · 2026-10-05T10:00:00.000Z to 2026-10-05T11:00:00.000Z"
+    );
+    expect(annotated.fields.some((f) => f.label === "Source")).toBe(false);
+  });
+
+  it("says a Monitoring-only incident is one, and that its zero log recount is by construction (#19)", () => {
+    const mon = { ...row, monitoringOnly: true as const, monitoringCount: 3 };
+    const e = buildEvidence(mon, cycle({ triage: { decision: "notify", counterCount: 0, counterFilter: "f" } }));
+    expect(stage(e, "detected").fields.find((f) => f.label === "Source")?.value).toBe("Cloud Monitoring only (no ERROR log entry)");
+    expect(stage(e, "detected").note).toMatch(/^Monitoring only/);
+    expect(stage(e, "counter-check").note).toMatch(/zero by construction/);
+    // A log incident's recount carries no such note.
+    expect(stage(buildEvidence(row, cycle({ triage: { counterCount: 0, counterFilter: "f" } })), "counter-check").note).toBeUndefined();
+    // Not reached stays not reached: nothing is said about a recount that did not happen.
+    expect(stage(buildEvidence(mon, null), "counter-check").note).toMatch(/^Not reached/);
+  });
+
   it("names the current recurrence's cycle", () => {
     expect(currentCycleId({ id: "inc-1", recurrenceCount: 0 })).toBe("inc-1_r0");
     expect(currentCycleId({ id: "inc-1", recurrenceCount: 3 })).toBe("inc-1_r3");

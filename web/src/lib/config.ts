@@ -128,6 +128,37 @@ export interface WebConfig {
   functionsRegion: string;
   /** Use the local Auth + Firestore emulators (`pnpm dev:emulated`), never a real project. */
   useEmulators: boolean;
+  /** Firebase App Check (#12): see `AppCheckConfig`. */
+  appCheck: AppCheckConfig;
+}
+
+/**
+ * Firebase App Check (#12). Optional: with no site key App Check is not initialised and the UI works exactly as before
+ * (it then cannot read a database whose App Check enforcement is on, guests included; docs/setup.md).
+ */
+export interface AppCheckConfig {
+  /** The reCAPTCHA site key of the web app's App Check registration. "" = App Check off. */
+  siteKey: string;
+  /** Which reCAPTCHA the key belongs to: "enterprise" (the default) or "v3". */
+  provider: "enterprise" | "v3";
+  /**
+   * A debug token for local development against a real project whose enforcement is on, honoured only by the Vite dev
+   * server (never by a production build): a registered token string, or `true` for the SDK to print a new one to the
+   * console for you to register. Undefined: none.
+   */
+  debugToken?: string | true;
+}
+
+/** The App Check settings from the environment. A bad provider value falls back to enterprise rather than blocking startup. */
+export function readAppCheckConfig(env: Record<string, unknown>): AppCheckConfig {
+  const str = (v: unknown): string => (typeof v === "string" ? v.trim() : "");
+  const siteKey = str(env.VITE_STARFISH_APPCHECK_SITE_KEY);
+  const provider = str(env.VITE_STARFISH_APPCHECK_PROVIDER).toLowerCase() === "v3" ? "v3" : "enterprise";
+  // Vite sets DEV to true only for `vite` (the dev server), never for `vite build`.
+  const dev = env.DEV === true || env.DEV === "true";
+  const raw = str(env.VITE_STARFISH_APPCHECK_DEBUG_TOKEN);
+  const debugToken = !dev || raw === "" ? undefined : raw.toLowerCase() === "true" ? true : raw;
+  return { siteKey, provider, ...(debugToken !== undefined && { debugToken }) };
 }
 
 /** A number above zero, else the default: a bad value here only affects a status line, so it never blocks startup. */
@@ -180,6 +211,7 @@ export function bootstrapWebConfig(
         environment: env.VITE_STARFISH_ENV || "dev",
         functionsRegion: env.VITE_FUNCTIONS_REGION || "us-central1",
         useEmulators: env.VITE_USE_EMULATORS === "1",
+        appCheck: readAppCheckConfig(env),
       };
       return cached;
     },

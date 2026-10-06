@@ -386,6 +386,14 @@ describe("loadConfig: where a missing index may be created", () => {
     }
   });
 
+  it("requires App Check on the admin API only when asked (#12), and refuses a value that is not a boolean", () => {
+    expect(loadConfig().adminApiRequireAppCheck).toBe(false);
+    vi.stubEnv("STARFISH_ADMIN_API_APPCHECK", "true");
+    expect(loadConfig().adminApiRequireAppCheck).toBe(true);
+    vi.stubEnv("STARFISH_ADMIN_API_APPCHECK", "enforce");
+    expect(() => loadConfig()).toThrow(/STARFISH_ADMIN_API_APPCHECK/);
+  });
+
   it("reads the UI origin for Slack links: exact, https, empty by default", () => {
     expect(loadConfig().uiBaseUrl).toBe("");
     vi.stubEnv("STARFISH_UI_URL", "https://site.web.app/");
@@ -462,6 +470,15 @@ describe("loadConfig: where a missing index may be created", () => {
     vi.stubEnv("STARFISH_INDEX_AUTO_APPLY", "");
     vi.stubEnv("STARFISH_INDEX_DAILY_CAP", "");
     expect(loadConfig()).toMatchObject({ indexAutoApply: false, indexDailyCap: 3 });
+  });
+
+  it("refuses a create at 100 existing indexes by default, and reads the limit", () => {
+    vi.stubEnv("STARFISH_INDEX_MAX_PER_DATABASE", "");
+    expect(loadConfig()).toMatchObject({ indexMaxPerDatabase: 100 });
+    vi.stubEnv("STARFISH_INDEX_MAX_PER_DATABASE", "150");
+    expect(loadConfig()).toMatchObject({ indexMaxPerDatabase: 150 });
+    vi.stubEnv("STARFISH_INDEX_MAX_PER_DATABASE", "0");
+    expect(() => loadConfig()).toThrow("STARFISH_INDEX_MAX_PER_DATABASE");
   });
 
   it("reads the switch and the cap, and refuses a typo at startup", () => {

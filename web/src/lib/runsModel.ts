@@ -265,6 +265,39 @@ export function indexRuntimeView(c: CycleRow): { text: string; tone: RunTone; un
   return { ...known, ...(r.runtime === "observing" && until && { until }) };
 }
 
+/**
+ * A missing-index heal that held (#38): the engine's observer (src/indexheal/observe.ts) recorded `runtime: "healed"` on
+ * an index run after its quiet window. Nothing else is "healed on its own": not a merged pull request, not an index that
+ * is merely READY or still under watch, and not a synthetic record (`pnpm seed-demo`), which no real run wrote.
+ */
+export const isHealedRun = (c: CycleRow): boolean => c.synthetic !== true && isIndexCycle(c) && c.summary.index?.runtime === "healed";
+
+/** A narrowing of the Runs list from its URL (the Overview links here): what it shows, and the test. */
+export interface RunFilter {
+  /** "Showing runs that ended: Pull request opened". */
+  lead: string;
+  label: string;
+  test: (c: CycleRow) => boolean;
+}
+
+const STATE_FILTERS: Record<string, { label: string; test: (c: CycleRow) => boolean }> = {
+  "waiting-human": { label: "Waiting for a human", test: (c) => c.state === "waiting-human" },
+  running: { label: "In progress, or waiting for a worker", test: (c) => c.state === "running" },
+};
+
+/**
+ * `?heal=healed`, `?state=waiting-human|running` or `?path=<path>`, first match wins. The URL is untrusted: an unknown
+ * value filters nothing (null), rather than showing an empty list that reads as "none".
+ */
+export function runFilter(params: URLSearchParams): RunFilter | null {
+  if (params.get("heal") === "healed") return { lead: "Showing", label: "Missing-index heals that held through their window", test: isHealedRun };
+  const state = params.get("state");
+  if (state !== null && Object.hasOwn(STATE_FILTERS, state)) return { lead: "Showing runs:", ...STATE_FILTERS[state]! };
+  const path = params.get("path");
+  if (path !== null && Object.hasOwn(PATH_LABELS, path)) return { lead: "Showing runs that ended:", label: PATH_LABELS[path as CyclePath], test: (c) => c.path === path };
+  return null;
+}
+
 /** `cycle` events are the loop's own bookkeeping (started, stopped, budget), shown as notes. */
 const NOTE_STAGE = "cycle";
 

@@ -38,7 +38,7 @@ Where it currently holds, and where it doesn't:
 | Service attribution | ✅ config patterns — no hardcoded service list |
 | Project, environment, collection, database, lookback | ✅ config (engine `src/config.ts`, UI `web/src/lib/config.ts`); these are the defaults, and the engine's need a redeploy to change |
 | Watched project, environment label, log resource types, service patterns, noise list, and the pipeline switches (dry run, review required, model calls per cycle) | ⚠️ an admin edits them on the Settings page; the engine validates the saved document and applies it over the defaults, falling back to the last good one (`src/runtimeSettings.ts`). `firestore.rules` let only admins write it, each save in one batch with an immutable audit entry (before and after) and a separate operator copy; the engine's last-good copy and any secret-shaped key are closed to clients. The editor and the engine run the same validator (`src/settingsSchema.ts`). Rules check each list's shape and size but not each entry (they have no loops); the engine checks entries on read. Tested on the emulator, and the editor's own save is the one the rules suite runs. `pnpm ingest` reads it on each run (`src/ingest/run.ts`), and `scripts/deploy-gcp.sh` defines the scheduled job that runs it, but that script has **not been run against a real project yet** (#6), so until it has, a saved document is read only when someone runs `pnpm ingest`; secrets (Secret Manager and its endpoint). The pipeline switches (dry run, review required, automation, model calls) are stored and applied the same way, but **no deployed job runs the agent loop yet** (`DEPLOY_AGENT=1` would deploy one; it has never run), so today they change nothing; the verify command, its timeout and the excluded paths stay environment-only on purpose (an editable command would be code execution on the engine host, and the excluded paths guard the judge). Single-target: one watched project per deployment |
-| Vertex project, model and region | ⚠️ the project is environment only (`STARFISH_VERTEX_PROJECT_ID`, defaulting to `GOOGLE_CLOUD_PROJECT`, so Gemini can run in a different project from the store). The model and region default to `STARFISH_MODEL` and `GOOGLE_CLOUD_LOCATION`, and an admin can override both on the Settings page (validated by the same schema and by `firestore.rules`); the agent job builds its model client from each pass's snapshot (`createAskJson` in `vertex.ts`), so an override reaches the call. That job has never run; `pnpm spike` stays on the environment's values |
+| Vertex project, model and region | ⚠️ they default to `STARFISH_VERTEX_PROJECT_ID` (else `GOOGLE_CLOUD_PROJECT`, so Gemini can run in a different project from the store), `STARFISH_MODEL` and `GOOGLE_CLOUD_LOCATION`, and an admin can override all three on the Settings page (validated by the same schema and by `firestore.rules`); the agent job builds its model client from each pass's snapshot (`createAskJson` in `vertex.ts`, one client per project and region), so an override reaches the call. Another Vertex project needs the agent's account granted `roles/aiplatform.user` there, which the deploy script does only for its own `VERTEX_PROJECT_ID`. That job has never run; `pnpm spike` stays on the environment's values |
 | Deployment-specific values in tracked code | ✅ `scripts/check-no-project-ids.mjs` (run by `pnpm run verify`'s lint step) fails on a GCP project id, Firebase/Cloud Run domain or Hack2Skill name in `src/`, `web/src/` or `scripts/` outside an allowlist of example placeholders. A pattern check, not a proof: it can't recognise a project id that has none of the shapes it looks for |
 | Firebase project the UI connects to | ✅ read at startup from Hosting's `/__/firebase/init.json`, so one build serves any project (`VITE_FIREBASE_*` is the local-dev fallback). `scripts/deploy-web.sh` deploys it to its own Hosting site; written and dry-run tested, **untested against a real Hosting site** (#12) |
 | UI environment label | ✅ follows the runtime settings once signed in (the build-time `VITE_STARFISH_ENV` is the fallback when none is set or the read fails) |
@@ -53,7 +53,7 @@ Where it currently holds, and where it doesn't:
 | Services Starfish never ingests (its own) | ✅ config (`STARFISH_EXCLUDED_SERVICES`, default `starfish`), applied at query time and at parse time; environment-only on purpose, because it guards against a feedback loop and is not an operational preference. Set it to the name Starfish is actually deployed under; nothing is deployed yet (#6, #32) |
 | Log source resource types | ⚠️ config, but attribution reads only `function_name` / `service_name`, so only Cloud Functions and Cloud Run work |
 | Framework-noise suppression list | ✅ config, callable GET-probe noise by default |
-| Cloud Monitoring failure signal (#19) | ⚠️ environment only (`STARFISH_MONITORING_ENABLED`, default off; `STARFISH_MONITORING_RESOURCE_TYPES` picks among the two built-in metrics, `cloud_run_revision` and `cloud_function`; `STARFISH_MONITORING_MAX_SERIES`, default 500); another metric needs code. Never run against real Monitoring |
+| Cloud Monitoring failure signal (#19) | ⚠️ environment only (`STARFISH_MONITORING_ENABLED`, default off; `STARFISH_MONITORING_RESOURCE_TYPES` picks among the two built-in metrics, `cloud_run_revision` and `cloud_function`; `STARFISH_MONITORING_MAX_SERIES`, default 500); another metric needs code. `scripts/deploy-gcp.sh STARFISH_MONITORING_ENABLED=true` sets it and grants `roles/monitoring.viewer` on the watched project. Never run against real Monitoring |
 | Deployment: project, region, schedule, the watched and Gemini projects, the environment label | ✅ environment variables of `scripts/deploy-gcp.sh`; no file is edited. Run once, on the demo project (2026-10-05): the ingest job, its schedule, the database and rules deployed and a scheduled run succeeded (#6). The agent job (`DEPLOY_AGENT=1`) has not run. `.github/workflows/deploy.yml` runs the same script by hand-dispatch with Workload Identity Federation and repository variables, no stored key; written and pinned by a test, **never run** (#75) |
 | Incident store | ❌ assumes Firestore |
 | Verify-gate command, timeout and excluded paths | ⚠️ environment only (`STARFISH_VERIFY_COMMAND`, `STARFISH_VERIFY_TIMEOUT_SECONDS`, `STARFISH_PATCH_EXCLUDED_PATHS`); `src/agent/verifyGate.ts` reads them; in the isolated deployment only the verify job runs it (written, never run) |
@@ -77,12 +77,17 @@ with its metric, resource type, project and observation window. A function that 
 ERROR in that window has its log incidents annotated (`monitoringCount`); one that did not gets a
 **Monitoring-only incident** (`signalSource: monitoring`), fingerprinted in a namespace of its own so it
 never merges with a log-derived one. A Monitoring read that fails is recorded as unavailable
-(`last_run.monitoring.unavailableWindows`), never as zero failures, and that window is not re-read.
+(`last_run.monitoring.unavailableWindows`), never as zero failures, and that window is not re-read: a
+retry would need the window's log incidents to correlate against, and the store's replay guard is per window
+and fingerprint for occurrences and readings together, so re-reading one signal alone would either count the
+logs twice or drop the annotation.
 Triage never declines a Monitoring-only incident because its log counter-check is zero, and never lets
 one become `act` without cause evidence on the incident (a cause or a stack trace, which a count of
 failures does not carry): it goes to a human (`notify`) instead. Enabling it needs
-`roles/monitoring.viewer` on the watched project, which `scripts/deploy-gcp.sh` does not grant yet, and
-the UI does not show the Monitoring fields yet. With it off, which is every deployment today, a clean
+`roles/monitoring.viewer` on the watched project, which `scripts/deploy-gcp.sh` grants only when run with
+`STARFISH_MONITORING_ENABLED=true` (dry-run tested; never run). The Incidents page and the evidence page
+badge a Monitoring-only incident and show `monitoringCount` and the latest window's readings (provenance and
+count). With it off, which is every deployment today, a clean
 ingest run still means *no logged errors*, not *no errors*.
 
 ## How it works
@@ -165,16 +170,18 @@ demo runs.
 - **Overview:** a first version is built and is the page the app opens on: how many runs wait on a
   human, runs in progress, open incidents, regressions, errors per hour (from the incidents' hourly
   buckets), key figures (pull requests opened and failed runs, each as "n of N finished runs"; median run length; untriaged open incidents; errors this hour against the hours before it), what the agent did by path (each row opens the Runs list filtered to runs that ended that way), the latest runs, the latest activity (the newest run events across all runs, each opening its run) and the engine's status. Every figure is a
-  count or median of stored records, not an accuracy score (no run has been scored; see `scoreboard/FORMAT.md`). It does **not** show a run "healed on its own" or merged (the auto-merge step records a merge on
-  the cycle, `summary.merge`, but the Overview does not count it, and nothing has merged); on a real deployment the run counts are zero until a job runs the agent
-  loop (#38 stays open).
+  count or median of stored records, not an accuracy score (no run has been scored; see `scoreboard/FORMAT.md`). "Healed on its own" counts
+  only missing-index runs the engine recorded as healed after their quiet window (`src/indexheal/observe.ts`) and opens the Runs list filtered
+  to them; a merged pull request is never counted as healed (the auto-merge step records a merge on the cycle, `summary.merge`, but the
+  Overview does not count it), and nothing has been healed or merged on a real project. On a real deployment the run
+  counts are zero until a job runs the agent loop.
 - **Slack messages and GitHub issue/PR bodies:** what Starfish posts elsewhere.
 - **Pre-recorded phone call:** to the on-call person when Slack goes unanswered.
 - **Settings:** connections, the engine's rules and on-call.
 
 The Incidents page opens with a line saying whether the engine is running (from the engine's last-run record: failed, stopped past a configurable threshold, read capped, or never recorded), so a quiet list can't pass for good news; nothing writes that record in production until the ingest job is deployed and scheduled: `scripts/deploy-gcp.sh` does both but has not been run against a real project yet (#6).
 
-The public demo needs no sign-in: a visitor is signed in anonymously and sees the Overview, the incidents and their evidence, the Runs page and a view-only Settings page, all for the `demo` environment only, with no triage buttons (#12). That needs Anonymous sign-in enabled in the Firebase project and only `demo`-labelled data; App Check and the uptime check are not built. Because the agent has never run, the demo can carry a **synthetic** evidence history instead: `pnpm seed-demo` (see [Synthetic demo history](#synthetic-demo-history)), every record of which the UI badges "Synthetic". A private deployment leaves Anonymous sign-in disabled and still requires an operator account.
+The public demo needs no sign-in: a visitor is signed in anonymously and sees the Overview, the incidents and their evidence, the Runs page and a view-only Settings page, all for the `demo` environment only, with no triage buttons (#12). That needs Anonymous sign-in enabled in the Firebase project and only `demo`-labelled data. App Check is built as an option, off unless the UI is built with a reCAPTCHA site key (`VITE_STARFISH_APPCHECK_SITE_KEY`), and enforcing it on Firestore is a console step left to a person; an optional uptime check and alert on the site come with `UPTIME_CHECK=1 scripts/deploy-web.sh`. Both are tested only with stubs and dry runs, never on a real project ([deploy.md](docs/deploy.md#app-check-and-the-uptime-check-12)). Because the agent has never run, the demo can carry a **synthetic** evidence history instead: `pnpm seed-demo` (see [Synthetic demo history](#synthetic-demo-history)), every record of which the UI badges "Synthetic". A private deployment leaves Anonymous sign-in disabled and still requires an operator account.
 
 ![Live runs: a missing-index fault, from first error to an evidence PR waiting for a human](docs/design/screens/live-runs-index.png)
 
@@ -199,7 +206,7 @@ is tested; "deployed" would mean it has run in a real project, and **nothing has
 | Secret Manager | the GitHub token the pull-request step uses | secret, access grant and mount are in the deploy script, and `loadGithubToken()` reads it; the opener is built and tested against a local git remote and a fake API, **not against real GitHub**; its only caller is the agent job (a dry run, never run) |
 | Firebase Hosting | the operator UI, on its own site (not the project's default one) | `scripts/deploy-web.sh` and the Hosting config written; not deployed |
 | Cloud Build, Artifact Registry | build the image (`gcloud run jobs deploy --source`; one build per job) | in the deploy script; not deployed |
-| Cloud Monitoring | a second signal beside logs (see the blind spot above) | built and tested against fakes; off by default (`STARFISH_MONITORING_ENABLED`); never run against real Cloud Monitoring, and the deploy script does not grant its role |
+| Cloud Monitoring | a second signal beside logs (see the blind spot above) | built and tested against fakes; off by default (`STARFISH_MONITORING_ENABLED`); never run against real Cloud Monitoring; the deploy script grants its role only with `STARFISH_MONITORING_ENABLED=true` |
 
 ## Status
 
@@ -390,8 +397,12 @@ query-failing or unverified. Starfish does not measure the traffic in that windo
 it), and it never resolves the incident itself. Runs and the incident page show the index stage and its runtime state.
 Refusals, the daily cap, a failed build, a query still failing after READY, and an index file it cannot extend go to a
 person (Slack when configured). **Never run:** none of the Admin REST calls, the probe's Firestore query or a real
-create-index URL has met Google; the response shapes are from the documentation. Not built: a quota or index-limit
-check beyond the daily cap, and Gemini writing the PR's explanation (the template does).
+create-index URL has met Google; the response shapes are from the documentation. **Also built, same status:** the
+database's index limit (before a create, the Admin API's inventory of every collection group is counted; at or above
+`STARFISH_INDEX_MAX_PER_DATABASE`, default 100, nothing is created and a person decides; a count that cannot be read
+creates nothing), and the incident's GitHub issue, filed for every index cycle through the same opener as a triaged
+incident's (idempotent by cycle, nothing filed in a dry run); the evidence pull request links that issue but does not
+close it, since whether the heal held is a person's call. Not built: Gemini writing the PR's explanation (the template does).
 
 The pieces that act are written and tested, not run: assembling an incident's inputs (`src/agent/assemble.ts`), the
 incident's GitHub issue, and the isolated verify step (`github-actions` or `cloud-run-job`, above) have never run against

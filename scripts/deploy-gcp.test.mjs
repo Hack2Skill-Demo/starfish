@@ -254,6 +254,70 @@ describe("scripts/deploy-gcp.sh", () => {
     expect(deploy(dry).out).not.toContain("jobs execute");
     expect(deploy({ ...dry, RUN_AFTER_DEPLOY: "1" }).out).toContain("gcloud run jobs execute starfish-ingest");
   });
+
+  describe("STARFISH_MONITORING_ENABLED (#19)", () => {
+    const watched = { ...dry, WATCHED_PROJECT_ID: "app-proj" };
+    const jobLine = (out) => out.split("\n").find((l) => l.includes("gcloud run jobs deploy starfish-ingest")) ?? "";
+
+    it("grants no Monitoring role and turns the signal off by default", () => {
+      const r = deploy(watched);
+      expect(r.status).toBe(0);
+      expect(r.out).not.toContain("roles/monitoring.viewer");
+      expect(r.out).not.toContain("monitoring.googleapis.com");
+      // Always set, so a redeploy with it off turns off a job deployed with it on.
+      expect(jobLine(r.out)).toContain("@STARFISH_MONITORING_ENABLED=false");
+    });
+
+    it("with true, grants roles/monitoring.viewer on the WATCHED project to the engine's account, and turns it on", () => {
+      const r = deploy({ ...watched, STARFISH_MONITORING_ENABLED: "true" });
+      expect(r.status).toBe(0);
+      expect(r.gcloudCalled).toBe(false);
+      const grants = r.out.split("\n").filter((l) => l.includes("--role=roles/monitoring.viewer"));
+      expect(grants).toEqual([
+        expect.stringContaining("add-iam-policy-binding app-proj --member=serviceAccount:starfish-engine@star-proj.iam.gserviceaccount.com"),
+      ]);
+      expect(grants[0]).toContain("--condition=None");
+      expect(r.out).toContain("gcloud services enable monitoring.googleapis.com --project=app-proj");
+      expect(jobLine(r.out)).toContain("@STARFISH_MONITORING_ENABLED=true");
+    });
+
+    it("gives the admin API's account the role too, since it runs the same ingest; the agent gets none", () => {
+      const r = deploy({
+        ...watched,
+        STARFISH_MONITORING_ENABLED: "true",
+        DEPLOY_ADMIN_API: "1",
+        DEPLOY_AGENT: "1",
+        AGENT_REPO: "o/r",
+        VERIFY_CHECKS: "verify",
+        STARFISH_GITHUB_TOKEN: "x",
+      });
+      expect(r.status).toBe(0);
+      const members = r.out
+        .split("\n")
+        .filter((l) => l.includes("--role=roles/monitoring.viewer"))
+        .map((l) => l.match(/--member=serviceAccount:([^@]+)@/)?.[1]);
+      expect(members.sort()).toEqual(["starfish-admin-api", "starfish-engine"]);
+      const admin = r.out.split("\n").find((l) => l.includes("gcloud run deploy starfish-admin")) ?? "";
+      expect(admin).toContain("STARFISH_MONITORING_ENABLED=true");
+    });
+
+    it("refuses another value, and refuses the setting through the extra lists, which would skip the role", () => {
+      // The engine's own spellings mean the same here.
+      expect(jobLine(deploy({ ...dry, STARFISH_MONITORING_ENABLED: "1" }).out)).toContain("@STARFISH_MONITORING_ENABLED=true");
+      expect(jobLine(deploy({ ...dry, STARFISH_MONITORING_ENABLED: "No" }).out)).toContain("@STARFISH_MONITORING_ENABLED=false");
+      const bad = deploy({ ...dry, STARFISH_MONITORING_ENABLED: "on" });
+      expect(bad.status).not.toBe(0);
+      expect(bad.out).toContain("STARFISH_MONITORING_ENABLED must be true or false");
+      for (const list of ["EXTRA_ENV_VARS", "AGENT_EXTRA_ENV_VARS"]) {
+        const r = deploy({ ...dry, [list]: "STARFISH_LOOKBACK_HOURS=6@STARFISH_MONITORING_ENABLED=true" });
+        expect(r.status).not.toBe(0);
+        expect(r.out).toContain(`${list} may not set STARFISH_MONITORING_ENABLED`);
+        expect(r.out).not.toContain("gcloud run jobs deploy");
+      }
+      // The resource types stay an ordinary extra setting.
+      expect(deploy({ ...dry, EXTRA_ENV_VARS: "STARFISH_MONITORING_RESOURCE_TYPES=cloud_function" }).status).toBe(0);
+    });
+  });
 });
 
 describe("scripts/deploy-gcp.sh: the agent and its isolated verify job (#74), VERIFY_ISOLATION=cloud-run-job", () => {

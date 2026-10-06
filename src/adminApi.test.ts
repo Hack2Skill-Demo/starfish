@@ -67,6 +67,52 @@ describe("admin API: who may call", () => {
   });
 });
 
+describe("admin API: App Check (#12)", () => {
+  const APP_CHECK = "a".repeat(30) + ".b.c";
+  const appCheckFakes = () => {
+    const seen: string[] = [];
+    const f = fakes({
+      verifyAppCheck: (t) => (seen.push(t), t === APP_CHECK ? Promise.resolve() : Promise.reject(new Error("bad app check: detail that must not leak"))),
+    });
+    return { ...f, seen };
+  };
+
+  it("is not asked for when not configured: a call with no App Check token runs as before", async () => {
+    const { api, calls } = fakes();
+    expect((await api(post("/api/ingest/run"))).status).toBe(200);
+    expect(calls).toEqual(["ingest:admin-1"]);
+  });
+
+  it("when configured, answers the same 401 for a missing, malformed or rejected App Check token, and runs nothing", async () => {
+    const { api, calls, seen } = appCheckFakes();
+    for (const appCheck of [undefined, "", "short", "x".repeat(40), `${APP_CHECK} `]) {
+      const r = await api(post("/api/ingest/run", { ...(appCheck !== undefined && { appCheck }) }));
+      expect(r.status, String(appCheck)).toBe(401);
+      expect(JSON.stringify(r.body)).toBe('{"error":"sign in again"}');
+    }
+    expect(calls).toEqual([]);
+    // Only the well-formed one reached the verifier.
+    expect(seen).toEqual(["x".repeat(40)]);
+  });
+
+  it("when configured, a valid App Check token still needs a valid ID token, and both pass the call through", async () => {
+    const { api, calls } = appCheckFakes();
+    expect((await api(post("/api/ingest/run", { appCheck: APP_CHECK, authorization: "Bearer " + "z".repeat(40) }))).status).toBe(401);
+    expect(calls).toEqual([]);
+    expect((await api(post("/api/ingest/run", { appCheck: APP_CHECK }))).status).toBe(200);
+    expect((await api(post("/api/incidents/inc-1/retire", { appCheck: APP_CHECK }))).status).toBe(200);
+    expect(calls).toEqual(["ingest:admin-1", "retire:inc-1:admin-1:"]);
+  });
+
+  it("is not needed for health or a preflight, and the preflight allows the header", async () => {
+    const { api } = appCheckFakes();
+    expect((await api({ method: "GET", path: "/healthz" })).status).toBe(200);
+    const pre = await api({ method: "OPTIONS", path: "/api/ingest/run", origin: ORIGIN });
+    expect(pre.status).toBe(204);
+    expect(pre.headers["access-control-allow-headers"]).toContain("x-firebase-appcheck");
+  });
+});
+
 describe("admin API: routes", () => {
   it("serves health without a token, and refuses other paths and methods", async () => {
     const { api } = fakes();
@@ -154,6 +200,17 @@ describe("admin API server", () => {
     expect(await r.json()).toEqual({ ok: true, alreadyRetired: false });
     expect(calls).toEqual(["inc-9:admin-1:demo reset"]);
     expect((await fetch(`${base}/healthz`)).status).toBe(200);
+  });
+
+  it("passes the X-Firebase-AppCheck header through to the handler", async () => {
+    const appCheck = "q".repeat(30);
+    const seen: string[] = [];
+    const base = await start({ verifyAppCheck: (t) => (seen.push(t), Promise.resolve()) });
+    const without = await fetch(`${base}/api/ingest/run`, { method: "POST", headers: { authorization: `Bearer ${TOKEN}` } });
+    expect(without.status).toBe(401);
+    const withIt = await fetch(`${base}/api/ingest/run`, { method: "POST", headers: { authorization: `Bearer ${TOKEN}`, "X-Firebase-AppCheck": appCheck } });
+    expect(withIt.status).toBe(200);
+    expect(seen).toEqual([appCheck]);
   });
 
   it("refuses a body over 4 KB, and treats a body that is not JSON as no body", async () => {

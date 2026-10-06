@@ -172,10 +172,31 @@ describe("Runs page", () => {
     expect(within(screen.getByRole("region", { name: "Runs" })).getByText("inc-a")).toBeInTheDocument();
   });
 
+  it("narrows to missing-index heals that held, and to runs waiting on a human", () => {
+    const rows = [
+      cycle("inc-a_r0", { state: "done", leaseExpiresAt: null, path: "index", summary: { index: { runtime: "healed" } } }),
+      cycle("inc-b_r0", { state: "done", leaseExpiresAt: null, path: "index", summary: { index: { runtime: "observing" } } }),
+      cycle("inc-c_r0", { state: "waiting-human", leaseExpiresAt: null, path: "pr" }),
+    ];
+    const first = renderRuns("/runs?heal=healed");
+    act(() => mocks.cyclesCb!(rows, false));
+    expect(screen.getByTestId("path-filter")).toHaveTextContent("Missing-index heals that held through their window (1)");
+    let list = screen.getByRole("region", { name: "Runs" });
+    expect(within(list).getByText("inc-a")).toBeInTheDocument();
+    expect(within(list).queryByText("inc-b")).toBeNull();
+    first.unmount();
+
+    renderRuns("/runs?state=waiting-human");
+    act(() => mocks.cyclesCb!(rows, false));
+    list = screen.getByRole("region", { name: "Runs" });
+    expect(within(list).getByText("inc-c")).toBeInTheDocument();
+    expect(within(list).queryByText("inc-a")).toBeNull();
+  });
+
   it("says when no run ended the chosen way", () => {
     renderRuns("/runs?path=failed");
     act(() => mocks.cyclesCb!([cycle("inc-a_r0", { path: "pr" })], false));
-    expect(screen.getByText("No run ended this way.")).toBeInTheDocument();
+    expect(screen.getByText("No recorded run matches this filter.")).toBeInTheDocument();
   });
 
   it("keeps the filter when you pick a run", async () => {

@@ -168,6 +168,25 @@ describe("Incidents page", () => {
     expect(within(ignored).getByRole("button", { name: "Reopen orders-updateOrder" })).toBeInTheDocument();
   });
 
+  it("badges a Monitoring-only incident, and shows a log incident's Monitoring count beside its own (#19)", async () => {
+    mocks.listIncidents.mockResolvedValue({
+      rows: [
+        { ...base, monitoringCount: 7 },
+        { ...base, id: "m", functionName: "orders-sync", errorType: "UnloggedFailure", monitoringOnly: true, monitoringCount: 5 },
+      ],
+      capped: false,
+    });
+    renderPage();
+    const mon = (await screen.findByText("orders-sync")).closest("tr")!;
+    expect(within(mon).getByText("Monitoring only")).toBeInTheDocument();
+    // Its count is its occurrences: no second Monitoring line.
+    expect(within(mon).queryByText(/^Monitoring: /)).toBeNull();
+
+    const logged = screen.getByText("mailDrainer").closest("tr")!;
+    expect(within(logged).queryByText("Monitoring only")).toBeNull();
+    expect(within(logged).getByText("Monitoring: 7 failed")).toBeInTheDocument();
+  });
+
   it("marks a regression and links the issue whose fix didn't hold", async () => {
     mocks.listIncidents.mockResolvedValue({
       rows: [

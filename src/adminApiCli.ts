@@ -4,6 +4,7 @@
  * are in src/adminApi.ts; this wires them to Firebase Auth, the store and the ingest.
  */
 import { initializeApp } from "firebase-admin/app";
+import { getAppCheck } from "firebase-admin/app-check";
 import { getAuth } from "firebase-admin/auth";
 import { getFirestore } from "firebase-admin/firestore";
 import { loadConfig } from "./config.js";
@@ -23,11 +24,20 @@ const handle = createAdminApi({
   // an account that is disabled, or whose tokens were revoked, is cut off at once rather than when its token expires (up
   // to an hour). Any failure here, a lookup that could not be made included, is the one 401 (adminApi.ts).
   verifyToken: async (token) => ({ uid: (await getAuth().verifyIdToken(token, true)).uid }),
+  // #12: only when STARFISH_ADMIN_API_APPCHECK is on. verifyToken checks the signature, expiry, audience (this project)
+  // and issuer; it throws for anything else, which adminApi.ts turns into the one 401.
+  ...(config.adminApiRequireAppCheck && {
+    verifyAppCheck: async (token: string) => {
+      await getAppCheck().verifyToken(token);
+    },
+  }),
   runIngest: (uid) => triggerIngest(db, config, loader, uid),
   retire: (id, uid, reason) => retireIncident(db, config, id, uid, reason, new Date()),
   allowedOrigins: config.adminApiOrigins,
 });
 
 const server = startAdminApiServer(handle, config.adminApiPort);
-console.log(`admin api on :${config.adminApiPort}, ${config.adminApiOrigins.length} browser origin(s) allowed`);
+console.log(
+  `admin api on :${config.adminApiPort}, ${config.adminApiOrigins.length} browser origin(s) allowed, App Check ${config.adminApiRequireAppCheck ? "required" : "not required"}`
+);
 process.on("SIGTERM", () => server.close());

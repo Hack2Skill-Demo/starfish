@@ -88,4 +88,23 @@ describe("createFirestoreAdmin", () => {
     await expect(api.getOperation("../../projects/other")).rejects.toThrow("not an operation name");
     expect(fetchFn).not.toHaveBeenCalled();
   });
+
+  it("counts the database's composite indexes across every collection group and page", async () => {
+    const { api, fetchFn } = admin(json({ indexes: [{}, {}], nextPageToken: "p2" }), json({ indexes: [{}] }));
+    expect(await api.countIndexes(SPEC)).toBe(3);
+    expect(String(fetchFn.mock.calls[0]![0])).toBe("https://firestore.googleapis.com/v1/projects/demo-app-1/databases/(default)/collectionGroups/-/indexes?pageSize=100");
+    expect(String(fetchFn.mock.calls[1]![0])).toContain("&pageToken=p2");
+    expect(fetchFn.mock.calls.every(([, init]) => init?.method === "GET")).toBe(true);
+  });
+
+  it("counts an empty database as zero, and never reads a failure or a bad shape as a count", async () => {
+    expect(await admin(json({})).api.countIndexes(SPEC)).toBe(0);
+    await expect(admin(json({}, 403)).api.countIndexes(SPEC)).rejects.toThrow("count indexes: HTTP 403");
+    await expect(admin(json({ indexes: "x" })).api.countIndexes(SPEC)).rejects.toThrow("unexpected response shape");
+  });
+
+  it("throws rather than return a partial count when the pages never end", async () => {
+    const pages = Array.from({ length: 30 }, () => json({ indexes: [{}], nextPageToken: "more" }));
+    await expect(admin(...pages).api.countIndexes(SPEC)).rejects.toThrow("more pages than any database has");
+  });
 });

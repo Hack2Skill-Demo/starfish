@@ -35,6 +35,7 @@ export function startAdminApiServer(handle: (req: ApiRequest) => Promise<ApiResp
             method: req.method ?? "GET",
             path,
             ...(typeof req.headers.authorization === "string" && { authorization: req.headers.authorization }),
+            ...(typeof req.headers["x-firebase-appcheck"] === "string" && { appCheck: req.headers["x-firebase-appcheck"] }),
             ...(typeof req.headers.origin === "string" && { origin: req.headers.origin }),
             ...(body !== undefined && { body }),
           });

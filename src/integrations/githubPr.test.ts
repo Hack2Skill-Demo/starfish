@@ -641,7 +641,16 @@ describe("issueText", () => {
     expect(body).not.toContain("open a pull request");
   });
 
-  it("claims nothing it does not know: no count, no counter-check, no links without a UI origin", () => {
+  it("for a missing index, says no model writes the fix, names the gates, and leaves resolving to a person", () => {
+    const { body } = issueText(issueRequest({ path: "index" }));
+    expect(body).toContain("No model writes this fix");
+    expect(body).toContain("the database's index limit");
+    expect(body).toContain("never deletes an index");
+    expect(body).toContain("whether the incident is resolved is a person's decision");
+    expect(body).not.toContain("Draft a minimal fix");
+  });
+
+    it("claims nothing it does not know: no count, no counter-check, no links without a UI origin", () => {
     const { body } = issueText(issueRequest({ occurrenceCount: null, counterCheck: null, fingerprint: null, suspectedCause: null, uiBaseUrl: "" }));
     expect(body).not.toMatch(/times so far/);
     expect(body).toContain("counter-check: not available");
@@ -925,7 +934,13 @@ describe("pullRequestText: the missing-index evidence pull request (#11)", () =>
     expect(body).toContain("This pull request creates `firestore.indexes.json`");
   });
 
-  it("a code fix without a verify result says so instead of inventing one", () => {
+  it("links the incident's issue but never closes it: whether the heal held is a person's call", () => {
+    const { body } = pullRequestText(request({ index, issueNumber: 12, verify: undefined, review: undefined }));
+    expect(body).toContain("- Issue: #12");
+    expect(body).not.toMatch(/(close[sd]?|fix(e[sd])?|resolve[sd]?) #12/i);
+  });
+
+    it("a code fix without a verify result says so instead of inventing one", () => {
     expect(pullRequestText(request({ verify: undefined })).body).toContain("## Verify gate\n\nNot run.");
   });
 });

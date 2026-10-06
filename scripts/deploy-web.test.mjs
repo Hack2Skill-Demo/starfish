@@ -33,6 +33,11 @@ exit 1
 `,
   );
   chmodSync(join(dir, "pnpm"), 0o755);
+  // gcloud and curl are stubbed too: a dry run must call neither (every call shows up in `calls`).
+  for (const tool of ["gcloud", "curl"]) {
+    writeFileSync(join(dir, tool), `#!/bin/sh\necho "${tool} $*" >> "${log}"\nexit 1\n`);
+    chmodSync(join(dir, tool), 0o755);
+  }
   const r = spawnSync("bash", [script], {
     env: { PATH: `${dir}:${dirname(process.execPath)}:/usr/bin:/bin`, ...env },
     encoding: "utf8",
@@ -154,6 +159,71 @@ describe("scripts/deploy-web.sh", () => {
       const r = deploy(dry, { site: "not json" });
       expect(r.status).not.toBe(0);
       expect(r.out).toContain("could not read hosting:sites:get");
+    });
+  });
+
+  describe("App Check (#12)", () => {
+    it("refuses to build with a debug token: it is a credential and would ship in the bundle", () => {
+      const r = deploy({ ...dry, VITE_STARFISH_APPCHECK_DEBUG_TOKEN: "11111111-2222-3333-4444-555555555555" });
+      expect(r.status).not.toBe(0);
+      expect(r.out).toContain("debug token is for local development only");
+      expect(r.calls).toEqual([]);
+    });
+
+    it("passes a site key to the build like any other VITE_ value, and never touches enforcement", () => {
+      const r = deploy({ ...dry, VITE_STARFISH_APPCHECK_SITE_KEY: "6Lc-site-key" });
+      expect(r.status).toBe(0);
+      expect(r.out).not.toMatch(/firebaseappcheck|enforcementMode/);
+    });
+  });
+
+  describe("uptime check and alert (#12)", () => {
+    const channels = "projects/star-proj/notificationChannels/123,projects/star-proj/notificationChannels/456";
+
+    it("is off unless asked for", () => {
+      const r = deploy(dry);
+      expect(r.out).not.toContain("monitoring");
+    });
+
+    it("plans the check on the site's init.json, and an alert on it, without calling gcloud or curl", () => {
+      const r = deploy({ ...dry, UPTIME_CHECK: "1", UPTIME_NOTIFICATION_CHANNELS: channels });
+      expect(r.status).toBe(0);
+      expect(onlyReads(r.calls)).toBe(true);
+      for (const part of [
+        "gcloud services enable monitoring.googleapis.com --project=star-proj",
+        "gcloud monitoring uptime create starfish-web star-proj-starfish --project=star-proj",
+        "--resource-type=uptime-url --resource-labels=host=star-proj-starfish.web.app,project_id=star-proj",
+        "--protocol=https --path=/__/firebase/init.json --validate-ssl=true",
+        "--period=5",
+        "curl -X POST",
+        "https://monitoring.googleapis.com/v3/projects/star-proj/alertPolicies",
+      ]) {
+        expect(r.out).toContain(part);
+      }
+      expect(r.out).not.toContain("Bearer ya29");
+      // The policy printed in the plan is valid JSON, tied to the check and the channels.
+      const lines = r.stdout.split("\n");
+      const start = lines.findIndex((l) => l.startsWith('{"displayName"'));
+      const end = lines.findIndex((l, i) => i > start && l.endsWith("}}}]}"));
+      const policy = JSON.parse(lines.slice(start, end + 1).join("\n"));
+      expect(policy.displayName).toBe("starfish-web down: star-proj-starfish");
+      expect(policy.notificationChannels).toEqual(channels.split(","));
+      expect(policy.conditions[0].conditionThreshold.filter).toContain('metric.label.check_id="<uptime-check-id>"');
+      expect(policy.conditions[0].conditionThreshold.filter).toContain("uptime_check/check_passed");
+    });
+
+    it("an alert with no channels has an empty list, and still plans", () => {
+      const r = deploy({ ...dry, UPTIME_CHECK: "1" });
+      expect(r.status).toBe(0);
+      expect(r.stdout).toContain('"notificationChannels":[]');
+    });
+
+    it("refuses a notification channel that is not a channel's full name", () => {
+      for (const bad of ["123", "projects/p/notificationChannels/abc", 'projects/p/notificationChannels/1","x']) {
+        const r = deploy({ ...dry, UPTIME_CHECK: "1", UPTIME_NOTIFICATION_CHANNELS: bad });
+        expect(r.status, bad).not.toBe(0);
+        expect(r.out).toContain("UPTIME_NOTIFICATION_CHANNELS takes");
+      }
     });
   });
 });

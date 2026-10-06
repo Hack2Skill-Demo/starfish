@@ -6,9 +6,10 @@
  * Latest activity is the newest run events across every run (one collection-group query, live); the latest
  * runs list beside it is the runs themselves, newest update first.
  *
- * Not here, because nothing records it yet: a run "healed on its own", the next scheduled run, and
- * anything about merges or deploys. The agent job has never run on a real project, so on a real
- * deployment the run counts are zero until it does, and the page says so.
+ * "Healed on its own" counts only missing-index runs the engine recorded as healed after their quiet window
+ * (src/indexheal/observe.ts); a merge or a READY index is not a heal. Not here: anything about merges or
+ * deploys. The agent job has never run on a real project, so on a real deployment the run counts are zero
+ * until it does, and the page says so.
  *
  * The key figures keep their denominators ("3 of 12", never a bare percentage) and read "–" when there is
  * nothing to divide by. They are counts and medians of stored records, not accuracy: no run has been scored
@@ -114,9 +115,19 @@ export default function Overview() {
         <div className="mt-2">{ready && <EngineStatus environment={environment} />}</div>
       </div>
 
-      <section aria-label="Counts" className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-        <Tile label="Waiting on a human" value={counts?.waitingHuman} to="/runs" note="runs" />
-        <Tile label="Runs in progress" value={counts?.inProgress} to="/runs" note={counts && counts.stalled > 0 ? `${counts.stalled} with no worker` : "a worker holds them now"} />
+      <section aria-label="Counts" className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
+        <Tile label="Waiting on a human" value={counts?.waitingHuman} to="/runs?state=waiting-human" note="runs" />
+        <Tile
+          label="Healed on its own"
+          value={counts?.healed}
+          to="/runs?heal=healed"
+          note={
+            counts && counts.healed === 0
+              ? "none recorded: only a missing-index heal that held through its window counts"
+              : "missing-index heals that held through their window"
+          }
+        />
+        <Tile label="Runs in progress" value={counts?.inProgress} to="/runs?state=running" note={counts && counts.stalled > 0 ? `${counts.stalled} with no worker` : "a worker holds them now"} />
         <Tile label="Open incidents" value={incidentCounts?.open} to="/incidents" note={`last ${WINDOW_HOURS} hours`} />
         <Tile label="Regressions" value={incidentCounts?.regressions} to="/incidents" note="open, came back after a fix" />
       </section>

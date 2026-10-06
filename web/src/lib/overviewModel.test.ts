@@ -60,8 +60,8 @@ describe("countCycles", () => {
       ],
       NOW
     );
-    expect(counts).toMatchObject({ waitingHuman: 2, inProgress: 1, stalled: 1, total: 6 });
-    expect(counts.byPath).toEqual({ decline: 1, notify: 1, draft: 0, pr: 1, human: 0, failed: 1 });
+    expect(counts).toMatchObject({ waitingHuman: 2, healed: 0, inProgress: 1, stalled: 1, total: 6 });
+    expect(counts.byPath).toEqual({ decline: 1, notify: 1, draft: 0, pr: 1, human: 0, failed: 1, index: 0 });
   });
 
   it("is all zeros for no cycles", () => {

@@ -17,6 +17,7 @@ import type { AskJson } from "./triage.js";
 import type { IndexAdmin, LiveIndex } from "../indexheal/firestoreAdmin.js";
 import type { ProbeVerdict } from "../indexheal/probe.js";
 import { observeIndexHeals } from "../indexheal/observe.js";
+import type { IssueRequest } from "../integrations/githubPr.js";
 import type { NotifyRequest } from "../integrations/slack.js";
 import { testConfig } from "../testConfig.js";
 import type { Incident, IncidentStatus } from "../types.js";
@@ -93,7 +94,7 @@ beforeEach(() => {
 afterEach(() => rmSync(src, { recursive: true, force: true }));
 
 /** A Firestore Admin fake: an index that appears READY once created (after one poll), and a record of every call. */
-function fakeAdmin(over: { live?: LiveIndex[]; opDone?: { done: boolean; error?: { code: number; message: string } }[] } = {}) {
+function fakeAdmin(over: { live?: LiveIndex[]; opDone?: { done: boolean; error?: { code: number; message: string } }[]; existing?: number } = {}) {
   const calls: string[] = [];
   let created = false;
   const ops = [...(over.opDone ?? [{ done: false }, { done: true }])];
@@ -105,6 +106,10 @@ function fakeAdmin(over: { live?: LiveIndex[]; opDone?: { done: boolean; error?:
     create: vi.fn(async () => {
       calls.push("create");
       return { operation: OP };
+    }),
+    countIndexes: vi.fn(async () => {
+      calls.push("count");
+      return over.existing ?? 5;
     }),
     getOperation: vi.fn(async () => {
       calls.push("op");
@@ -132,6 +137,7 @@ function wiring(admin: IndexAdmin, probe: IndexHealWiring["probe"], over: Partia
       own: { project: "starfish-proj", database: "starfish" },
       autoApply: true,
       dailyCap: 3,
+      maxIndexes: 100,
       pollMs: 1000,
       maxWaitMs: 10_000,
       ...over,
@@ -203,6 +209,73 @@ describe("runCycle: a missing index takes the index path", () => {
     expect(opened[0]!.index).toMatchObject({ collectionGroup: "orders", created: true, operation: OP, indexFile: "firestore.indexes.json", fileCreated: false });
     expect(opened[0]!.verify).toBeUndefined();
     expect(JSON.parse(readAfter(opened[0]!.patch))).toBeDefined();
+  });
+
+  it("files the incident's issue first, through the loop's opener, and links it from the evidence PR without closing it", async () => {
+    const a = fakeAdmin();
+    const opened: PullRequestRequest[] = [];
+    const told: NotifyRequest[] = [];
+    const issues: IssueRequest[] = [];
+    const openIssue = async (req: IssueRequest) => (issues.push(req), { number: 7, url: "https://example.test/issues/7" });
+    const r = await runCycle(deps(wiring(a.admin, fakeProbe(a)), { openIssue }, opened, told), key);
+    expect(r).toMatchObject({ state: "done", outcome: "index-pr-opened" });
+    expect(issues).toHaveLength(1);
+    expect(issues[0]).toMatchObject({ path: "index", cycleId: "idx1_r0", errorType: "MissingIndexError", suspectedCause: null });
+    expect(issues[0]!.reason).toContain("orders (fields: status ASCENDING, createdAt DESCENDING)");
+    expect((await kinds()).slice(0, 3)).toEqual(["cycle:started", "index:started", "issue:opened"]);
+    expect((await cycleDoc()).summary.issue).toMatchObject({ state: "opened", number: 7 });
+    expect(opened[0]!.issueNumber).toBe(7);
+  });
+
+  it("files the issue once: a resumed attempt reuses the recorded one", async () => {
+    const a = fakeAdmin({ opDone: [{ done: false }] });
+    const issues: IssueRequest[] = [];
+    const openIssue = async (req: IssueRequest) => (issues.push(req), { number: 7, url: "https://example.test/issues/7" });
+    expect(await runCycle(deps(wiring(a.admin, fakeProbe(a)), { openIssue }), key)).toEqual({ kind: "released", reason: "index-still-building" });
+    clock = new Date(clock.getTime() + 60_000);
+    const b = fakeAdmin({ live: [READY] });
+    const opened: PullRequestRequest[] = [];
+    expect(await runCycle(deps(wiring(b.admin, fakeProbe(b, [{ state: "passed", probes: 1 }])), { openIssue }, opened), key)).toMatchObject({ outcome: "index-pr-opened" });
+    expect(issues).toHaveLength(1);
+    expect(opened[0]!.issueNumber).toBe(7);
+  });
+
+  it("files no issue in a dry run, and records that one would have been filed", async () => {
+    cfgOver = { dryRun: true };
+    const a = fakeAdmin();
+    const issues: IssueRequest[] = [];
+    const openIssue = async (req: IssueRequest) => (issues.push(req), { number: 7, url: "https://example.test/issues/7" });
+    expect(await runCycle(deps(wiring(a.admin, fakeProbe(a)), { openIssue }), key)).toMatchObject({ outcome: "index-dry-run" });
+    expect(issues).toHaveLength(0);
+    expect((await cycleDoc()).summary.issue).toEqual({ state: "dry-run" });
+  });
+
+  it("a failed issue is recorded and the heal goes on; a refused one still gets its issue, linked from the message", async () => {
+    const a = fakeAdmin();
+    const failing = async (): Promise<{ number: number; url: string }> => {
+      throw Object.assign(new Error("boom"), { rule: "http-error" });
+    };
+    expect(await runCycle(deps(wiring(a.admin, fakeProbe(a)), { openIssue: failing }), key)).toMatchObject({ outcome: "index-pr-opened" });
+    expect((await cycleDoc()).summary.issue).toEqual({ state: "failed", reason: "http-error" });
+
+    run = randomUUID().slice(0, 8);
+    incident = incidentFor("other-app-1");
+    const told: NotifyRequest[] = [];
+    const openIssue = async () => ({ number: 8, url: "https://example.test/issues/8" });
+    const b = fakeAdmin();
+    expect(await runCycle(deps(wiring(b.admin, fakeProbe(b)), { openIssue }, [], told), key)).toMatchObject({ outcome: "index-target-not-allowed" });
+    expect(told[0]).toMatchObject({ rule: "index-target-not-allowed", issueUrl: "https://example.test/issues/8" });
+  });
+
+  it("refuses at the configured index limit for the database, and hands it to a person", async () => {
+    const a = fakeAdmin({ existing: 100 });
+    const told: NotifyRequest[] = [];
+    const r = await runCycle(deps(wiring(a.admin, fakeProbe(a)), {}, [], told), key);
+    expect(r).toMatchObject({ state: "waiting-human", outcome: "index-index-limit" });
+    expect(a.admin.create).not.toHaveBeenCalled();
+    expect((await cycleDoc()).summary.index).toMatchObject({ state: "index-limit", existing: 100, limit: 100 });
+    expect((await cycleDoc()).summary.index.capSlot).toBeUndefined();
+    expect(told[0]).toMatchObject({ rule: "index-index-limit" });
   });
 
   it("is a dry run by default: it reads and replays, and creates nothing", async () => {

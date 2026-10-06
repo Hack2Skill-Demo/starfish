@@ -97,5 +97,7 @@ jobs:
           HOSTING_SITE: ${{ vars.STARFISH_WEB_HOSTING_SITE }}
           STARFISH_ENV: ${{ vars.STARFISH_ENV }}
           STARFISH_DATABASE_ID: ${{ vars.STARFISH_DATABASE_ID }}
+          # Optional (#12): empty = App Check off. A public site key, not a secret.
+          VITE_STARFISH_APPCHECK_SITE_KEY: ${{ vars.STARFISH_WEB_APPCHECK_SITE_KEY }}
           DRY_RUN: ${{ inputs.dry_run && '1' || '0' }}
         run: scripts/deploy-web.sh

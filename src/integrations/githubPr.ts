@@ -109,8 +109,11 @@ export interface IssueRequest {
   occurrenceCount: number | null;
   fingerprint: string | null;
   counterCheck: { window: string; count: number; capped: boolean } | null;
-  /** `act`: Starfish will draft a fix. `notify`: no code change helps and a person is told. */
-  path: "act" | "notify";
+  /**
+   * `act`: Starfish will draft a fix. `notify`: no code change helps and a person is told. `index`: a missing Firestore
+   * index (#11), taken by the index path: no model, the gates, at most one index created, an evidence pull request.
+   */
+  path: "act" | "notify" | "index";
   /** Triage's one-line reason, and what it suspects. Redacted and cut here. */
   reason: string;
   suspectedCause: string | null;
@@ -415,7 +418,8 @@ export function indexPullRequestText(req: PullRequestRequest, index: IndexEviden
     `- Patch SHA-256: \`${code(req.patchSha256, 64)}\``,
     "",
     "Opened by Starfish. It does not merge or deploy: a person decides.",
-    ...(req.issueNumber !== undefined && Number.isInteger(req.issueNumber) && req.issueNumber > 0 ? ["", `Closes #${req.issueNumber}`] : []),
+    // No `Closes #N` (the issue is linked above): merging the index file changes nothing in production, and whether the
+    // heal held, and so whether the incident is resolved, is a person's call.
     "",
   ];
   return { title, body: fitBody(lines, footer) };
@@ -448,7 +452,9 @@ export function issueText(req: IssueRequest): { title: string; body: string } {
     "",
     req.path === "act"
       ? `Draft a minimal fix, check it with this repository's own tests, have it adversarially reviewed, and open a pull request that references this issue. ${req.autoMerge === true ? MERGE_LINE.on : "Starfish does not merge or deploy: a person decides."}`
-      : "Nothing in the code can fix this, so no patch will be drafted. A person is told, here and in Slack; the step they need to take is above.",
+      : req.path === "index"
+        ? "No model writes this fix: the missing index is the one Google's error names. Only if every gate passes (an allowed target, index creation switched on and not a dry run, the daily cap, the database's index limit, a configured query that fails for exactly this index) does Starfish create that one index, wait for it to be READY and replay the query; then it opens a pull request adding the entry to the repository's index file. Otherwise a person is told why. Starfish never deletes an index, and does not close this issue: whether the incident is resolved is a person's decision."
+        : "Nothing in the code can fix this, so no patch will be drafted. A person is told, here and in Slack; the step they need to take is above.",
   ];
   const incident = incidentUrl(req.uiBaseUrl, req.incidentId);
   const run = runUrl(req.uiBaseUrl, req.cycleId);

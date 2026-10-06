@@ -116,7 +116,13 @@ const FIELDS: Record<
     label: "Vertex AI region",
     multiline: false,
     placeholder: "us-central1",
-    hint: "Where those model calls go: a GCP region such as us-central1, or global. The Vertex project stays the engine's own setting.",
+    hint: "Where those model calls go: a GCP region such as us-central1, or global.",
+  },
+  vertexProjectId: {
+    label: "Vertex AI project",
+    multiline: false,
+    placeholder: "my-ai-project",
+    hint: "The GCP project those model calls run in and are billed to. The agent's service account needs roles/aiplatform.user there and the Vertex AI API enabled; the deploy script grants that only on its own VERTEX_PROJECT_ID.",
   },
 };
 

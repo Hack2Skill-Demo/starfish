@@ -85,6 +85,17 @@ describe("createAskJson", () => {
     ]);
   });
 
+  it("builds the client in the Vertex project of the run's resolved settings (#7)", async () => {
+    responseText = "{}";
+    const base = testConfig({ projectId: "store-project", vertexProjectId: "vertex-env", location: "us-central1", model: "m" });
+    const resolved = await new RuntimeConfigLoader(base).resolve(dbWithSettings({ version: 1, vertexProjectId: "elsewhere" }));
+    expect(resolved.source).toBe("settings");
+
+    await createAskJson(resolved.config)("p", "s", {});
+
+    expect(requests).toEqual([{ client: { vertexai: true, project: "elsewhere", location: "us-central1" }, model: "m" }]);
+  });
+
   it("keeps a client per location, so a run on another region doesn't reuse the first client built", async () => {
     responseText = "{}";
     await createAskJson(testConfig({ vertexProjectId: "vp", location: "asia-east1", model: "a" }))("p", "s", {});

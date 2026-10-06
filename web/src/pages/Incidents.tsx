@@ -12,6 +12,7 @@
  */
 import { Fragment, useState } from "react";
 import { SyntheticBadge } from "../components/SyntheticBadge";
+import { MonitoringOnlyBadge } from "../components/MonitoringOnlyBadge";
 import { Link, useSearchParams } from "react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -360,6 +361,7 @@ export default function Incidents() {
                                 <p className="flex flex-wrap items-center gap-2 font-medium text-gray-900 dark:text-white">
                                   {row.functionName}
                                   {row.synthetic && <SyntheticBadge />}
+                                  {row.monitoringOnly && <MonitoringOnlyBadge />}
                                 </p>
                                 <p className="text-xs text-gray-500 dark:text-gray-400">
                                   {row.service}
@@ -429,6 +431,16 @@ export default function Incidents() {
                             title={`${row.occurrenceCount.toLocaleString()} all-time since first seen`}
                           >
                             {row.windowedCount.toLocaleString()}
+                            {/* On a log incident, an annotation: the function's failures Monitoring counted in windows
+                                where this incident also logged, not extra occurrences of it (#19). */}
+                            {row.monitoringCount !== undefined && !row.monitoringOnly && (
+                              <p
+                                className="mt-1 whitespace-nowrap text-xs text-gray-600 dark:text-gray-400"
+                                title="Failed invocations of this function that Cloud Monitoring counted, summed over the windows it read"
+                              >
+                                Monitoring: {row.monitoringCount.toLocaleString()} failed
+                              </p>
+                            )}
                           </td>
                           <td className="hidden whitespace-nowrap px-4 py-3 text-sm text-gray-500 2xl:table-cell dark:text-gray-400" title={formatDateTime(row.firstOccurredAt)}>
                             {formatRelativeTime(row.firstOccurredAt)}

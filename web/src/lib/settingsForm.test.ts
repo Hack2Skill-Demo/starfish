@@ -98,6 +98,23 @@ describe("the Gemini model and region (#7)", () => {
   });
 });
 
+describe("the Vertex AI project (#7)", () => {
+  it("round-trips a stored project, trimming what was typed", () => {
+    expect(formFromStored({ version: 1, vertexProjectId: "vertex-project" }).vertexProjectId).toEqual({ override: true, text: "vertex-project" });
+    expect(settingsFromForm(withField({ vertexProjectId: { override: true, text: " elsewhere " } }))).toEqual({
+      ok: true,
+      settings: { vertexProjectId: "elsewhere" },
+    });
+  });
+
+  it("refuses an empty or malformed project with the engine's own validator", () => {
+    for (const text of ["", "Vertex", "projects/vertex-project"]) {
+      const result = settingsFromForm(withField({ vertexProjectId: { override: true, text } }));
+      expect(!result.ok && result.problems.map((p) => p.split(":")[0])).toEqual(["vertexProjectId"]);
+    }
+  });
+});
+
 describe("settingsFromForm", () => {
   it("returns no settings for a form left entirely on its defaults", () => {
     expect(settingsFromForm(defaults)).toEqual({ ok: true, settings: {} });

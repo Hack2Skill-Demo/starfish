@@ -103,7 +103,12 @@ Be honest with yourself about this list before the demo:
   (`src/integrations/githubPr.ts`, tested against a local git remote and a fake GitHub API, **never against real
   GitHub**) and the mounted GitHub token has that one reader, but nothing that runs deployed calls it.
 - **No alert when ingestion stops**, only the UI's "engine stopped" line (#6).
-- **No App Check** (#12). The public page shows what really happened and no more, unless you add the synthetic
+- **No App Check unless you set it up, and no enforcement unless you switch it on** (#12). The UI initialises App Check
+  only when built with `VITE_STARFISH_APPCHECK_SITE_KEY`; requiring it on Firestore is a console step that is set per
+  product, not per database (unverified), so in a project shared with the watched app it would affect that app too. Steps and caveats:
+  [`deploy.md`](deploy.md#app-check-and-the-uptime-check-12). Never run against a real project.
+- **No uptime check unless you ask for one**: `UPTIME_CHECK=1 scripts/deploy-web.sh` (same section; dry-run tested only).
+- **The public page shows what really happened and no more**, unless you add the synthetic
   history: `STARFISH_ENV=demo pnpm seed-demo -- --apply --project=<id>` writes five made-up incidents and finished
   runs, one per path of the loop, each marked `synthetic: true` and badged "Synthetic" in the UI; `--remove` deletes
   exactly them. It refuses any other environment. What it writes: the README's

@@ -5,9 +5,11 @@ import {
   prStateView,
   formatDuration,
   indexRuntimeView,
+  isHealedRun,
   parseCycle,
   parseEvent,
   progressText,
+  runFilter,
   runStatus,
   safeUrl,
   triageRule,
@@ -264,5 +266,29 @@ describe("the missing-index path (#11)", () => {
     expect(indexRuntimeView(at("recurred"))?.tone).toBe("warning");
     expect(indexRuntimeView(at("made-up"))).toBeUndefined();
     expect(indexRuntimeView(cycle())).toBeUndefined();
+  });
+});
+
+describe("isHealedRun and runFilter (#38)", () => {
+  const index = (runtime: string, over: Partial<CycleRow> = {}) => cycle({ state: "done", path: "index", summary: { index: { runtime } }, ...over });
+
+  it("counts only a missing-index run the observer recorded as healed", () => {
+    expect(isHealedRun(index("healed"))).toBe(true);
+    for (const r of ["observing", "recurred", "query-failing", "unverified", ""]) expect(isHealedRun(index(r)), r).toBe(false);
+    // A merged pull request, or a READY index still under watch, is not healed.
+    expect(isHealedRun(cycle({ state: "done", path: "pr", summary: { prState: { state: "merged" } } }))).toBe(false);
+    expect(isHealedRun(cycle({ state: "done", path: "pr", summary: { triage: { runtime: "healed" } } }))).toBe(false);
+    // A synthetic record was written by seed-demo, not by a run.
+    expect(isHealedRun(index("healed", { synthetic: true }))).toBe(false);
+  });
+
+  it("reads one filter from the URL, and ignores unknown values", () => {
+    const f = (q: string) => runFilter(new URLSearchParams(q));
+    expect(f("heal=healed")?.test(index("healed"))).toBe(true);
+    expect(f("heal=healed")?.test(index("observing"))).toBe(false);
+    expect(f("state=waiting-human")?.test(cycle({ state: "waiting-human" }))).toBe(true);
+    expect(f("state=running")?.test(cycle({ state: "done" }))).toBe(false);
+    expect(f("path=pr")?.label).toBe("Pull request opened");
+    for (const q of ["", "heal=yes", "state=done", "path=bogus", "path=toString", "state=__proto__"]) expect(f(q), q).toBeNull();
   });
 });

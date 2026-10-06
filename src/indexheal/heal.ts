@@ -10,7 +10,8 @@
  *   4. the live inventory (read-only): an equal index that exists or is still building is reconciled, never created twice,
  *      which is also how a crash after a create is recovered: the next run finds the building index;
  *   5. an operation an earlier attempt of this cycle already started (`opts.priorOperation`): waited on, never repeated;
- *   6. the per-target daily cap;
+ *   6. the per-target daily cap, then the database's index count (the Admin API's inventory of every collection group):
+ *      at or above the configured limit nothing is created and a person decides (Firestore caps indexes per database);
  *   7. the deterministic probe (probe.ts): the configured query must fail with the error naming exactly this spec;
  *   8. the switches again, immediately before the one mutation (they are read fresh, an operator may have flipped one);
  *   9. `onCreating` (the caller records the attempt, which is what the daily cap counts, so a crash after the create
@@ -36,6 +37,11 @@ export interface HealSettings {
   autoApply: boolean;
   dryRun: boolean;
   dailyCap: number;
+  /**
+   * The most composite indexes the target database may already hold for Starfish to add one: at or above it, a person
+   * decides. Kept well under Firestore's own per-database limit, which also counts indexes nobody here made.
+   */
+  maxIndexes: number;
   /** Poll interval and the longest the wait may last (the build of a big collection can outlast a cycle). */
   pollMs: number;
   maxWaitMs: number;
@@ -69,6 +75,8 @@ export type HealOutcome =
   | { outcome: "switched-off"; reason: string }
   | { outcome: "dry-run"; spec: IndexSpec; repoFile: RepoFileState; live: "absent" | "building" | "ready"; probe: ProbeVerdict["state"] }
   | { outcome: "cap-reached"; spec: IndexSpec; created: number; cap: number }
+  /** The database already holds `existing` composite indexes, at or above the configured `limit`: nothing was created. */
+  | { outcome: "index-limit"; spec: IndexSpec; existing: number; limit: number }
   /** READY. `probe` is what the replayed query said afterwards: only `passed` means the query works again. */
   | { outcome: "ready"; spec: IndexSpec; repoFile: RepoFileState; created: boolean; operation?: string; probe: ProbeVerdict["state"] }
   | { outcome: "build-failed"; spec: IndexSpec; operation?: string; reason: string }
@@ -159,6 +167,10 @@ async function heal(errorText: string, settings: HealSettings, deps: HealDeps, o
 
   const created = await deps.createdToday(targetKey);
   if (created >= settings.dailyCap) return { outcome: "cap-reached", spec, created, cap: settings.dailyCap };
+  // Read, not assumed: a count that cannot be read throws (the cycle resumes), it never reads as room to spare.
+  const existing = await deps.admin.countIndexes(targetKey);
+  if (!Number.isInteger(existing) || existing < 0) throw new Error("index count: not a count");
+  if (existing >= settings.maxIndexes) return { outcome: "index-limit", spec, existing, limit: settings.maxIndexes };
 
   // The failing query must be known and must fail for exactly this index: a URL alone is not the query (#11).
   const confirmed = await deps.probe(spec);

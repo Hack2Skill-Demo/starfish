@@ -162,7 +162,7 @@ service cloud.firestore {
       return d.keys().hasOnly(['version', 'revision', 'auditId', 'watchedProjectId', 'environment',
                                'logResourceTypes', 'servicePatterns', 'ignoredMessages',
                                'dryRun', 'reviewRequired', 'automationEnabled', 'autoMerge', 'mergeFreeze', 'modelCallBudget',
-                               'model', 'location', 'updatedAt', 'updatedBy'])
+                               'model', 'location', 'vertexProjectId', 'updatedAt', 'updatedBy'])
         && d.keys().hasAll(['version', 'revision', 'auditId', 'updatedAt', 'updatedBy'])
         && d.version == 1
         && d.revision is int
@@ -186,7 +186,10 @@ service cloud.firestore {
         // The same patterns as MODEL_ID and VERTEX_LOCATION in src/settingsSchema.ts.
         && (!('model' in d) || (d.model is string && d.model.matches('^[a-z][a-z0-9._-]{0,63}$')))
         && (!('location' in d)
-            || (d.location is string && d.location.matches('^(global|[a-z]{2,20}-[a-z]{2,20}[0-9]{1,2})$')));
+            || (d.location is string && d.location.matches('^(global|[a-z]{2,20}-[a-z]{2,20}[0-9]{1,2})$')))
+        // PROJECT_ID in src/settingsSchema.ts, as for watchedProjectId.
+        && (!('vertexProjectId' in d)
+            || (d.vertexProjectId is string && d.vertexProjectId.matches('^[a-z][a-z0-9-]{4,28}[a-z0-9]$')));
     }
 
     // The change being written also creates its audit entry (new in this batch, so

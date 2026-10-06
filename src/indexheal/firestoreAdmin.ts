@@ -42,6 +42,12 @@ export interface IndexAdmin {
   list(spec: Pick<IndexSpec, "project" | "database" | "collectionGroup">): Promise<LiveIndex[]>;
   /** Starts building one index and returns the operation's name. Throws on any failure, including ALREADY_EXISTS (409). */
   create(spec: IndexSpec): Promise<{ operation: string }>;
+  /**
+   * How many composite indexes the whole database holds now, in every collection group and every state (one still
+   * building counts). Read before a create so a database near Firestore's per-database limit goes to a person. Throws on
+   * any failure, and when there are more pages than it reads: an unknown count is never a small one.
+   */
+  countIndexes(target: Pick<IndexSpec, "project" | "database">): Promise<number>;
   getOperation(operation: string): Promise<OperationStatus>;
 }
 
@@ -50,6 +56,9 @@ const OPERATION_RE = /^projects\/[a-z][a-z0-9-]{4,28}[a-z0-9]\/databases\/(?:\(d
 
 /** Whether a value read back from a record is a Firestore Admin operation name (what `getOperation` accepts). */
 export const isOperationName = (v: unknown): v is string => typeof v === "string" && v.length <= 300 && OPERATION_RE.test(v);
+
+/** The most pages of 100 `countIndexes` reads: far above any database's composite-index limit. */
+const MAX_COUNT_PAGES = 30;
 
 const parentOf = (s: Pick<IndexSpec, "project" | "database" | "collectionGroup">) =>
   `${ROOT}/projects/${encodeURIComponent(s.project)}/databases/${encodeURIComponent(s.database)}/collectionGroups/${encodeURIComponent(s.collectionGroup)}/indexes`;
@@ -105,6 +114,24 @@ export function createFirestoreAdmin(deps: { token?: () => Promise<string>; fetc
         pageToken = body.nextPageToken;
       }
       throw new FirestoreAdminError("list indexes: more pages than any collection group has");
+    },
+
+    async countIndexes(target) {
+      // `-` is the Admin API's "every collection group" (what `firebase firestore:indexes` lists).
+      const base = parentOf({ ...target, collectionGroup: "-" });
+      let count = 0;
+      let pageToken = "";
+      for (let page = 0; page < MAX_COUNT_PAGES; page++) {
+        const body = (await call("count indexes", `${base}?pageSize=100${pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : ""}`, { method: "GET" })) as {
+          indexes?: unknown;
+          nextPageToken?: unknown;
+        };
+        if (body.indexes !== undefined && !Array.isArray(body.indexes)) throw new FirestoreAdminError("count indexes: unexpected response shape");
+        count += ((body.indexes ?? []) as unknown[]).length;
+        if (typeof body.nextPageToken !== "string" || body.nextPageToken === "") return count;
+        pageToken = body.nextPageToken;
+      }
+      throw new FirestoreAdminError("count indexes: more pages than any database has");
     },
 
     async create(spec) {

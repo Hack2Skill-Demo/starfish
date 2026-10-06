@@ -74,6 +74,56 @@ describe("toRow", () => {
     expect(toRow("s", {}, 24, now)).not.toHaveProperty("synthetic");
   });
 
+  describe("the Cloud Monitoring signal (#19)", () => {
+    const reading = {
+      source: "cloud-monitoring",
+      metricType: "run.googleapis.com/request_count",
+      resourceType: "cloud_run_revision",
+      projectId: "app-proj",
+      windowStart: Timestamp.fromMillis(Date.UTC(2026, 9, 5, 10)),
+      windowEnd: Timestamp.fromMillis(Date.UTC(2026, 9, 5, 11)),
+      failureCount: 7,
+    };
+
+    it("marks a Monitoring-only incident by its signal source or its mon- fingerprint, and nothing else", () => {
+      expect(toRow("m", { signalSource: "monitoring" }, 24, now).monitoringOnly).toBe(true);
+      expect(toRow("m", { fingerprint: "mon-abc123" }, 24, now).monitoringOnly).toBe(true);
+      expect(toRow("l", { fingerprint: "abc123", signalSource: "log" }, 24, now)).not.toHaveProperty("monitoringOnly");
+      expect(toRow("l", {}, 24, now)).not.toHaveProperty("monitoringOnly");
+    });
+
+    it("reads the Monitoring count and the latest readings, as stored", () => {
+      const row = toRow("a", { monitoringCount: 12, lastMonitoring: [reading, { ...reading, failureCount: 5, capped: true }] }, 24, now);
+      expect(row.monitoringCount).toBe(12);
+      expect(row.lastMonitoring).toEqual([
+        {
+          metricType: "run.googleapis.com/request_count",
+          resourceType: "cloud_run_revision",
+          projectId: "app-proj",
+          windowStart: "2026-10-05T10:00:00.000Z",
+          windowEnd: "2026-10-05T11:00:00.000Z",
+          failureCount: 7,
+          capped: false,
+        },
+        expect.objectContaining({ failureCount: 5, capped: true }),
+      ]);
+    });
+
+    it("leaves out a malformed count or reading rather than showing it half-filled; absent is not zero", () => {
+      const row = toRow(
+        "b",
+        { monitoringCount: "7", lastMonitoring: [{ ...reading, failureCount: "7" }, { ...reading, projectId: 3 }, null, reading] },
+        24,
+        now
+      );
+      expect(row).not.toHaveProperty("monitoringCount");
+      expect(row.lastMonitoring).toHaveLength(1);
+      expect(toRow("c", { monitoringCount: -1, lastMonitoring: "x" }, 24, now)).not.toHaveProperty("monitoringCount");
+      expect(toRow("c", { lastMonitoring: [] }, 24, now)).not.toHaveProperty("lastMonitoring");
+      expect(toRow("c", { lastMonitoring: Array(20).fill(reading) }, 24, now).lastMonitoring).toHaveLength(8);
+    });
+  });
+
   it("degrades a malformed document instead of throwing", () => {
     const row = toRow("x", { status: "bogus", occurrenceCount: "lots", githubPrState: "weird" }, 24, now);
     expect(row).toMatchObject({
