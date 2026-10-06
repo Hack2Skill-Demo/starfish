@@ -64,8 +64,10 @@ describe("buildEvidence", () => {
         pr: { opened: true, number: 42, url: "https://github.com/o/r/pull/42", patchSha256: HASH },
       })
     );
-    expect(stage(e, "fix").note).toMatch(/patch text is not stored; its SHA-256 is recorded/);
-    expect(stage(e, "fix").fields.map((f) => f.label)).toEqual(["Outcome", "Rule", "Root cause", "Test added", "Revisions"]);
+    expect(stage(e, "fix").note).toMatch(/diff is in the pull request on GitHub/);
+    // The diff is a link to the pull request's files, never stored text (#39).
+    expect(stage(e, "fix").fields.find((f) => f.label === "Diff")).toMatchObject({ href: "https://github.com/o/r/pull/42/files" });
+    expect(stage(e, "fix").fields.map((f) => f.label)).toEqual(["Outcome", "Rule", "Root cause", "Test added", "Revisions", "Diff"]);
     // A null risk is left out, not shown as "null".
     expect(stage(e, "verify").fields.find((f) => f.label === "Exit code")?.value).toBe("0");
     expect(stage(e, "review").fields.find((f) => f.label === "Broken")?.value).toBe("0");
@@ -76,6 +78,12 @@ describe("buildEvidence", () => {
   it("flags a patch hash that differs between stages", () => {
     const e = buildEvidence(row, cycle({ verify: { status: "passed", patchSha256: HASH }, review: { verdict: "approve", patchSha256: "b".repeat(64) } }));
     expect(e.samePatch).toBe(false);
+  });
+
+  it("says there is no diff to link to when verify ran but no pull request was opened", () => {
+    const e = buildEvidence(row, cycle({ fix: { outcome: "proposed", rule: "ok", rootCause: "x" }, verify: { status: "passed", patchSha256: HASH } }));
+    expect(stage(e, "fix").note).toMatch(/No pull request was opened/);
+    expect(stage(e, "fix").fields.some((f) => f.label === "Diff")).toBe(false);
   });
 
   it("does not point at a hash that was never recorded", () => {
