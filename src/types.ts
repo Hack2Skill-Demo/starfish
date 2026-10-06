@@ -177,4 +177,19 @@ export interface SpikeFixture {
     summary: string;
     reference?: string;
   };
+  /**
+   * The pre-fix source and a private evaluator (#4), so a fix-quality fixture's patch is RUN, not just printed:
+   * the evaluator must fail on the checkout before the patch and pass after it, and the target's own command must
+   * pass too (src/scoreboard/evaluate.ts). Paths are relative to the fixture file. Absent: the patch is not checked.
+   */
+  checkout?: {
+    /** The pre-fix source, recovered from history (`git show <fix>^:path`), never reconstructed. */
+    repo: string;
+    /** Files from `repo` shown to the model in full, in place of `context`. */
+    files: string[];
+    /** The target's own verification, run with the patch applied. */
+    verifyCommand: string;
+    /** Outside `repo`: the test that proves the fix, laid over a disposable copy only after the model answered. */
+    evaluator: { dir: string; command: string };
+  };
 }
