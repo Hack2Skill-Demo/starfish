@@ -84,7 +84,7 @@ export function createCloudRunJobStarter(
       throw new VerifyRunnerError("the verify job could not be started: Cloud Run could not be reached");
     }
     if (!res.ok) {
-      const hint = res.status === 403 ? " (the agent's service account needs roles/run.invoker on the job)" : "";
+      const hint = res.status === 403 ? " (the agent's service account needs roles/run.jobsExecutorWithOverrides on the job: it runs the job with an override)" : "";
       throw new VerifyRunnerError(`the verify job could not be started: Cloud Run answered ${res.status}${hint}`);
     }
   };

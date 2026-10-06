@@ -11,3 +11,6 @@ coverage/
 # Written by scripts/deploy-web.sh: maps the "starfish" hosting target to this deployment's site.
 .firebaserc
 .firebase/
+
+# Written by scripts/deploy-gcp.sh for the rules deploy (names STARFISH_DATABASE_ID), removed on exit.
+.firebase-deploy.json
