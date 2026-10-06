@@ -26,7 +26,7 @@ import type { StarfishConfig } from "../config.js";
 import { hasAdminRole, isValidUid } from "../adminAuth.js";
 import { fingerprintOf } from "./fingerprint.js";
 import { redactPii, sliceWellFormed, toWellFormed } from "./redact.js";
-import { incidentKeyId } from "./store.js";
+import { abortIfClosed, incidentKeyId } from "./store.js";
 import type { StoredIncident } from "../types.js";
 
 export type RetireConfig = Pick<StarfishConfig, "incidentCollection" | "incidentKeyCollection" | "usersCollection" | "auditCollection">;
@@ -50,7 +50,8 @@ export async function retireIncident(
   const incidentRef = db.collection(cfg.incidentCollection).doc(incidentId);
   const actorRef = db.collection(cfg.usersCollection).doc(actorUid);
 
-  return db.runTransaction(async (tx): Promise<RetireResult> => {
+  return db.runTransaction((tx) =>
+    abortIfClosed(async (): Promise<RetireResult> => {
     // Every read before any write.
     const [actor, snap] = await Promise.all([tx.get(actorRef), tx.get(incidentRef)]);
     if (!hasAdminRole(actor)) return { ok: false, reason: "not-admin" };
@@ -87,5 +88,5 @@ export async function retireIncident(
       after: { status: wasOpen ? "resolved" : data.status, retired: true },
     });
     return { ok: true, alreadyRetired: false };
-  });
+  }));
 }

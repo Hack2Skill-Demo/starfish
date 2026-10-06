@@ -28,6 +28,7 @@ import type { ConfigSource, ResolvedConfig } from "../runtimeSettings.js";
 import { aggregateErrors, type AggregationResult } from "./aggregate.js";
 import { planWindow, windowOf, type IngestWindow, type WindowPlan } from "./window.js";
 import { cronIntervalMinutes } from "./cadence.js";
+import { abortIfClosed } from "./store.js";
 
 export const STATE_DOC = "state";
 export const LAST_RUN_DOC = "last_run";
@@ -181,14 +182,15 @@ async function claimWindow(
   target: RunState["target"],
   plan: Omit<WindowPlan, "checkpoint">
 ): Promise<IngestWindow | null> {
-  return db.runTransaction(async (tx) => {
+  return db.runTransaction((tx) =>
+    abortIfClosed(async () => {
     const state = parseState(await tx.get(ref), target);
     if (state.pending) return state.pending;
     const window = planWindow({ ...plan, checkpoint: state.checkpoint });
     if (!window) return null;
     tx.set(ref, serializeState({ ...state, pending: window }));
     return window;
-  });
+  }));
 }
 
 /**
@@ -202,11 +204,12 @@ async function completeWindow(
   target: RunState["target"],
   window: IngestWindow
 ): Promise<void> {
-  await db.runTransaction(async (tx) => {
+  await db.runTransaction((tx) =>
+    abortIfClosed(async () => {
     const state = parseState(await tx.get(ref), target);
     if (state.pending?.id !== window.id) return;
     tx.set(ref, serializeState({ target, checkpoint: window.end }));
-  });
+  }));
 }
 
 /**
@@ -226,11 +229,12 @@ async function narrowPending(
   if (narrowed.start.getTime() !== window.start.getTime() || !(narrowed.end > window.start && narrowed.end < window.end)) {
     throw new Error("narrowed window is not a prefix of the pending one");
   }
-  await db.runTransaction(async (tx) => {
+  await db.runTransaction((tx) =>
+    abortIfClosed(async () => {
     const state = parseState(await tx.get(ref), target);
     if (state.pending?.id !== window.id) return;
     tx.set(ref, serializeState({ ...state, pending: narrowed }));
-  });
+  }));
 }
 
 function parseState(snap: DocumentSnapshot, target: RunState["target"]): RunState {

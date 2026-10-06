@@ -336,11 +336,12 @@ export function isClosedTransactionError(err: unknown): boolean {
 }
 
 /**
- * Run one attempt's body; a closed-transaction error leaves it as ABORTED, the code the transaction
+ * Run one transaction attempt's body (the upsert here, and every transaction in retire.ts and run.ts, which read
+ * the same way); a closed-transaction error leaves it as ABORTED, the code the transaction
  * runner retries, so the attempt is redone under the same `maxAttempts` budget and backoff instead of
  * failing the upsert. Every other error passes through untouched.
  */
-async function abortIfClosed<T>(attempt: () => Promise<T>): Promise<T> {
+export async function abortIfClosed<T>(attempt: () => Promise<T>): Promise<T> {
   try {
     return await attempt();
   } catch (err) {
