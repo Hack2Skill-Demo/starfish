@@ -262,7 +262,7 @@ describe("runCycle: the run record on the cycle", () => {
     ["handed to a person by the fixer", { triage: [act], fix: [fixOf("", { rootCause: "no context" })] }, {}, { state: "waiting-human", path: "human", outcome: "fixer-declined" }, ["fix", "triage"]],
     ["a draft in dry run", { triage: [act], fix: [fixOf(GOOD_PATCH)], review: [held] }, { dryRun: true }, { state: "waiting-human", path: "draft", outcome: "dry-run" }, ["fix", "pr", "review", "triage", "verify"]],
     ["blocked by review", { triage: [act], fix: [fixOf(GOOD_PATCH)], review: [broken] }, {}, { state: "waiting-human", path: "human", outcome: "review-blocked" }, ["fix", "review", "triage", "verify"]],
-    ["failed on budget", { triage: [act], fix: [fixOf(GOOD_PATCH)], review: [held] }, { modelCallBudget: 1 }, { state: "failed", path: "failed", outcome: "budget-exceeded" }, ["triage"]],
+    ["handed to a person on budget", { triage: [act], fix: [fixOf(GOOD_PATCH)], review: [held] }, { modelCallBudget: 1 }, { state: "waiting-human", path: "human", outcome: "budget-exceeded" }, ["triage"]],
   ])("is %s", async (_name, answers, over, expected, stages) => {
     cfgOver = over as typeof cfgOver;
     await runCycle(deps(scripted(answers as Parameters<typeof scripted>[0])), key);
@@ -449,8 +449,8 @@ describe("runCycle: the fix, the gate and the review", () => {
     cfgOver = { modelCallBudget: 3 };
     const model = scripted({ triage: [act], fix: [fixOf(BAD_PATCH), fixOf(GOOD_PATCH)], review: [held] });
     const r = await runCycle(deps(model), key);
-    // triage, fix, (verify fails) fix, then the review would be the fourth call.
-    expect(r).toEqual({ kind: "finished", state: "failed", outcome: "budget-exceeded" });
+    // triage, fix, (verify fails) fix, then the review would be the fourth call: a person decides.
+    expect(r).toEqual({ kind: "finished", state: "waiting-human", outcome: "budget-exceeded" });
     expect(model.calls).toHaveLength(3);
   });
 });
@@ -829,8 +829,31 @@ describe("runCycle: the budget and the one revision are the cycle's, not the att
     expect(await runCycle(deps(model), key)).toEqual({ kind: "released", reason: "model-call-failed" });
     expect((await cycleDoc()).modelCalls).toBe(2);
     // Attempt 2 starts with the budget already spent: no more calls.
-    expect(await runCycle(deps(model), key)).toEqual({ kind: "finished", state: "failed", outcome: "budget-exceeded" });
+    expect(await runCycle(deps(model), key)).toEqual({ kind: "finished", state: "waiting-human", outcome: "budget-exceeded" });
     expect(model.calls).toHaveLength(2);
+  });
+
+  it("hands a cycle whose budget ran out on a resumed attempt to a person, never a silent failure", async () => {
+    cfgOver = { modelCallBudget: 2 };
+    const calls: NotifyRequest[] = [];
+    const notify = async (req: NotifyRequest) => (calls.push(req), { state: "sent" as const, attempts: 1 });
+    const model = scripted({ triage: [act], fix: [new Error("model down")] });
+    expect(await runCycle(deps(model, { notify }), key)).toEqual({ kind: "released", reason: "model-call-failed" });
+    expect(await runCycle(deps(model, { notify }), key)).toEqual({ kind: "finished", state: "waiting-human", outcome: "budget-exceeded" });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({ path: "human", rule: "budget-exceeded" });
+    expect((await cycleDoc()).summary.notify).toMatchObject({ state: "sent" });
+  });
+
+  it("spends nothing on a triage decided by a deterministic gate", async () => {
+    const quiet: Incident = { ...incident, logCounterCheck: { window: "24h", count: 0 } };
+    const base = deps(scripted({}));
+    const load: LoopDeps["load"] = async (id) => {
+      const loaded = await base.load(id);
+      return loaded && { ...loaded, subject: { ...loaded.subject, incident: quiet } };
+    };
+    expect(await runCycle({ ...base, load }, key)).toMatchObject({ kind: "finished", state: "declined" });
+    expect((await cycleDoc()).modelCalls ?? 0).toBe(0);
   });
 
   it("does not give a resumed attempt a second revision", async () => {

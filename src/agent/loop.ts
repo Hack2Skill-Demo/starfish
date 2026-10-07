@@ -16,7 +16,8 @@
  *     who resolved or ignored the incident settles the cycle at the next step; automation turned off releases it,
  *     uncounted, to be taken up again when it is back on (#133). A cycle that would wait for a person is never settled
  *     with nobody told because the switch went off (#180).
- *   - BOUNDED. At most `modelCallBudget` model calls; at most ONE revision, shared between a failed
+ *   - BOUNDED. At most `modelCallBudget` model calls (a used-up budget goes to a person; a triage decided by a
+ *     deterministic gate costs none); at most ONE revision, shared between a failed
  *     verify and a blocking review (a second failure goes to a person). Both are counted on the cycle, not the attempt
  *     (cycle.ts `countSpend`, #182), so a resumed attempt goes on from what earlier ones spent; the cycle's own deadline and
  *     attempt cap (cycle.ts) bound the rest, and a person is told when either gives a cycle up. A failure
@@ -532,10 +533,19 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
     }
 
     let modelCalls = lease.modelCalls;
-    const overBudget = async (): Promise<LoopResult | null> => {
+    // A used-up budget hands the incident to a person, like any other "Starfish stops here": the spend is the cycle's
+    // (#182), so ordinary retries can reach it, and a cycle given up with nobody told is what #180 forbids.
+    const overBudget = async (loaded: LoopSubject): Promise<LoopResult | null> => {
       if (modelCalls < cfg.modelCallBudget) return null;
       await note({ stage: "cycle", type: "budget", summary: "Model-call budget used up", data: { budget: cfg.modelCallBudget, used: modelCalls } });
-      return finish("failed", "budget-exceeded", "failed");
+      return handOver(
+        factsOf(loaded),
+        "human",
+        "budget-exceeded",
+        `This cycle used its ${cfg.modelCallBudget} model calls without a result Starfish could act on, so a person decides.`,
+        "budget-exceeded",
+        "human"
+      );
     };
     // Counted on the cycle before the call is made (#182): a resumed attempt goes on from what earlier ones spent.
     const spendModelCall = async (): Promise<void> => {
@@ -578,10 +588,22 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
     }
 
     // ---- triage ---------------------------------------------------------------------------------
-    let stop = (await halted()) ?? (await overBudget());
+    let stop = (await halted()) ?? (await overBudget(loaded));
     if (stop) return stop;
-    await spendModelCall();
-    const triage = await triageIncident(loaded.subject, deps.ask);
+    // Counted only when triage asks the model: a deterministic gate's decision (a closed incident, a zero counter-check)
+    // spends nothing. Triage turns a throwing `ask` into "model call failed", so a lost lease is carried out and rethrown.
+    let spendError: unknown;
+    const countedAsk: AskJson = async <T,>(prompt: string, system: string, schema: Record<string, unknown>): Promise<T> => {
+      try {
+        await spendModelCall();
+      } catch (err) {
+        spendError = err;
+        throw err;
+      }
+      return deps.ask<T>(prompt, system, schema);
+    };
+    const triage = await triageIncident(loaded.subject, countedAsk);
+    if (spendError !== undefined) throw spendError;
     await note({
       stage: "triage",
       type: "decision",
@@ -642,7 +664,7 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
       revisions = r.count ?? revisions + 1;
     };
     for (;;) {
-      stop = (await halted()) ?? (await overBudget());
+      stop = (await halted()) ?? (await overBudget(loaded));
       if (stop) return stop;
       await spendModelCall();
       const fix = await proposeFix({ subject: loaded.subject, files: loaded.files, ...(feedback && { feedback }) }, deps.ask);
@@ -720,7 +742,7 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
 
       let review: { verdict: ReviewVerdict; attacks: Attack[] } | undefined;
       if (cfg.reviewRequired) {
-        stop = (await halted()) ?? (await overBudget());
+        stop = (await halted()) ?? (await overBudget(loaded));
         if (stop) return stop;
         await spendModelCall();
         const reviewed = await reviewPatch(

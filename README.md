@@ -359,8 +359,8 @@ the incident, and pauses the cycle (lease released, the attempt not counted) if 
 switched off (asked before every stage, before verify, before a person is told, and again just before anything is opened;
 a pass with automation off starts no cycle); it renews its lease while it works, a long verify
 wait included; it allows **one revision**, shared between a failed verify and a blocking
-review, then hands the cycle to a person; it stops at a **model-call budget** (both counted on the
-cycle across its attempts, so a retry does not reset them); it releases the
+review, then hands the cycle to a person; it stops at a **model-call budget** and hands the cycle to a person (both counted on the
+cycle across its attempts, so a retry does not reset them; a triage decided without the model costs nothing); it releases the
 lease to retry when the evidence is missing or the model call failed (bounded by the attempts cap
 and the deadline, and a person is told when either gives the cycle up); a
 worker that loses its lease stops and opens nothing; and it is a **dry run by default**
