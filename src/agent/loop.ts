@@ -11,12 +11,15 @@
  *     that lease, so a worker that lost it stops at once and can record or open nothing.
  *   - KEPT ALIVE. The lease is renewed about every third of its length while the cycle works, and before verify;
  *     the verifiers that wait call a heartbeat on every poll, which stops them once the lease is lost (#132).
- *   - RECHECKED BEFORE ACTING. Before each stage, before verify, and again before the pull request, the
- *     incident's status is read fresh and the automation switch is asked: an operator who resolved or ignored
- *     the incident settles the cycle at the next step; automation turned off releases it, uncounted, to be
- *     taken up again when it is back on (#133).
- *   - BOUNDED. At most `modelCallBudget` model calls; at most ONE revision, shared between a failed
- *     verify and a blocking review (a second failure goes to a person); the cycle's own deadline and
+ *   - RECHECKED BEFORE ACTING. Before each stage, before the issue is filed, before verify, before a person is told, and
+ *     again before the pull request, the incident's status is read fresh and the automation switch is asked: an operator
+ *     who resolved or ignored the incident settles the cycle at the next step; automation turned off releases it,
+ *     uncounted, to be taken up again when it is back on (#133). A cycle that would wait for a person is never settled
+ *     with nobody told because the switch went off (#180).
+ *   - BOUNDED. At most `modelCallBudget` model calls (a used-up budget goes to a person; a triage decided by a
+ *     deterministic gate costs none); at most ONE revision, shared between a failed
+ *     verify and a blocking review (a second failure goes to a person). Both are counted on the cycle, not the attempt
+ *     (cycle.ts `countSpend`, #182), so a resumed attempt goes on from what earlier ones spent; the cycle's own deadline and
  *     attempt cap (cycle.ts) bound the rest, and a person is told when either gives a cycle up. A failure
  *     worth retrying (a missing counter-check, a model call that failed) releases the lease so the next run
  *     tries again, counted against the cap; a patch unfit to verify goes to a person.
@@ -43,9 +46,10 @@ import type { Firestore } from "firebase-admin/firestore";
 import type { StarfishConfig } from "../config.js";
 import type { IncidentStatus, LogCounterCheck } from "../types.js";
 import { OPEN_INCIDENT_STATUSES } from "../types.js";
-import { redactPii } from "../ingest/redact.js";
+import { clipWellFormed } from "../ingest/redact.js";
 import {
   acquireLease,
+  countSpend,
   cycleId,
   finishCycle,
   recordEvent,
@@ -193,6 +197,31 @@ export type LoopResult =
   | { kind: "released"; reason: string }
   | { kind: "finished"; state: Exclude<CycleState, "running">; outcome: string };
 
+/** What a message to a person says about the incident: from the loaded subject, or the stored incident. */
+type IncidentFacts = Pick<NotifyRequest, "functionName" | "service" | "errorType" | "occurrenceCount">;
+
+function factsOf(loaded: LoopSubject): IncidentFacts {
+  const incident = loaded.subject.incident;
+  return {
+    functionName: incident.functionName ?? "unknown function",
+    service: incident.service ?? "unknown",
+    errorType: incident.errorType ?? "unknown",
+    occurrenceCount: incident.occurrenceCount ?? null,
+  };
+}
+
+/** The same facts read from the store, for a message sent without the incident loaded. Never a count it does not have. */
+async function storedIncidentFacts(deps: Pick<LoopDeps, "db" | "config">, incidentId: string): Promise<IncidentFacts> {
+  const incident = (await deps.db.collection(deps.config.incidentCollection).doc(incidentId).get()).data() ?? {};
+  const text = (v: unknown, fallback: string) => (typeof v === "string" && v !== "" ? v : fallback);
+  return {
+    functionName: text(incident.functionName, "unknown function"),
+    service: text(incident.service, "unknown"),
+    errorType: text(incident.errorType, "unknown"),
+    occurrenceCount: typeof incident.occurrenceCount === "number" && Number.isFinite(incident.occurrenceCount) ? incident.occurrenceCount : null,
+  };
+}
+
 /** Thrown inside the loop when a fenced write is refused; turned into `lease-lost` at the top. */
 class LeaseLost extends Error {}
 
@@ -317,20 +346,6 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
       data: { attempt: lease.attempt, resumed: lease.resumed, ...(lease.reconsidered && { trigger: lease.reconsidered }) },
     });
 
-    // A pull request already opened for this cycle ends it (#134): an attempt resumed after the open succeeded but its
-    // record or the finish did not must not redo the pipeline (the CI verifier would rebuild the PR's own branch).
-    const priorPr = await openedPullRequest(deps, id);
-    if (priorPr) {
-      await note({
-        stage: "pr",
-        type: "opened",
-        summary: "Pull request already opened by an earlier attempt",
-        data: { number: priorPr.number },
-        record: { opened: true, number: priorPr.number, url: priorPr.url, ...(priorPr.patchSha256 !== undefined && { patchSha256: priorPr.patchSha256 }) },
-      });
-      return priorPr.index ? await finish("done", "index-pr-opened", "index") : await finish("done", "pr-opened", "pr");
-    }
-
     // Asked before every stage and before anything is opened: a cycle stops at the next step after an
     // operator resolves or ignores the incident, or automation is switched off.
     const stopReason = async (): Promise<string | null> => {
@@ -343,12 +358,14 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
     // An operator who resolved or ignored the incident settles the cycle. The kill switch only pauses it (#133): the
     // lease is released, uncounted, so the cycle is taken up again once automation is back on. The switch also reads
     // "off" when the settings cannot be read, and one failed read must not decline an incident for good.
-    const halted = async (): Promise<LoopResult | null> => {
-      const why = await stopReason();
-      if (why === null) return null;
+    const haltFor = async (why: string): Promise<LoopResult> => {
       await note({ stage: "cycle", type: "stopped", summary: `Stopped before acting: ${why}`, data: { rule: why } });
       if (why === "automation-disabled") return release(why, { uncounted: true });
       return finish("declined", why, "decline");
+    };
+    const halted = async (): Promise<LoopResult | null> => {
+      const why = await stopReason();
+      return why === null ? null : haltFor(why);
     };
 
     // Auto-merge could apply right now (#9): never in a dry run, never without the switches.
@@ -408,19 +425,22 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
     // two leaves `pending` and the next attempt posts again (at-least-once: a missed escalation is worse than a repeat),
     // while a recorded `sent` or `failed` is never sent again.
     // The same pattern serves the `#ops-alerts` "new incident" message (`summary.alert`).
+    // Resolves to why it stopped before sending (the incident closed, or automation off), or null: the caller must then
+    // stop too, and not settle the cycle as if a person had been told (#180).
     const deliverOnce = async (
       stage: "notify" | "alert",
       words: { dryRun: string; pending: string; sent: string; failed: string },
       send: () => Promise<DeliveryResult>
-    ): Promise<void> => {
+    ): Promise<string | null> => {
       if (cfg.dryRun) {
         await note({ stage, type: "dry-run", summary: words.dryRun, record: { state: "dry-run", at: deps.now().toISOString() } });
-        return;
+        return null;
       }
       const snap = await db.collection(cfg.cycleCollection).doc(id).get();
       const prior = (snap.data()?.summary as Record<string, { state?: unknown } | undefined> | undefined)?.[stage]?.state;
-      if (prior === "sent" || prior === "failed") return;
-      if ((await stopReason()) !== null) return;
+      if (prior === "sent" || prior === "failed") return null;
+      const why = await stopReason();
+      if (why !== null) return why;
       await renew();
       await note({ stage, type: "pending", summary: words.pending, record: { state: "pending", attempts: 0 } });
       let result: DeliveryResult;
@@ -438,45 +458,100 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
         // `at`: when a person was told, which the phone escalation (#37, src/oncall/escalation.ts) waits after.
         record: { state: result.state, attempts: result.attempts, at: deps.now().toISOString(), ...(result.reason !== undefined && { reason: result.reason }) },
       });
+      return null;
     };
-    const about = (loaded: LoopSubject) => {
-      const incident = loaded.subject.incident;
-      return {
-        cycleId: id,
-        incidentId: key.incidentId,
-        functionName: incident.functionName ?? "unknown function",
-        service: incident.service ?? "unknown",
-        errorType: incident.errorType ?? "unknown",
-        occurrenceCount: incident.occurrenceCount ?? null,
-        ...(issue && { issueUrl: issue.url }),
-      };
-    };
-    const announce = async (loaded: LoopSubject, path: NotifyRequest["path"], rule: string, reason: string): Promise<void> => {
+    const about = (facts: IncidentFacts) => ({ cycleId: id, incidentId: key.incidentId, ...facts, ...(issue && { issueUrl: issue.url }) });
+    const announce = async (facts: IncidentFacts, path: NotifyRequest["path"], rule: string, reason: string): Promise<string | null> => {
       const notify = deps.notify;
-      if (!notify) return;
-      await deliverOnce(
+      if (!notify) return null;
+      return deliverOnce(
         "notify",
         { dryRun: "A person would be told here; nothing sent (dry run)", pending: "Telling a person", sent: "A person was told", failed: "A person could not be told" },
-        () => notify({ ...about(loaded), path, rule, reason })
+        () => notify({ ...about(facts), path, rule, reason })
       );
     };
+    // End the cycle waiting for a person, after telling them. Asked first, and again by the delivery itself: an incident
+    // an operator closed settles the cycle, and automation turned off releases it uncounted, to be told when it is back on.
+    // Never `waiting-human` with nobody told because the switch went off meanwhile (#180): nothing would ever resume it
+    // (pass.ts treats it as settled) and the phone escalation waits on the message that was never sent.
+    const handOver = async (facts: IncidentFacts, path: NotifyRequest["path"], rule: string, reason: string, outcome: string, cyclePath: CyclePath): Promise<LoopResult> => {
+      const why = (await stopReason()) ?? (await announce(facts, path, rule, reason));
+      if (why !== null) return haltFor(why);
+      return finish("waiting-human", outcome, cyclePath);
+    };
     // The `#ops-alerts` "new incident" message: once for every cycle Starfish acts on or escalates, after its issue is
-    // filed so the message can link to it. A declined incident gets none, as it gets no issue.
+    // filed so the message can link to it. A declined incident gets none, as it gets no issue. A stop it meets is left to
+    // the next step, which asks again.
     const alertTeam = async (loaded: LoopSubject, path: AlertRequest["path"], reason: string): Promise<void> => {
       const alert = deps.alert;
       if (!alert) return;
       await deliverOnce(
         "alert",
         { dryRun: "The team would be alerted here; nothing sent (dry run)", pending: "Alerting the team", sent: "The team was alerted", failed: "The team could not be alerted" },
-        () => alert({ ...about(loaded), path, reason })
+        () => alert({ ...about(factsOf(loaded)), path, reason })
       );
     };
 
-    let modelCalls = 0;
-    const overBudget = async (): Promise<LoopResult | null> => {
+    // A pull request already opened for this cycle ends it (#134): an attempt resumed after the open succeeded but its
+    // record or the finish did not must not redo the pipeline (the CI verifier would rebuild the PR's own branch).
+    const priorPr = await openedPullRequest(deps, id);
+    if (priorPr) {
+      await note({
+        stage: "pr",
+        type: "opened",
+        summary: "Pull request already opened by an earlier attempt",
+        data: { number: priorPr.number },
+        record: { opened: true, number: priorPr.number, url: priorPr.url, ...(priorPr.patchSha256 !== undefined && { patchSha256: priorPr.patchSha256 }) },
+      });
+      if (priorPr.index) return await finish("done", "index-pr-opened", "index");
+      // Where auto-merge could apply, the attempt that opened it never recorded it as a candidate (#184): what gate 1 and
+      // the "fails before" run saw is gone with it, so it is never merged on a guess. Recorded as skipped, and a person
+      // is told the decision is theirs.
+      if (!priorPr.mergeRecorded && (await autoMergeOn())) {
+        await note({
+          stage: "merge",
+          type: "skipped",
+          summary: "Not auto-merged: resumed-without-candidate",
+          record: {
+            state: "skipped",
+            reason: "resumed-without-candidate",
+            number: priorPr.number,
+            ...(priorPr.patchSha256 !== undefined && { patchSha256: priorPr.patchSha256 }),
+            headSha: null,
+            decidedAt: deps.now().toISOString(),
+          },
+        });
+        if (priorPr.issueNumber !== undefined && priorPr.issueUrl !== undefined) issue = { number: priorPr.issueNumber, url: priorPr.issueUrl };
+        await announce(
+          await storedIncidentFacts(deps, key.incidentId),
+          "human",
+          "auto-merge-resumed",
+          "The pull request is open, but the attempt that opened it did not record it as an auto-merge candidate, so Starfish will not merge it itself. A person decides."
+        );
+      }
+      return await finish("done", "pr-opened", "pr");
+    }
+
+    let modelCalls = lease.modelCalls;
+    // A used-up budget hands the incident to a person, like any other "Starfish stops here": the spend is the cycle's
+    // (#182), so ordinary retries can reach it, and a cycle given up with nobody told is what #180 forbids.
+    const overBudget = async (loaded: LoopSubject): Promise<LoopResult | null> => {
       if (modelCalls < cfg.modelCallBudget) return null;
-      await note({ stage: "cycle", type: "budget", summary: "Model-call budget used up", data: { budget: cfg.modelCallBudget } });
-      return finish("failed", "budget-exceeded", "failed");
+      await note({ stage: "cycle", type: "budget", summary: "Model-call budget used up", data: { budget: cfg.modelCallBudget, used: modelCalls } });
+      return handOver(
+        factsOf(loaded),
+        "human",
+        "budget-exceeded",
+        `This cycle used its ${cfg.modelCallBudget} model calls without a result Starfish could act on, so a person decides.`,
+        "budget-exceeded",
+        "human"
+      );
+    };
+    // Counted on the cycle before the call is made (#182): a resumed attempt goes on from what earlier ones spent.
+    const spendModelCall = async (): Promise<void> => {
+      const r = await countSpend(db, cfg, id, owner, deps.now(), "modelCalls");
+      if (!r.ok) throw new LeaseLost();
+      modelCalls = r.count ?? modelCalls + 1;
     };
 
     const loaded = await deps.load(key.incidentId);
@@ -502,7 +577,7 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
         renew,
         halted,
         stopReason,
-        announce: (rule, reason) => announce(loaded, "human", rule, reason),
+        handOver: (rule, reason, outcome, path) => handOver(factsOf(loaded), "human", rule, reason, outcome, path),
         fileIssue: async (reason) => {
           await fileIssue(loaded, "index", reason, undefined);
           return issue?.number;
@@ -513,10 +588,22 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
     }
 
     // ---- triage ---------------------------------------------------------------------------------
-    let stop = (await halted()) ?? (await overBudget());
+    let stop = (await halted()) ?? (await overBudget(loaded));
     if (stop) return stop;
-    modelCalls += 1;
-    const triage = await triageIncident(loaded.subject, deps.ask);
+    // Counted only when triage asks the model: a deterministic gate's decision (a closed incident, a zero counter-check)
+    // spends nothing. Triage turns a throwing `ask` into "model call failed", so a lost lease is carried out and rethrown.
+    let spendError: unknown;
+    const countedAsk: AskJson = async <T,>(prompt: string, system: string, schema: Record<string, unknown>): Promise<T> => {
+      try {
+        await spendModelCall();
+      } catch (err) {
+        spendError = err;
+        throw err;
+      }
+      return deps.ask<T>(prompt, system, schema);
+    };
+    const triage = await triageIncident(loaded.subject, countedAsk);
+    if (spendError !== undefined) throw spendError;
     await note({
       stage: "triage",
       type: "decision",
@@ -534,6 +621,10 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
     });
     // An issue for every incident Starfish acts on or escalates; a declined, skipped or deferred one gets none.
     if (triage.decision === "act" || triage.decision === "notify") {
+      // The triage call can take a while: an operator who closed the incident, or the kill switch, stops it before
+      // anything is filed or posted (#181).
+      stop = await halted();
+      if (stop) return stop;
       await fileIssue(loaded, triage.decision, triage.reason, triage.suspectedCause);
       await alertTeam(loaded, triage.decision, triage.reason);
     }
@@ -555,8 +646,7 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
         });
       }
       case "notify":
-        await announce(loaded, "notify", triage.rule, triage.reason);
-        return await finish("waiting-human", `notify:${triage.rule}`, "notify");
+        return await handOver(factsOf(loaded), "notify", triage.rule, triage.reason, `notify:${triage.rule}`, "notify");
       case "defer":
       case "error":
         return await release(triage.rule);
@@ -566,11 +656,17 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
 
     // ---- fix, verify, review (one revision, shared) ----------------------------------------------
     let feedback: FixRequest["feedback"];
-    let revisions = 0;
+    // The cycle's revisions so far (#182): one resumed after a revision does not get another.
+    let revisions = lease.revisions;
+    const spendRevision = async (): Promise<void> => {
+      const r = await countSpend(db, cfg, id, owner, deps.now(), "revisions");
+      if (!r.ok) throw new LeaseLost();
+      revisions = r.count ?? revisions + 1;
+    };
     for (;;) {
-      stop = (await halted()) ?? (await overBudget());
+      stop = (await halted()) ?? (await overBudget(loaded));
       if (stop) return stop;
-      modelCalls += 1;
+      await spendModelCall();
       const fix = await proposeFix({ subject: loaded.subject, files: loaded.files, ...(feedback && { feedback }) }, deps.ask);
       await note({
         stage: "fix",
@@ -592,8 +688,7 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
       // next attempt would most likely repeat it: that goes to a person now (#137).
       if (fix.outcome === "error" && !UNFIT_PATCH_RULES.has(fix.rule)) return await release(fix.rule);
       if (fix.outcome !== "proposed" || fix.patch === undefined) {
-        await announce(loaded, "human", fix.rule, fix.rootCause);
-        return await finish("waiting-human", fix.rule, "human");
+        return await handOver(factsOf(loaded), "human", fix.rule, fix.rootCause, fix.rule, "human");
       }
 
       // ---- auto-merge evidence (#9): gate 1, then the patch's tests alone on the base revision -----------------
@@ -638,19 +733,18 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
       });
       if (verified.status !== "passed") {
         if (revisions < MAX_REVISIONS) {
-          revisions += 1;
+          await spendRevision();
           feedback = { previousPatchSha256: verified.patchSha256, verifyOutput: verified.output || verified.reason };
           continue;
         }
-        await announce(loaded, "human", `verify-${verified.rule}`, verified.reason);
-        return await finish("waiting-human", `verify-${verified.rule}`, "human");
+        return await handOver(factsOf(loaded), "human", `verify-${verified.rule}`, verified.reason, `verify-${verified.rule}`, "human");
       }
 
       let review: { verdict: ReviewVerdict; attacks: Attack[] } | undefined;
       if (cfg.reviewRequired) {
-        stop = (await halted()) ?? (await overBudget());
+        stop = (await halted()) ?? (await overBudget(loaded));
         if (stop) return stop;
-        modelCalls += 1;
+        await spendModelCall();
         const reviewed = await reviewPatch(
           { subject: loaded.subject, patch: fix.patch, verify: verified, files: loaded.files, claimed: { rootCause: fix.rootCause, risk: fix.risk ?? "" } },
           deps.ask
@@ -678,13 +772,19 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
         if (reviewed.verdict === undefined) return await release(reviewed.rule);
         if (reviewed.verdict === "block") {
           if (revisions < MAX_REVISIONS) {
-            revisions += 1;
+            await spendRevision();
             const broken = (reviewed.attacks ?? []).filter((a) => a.outcome === "broken").map((a) => `${a.attack}: ${a.detail}`);
             feedback = { previousPatchSha256: verified.patchSha256, verifyOutput: `A reviewer broke this patch:\n${broken.join("\n")}` };
             continue;
           }
-          await announce(loaded, "human", "review-blocked", "The adversarial review broke the patch, and the one revision did not fix it.");
-          return await finish("waiting-human", "review-blocked", "human");
+          return await handOver(
+            factsOf(loaded),
+            "human",
+            "review-blocked",
+            "The adversarial review broke the patch, and the one revision did not fix it.",
+            "review-blocked",
+            "human"
+          );
         }
         review = { verdict: reviewed.verdict, attacks: reviewed.attacks ?? [] };
       }
@@ -736,7 +836,7 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
           record,
         });
         if (!pending) {
-          await announce(loaded, "human", "auto-merge-gate1", "The pull request is open, but Starfish may not merge it itself (gate 1, low blast radius, or its head is unknown). A person decides.");
+          await announce(factsOf(loaded), "human", "auto-merge-gate1", "The pull request is open, but Starfish may not merge it itself (gate 1, low blast radius, or its head is unknown). A person decides.");
         }
       }
       return await finish("done", "pr-opened", "pr");
@@ -784,19 +884,37 @@ async function recordFailsBefore(
   });
 }
 
+interface OpenedPullRequest {
+  number: number;
+  url: string;
+  patchSha256?: string;
+  index: boolean;
+  /** Whether the cycle holds an auto-merge record (`summary.merge`) for it (#184). */
+  mergeRecorded: boolean;
+  /** The incident's issue, when one was recorded: the message to a person links it. */
+  issueNumber?: number;
+  issueUrl?: string;
+}
+
 /** The pull request this cycle already opened: recorded on the cycle, or found by the opener's own lookup. */
-async function openedPullRequest(deps: LoopDeps, id: string): Promise<{ number: number; url: string; patchSha256?: string; index: boolean } | null> {
+async function openedPullRequest(deps: LoopDeps, id: string): Promise<OpenedPullRequest | null> {
   const snap = await deps.db.collection(deps.config.cycleCollection).doc(id).get();
-  const summary = snap.data()?.summary as { pr?: { opened?: unknown; number?: unknown; url?: unknown; patchSha256?: unknown }; index?: unknown } | undefined;
+  const summary = snap.data()?.summary as
+    | { pr?: { opened?: unknown; number?: unknown; url?: unknown; patchSha256?: unknown }; index?: unknown; merge?: unknown; issue?: { state?: unknown; number?: unknown; url?: unknown } }
+    | undefined;
   // An index cycle's PR is its evidence PR: the cycle keeps the index path (and its runtime record) when it is resumed.
   const index = summary?.index !== undefined;
+  const mergeRecorded = summary?.merge !== undefined;
+  const issue = summary?.issue;
+  const issueFields =
+    issue?.state === "opened" && typeof issue.number === "number" && typeof issue.url === "string" ? { issueNumber: issue.number, issueUrl: issue.url } : {};
   const pr = summary?.pr;
   if (pr?.opened === true && typeof pr.number === "number" && typeof pr.url === "string") {
-    return { number: pr.number, url: pr.url, ...(typeof pr.patchSha256 === "string" && { patchSha256: pr.patchSha256 }), index };
+    return { number: pr.number, url: pr.url, ...(typeof pr.patchSha256 === "string" && { patchSha256: pr.patchSha256 }), index, mergeRecorded, ...issueFields };
   }
   if (deps.config.dryRun || !deps.openPullRequest || !deps.findPullRequest) return null;
   const found = await deps.findPullRequest(id);
-  return found && { ...found, index };
+  return found && { ...found, index, mergeRecorded, ...issueFields };
 }
 
 /**
@@ -817,17 +935,13 @@ async function announceGivenUp(deps: LoopDeps, key: CycleKey, rule: "deadline-pa
       await ref.update({ "summary.notify": { state: "dry-run" } });
       return;
     }
-    const incident = (await db.collection(cfg.incidentCollection).doc(key.incidentId).get()).data() ?? {};
-    const text = (v: unknown, fallback: string) => (typeof v === "string" && v !== "" ? v : fallback);
+    const facts = await storedIncidentFacts(deps, key.incidentId);
     let result: DeliveryResult;
     try {
       result = await deps.notify({
         cycleId: id,
         incidentId: key.incidentId,
-        functionName: text(incident.functionName, "unknown function"),
-        service: text(incident.service, "unknown"),
-        errorType: text(incident.errorType, "unknown"),
-        occurrenceCount: typeof incident.occurrenceCount === "number" && Number.isFinite(incident.occurrenceCount) ? incident.occurrenceCount : null,
+        ...facts,
         path: "human",
         rule,
         reason:
@@ -839,7 +953,7 @@ async function announceGivenUp(deps: LoopDeps, key: CycleKey, rule: "deadline-pa
       result = { state: "failed", attempts: 1, reason: "notifier-error" };
     }
     await ref.update({
-      "summary.notify": { state: result.state, attempts: result.attempts, ...(result.reason !== undefined && { reason: redactPii(result.reason).slice(0, 300) }) },
+      "summary.notify": { state: result.state, attempts: result.attempts, ...(result.reason !== undefined && { reason: clipWellFormed(result.reason, 300) }) },
     });
   } catch {
     // The store or the incident read failed: nothing more can be done for a cycle that is already settled.

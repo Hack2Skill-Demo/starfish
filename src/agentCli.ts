@@ -251,6 +251,7 @@ try {
     const twilio = twilioCredentials && createTwilioClient({ credentials: twilioCredentials, apiUrl: cfg.twilioApiUrl });
     const t = await runEscalationTick({ db, config: cfg, now: () => new Date(), owner, ...(twilio && { twilio }) });
     if (t.skipped !== "off") console.log(`agent: phone escalation: ${t.skipped === "policy-unreadable" ? "the on-call policy is invalid or unreadable; nothing done" : `${t.armed} armed, ${t.placed} call(s) placed, ${t.closed} closed`}`);
+    if (t.scanCapped) console.warn("agent: phone escalation: the scan of waiting cycles hit its cap; any beyond it are armed on a later tick.");
   } catch (err) {
     console.error(`agent: phone escalation failed: ${redactPii(err instanceof Error ? err.message : String(err)).slice(0, 300)}`);
     failed = true;

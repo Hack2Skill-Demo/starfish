@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { SEEDED_SECRETS } from "./testSecrets.js";
-import { redactPii, redactCredentials, sanitize, isSensitiveKey, sliceWellFormed, truncate } from "./redact.js";
+import { redactPii, redactCredentials, sanitize, isSensitiveKey, sliceWellFormed, truncate, clipWellFormed } from "./redact.js";
 
 describe("redactCredentials", () => {
   for (const [name, secret] of Object.entries(SEEDED_SECRETS)) {
@@ -129,6 +129,27 @@ describe("sanitize", () => {
 
   it("passes undefined through", () => {
     expect(sanitize(undefined)).toBeUndefined();
+  });
+});
+
+describe("clipWellFormed: short stored text, redacted and cut without a lone surrogate (#183)", () => {
+  const wellFormed = (s: string) => Buffer.from(s, "utf8").toString("utf8") === s;
+
+  it("never splits a pair at the cut", () => {
+    const out = clipWellFormed("x".repeat(299) + "😢 Payment failed", 300);
+    expect(out).toBe("x".repeat(299));
+    expect(wellFormed(out)).toBe(true);
+    expect(clipWellFormed("x".repeat(298) + "😢 tail", 300)).toBe("x".repeat(298) + "😢");
+  });
+
+  it("replaces a lone surrogate the text already held (parsed JSON may carry one)", () => {
+    const out = clipWellFormed("before \ud83d after", 300);
+    expect(wellFormed(out)).toBe(true);
+    expect(out).toBe("before \ufffd after");
+  });
+
+  it("redacts before it cuts", () => {
+    expect(clipWellFormed(`mail ops@example.com ${SEEDED_SECRETS.github}`, 300)).not.toContain("ops@example.com");
   });
 });
 

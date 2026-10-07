@@ -157,7 +157,7 @@ src/
   agent/fixer.ts   stage 2: minimal patch or honest decline from a stubbed-testable model call;
                    fails closed, redacts both ways. Run by `pnpm agent` (deployable, never run)
   agent/cycle.ts   cycle per (incident, recurrence), transactional lease with fencing, append-only run events
-                   (redacted) and the cycle's run record (summary.<stage>, path); infrastructure errors throw, logical refusals are returned. Run by `pnpm agent` (deployable, never run)
+                   (redacted), the cycle's run record (summary.<stage>, path) and its model-call and revision counts (#182); infrastructure errors throw, logical refusals are returned. Run by `pnpm agent` (deployable, never run)
   agent/loop.ts    one cycle: lease -> triage -> fix -> verify -> review -> PR (interface); rechecks status +
                    kill switch, one shared revision, call budget, dry run by default. Run by `pnpm agent`. Where
                    auto-merge may apply it also runs gate 1 and the "fails before" run (`summary.before`) and records
@@ -244,7 +244,7 @@ src/
   oncall/twilio.ts the Twilio REST client (place a call, send a text; never retries, never throws), X-Twilio-Signature
                    check, and the fixed TwiML (one recording, one key; no incident text is ever spoken)
   oncall/webhooks.ts  Twilio's webhooks on the admin API (`/twilio/voice|gather|status`): signature-checked against the
-                   configured origin, 1 takes it, 2 texts the incident link, 3 passes, voicemail/no input moves on
+                   configured origin, 1 takes it, 2 texts the incident link (to the number called, still confirmed), 3 passes, voicemail/no input moves on
   oncall/optIn.ts  a number is called only once confirmed: an admin asks for a texted code, the person reads it back
                    (admin API `POST /api/oncall/people/<id>/send-code|confirm`); hash bound to person + number
   oncallSchema.ts  the on-call policy and person schema, `maskPhone`, quiet hours: pure, shared with the UI's Settings -> On-call.

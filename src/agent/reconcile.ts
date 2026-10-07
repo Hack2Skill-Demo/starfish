@@ -75,7 +75,8 @@ export async function selectPrCycles(db: Firestore, cfg: ReconcileConfig, limit:
   for (const doc of snap.docs) {
     const d = doc.data();
     const pr = d.summary?.pr as { opened?: unknown; number?: unknown } | undefined;
-    if (d.state !== "done" || pr?.opened !== true || typeof pr.number !== "number" || !Number.isInteger(pr.number) || pr.number < 1) continue;
+    // A seeded synthetic cycle (seedDemo.ts) names a pull request that does not exist: never read from GitHub (#192).
+    if (d.synthetic === true || d.state !== "done" || pr?.opened !== true || typeof pr.number !== "number" || !Number.isInteger(pr.number) || pr.number < 1) continue;
     const prior = d.summary?.prState as { state?: unknown; checks?: unknown; checkedAt?: unknown } | undefined;
     if (prior?.state === "merged" && SETTLED_CHECKS.includes(String(prior.checks))) continue;
     const checked = typeof prior?.checkedAt === "string" ? Date.parse(prior.checkedAt) : NaN;

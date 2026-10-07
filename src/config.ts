@@ -135,7 +135,10 @@ export interface StarfishConfig {
    * off from Settings, and it is read fresh, not once per run (src/agent/automationSwitch.ts).
    */
   automationEnabled: boolean;
-  /** The most model calls one cycle may make (triage, each fix attempt, each review): a spend cap. */
+  /**
+   * The most model calls one cycle may make (triage, each fix attempt, each review): a spend cap. Counted on the cycle
+   * across all its attempts (src/agent/cycle.ts `countSpend`); a reconsidered decline starts a fresh count.
+   */
   modelCallBudget: number;
   /**
    * The one repository Starfish opens pull requests in, as `owner/name` (src/integrations/githubPr.ts).

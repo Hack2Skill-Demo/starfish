@@ -246,11 +246,14 @@ export function flat(record: Record<string, unknown>): Record<string, string | n
   return sanitizeEvent({ stage: "merge", type: "record", summary: "", record: record as Record<string, string | number | boolean | null> }).record ?? {};
 }
 
-/** The cycles of this environment whose `summary.<stage>.state` is one of `states`, at most `limit`. Equality only: no composite index. */
+/**
+ * The cycles of this environment whose `summary.<stage>.state` is one of `states`, at most `limit`. Equality only: no
+ * composite index. A seeded synthetic cycle (seedDemo.ts) is never one: nothing it names exists (#192).
+ */
 export async function cyclesInState(db: Firestore, cfg: Pick<AutoMergeConfig, "cycleCollection" | "environment">, stage: "merge" | "revert", states: string[], limit: number) {
   if (!Number.isInteger(limit) || limit < 1) return [];
   const snap = await db.collection(cfg.cycleCollection).where("environment", "==", cfg.environment).where(`summary.${stage}.state`, "in", states).limit(limit).get();
-  return snap.docs.map((d) => ({ id: d.id, data: d.data() }));
+  return snap.docs.filter((d) => d.data().synthetic !== true).map((d) => ({ id: d.id, data: d.data() }));
 }
 
 /**

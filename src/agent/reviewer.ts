@@ -24,7 +24,7 @@
  */
 import { createHash } from "node:crypto";
 import { askJson } from "../vertex.js";
-import { redactCredentials, redactPii } from "../ingest/redact.js";
+import { clipWellFormed, redactCredentials, redactPii } from "../ingest/redact.js";
 import { renderForTriage } from "./triage.js";
 import type { AskJson } from "./triage.js";
 import type { FixRequest, SourceFile } from "./fixer.js";
@@ -157,7 +157,7 @@ export function verdictOf(attacks: readonly Attack[]): ReviewVerdict {
   return "approve";
 }
 
-const clip = (text: string, max = MAX_TEXT) => redactPii(text).slice(0, max);
+const clip = (text: string, max = MAX_TEXT) => clipWellFormed(text, max);
 const none = (rule: ReviewRule, reason: string): ReviewResult => ({ rule, reason });
 
 function parseAttacks(raw: unknown): Attack[] | null {

@@ -199,6 +199,13 @@ describe("runAutoMergeStep: merges only what every switch and gate allows", () =
     expect((await cycle("inc1_r0")).summary.merge.state).toBe("pending");
   });
 
+  it("never touches a seeded synthetic cycle, whatever its record says (#192)", async () => {
+    await seed("inc1_r0", proven(), { synthetic: true });
+    const gh = fakeGithub();
+    expect(await runAutoMergeStep(mergeDeps(gh.client))).toMatchObject({ considered: 0 });
+    expect(gh.calls).toEqual([]);
+  });
+
   it("never touches a cycle with no auto-merge candidate (a target where it is off opened a plain PR)", async () => {
     const summary = proven();
     delete summary.merge;

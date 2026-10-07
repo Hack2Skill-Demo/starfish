@@ -90,6 +90,11 @@ describe("reviewPatch: a review", () => {
     expect(r.attacks![0]).toMatchObject({ outcome: "broken", detail: "Drops the coupon when it is 0." });
   });
 
+  it("never leaves a lone surrogate where it cuts the model's text (#183)", async () => {
+    const r = await reviewPatch(request(), stub({ attacks: [attack("held", { attack: "a".repeat(299) + "😢", detail: "d".repeat(599) + "😢 tail" })] }).ask);
+    expect(r.attacks![0]).toMatchObject({ attack: "a".repeat(299), detail: "d".repeat(599) });
+  });
+
   it("flags without blocking", async () => {
     const r = await reviewPatch(request(), stub({ attacks: [attack("flagged")] }).ask);
     expect(r.verdict).toBe("approve-with-flags");

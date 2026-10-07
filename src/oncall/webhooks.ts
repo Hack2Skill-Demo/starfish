@@ -9,8 +9,9 @@
  *   /twilio/voice   the call was answered: a person hears the recording and the menu; voicemail hears a short fixed
  *                   message with no incident detail
  *   /twilio/gather  the key pressed: 1 takes it (the sequence ends; a `new` incident becomes `acknowledged`, attributed
- *                   to `oncall:<person id>`), 2 texts the link to the incident (the link only), 3 passes it to the next
- *                   person, nothing or a wrong key twice moves on
+ *                   to `oncall:<person id>`), 2 texts the link to the incident (the link only, and only to the number
+ *                   the call was placed to while it is still confirmed), 3 passes it to the next person, nothing or a
+ *                   wrong key twice moves on
  *   /twilio/status  the call ended: no answer, busy, failed, voicemail or answered-with-no-decision moves the sequence on
  *
  * Every answer, keypress and outcome is a run event on the cycle (escalation.ts), masked, named by role.
@@ -21,7 +22,7 @@ import type { Firestore } from "firebase-admin/firestore";
 import { appendEventsInTransaction, type RunEvent } from "../agent/cycle.js";
 import { incidentUrl } from "../integrations/links.js";
 import { ROLE_LABELS, maskPhone, parsePerson, type OnCallRole } from "../oncallSchema.js";
-import { advance, closeUpdate, readCurrentCall, stopReason, STEPS, type CallOutcome, type EscalationConfig } from "./escalation.js";
+import { advance, callNumberHash, closeUpdate, readCurrentCall, stopReason, STEPS, type CallOutcome, type EscalationConfig } from "./escalation.js";
 import { SPOKEN, twiml, verifyTwilioSignature, type TwilioClient } from "./twilio.js";
 
 export interface TwilioWebhookRequest {
@@ -155,8 +156,11 @@ export function createTwilioWebhooks(deps: TwilioWebhookDeps): (req: TwilioWebho
         if (c.call.linkSent === true || typeof c.call.personId !== "string") return { already: true as const };
         const person = await tx.get(db.collection(cfg.onCallPeopleCollection).doc(c.call.personId));
         const p = parsePerson(person.id, person.data(), 0);
+        // Only to the number this call was placed to, and only while it is still confirmed (#187): an admin who changed the
+        // number mid-call made it `pending`, and the new number never consented to anything.
+        const same = p !== null && p.state === "confirmed" && c.call.numberHash === callNumberHash(p.id, p.phone);
         tx.update(c.ref, { "call.linkSent": true, updatedAt: Timestamp.fromDate(now) });
-        return { already: false as const, phone: p?.phone, incidentId: String(c.esc.incidentId), role: c.call.role };
+        return { already: false as const, phone: same ? p.phone : undefined, incidentId: String(c.esc.incidentId), role: c.call.role };
       });
       if (target === null) return xmlReply(twiml.sayAndHangUp(SPOKEN.over));
       if (target.already) return xmlReply(twiml.again(SPOKEN.linkSent, selfUrl("/twilio/gather")));

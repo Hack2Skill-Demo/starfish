@@ -31,6 +31,15 @@
         { "fieldPath": "environment", "order": "ASCENDING" },
         { "fieldPath": "startDays", "arrayConfig": "CONTAINS" }
       ]
+    },
+    {
+      "collectionGroup": "starfish_cycles",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "environment", "order": "ASCENDING" },
+        { "fieldPath": "state", "order": "ASCENDING" },
+        { "fieldPath": "updatedAt", "order": "DESCENDING" }
+      ]
     }
   ],
   "fieldOverrides": []

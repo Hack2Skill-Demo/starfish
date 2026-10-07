@@ -46,11 +46,12 @@ describe("selectCandidates", () => {
     expect(ids(await selectCandidates(db, cfg, 10))).toEqual(["new:0", "mid:0", "old:0"]);
   });
 
-  it("leaves out closed incidents, other environments and retired ones", async () => {
+  it("leaves out closed incidents, other environments, retired ones and seeded synthetic ones (#192)", async () => {
     await incident("resolved", { status: "resolved" });
     await incident("ignored", { status: "ignored" });
     await incident("prod", { environment: "prod" });
     await incident("retired", { retired: true });
+    await incident("synthetic", { synthetic: true });
     await incident("open");
     expect(ids(await selectCandidates(db, cfg, 10))).toEqual(["open:0"]);
   });

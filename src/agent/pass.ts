@@ -39,7 +39,7 @@ const MAX_SCAN = 500;
  * activity first, at most `limit`. A cycle that is absent or still `running` is a candidate (the loop's
  * lease decides whether another worker holds it). A `declined` one is too, with `opts.reconsider`, when new
  * evidence arrived since its decision (reconsider.ts; the lease acquire checks again in its transaction).
- * An operator-retired incident is never one. Uses the same (environment, lastOccurredAt) index as the
+ * An operator-retired incident is never one, nor a seeded synthetic one. Uses the same (environment, lastOccurredAt) index as the
  * incidents list, so it needs no new index.
  */
 export async function selectCandidates(
@@ -61,7 +61,8 @@ export async function selectCandidates(
   const incidents = new Map<string, Record<string, unknown>>();
   for (const doc of snap.docs) {
     const d = doc.data();
-    if (d.retired === true || !OPEN.includes(String(d.status))) continue;
+    // A seeded synthetic incident (seedDemo.ts) is never worked on, whatever its cycle says (#192).
+    if (d.retired === true || d.synthetic === true || !OPEN.includes(String(d.status))) continue;
     const recurrence = typeof d.recurrenceCount === "number" && Number.isInteger(d.recurrenceCount) && d.recurrenceCount >= 0 ? d.recurrenceCount : 0;
     const id = cycleId({ incidentId: doc.id, environment: cfg.environment, recurrence });
     if (id === null) continue; // an id that cannot name a cycle is never worked on

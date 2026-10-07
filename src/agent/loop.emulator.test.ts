@@ -17,6 +17,7 @@ import type { IssueRequest } from "../integrations/githubPr.js";
 import { acquireLease } from "./cycle.js";
 import { selectCandidates } from "./pass.js";
 import { FIX_SYSTEM } from "./fixer.js";
+import { verifyPatch } from "./verifyGate.js";
 import { REVIEW_SYSTEM } from "./reviewer.js";
 import { TRIAGE_SYSTEM, type AskJson } from "./triage.js";
 import { SEEDED_SECRETS } from "../ingest/testSecrets.js";
@@ -261,7 +262,7 @@ describe("runCycle: the run record on the cycle", () => {
     ["handed to a person by the fixer", { triage: [act], fix: [fixOf("", { rootCause: "no context" })] }, {}, { state: "waiting-human", path: "human", outcome: "fixer-declined" }, ["fix", "triage"]],
     ["a draft in dry run", { triage: [act], fix: [fixOf(GOOD_PATCH)], review: [held] }, { dryRun: true }, { state: "waiting-human", path: "draft", outcome: "dry-run" }, ["fix", "pr", "review", "triage", "verify"]],
     ["blocked by review", { triage: [act], fix: [fixOf(GOOD_PATCH)], review: [broken] }, {}, { state: "waiting-human", path: "human", outcome: "review-blocked" }, ["fix", "review", "triage", "verify"]],
-    ["failed on budget", { triage: [act], fix: [fixOf(GOOD_PATCH)], review: [held] }, { modelCallBudget: 1 }, { state: "failed", path: "failed", outcome: "budget-exceeded" }, ["triage"]],
+    ["handed to a person on budget", { triage: [act], fix: [fixOf(GOOD_PATCH)], review: [held] }, { modelCallBudget: 1 }, { state: "waiting-human", path: "human", outcome: "budget-exceeded" }, ["triage"]],
   ])("is %s", async (_name, answers, over, expected, stages) => {
     cfgOver = over as typeof cfgOver;
     await runCycle(deps(scripted(answers as Parameters<typeof scripted>[0])), key);
@@ -448,8 +449,8 @@ describe("runCycle: the fix, the gate and the review", () => {
     cfgOver = { modelCallBudget: 3 };
     const model = scripted({ triage: [act], fix: [fixOf(BAD_PATCH), fixOf(GOOD_PATCH)], review: [held] });
     const r = await runCycle(deps(model), key);
-    // triage, fix, (verify fails) fix, then the review would be the fourth call.
-    expect(r).toEqual({ kind: "finished", state: "failed", outcome: "budget-exceeded" });
+    // triage, fix, (verify fails) fix, then the review would be the fourth call: a person decides.
+    expect(r).toEqual({ kind: "finished", state: "waiting-human", outcome: "budget-exceeded" });
     expect(model.calls).toHaveLength(3);
   });
 });
@@ -574,9 +575,9 @@ describe("runCycle: the lease is proved again just before anything is opened", (
     const opened: PullRequestRequest[] = [];
     let asked = 0;
     const d = deps(scripted({ triage: [act], fix: [fixOf(GOOD_PATCH)], review: [held] }), {}, opened);
-    // The fifth look at the automation switch (triage, fix, verify, review, open) is the one just before opening; time passes during it.
+    // The sixth look at the automation switch (triage, issue, fix, verify, review, open) is the one just before opening; time passes during it.
     d.automationEnabled = async () => {
-      if (++asked === 5) clock = new Date(t0.getTime() + 400_000);
+      if (++asked === 6) clock = new Date(t0.getTime() + 400_000);
       return true;
     };
     expect(await runCycle(d, key)).toEqual({ kind: "lease-lost" });
@@ -721,7 +722,7 @@ describe("runCycle: telling a person (#17)", () => {
     }
   });
 
-  it("does not send once a person has resolved the incident in the meantime", async () => {
+  it("does not send once a person has resolved the incident in the meantime, and settles the cycle as resolved", async () => {
     const calls: NotifyRequest[] = [];
     const notify = async (req: NotifyRequest) => (calls.push(req), { state: "sent" as const, attempts: 1 });
     const model = scripted({ triage: [notifyDecision] });
@@ -731,8 +732,139 @@ describe("runCycle: telling a person (#17)", () => {
       return answer;
     }) as AskJson;
     const r = await runCycle(deps(model, { notify, ask }), key);
-    expect(r).toMatchObject({ kind: "finished", state: "waiting-human" });
+    expect(r).toEqual({ kind: "finished", state: "declined", outcome: "incident-resolved" });
     expect(calls).toHaveLength(0);
+  });
+});
+
+describe("runCycle: a stop met just before a person is told is never a silent 'waiting-human' (#180)", () => {
+  const notifyDecision = { decision: "notify", reasoning: "The API is not enabled.", suspectedCause: "Translation API disabled" };
+  const told = () => {
+    const calls: NotifyRequest[] = [];
+    return { calls, notify: async (req: NotifyRequest) => (calls.push(req), { state: "sent" as const, attempts: 1 }) };
+  };
+  /** The real gate, with `onSecond` run during the second verify: a long CI wait in which the world changes. */
+  const verifyThen = (onSecond: () => void): LoopDeps["verify"] => {
+    let n = 0;
+    return async (req) => {
+      const r = await verifyPatch(req);
+      if (++n === 2) onSecond();
+      return r;
+    };
+  };
+
+  it("automation switched off during the last verify: paused uncounted, nobody told yet, and told once it is back on", async () => {
+    const { calls, notify } = told();
+    const d = deps(scripted({ triage: [act], fix: [fixOf(BAD_PATCH)] }), { notify, verify: verifyThen(() => (enabled = false)) });
+    expect(await runCycle(d, key)).toEqual({ kind: "released", reason: "automation-disabled" });
+    expect(calls).toHaveLength(0);
+    expect(await cycleDoc()).toMatchObject({ state: "running", owner: null, resumeUncounted: true });
+    expect((await cycleDoc()).summary?.notify).toBeUndefined();
+
+    enabled = true;
+    const r = await runCycle({ ...d, verify: undefined }, key);
+    expect(r).toMatchObject({ kind: "finished", state: "waiting-human", outcome: "verify-command-failed" });
+    expect(calls).toHaveLength(1);
+    expect((await cycleDoc()).summary.notify).toMatchObject({ state: "sent" });
+  });
+
+  it("the incident resolved during the last verify: settled as resolved, nobody told", async () => {
+    const { calls, notify } = told();
+    const d = deps(scripted({ triage: [act], fix: [fixOf(BAD_PATCH)] }), { notify, verify: verifyThen(() => (status = "resolved")) });
+    expect(await runCycle(d, key)).toEqual({ kind: "finished", state: "declined", outcome: "incident-resolved" });
+    expect(calls).toHaveLength(0);
+  });
+
+  it("the triage notify path: automation switched off while the issue was filed pauses the cycle instead of settling it", async () => {
+    const { calls, notify } = told();
+    const openIssue = async () => {
+      enabled = false;
+      return { number: 12, url: "https://github.com/acme/shop/issues/12" };
+    };
+    expect(await runCycle(deps(scripted({ triage: [notifyDecision] }), { notify, openIssue }), key)).toEqual({ kind: "released", reason: "automation-disabled" });
+    expect(calls).toHaveLength(0);
+    expect((await cycleDoc()).state).toBe("running");
+  });
+
+  it("pauses even with no notifier configured, rather than settle a cycle nobody can resume", async () => {
+    const d = deps(scripted({ triage: [act], fix: [fixOf(BAD_PATCH)] }), { verify: verifyThen(() => (enabled = false)) });
+    expect(await runCycle(d, key)).toEqual({ kind: "released", reason: "automation-disabled" });
+  });
+});
+
+describe("runCycle: nothing is filed once the cycle was stopped during triage (#181)", () => {
+  const ISSUE = { number: 12, url: "https://github.com/acme/shop/issues/12" };
+  const whileTriaging = (model: ReturnType<typeof scripted>, change: () => void) =>
+    (async (...args: Parameters<AskJson>) => {
+      const answer = await model.ask(...args);
+      change();
+      return answer;
+    }) as AskJson;
+
+  it("files no issue for an incident resolved while triage ran, and settles the cycle", async () => {
+    const filed: IssueRequest[] = [];
+    const openIssue = async (req: IssueRequest) => (filed.push(req), ISSUE);
+    const model = scripted({ triage: [act] });
+    const r = await runCycle(deps(model, { openIssue, ask: whileTriaging(model, () => (status = "resolved")) }), key);
+    expect(r).toEqual({ kind: "finished", state: "declined", outcome: "incident-resolved" });
+    expect(filed).toHaveLength(0);
+    expect((await cycleDoc()).summary?.issue).toBeUndefined();
+  });
+
+  it("files no issue when automation is switched off while triage ran, and pauses the cycle", async () => {
+    const filed: IssueRequest[] = [];
+    const openIssue = async (req: IssueRequest) => (filed.push(req), ISSUE);
+    const model = scripted({ triage: [act] });
+    const r = await runCycle(deps(model, { openIssue, ask: whileTriaging(model, () => (enabled = false)) }), key);
+    expect(r).toEqual({ kind: "released", reason: "automation-disabled" });
+    expect(filed).toHaveLength(0);
+  });
+});
+
+describe("runCycle: the budget and the one revision are the cycle's, not the attempt's (#182)", () => {
+  it("does not reset the model-call budget when an attempt is released and resumed", async () => {
+    cfgOver = { modelCallBudget: 2 };
+    const model = scripted({ triage: [act], fix: [new Error("model down")] });
+    // Attempt 1: triage and fix (2 calls), the fix call fails, released to retry.
+    expect(await runCycle(deps(model), key)).toEqual({ kind: "released", reason: "model-call-failed" });
+    expect((await cycleDoc()).modelCalls).toBe(2);
+    // Attempt 2 starts with the budget already spent: no more calls.
+    expect(await runCycle(deps(model), key)).toEqual({ kind: "finished", state: "waiting-human", outcome: "budget-exceeded" });
+    expect(model.calls).toHaveLength(2);
+  });
+
+  it("hands a cycle whose budget ran out on a resumed attempt to a person, never a silent failure", async () => {
+    cfgOver = { modelCallBudget: 2 };
+    const calls: NotifyRequest[] = [];
+    const notify = async (req: NotifyRequest) => (calls.push(req), { state: "sent" as const, attempts: 1 });
+    const model = scripted({ triage: [act], fix: [new Error("model down")] });
+    expect(await runCycle(deps(model, { notify }), key)).toEqual({ kind: "released", reason: "model-call-failed" });
+    expect(await runCycle(deps(model, { notify }), key)).toEqual({ kind: "finished", state: "waiting-human", outcome: "budget-exceeded" });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({ path: "human", rule: "budget-exceeded" });
+    expect((await cycleDoc()).summary.notify).toMatchObject({ state: "sent" });
+  });
+
+  it("spends nothing on a triage decided by a deterministic gate", async () => {
+    const quiet: Incident = { ...incident, logCounterCheck: { window: "24h", count: 0 } };
+    const base = deps(scripted({}));
+    const load: LoopDeps["load"] = async (id) => {
+      const loaded = await base.load(id);
+      return loaded && { ...loaded, subject: { ...loaded.subject, incident: quiet } };
+    };
+    expect(await runCycle({ ...base, load }, key)).toMatchObject({ kind: "finished", state: "declined" });
+    expect((await cycleDoc()).modelCalls ?? 0).toBe(0);
+  });
+
+  it("does not give a resumed attempt a second revision", async () => {
+    // Attempt 1: the first patch fails the gate, the one revision is used, and the revised call fails: released.
+    const model = scripted({ triage: [act, act], fix: [fixOf(BAD_PATCH), new Error("model down"), fixOf(BAD_PATCH)] });
+    expect(await runCycle(deps(model), key)).toEqual({ kind: "released", reason: "model-call-failed" });
+    expect((await cycleDoc()).revisions).toBe(1);
+    // Attempt 2: its patch fails the gate too; the revision is spent, so it goes to a person, not round again.
+    expect(await runCycle(deps(model), key)).toEqual({ kind: "finished", state: "waiting-human", outcome: "verify-command-failed" });
+    expect(model.count("fix")).toBe(3);
+    expect(await cycleDoc()).toMatchObject({ modelCalls: 5, revisions: 1 });
   });
 });
 
@@ -962,6 +1094,35 @@ describe("runCycle: a pull request already opened for the cycle ends it (#134)",
     expect(asked).toEqual(["inc1_r0"]);
     expect(model.calls).toHaveLength(0);
     expect(await kinds()).toEqual(["cycle:started", "pr:opened"]);
+  });
+
+  it("where auto-merge applies, records a skipped candidate and tells a person, and never merges on a guess (#184)", async () => {
+    const calls: NotifyRequest[] = [];
+    const notify = async (req: NotifyRequest) => (calls.push(req), { state: "sent" as const, attempts: 1 });
+    const findPullRequest = async () => ({ number: 6, url: "https://github.com/acme/shop/pull/6" });
+    const r = await runCycle(deps(scripted({ triage: [act] }), { verify: verifyMustNotRun, findPullRequest, notify, autoMergeAllowed: async () => true }), key);
+    expect(r).toEqual({ kind: "finished", state: "done", outcome: "pr-opened" });
+    expect((await cycleDoc()).summary.merge).toMatchObject({ state: "skipped", reason: "resumed-without-candidate", number: 6, headSha: null });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({ path: "human", rule: "auto-merge-resumed", cycleId: "inc1_r0" });
+    expect(await kinds()).toEqual(["cycle:started", "pr:opened", "merge:skipped", "notify:pending", "notify:sent"]);
+  });
+
+  it("leaves a candidate already recorded alone, and records nothing where auto-merge does not apply (#184)", async () => {
+    const calls: NotifyRequest[] = [];
+    const notify = async (req: NotifyRequest) => (calls.push(req), { state: "sent" as const, attempts: 1 });
+    expect(await runCycle(deps(scripted({ triage: [new Error("boom")] })), key)).toMatchObject({ kind: "released" });
+    await db.collection(`cycles_${cfg}`).doc("inc1_r0").update({
+      "summary.pr": { opened: true, number: 5, url: "https://github.com/acme/shop/pull/5" },
+      "summary.merge": { state: "pending", number: 5 },
+    });
+    await runCycle(deps(scripted({}), { verify: verifyMustNotRun, notify, autoMergeAllowed: async () => true }), key);
+    expect((await cycleDoc()).summary.merge).toEqual({ state: "pending", number: 5 });
+    cfg = randomUUID().slice(0, 8);
+    const findPullRequest = async () => ({ number: 6, url: "https://github.com/acme/shop/pull/6" });
+    await runCycle(deps(scripted({}), { verify: verifyMustNotRun, findPullRequest, notify, autoMergeAllowed: async () => false }), key);
+    expect((await cycleDoc()).summary.merge).toBeUndefined();
+    expect(calls).toHaveLength(0);
   });
 
   it("goes on as usual when there is none, and does not look in a dry run", async () => {

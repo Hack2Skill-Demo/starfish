@@ -32,6 +32,7 @@
  *
  * Infrastructure errors (the store) throw, as in cycle.ts; a call Twilio refused is a result.
  */
+import { createHash } from "node:crypto";
 import { FieldValue, Timestamp } from "firebase-admin/firestore";
 import type { DocumentReference, DocumentSnapshot, Firestore, Transaction } from "firebase-admin/firestore";
 import type { StarfishConfig } from "../config.js";
@@ -78,7 +79,7 @@ export const MAX_NOTIFY_AGE_MS = 24 * 60 * 60_000;
 /** A claimed call whose end was never reported is given up on after this, and the sequence moves on. */
 export const CALL_STALE_MS = 10 * 60_000;
 /** The most cycles one tick looks at, and the most open sequences it steps. */
-const MAX_SCAN = 50;
+export const MAX_SCAN = 50;
 const MAX_PEOPLE = 50;
 const ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
 
@@ -106,9 +107,12 @@ const ms = (v: unknown): number | undefined => {
 const utcDay = (d: Date): string => d.toISOString().slice(0, 10);
 const hhmmUtc = (d: Date): string => `${d.toISOString().slice(11, 16)} UTC`;
 
-/** The time of the Slack message a sequence waits after, when the cycle qualifies for one; else null. Pure. */
+/**
+ * The time of the Slack message a sequence waits after, when the cycle qualifies for one; else null. Pure. A seeded
+ * synthetic cycle (seedDemo.ts) never qualifies: nothing happened, so nobody is phoned about it (#192).
+ */
 export function escalationEligible(cycle: Record<string, unknown> | undefined, now: Date): Date | null {
-  if (!cycle || cycle.state !== "waiting-human" || (cycle.path !== "notify" && cycle.path !== "human")) return null;
+  if (!cycle || cycle.synthetic === true || cycle.state !== "waiting-human" || (cycle.path !== "notify" && cycle.path !== "human")) return null;
   const summary = (cycle.summary ?? {}) as Record<string, Record<string, unknown> | undefined>;
   const decision = summary.triage?.decision;
   if (decision !== "notify" && decision !== "act") return null;
@@ -125,6 +129,15 @@ export function isCritical(incident: Record<string, unknown> | undefined, policy
   if (!incident) return false;
   if (incident.status === "recurred") return true;
   return typeof incident.occurrenceCount === "number" && incident.occurrenceCount >= policy.criticalOccurrences;
+}
+
+/**
+ * The number a call was claimed for, bound to the person, as a hash (#187): stored on the claim so the "2" keypress
+ * (webhooks.ts) texts the link only to that same number, still confirmed. The sequences are engine-only (firestore.rules),
+ * and the number itself is never stored on them. Pure.
+ */
+export function callNumberHash(personId: string, phone: string): string {
+  return createHash("sha256").update(`${personId}\n${phone}`).digest("hex");
 }
 
 /** The person called for a role: the earliest-added CONFIRMED one. A pending number is never called. Pure. */
@@ -158,6 +171,11 @@ export interface TickResult {
   armed: number;
   placed: number;
   closed: number;
+  /**
+   * The arming scan read its cap of recently updated waiting cycles (#185): a qualifying cycle beyond it is armed on a
+   * later tick, once newer ones are armed or settle. Said so it is visible, never silent.
+   */
+  scanCapped?: boolean;
   /** Why nothing could run at all, when nothing could. */
   skipped?: "off" | "policy-unreadable";
 }
@@ -172,7 +190,11 @@ export async function runEscalationTick(deps: EscalationDeps): Promise<TickResul
   if (!deps.config.phoneEscalation) return { ...result, skipped: "off" };
   const policy = await readPolicy(deps.db, deps.config);
   if (policy === null) return { ...result, skipped: "policy-unreadable" };
-  if (policy.enabled) result.armed = await armEscalations(deps, policy);
+  if (policy.enabled) {
+    const armed = await armEscalations(deps, policy);
+    result.armed = armed.armed;
+    if (armed.capped) result.scanCapped = true;
+  }
   const open = await deps.db
     .collection(deps.config.escalationCollection)
     .where("environment", "==", deps.config.environment)
@@ -187,10 +209,24 @@ export async function runEscalationTick(deps: EscalationDeps): Promise<TickResul
   return result;
 }
 
-/** Start a sequence (one, ever) for each waiting cycle that qualifies. Returns how many were started. */
-export async function armEscalations(deps: EscalationDeps, policy: OnCallPolicy): Promise<number> {
+/**
+ * Start a sequence (one, ever) for each waiting cycle that qualifies. Returns how many were started, and whether the scan
+ * read its cap. The scan reads only what can qualify: a cycle whose Slack message is less than a day old was updated
+ * within that day (the message's record moved `updatedAt`), so it reads the waiting cycles updated in the last
+ * `MAX_NOTIFY_AGE_MS`, newest first (#185). Old waiting cycles, which only accumulate, can no longer fill the scan and
+ * crowd a new one out. Index: (environment, state, updatedAt desc), firestore.indexes.json.
+ */
+export async function armEscalations(deps: EscalationDeps, policy: OnCallPolicy): Promise<{ armed: number; capped: boolean }> {
   const { db, config: cfg } = deps;
-  const waiting = await db.collection(cfg.cycleCollection).where("environment", "==", cfg.environment).where("state", "==", "waiting-human").limit(MAX_SCAN).get();
+  const since = Timestamp.fromMillis(deps.now().getTime() - MAX_NOTIFY_AGE_MS);
+  const waiting = await db
+    .collection(cfg.cycleCollection)
+    .where("environment", "==", cfg.environment)
+    .where("state", "==", "waiting-human")
+    .where("updatedAt", ">=", since)
+    .orderBy("updatedAt", "desc")
+    .limit(MAX_SCAN)
+    .get();
   let armed = 0;
   for (const doc of waiting.docs) {
     if (!ID_RE.test(doc.id) || escalationEligible(doc.data(), deps.now()) === null) continue;
@@ -227,7 +263,7 @@ export async function armEscalations(deps: EscalationDeps, policy: OnCallPolicy)
     });
     if (created) armed += 1;
   }
-  return armed;
+  return { armed, capped: waiting.size >= MAX_SCAN };
 }
 
 type Claimed = { kind: "call"; step: number; person: OnCallPerson } | { kind: "idle" } | { kind: "closed" };
@@ -390,7 +426,15 @@ export async function stepEscalation(deps: EscalationDeps, id: string, policy: O
       state: "calling",
       step: chosen.step,
       quietHeld: false,
-      call: { step: chosen.step, personId: chosen.person.id, role: chosen.person.role, to, claimedBy: deps.owner, claimedAt: Timestamp.fromDate(now) },
+      call: {
+        step: chosen.step,
+        personId: chosen.person.id,
+        role: chosen.person.role,
+        to,
+        numberHash: callNumberHash(chosen.person.id, chosen.person.phone),
+        claimedBy: deps.owner,
+        claimedAt: Timestamp.fromDate(now),
+      },
       updatedAt: Timestamp.fromDate(now),
     });
     tx.set(capRef(deps, chosen.person.id, day), { personId: chosen.person.id, day, count: counts.get(chosen.person.id)! + 1, updatedAt: Timestamp.fromDate(now) }, { merge: true });
