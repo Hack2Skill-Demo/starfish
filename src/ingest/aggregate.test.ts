@@ -165,6 +165,50 @@ describe("aggregateErrors", () => {
       expect(result.narrowedTo).toBeUndefined();
       expect(created).toHaveLength(1);
     });
+
+    it("processes the read under the window's own id, flagged capped, when an earlier attempt already wrote it (#199)", async () => {
+      const t0 = window.start.getTime() + 60_000;
+      entries.splice(0, entries.length, ...Array.from({ length: MAX_ENTRIES_PER_RUN }, (_, i) => at(t0 + i * 1000, "burst")));
+      const { db, created } = fakeDb();
+      let began = 0;
+
+      const result = await aggregateErrors(db, config, window, { writes: { mayNarrow: false, beginWrites: async () => (began++, true) } });
+
+      expect(result).toMatchObject({ entriesProcessed: MAX_ENTRIES_PER_RUN, incidentsCreated: 1, capped: true });
+      expect(result.narrowedTo).toBeUndefined();
+      expect(created[0]).toMatchObject({ occurrenceCount: MAX_ENTRIES_PER_RUN });
+      expect(began).toBe(1);
+    });
+  });
+
+  describe("coordinating its writes with the run (#199)", () => {
+    it("records that writes begin before the first upsert", async () => {
+      entries.splice(0, entries.length, entry("first failure"), entry("second failure"));
+      const { db, created } = fakeDb();
+      const createdWhenBegun: number[] = [];
+
+      await aggregateErrors(db, config, window, { writes: { mayNarrow: true, beginWrites: async () => (createdWhenBegun.push(created.length), true) } });
+
+      expect(createdWhenBegun).toEqual([0]);
+      expect(created).toHaveLength(2);
+    });
+
+    it("writes nothing for a window that is no longer the pending one", async () => {
+      entries.splice(0, entries.length, entry("first failure"));
+      const { db, created } = fakeDb();
+
+      const result = await aggregateErrors(db, config, window, { writes: { mayNarrow: true, beginWrites: async () => false } });
+
+      expect(created).toHaveLength(0);
+      expect(result).toMatchObject({ superseded: true, entriesProcessed: 0, incidentsCreated: 0 });
+    });
+
+    it("does not record a write for a window with nothing to write", async () => {
+      entries.splice(0, entries.length);
+      let began = false;
+      await aggregateErrors(fakeDb().db, config, window, { writes: { mayNarrow: true, beginWrites: async () => (began = true) } });
+      expect(began).toBe(false);
+    });
   });
 });
 

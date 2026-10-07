@@ -11,7 +11,7 @@ import type { Firestore } from "firebase-admin/firestore";
 import type { StarfishConfig } from "../config.js";
 import type { ResolvedConfig } from "../runtimeSettings.js";
 import { testConfig } from "../testConfig.js";
-import { LAST_RUN_DOC, STATE_DOC, runIngest, type RunDeps } from "./run.js";
+import { LAST_RUN_DOC, runIngest, stateDocId, type RunDeps } from "./run.js";
 import { triggerIngest } from "./trigger.js";
 
 if (!process.env.FIRESTORE_EMULATOR_HOST) {
@@ -79,7 +79,7 @@ describe("triggerIngest", () => {
     expect(await triggerIngest(db, config, loader(), uid, now, deps)).toEqual({ ok: false, reason: "not-admin" });
     expect(calls).toHaveLength(0);
     expect(await audit()).toHaveLength(0);
-    expect(await runDoc(STATE_DOC)).toBeUndefined();
+    expect(await runDoc(stateDocId(config))).toBeUndefined();
     expect(await runDoc(LAST_RUN_DOC)).toBeUndefined();
   });
 
@@ -113,7 +113,7 @@ describe("triggerIngest", () => {
   it("is the scheduled run, not a lookalike: the same windows, state and record", async () => {
     const viaTrigger = counting();
     const trig = await triggerIngest(db, config, loader(), "admin1", now, viaTrigger.deps);
-    const triggered = { state: await runDoc(STATE_DOC), last: await runDoc(LAST_RUN_DOC) };
+    const triggered = { state: await runDoc(stateDocId(config)), last: await runDoc(LAST_RUN_DOC) };
 
     // The same run, scheduled, against a fresh set of collections.
     config = { ...config, runCollection: `${config.runCollection}_b` };
@@ -122,7 +122,7 @@ describe("triggerIngest", () => {
 
     expect(trig.ok && trig.summary).toMatchObject({ outcome: sched.outcome, windows: sched.windows, totals: sched.totals });
     expect(viaTrigger.calls.map((c) => [c.start, c.end])).toEqual(viaSchedule.calls.map((c) => [c.start, c.end]));
-    const scheduled = { state: await runDoc(STATE_DOC), last: await runDoc(LAST_RUN_DOC) };
+    const scheduled = { state: await runDoc(stateDocId(config)), last: await runDoc(LAST_RUN_DOC) };
     expect(triggered.state?.checkpoint.toMillis()).toBe(scheduled.state?.checkpoint.toMillis());
     expect(triggered.last).toMatchObject({ outcome: scheduled.last?.outcome, windows: scheduled.last?.windows, capped: scheduled.last?.capped });
   });

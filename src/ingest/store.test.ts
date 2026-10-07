@@ -338,6 +338,32 @@ describe("upsertIncident: regressions", () => {
     expect(keyWrites[0]?.data.incidentId).toBe("new-doc");
   });
 
+  it("accrues an occurrence from before the retire onto the retired incident, leaving it closed (#197)", async () => {
+    const fp = computeErrorFingerprint(input.functionName, input.errorMessage);
+    const retiredAt = Timestamp.fromMillis(input.lastOccurredAt.getTime() + 60_000);
+    const { db, writes, keyWrites } = fakeDb([{ id: "retired", data: resolvedDoc({ retired: true, retiredAt }) }], {
+      [incidentKeyId("prod", fp)]: "retired",
+    });
+    expect(await upsertIncident(db, STORE, { ...input, windowId: "w2" }, Timestamp.now())).toBe("updated");
+    expect(writes).toHaveLength(1);
+    expect(writes[0]).toMatchObject({ op: "update", id: "retired" });
+    for (const field of ["status", "triageState", "recurrenceCount", "resolvedAt"]) expect(writes[0]!.data).not.toHaveProperty(field);
+    expect(keyWrites[0]?.data).toMatchObject({ incidentId: "retired", appliedWindows: ["w2"] });
+  });
+
+  it("never adopts an older resolved incident through a key that names a retired one (#197)", async () => {
+    const fp = computeErrorFingerprint(input.functionName, input.errorMessage);
+    const { db, writes } = fakeDb(
+      [
+        { id: "retired", data: resolvedDoc({ retired: true }) },
+        { id: "fixed", data: resolvedDoc() },
+      ],
+      { [incidentKeyId("prod", fp)]: "retired" }
+    );
+    expect(await upsertIncident(db, STORE, input, Timestamp.now())).toBe("new");
+    expect(writes.map((w) => w.op)).toEqual(["set"]);
+  });
+
   it("re-opens a resolved incident as recurred when its error fires after the resolution", async () => {
     const { db, writes } = fakeDb([
       { id: "fixed", data: resolvedDoc({ githubIssueNumber: 42, githubIssueUrl: "https://example.test/issues/42" }) },

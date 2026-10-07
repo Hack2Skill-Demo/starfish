@@ -85,9 +85,10 @@ export interface ResolvedConfig {
   /**
    * False when the settings document is unusable and no earlier one is known good,
    * so the run is on the defaults without knowing they are what the admin intends.
-   * Reading logs and recording incidents in Starfish's own store are safe then;
-   * anything that acts outside it (a pull request, an index, a deploy) must wait
-   * for a valid document. Nothing acts yet: the agent loop (#8) must check this.
+   * Nothing runs on that: the defaults may name another watched project or
+   * environment, so ingest refuses too (src/ingest/run.ts, #198), as do `pnpm agent`
+   * and `pnpm escalate`, and the kill switch reads as off. A MISSING document is not this case:
+   * the defaults are then the configuration (`actionsAllowed` true).
    */
   actionsAllowed: boolean;
 }

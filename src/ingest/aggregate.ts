@@ -24,7 +24,8 @@ const PAGE_SIZE = 500;
  * and runs the job into its timeout — during exactly the incident it exists to
  * catch. The read is oldest first, so a capped read has covered a prefix of the
  * window in full: it writes nothing and hands back that prefix to replay instead
- * (`narrowWindow`), and the rest is read by the windows after it (#127). Reading
+ * (`narrowWindow`), and the rest is read by the windows after it (#127), unless an
+ * earlier attempt already wrote under the window's id (`WindowWrites`, #199). Reading
  * the newest entries and completing the window anyway lost every older one.
  */
 export const MAX_ENTRIES_PER_RUN = 5000;
@@ -45,7 +46,8 @@ export interface AggregationResult {
   incidentsReplayed: number;
   /**
    * True when the read stopped at MAX_ENTRIES_PER_RUN and the window could not be narrowed (more
-   * entries than that in its first millisecond): it was processed as read, and the rest of it is lost,
+   * entries than that in its first millisecond, or an earlier attempt already wrote under its id: see
+   * `WindowWrites`): it was processed as read, and the rest of it is lost,
    * so occurrence counts are a floor.
    */
   capped: boolean;
@@ -54,6 +56,11 @@ export interface AggregationResult {
    * covered in full. The caller replays this narrower window in place of the one it asked for.
    */
   narrowedTo?: IngestWindow;
+  /**
+   * Set when `writes.beginWrites` said the window is no longer the pending one (another run narrowed
+   * or completed it): nothing was written, and the caller must not complete it.
+   */
+  superseded?: true;
   /**
    * The Cloud Monitoring signal for this window (#19), absent when it is off. `unavailable` means the
    * read failed: the window's failures without an ERROR log are UNKNOWN, not zero.
@@ -74,6 +81,28 @@ export interface MonitoringSummary {
 export interface AggregateDeps {
   /** The Monitoring reader. Default: the REST adapter, created only when the signal is on. */
   monitoring?: MonitoringReader;
+  /** How the window's writes are coordinated with the run's state (run.ts). Absent: narrow freely, write at once. */
+  writes?: WindowWrites;
+}
+
+/**
+ * What the run that owns the pending window tells the aggregator about it (#199). Narrowing gives the
+ * window a NEW id, and the store recognises a replay only by id: if an earlier attempt at this window
+ * already committed upserts under its id, the narrowed window would apply those occurrences again under
+ * its own. So a window may be narrowed only while nothing has been written under its id.
+ */
+export interface WindowWrites {
+  /**
+   * False when an earlier attempt at this window reached its writes: some of its upserts may have
+   * committed. A capped read is then processed as read, under this window's own id, and flagged capped
+   * (its counts are a floor), never narrowed.
+   */
+  mayNarrow: boolean;
+  /**
+   * Called once, before the first upsert, to record that writes under this window's id are beginning.
+   * Resolves false when the window is no longer the pending one: nothing is written then.
+   */
+  beginWrites: () => Promise<boolean>;
 }
 
 /** The errorType of a Monitoring-only incident: there is no log to classify, only a count of failures. */
@@ -166,7 +195,9 @@ export async function aggregateErrors(
 
   if (entries.length >= MAX_ENTRIES_PER_RUN) {
     const lastReadAt = latestTimestamp(entries as RawLogEntry[]);
-    const narrowed = lastReadAt && narrowWindow(window, lastReadAt);
+    // Not when an earlier attempt may have written under this window's id (see WindowWrites): the
+    // narrowed window would count those occurrences a second time under its own id.
+    const narrowed = deps.writes?.mayNarrow !== false && lastReadAt && narrowWindow(window, lastReadAt);
     // Nothing is written: the narrowed window gets its own id, and the store must not see these
     // entries under this window's id and again under that one's.
     if (narrowed) return { ...result, narrowedTo: narrowed };
@@ -247,6 +278,10 @@ export async function aggregateErrors(
     }
   }
   if (queue.length === 0) return result;
+  // Recorded before the first upsert, so a later attempt at this window knows it may not narrow it.
+  if (deps.writes && !(await deps.writes.beginWrites())) {
+    return { entriesProcessed: 0, incidentsCreated: 0, incidentsUpdated: 0, incidentsRecurred: 0, incidentsReplayed: 0, capped: false, superseded: true };
+  }
 
   const now = Timestamp.now();
   const total = queue.length;

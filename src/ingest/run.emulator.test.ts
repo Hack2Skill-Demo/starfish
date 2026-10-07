@@ -10,7 +10,8 @@ import { getFirestore, Timestamp } from "firebase-admin/firestore";
 import type { Firestore } from "firebase-admin/firestore";
 import type { StarfishConfig } from "../config.js";
 import { testConfig } from "../testConfig.js";
-import type { ResolvedConfig } from "../runtimeSettings.js";
+import { RuntimeConfigLoader, SETTINGS_DOC, type ResolvedConfig } from "../runtimeSettings.js";
+import type { AggregateDeps } from "./aggregate.js";
 
 if (!process.env.FIRESTORE_EMULATOR_HOST) {
   throw new Error("run.emulator.test.ts needs the Firestore emulator: run `pnpm test:emulator`");
@@ -39,7 +40,7 @@ vi.mock("@google-cloud/logging", () => ({
   },
 }));
 
-const { runIngest, STATE_DOC, LAST_RUN_DOC, MAX_WINDOWS_PER_RUN } = await import("./run.js");
+const { runIngest, stateDocId, LEGACY_STATE_DOC, LAST_RUN_DOC, MAX_WINDOWS_PER_RUN, SETTINGS_UNUSABLE } = await import("./run.js");
 const { aggregateErrors, MAX_ENTRIES_PER_RUN } = await import("./aggregate.js");
 const { windowOf } = await import("./window.js");
 
@@ -79,7 +80,7 @@ const loader = (over: Partial<ResolvedConfig> = {}) => ({
 });
 
 const emptyResult = { entriesProcessed: 0, incidentsCreated: 0, incidentsUpdated: 0, incidentsRecurred: 0, incidentsReplayed: 0, capped: false };
-const state = async () => (await db.collection(config.runCollection).doc(STATE_DOC).get()).data();
+const state = async () => (await db.collection(config.runCollection).doc(stateDocId(config)).get()).data();
 const lastRun = async () => (await db.collection(config.runCollection).doc(LAST_RUN_DOC).get()).data();
 const ms = (t: unknown) => (t as Timestamp).toMillis();
 
@@ -292,7 +293,7 @@ describe("runIngest on the emulator", () => {
   });
 
   it("stops without reading anything when the state can't be trusted", async () => {
-    await db.collection(config.runCollection).doc(STATE_DOC).set({
+    await db.collection(config.runCollection).doc(stateDocId(config)).set({
       target: { watchedProjectId: config.watchedProjectId, environment: config.environment },
       checkpoint: "garbage",
     });
@@ -339,7 +340,7 @@ describe("runIngest on the emulator", () => {
 
   it("a run that finishes late never moves the checkpoint backwards", async () => {
     config = { ...config, defaultLookbackHours: 6 };
-    const stateRef = db.collection(config.runCollection).doc(STATE_DOC);
+    const stateRef = db.collection(config.runCollection).doc(stateDocId(config));
     const target = { watchedProjectId: config.watchedProjectId, environment: config.environment };
     const ahead = new Date(horizon.getTime() + HOUR);
 
@@ -386,5 +387,152 @@ describe("runIngest on the emulator", () => {
     expect(docs[0]?.get("occurrenceCount")).toBe(1);
     // The filter carried both ends of the window.
     expect(logs.filters.at(-1)).toMatch(/timestamp>"[^"]+"\ntimestamp<="[^"]+"/);
+  });
+
+  // A log entry as the stubbed Logging serves it.
+  const logEntry = (t: number, message: string, fn = "api") => ({
+    metadata: { timestamp: new Date(t).toISOString(), resource: { labels: { function_name: fn } } },
+    data: message,
+  });
+  const countOf = async (message: string, environment = config.environment) =>
+    (await db.collection(config.incidentCollection).where("environment", "==", environment).get()).docs
+      .filter((d) => d.get("errorMessage") === message)
+      .map((d) => d.get("occurrenceCount") as number);
+
+  it("switching to another target and back resumes from its own checkpoint, counting nothing twice (#198)", async () => {
+    config = { ...config, defaultLookbackHours: 6 };
+    logs.entries = [logEntry(horizon.getTime() - 3 * HOUR, "email send failed", "mailDrainer")];
+    const prod = config;
+
+    await runIngest(db, loader(), now);
+    expect(await countOf("email send failed")).toEqual([1]);
+
+    // An admin points the engine at another environment for a while, then back.
+    config = { ...prod, environment: "staging" };
+    await runIngest(db, loader(), now);
+    config = prod;
+    const back = await runIngest(db, loader(), new Date(now.getTime() + HOUR));
+
+    // With one shared state document, the switch back re-read the lookback under new window ids: 2.
+    expect(await countOf("email send failed")).toEqual([1]);
+    expect(back.window?.start.getTime()).toBe(horizon.getTime());
+    expect(ms((await state())?.checkpoint)).toBe(horizon.getTime() + HOUR);
+  });
+
+  it("keeps the checkpoint of a deployment from before per-target state, and moves it (#198)", async () => {
+    const runs = db.collection(config.runCollection);
+    const target = { watchedProjectId: config.watchedProjectId, environment: config.environment };
+    await runs.doc(LEGACY_STATE_DOC).set({ target, checkpoint: Timestamp.fromDate(horizon) });
+    const seen: number[] = [];
+
+    await runIngest(db, loader(), new Date(now.getTime() + HOUR), {
+      aggregate: async (_d, _c, w) => (seen.push(w.start.getTime()), emptyResult),
+    });
+
+    expect(seen).toEqual([horizon.getTime()]);
+    expect(ms((await state())?.checkpoint)).toBe(horizon.getTime() + HOUR);
+    expect((await runs.doc(LEGACY_STATE_DOC).get()).exists).toBe(false);
+  });
+
+  it("leaves a legacy state written for another target alone (#198)", async () => {
+    const runs = db.collection(config.runCollection);
+    const other = { watchedProjectId: config.watchedProjectId, environment: "staging" };
+    await runs.doc(LEGACY_STATE_DOC).set({ target: other, checkpoint: Timestamp.fromDate(horizon) });
+    const seen: number[] = [];
+
+    await runIngest(db, loader(), now, { aggregate: async (_d, _c, w) => (seen.push(w.start.getTime()), emptyResult) });
+
+    expect(seen[0]).toBe(horizon.getTime() - 24 * HOUR);
+    expect((await runs.doc(LEGACY_STATE_DOC).get()).data()?.target).toEqual(other);
+  });
+
+  it("refuses to run on env defaults it fell back to because the settings could not be used (#198)", async () => {
+    let called = false;
+    const result = await runIngest(db, loader({ source: "env", problems: ["settings read failed: 14"], actionsAllowed: false }), now, {
+      aggregate: async () => ((called = true), emptyResult),
+    });
+
+    expect(called).toBe(false);
+    expect(result).toMatchObject({ outcome: "failed", error: SETTINGS_UNUSABLE, windows: 0 });
+    expect(await lastRun()).toMatchObject({ outcome: "failed", error: SETTINGS_UNUSABLE, actionsAllowed: false, problems: ["settings read failed: 14"] });
+    expect(await state()).toBeUndefined();
+  });
+
+  it("with the real loader: no settings document runs on the defaults, an invalid one with no last-good does not (#198)", async () => {
+    const aggregate = async () => emptyResult;
+    expect(await runIngest(db, new RuntimeConfigLoader(config), now, { aggregate })).toMatchObject({ outcome: "ok", actionsAllowed: true });
+
+    await db.collection(config.settingsCollection).doc(SETTINGS_DOC).set({ version: 999 });
+    const refused = await runIngest(db, new RuntimeConfigLoader(config), new Date(now.getTime() + HOUR), { aggregate });
+    expect(refused).toMatchObject({ outcome: "failed", error: SETTINGS_UNUSABLE, actionsAllowed: false });
+  });
+
+  it("never narrows a window an earlier attempt already wrote: the capped read counts nothing twice (#199)", async () => {
+    config = { ...config, defaultLookbackHours: 2 };
+    const start = horizon.getTime() - 2 * HOUR;
+    logs.entries = Array.from({ length: 10 }, (_, i) => logEntry(start + 10 * 60_000 + i, "early failure", "billing"));
+
+    // The window commits its upserts, then the process dies before the checkpoint.
+    const realThenCrash = async (d: Firestore, c: StarfishConfig, w: Parameters<typeof aggregateErrors>[2], deps: AggregateDeps) => {
+      await aggregateErrors(d, c, w, deps);
+      throw new Error("died before the checkpoint");
+    };
+    expect((await runIngest(db, loader(), now, { aggregate: realThenCrash })).outcome).toBe("failed");
+    expect(await countOf("early failure")).toEqual([10]);
+
+    // Late entries arrive in the same window: the retry's read now hits the cap.
+    logs.entries.push(...Array.from({ length: MAX_ENTRIES_PER_RUN }, (_, i) => logEntry(start + HOUR + i * 100, "burst failure")));
+    const retry = await runIngest(db, loader(), now);
+
+    // Narrowed, the window got a new id and its first 10 entries were applied again under it: 20.
+    expect(await countOf("early failure")).toEqual([10]);
+    expect(retry).toMatchObject({ outcome: "ok", capped: true, totals: { incidentsReplayed: 1, incidentsCreated: 1 } });
+    expect(await countOf("burst failure")).toEqual([MAX_ENTRIES_PER_RUN - 10]);
+    expect(await lastRun()).toMatchObject({ capped: true });
+  });
+
+  it("does not narrow a window another attempt began writing, even on a read made before that (#199)", async () => {
+    config = { ...config, defaultLookbackHours: 2 };
+    const calls: { id: string; mayNarrow: boolean | undefined }[] = [];
+    const aggregate = async (_d: Firestore, _c: StarfishConfig, w: { id: string; start: Date; end: Date }, deps: AggregateDeps) => {
+      calls.push({ id: w.id, mayNarrow: deps.writes?.mayNarrow });
+      if (calls.length > 1) return emptyResult;
+      // An overlapping attempt reaches its writes while this read comes back capped.
+      expect(await deps.writes!.beginWrites()).toBe(true);
+      return { ...emptyResult, narrowedTo: windowOf(w.start, new Date(w.start.getTime() + HOUR)) };
+    };
+
+    await runIngest(db, loader(), now, { aggregate });
+
+    expect(calls).toEqual([{ id: calls[0]!.id, mayNarrow: true }, { id: calls[0]!.id, mayNarrow: false }]);
+    expect(ms((await state())?.checkpoint)).toBe(horizon.getTime());
+  });
+
+  it("writes nothing for a window that stopped being the pending one before its writes began (#199)", async () => {
+    config = { ...config, defaultLookbackHours: 2 };
+    const stateRef = db.collection(config.runCollection).doc(stateDocId(config));
+    const target = { watchedProjectId: config.watchedProjectId, environment: config.environment };
+    const seen: { start: number; end: number; began: boolean }[] = [];
+    const result = await runIngest(db, loader(), now, {
+      aggregate: async (_d, _c, w, deps) => {
+        // Another run narrowed this window meanwhile (the first time only).
+        if (seen.length === 0) {
+          await stateRef.set({ target, pending: { start: Timestamp.fromDate(w.start), end: Timestamp.fromDate(new Date(w.start.getTime() + HOUR)) } });
+        }
+        const began = await deps.writes!.beginWrites();
+        seen.push({ start: w.start.getTime(), end: w.end.getTime(), began });
+        return began ? emptyResult : { ...emptyResult, superseded: true as const };
+      },
+    });
+
+    const start = horizon.getTime() - 2 * HOUR;
+    expect(seen).toEqual([
+      { start, end: horizon.getTime(), began: false },
+      // The superseded window was neither counted nor completed: the narrowed one is claimed next, then the rest.
+      { start, end: start + HOUR, began: true },
+      { start: start + HOUR, end: horizon.getTime(), began: true },
+    ]);
+    expect(result.windows).toBe(2);
+    expect(ms((await state())?.checkpoint)).toBe(horizon.getTime());
   });
 });

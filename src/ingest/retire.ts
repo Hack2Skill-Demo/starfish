@@ -4,21 +4,26 @@
  * In production a resolved incident that fires again is reopened as `recurred`: a regression. That
  * is wrong for a demo that puts a fixed bug back on purpose, and it would look like a failed fix to
  * anything watching for one. Retiring an incident ends that cycle: the incident keeps its history and
- * is marked resolved, its incident key is removed, and a later occurrence of the same error opens a NEW
- * incident (store.ts treats a retired incident as if it were not there).
+ * is marked resolved, and a later occurrence of the same error opens a NEW incident.
  *
- * One transaction does all of it, together with the audit entry, so there is no state where the key is
- * gone but the incident is not retired, or the action happened unrecorded. It runs in the same
- * transactional world as `upsertIncident`, so a retire racing an occurrence either lands after it (the
- * occurrence is counted on this incident) or before it (the occurrence opens a new one): never lost, never
- * split.
+ * The incident key is left in place, as a tombstone (store.ts): it still names this incident and still
+ * holds the ingest windows already applied, so a window replayed after the retire counts nothing twice
+ * (#197). Deleting it lost that record: the replay opened a second incident. The store reads the key's
+ * incident as retired: an occurrence dated at or before `retiredAt` (ingest reads behind the clock)
+ * accrues onto this incident without reopening it; a later one opens a new incident and the key moves to
+ * it. That is what frees the fingerprint.
+ *
+ * One transaction does it, together with the audit entry, so the action never happens unrecorded. It
+ * writes the incident document the store reads in every upsert of this fingerprint, so a retire racing an
+ * occurrence either lands after it (the occurrence is counted on this incident) or before it (counted on
+ * this one if it happened before the retire, else on a new one): never lost, never split.
  *
  * Admin only, checked HERE from the operator record (the same `roles` firestore.rules reads), not from
  * anything the caller passes: whoever calls this (the admin API, src/adminApi.ts) must still
  * authenticate the person and hand over their uid, but cannot widen what that uid may do.
  *
- * `retired` is the flag the fast-revert watch (#9) must honour. That watch does not exist yet, so there is
- * nothing to disarm; nothing here pretends otherwise.
+ * The fast-revert watch (#9, src/agent/fastRevert.ts) honours `retired`: a retired incident never counts
+ * as having come back, so a watch on it never opens a revert and ends `clear` when its window closes.
  */
 import { Timestamp } from "firebase-admin/firestore";
 import type { Firestore } from "firebase-admin/firestore";
@@ -26,10 +31,10 @@ import type { StarfishConfig } from "../config.js";
 import { hasAdminRole, isValidUid } from "../adminAuth.js";
 import { fingerprintOf } from "./fingerprint.js";
 import { redactPii, sliceWellFormed, toWellFormed } from "./redact.js";
-import { abortIfClosed, incidentKeyId } from "./store.js";
+import { abortIfClosed } from "./store.js";
 import type { StoredIncident } from "../types.js";
 
-export type RetireConfig = Pick<StarfishConfig, "incidentCollection" | "incidentKeyCollection" | "usersCollection" | "auditCollection">;
+export type RetireConfig = Pick<StarfishConfig, "incidentCollection" | "usersCollection" | "auditCollection">;
 
 export type RetireResult =
   | { ok: true; alreadyRetired: boolean }
@@ -60,8 +65,6 @@ export async function retireIncident(
     if (data.retired === true) return { ok: true, alreadyRetired: true };
 
     const fingerprint = fingerprintOf(data.functionName, data.errorMessage, data.signalSource);
-    const keyRef = db.collection(cfg.incidentKeyCollection).doc(incidentKeyId(data.environment, fingerprint));
-    const key = await tx.get(keyRef);
     const wasOpen = data.status !== "resolved" && data.status !== "ignored";
 
     tx.update(incidentRef, {
@@ -72,8 +75,7 @@ export async function retireIncident(
       ...(wasOpen && { status: "resolved", resolvedAt: Timestamp.fromDate(now), statusChangedBy: actorUid }),
       updatedAt: Timestamp.fromDate(now),
     });
-    // Only a key that points HERE is removed: one that already moved to a newer incident is not ours.
-    if (key.exists && key.get("incidentId") === incidentId) tx.delete(keyRef);
+    // The incident key is not touched: it stays as the tombstone the store reads (see above).
 
     tx.create(db.collection(cfg.auditCollection).doc(), {
       action: "retire-incident",
