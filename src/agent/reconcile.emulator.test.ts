@@ -29,6 +29,7 @@ beforeEach(() => {
     cycleDeadlineMinutes: 60,
     maxCycleAttempts: 3,
     environment: "demo",
+    verifyCheckApp: "github-actions",
     verifyChecks: ["verify"],
     maxPrChecksPerPass: 10,
   };
@@ -68,7 +69,7 @@ function fakeGithub(prs: Record<number, Partial<PullRequestState> | Error>, chec
   };
   return { client, reads };
 }
-const success: CheckRun = { id: 1, name: "verify", status: "completed", conclusion: "success", url: "", title: "", summary: "" };
+const success: CheckRun = { id: 1, name: "verify", status: "completed", conclusion: "success", url: "", app: "github-actions", title: "", summary: "" };
 
 describe("selectPrCycles", () => {
   it("picks finished cycles that opened a PR, never checked first, then least recently checked, at most the limit", async () => {

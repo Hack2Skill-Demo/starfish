@@ -14,7 +14,7 @@ import type { NotifyRequest } from "../integrations/slack.js";
 import { testConfig } from "../testConfig.js";
 import type { IncidentStatus } from "../types.js";
 import { runAutoMergeStep, type AutoMergeDeps, type MergeClient } from "./autoMerge.js";
-import { runFastRevertStep, WATCH_SETTLE_MS, type FastRevertDeps, type RevertClient } from "./fastRevert.js";
+import { runFastRevertStep, watchSpan, type FastRevertDeps, type RevertClient } from "./fastRevert.js";
 
 if (!process.env.FIRESTORE_EMULATOR_HOST) {
   throw new Error("autoMerge.emulator.test.ts needs the Firestore emulator: run `pnpm test:emulator`");
@@ -95,10 +95,10 @@ async function seed(id: string, summary: Record<string, unknown> = proven(), ove
 }
 const cycle = async (id: string) => (await db.collection(cfg.cycleCollection).doc(id).get()).data()!;
 
-const success: CheckRun = { id: 11, name: "verify", status: "completed", conclusion: "success", url: "https://github.com/acme/demo-shop/actions/runs/1", title: "", summary: "" };
+const success: CheckRun = { id: 11, name: "verify", status: "completed", conclusion: "success", url: "https://github.com/acme/demo-shop/actions/runs/1", app: "github-actions", title: "", summary: "" };
 
 function fakeGithub(
-  opts: { pr?: Partial<PullRequestState>; checks?: CheckRun[]; mergeError?: Error; commentError?: Error; revertError?: Error; revertPr?: Partial<PullRequestState>; changed?: string[] | Error } = {}
+  opts: { pr?: Partial<PullRequestState>; readError?: Error; revertReadError?: Error; checks?: CheckRun[] | Error; mergeError?: Error; commentError?: Error; revertError?: Error; revertPr?: Partial<PullRequestState>; changed?: string[] | Error } = {}
 ) {
   const calls: string[] = [];
   const merges: { id: string; number: number; sha: string }[] = [];
@@ -106,11 +106,14 @@ function fakeGithub(
   const client: MergeClient & RevertClient = {
     readPullRequest: async (id, number) => {
       calls.push(`read ${id} #${number}`);
+      const readError = id.startsWith("revert-") ? opts.revertReadError : opts.readError;
+      if (readError) throw readError;
       const base = id.startsWith("revert-") ? { headSha: REVERT_HEAD, ...opts.revertPr } : { headSha: HEAD, ...opts.pr };
       return { number, state: "open", mergedAt: null, closedAt: null, ...base } as PullRequestState;
     },
     listCheckRuns: async (sha) => {
       calls.push(`checks ${sha.slice(0, 4)}`);
+      if (opts.checks instanceof Error) throw opts.checks;
       return opts.checks ?? [success];
     },
     filesChangedSince: async (rev) => {
@@ -243,6 +246,8 @@ describe("runAutoMergeStep: merges only what every switch and gate allows", () =
     ["a failed required check", { checks: [{ ...success, conclusion: "failure" }] }, "checks-failed"],
     ["a required check never reported, past the wait", { checks: [] }, "checks-timeout"],
     ["a head that moved since it was verified", { pr: { headSha: "d".repeat(40) } }, "head-changed"],
+    // GitHub listed fewer runs than it counts, or more than Starfish reads: never judged on part of them (#205).
+    ["check runs it cannot all read", { checks: new GithubError("too-many-check-runs", "more than 500") }, "checks-unreadable"],
   ])("refuses %s", async (_name, gh0, reason) => {
     if (reason === "checks-timeout") clock = new Date(t0.getTime() + 121 * 60_000);
     await seed("inc1_r0");
@@ -250,6 +255,15 @@ describe("runAutoMergeStep: merges only what every switch and gate allows", () =
     await runAutoMergeStep(mergeDeps(gh.client));
     expect(gh.merges).toEqual([]);
     expect((await cycle("inc1_r0")).summary.merge).toMatchObject({ state: "skipped", reason });
+  });
+
+  it("hands a pull request retargeted to another base branch to a person, and merges nothing (#186)", async () => {
+    await seed("inc1_r0");
+    const gh = fakeGithub({ readError: new GithubError("wrong-base", "not the configured base") });
+    expect(await runAutoMergeStep(mergeDeps(gh.client))).toMatchObject({ skipped: 1, errors: [] });
+    expect(gh.calls.filter((c) => c.startsWith("merge") || c.startsWith("comment"))).toEqual([]);
+    expect((await cycle("inc1_r0")).summary.merge).toMatchObject({ state: "skipped", reason: "wrong-base", escalation: "sent" });
+    expect(told[0]).toMatchObject({ path: "human", rule: "auto-merge-wrong-base" });
   });
 
   it("refuses when the base branch changed the fixed file after the fix was verified, or that cannot be told", async () => {
@@ -375,7 +389,9 @@ describe("runFastRevertStep: reverts Starfish's own merge when the incident come
     const gh = fakeGithub();
     clock = new Date(t0.getTime() + 30 * 60_000);
     expect(await runFastRevertStep(revertDeps(gh.client))).toMatchObject({ considered: 1, cleared: 0, opened: 0 });
-    clock = new Date(t0.getTime() + 60 * 60_000 + WATCH_SETTLE_MS + 1);
+    clock = new Date(watchSpan(t0.getTime(), cfg).closesAt - 1);
+    expect(await runFastRevertStep(revertDeps(gh.client))).toMatchObject({ cleared: 0 });
+    clock = new Date(watchSpan(t0.getTime(), cfg).closesAt + 1);
     expect(await runFastRevertStep(revertDeps(gh.client))).toMatchObject({ cleared: 1 });
     expect((await cycle("inc1_r0")).summary.revert.state).toBe("clear");
     expect(gh.calls).toEqual([]);
@@ -436,6 +452,36 @@ describe("runFastRevertStep: reverts Starfish's own merge when the incident come
     await runFastRevertStep(revertDeps(gh.client));
     expect(gh.merges).toEqual([]);
     expect((await cycle("inc1_r0")).summary.revert).toMatchObject({ state: "escalated", reason: "checks-failed" });
+  });
+
+  it("does not merge a revert whose check runs cannot all be read (#205)", async () => {
+    await seed("inc1_r0", proven({ merge: { state: "merged", mergeSha: MERGED }, revert: { state: "pending", mergeSha: MERGED, number: 8, headSha: REVERT_HEAD, openedAt: t0.toISOString() } }));
+    const gh = fakeGithub({ checks: new GithubError("too-many-check-runs", "more than 500") });
+    expect(await runFastRevertStep(revertDeps(gh.client))).toMatchObject({ escalated: 1, errors: [] });
+    expect(gh.merges).toEqual([]);
+    expect((await cycle("inc1_r0")).summary.revert).toMatchObject({ state: "escalated", reason: "checks-unreadable" });
+  });
+
+  it("does not merge a revert retargeted to another base branch: a person is told, once (#186)", async () => {
+    await seed("inc1_r0", proven({ merge: { state: "merged", mergeSha: MERGED }, revert: { state: "pending", mergeSha: MERGED, number: 8, headSha: REVERT_HEAD, openedAt: t0.toISOString() } }));
+    const gh = fakeGithub({ revertReadError: new GithubError("wrong-base", "not the configured base") });
+    expect(await runFastRevertStep(revertDeps(gh.client))).toMatchObject({ escalated: 1, errors: [] });
+    expect(gh.merges).toEqual([]);
+    expect((await cycle("inc1_r0")).summary.revert).toMatchObject({ state: "escalated", reason: "wrong-base", escalation: "sent" });
+  });
+
+  it("reverts for an error that kept firing past the window, read late by the pass (#201)", async () => {
+    await seed("inc1_r0", watching());
+    // Every minute from the merge to 70 minutes after it: the latest is past the window, the 13:00 hour is not.
+    const byHour: Record<string, number> = {};
+    for (let m = 0; m <= 70; m++) {
+      const k = String(Math.floor((t0.getTime() + m * 60_000) / 3_600_000));
+      byHour[k] = (byHour[k] ?? 0) + 1;
+    }
+    await db.collection(cfg.incidentCollection).doc("inc1").update({ lastOccurredAt: Timestamp.fromMillis(t0.getTime() + 70 * 60_000), occurrencesByHour: byHour });
+    clock = new Date(t0.getTime() + 75 * 60_000);
+    const gh = fakeGithub();
+    expect(await runFastRevertStep(revertDeps(gh.client))).toMatchObject({ opened: 1 });
   });
 
   it("leaves alone a watch whose merge record does not match it", async () => {

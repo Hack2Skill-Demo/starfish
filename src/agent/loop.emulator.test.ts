@@ -1292,7 +1292,8 @@ describe("runCycle: auto-merge evidence (#9)", () => {
   const SRC_FILE = "functions/src/orders/createOrder.js";
   const TEST_FILE = "functions/src/orders/createOrder.test.js";
   const HEAD = "b".repeat(40);
-  const sourceHunk = (changed: string[]) => [`--- a/${SRC_FILE}`, `+++ b/${SRC_FILE}`, `@@ -1,${3 + changed.filter((l) => !l.startsWith("+")).length} +1,${3 + changed.filter((l) => !l.startsWith("-")).length} @@`, " function get(o) {", "   const x = o;", ...changed, " }"];
+  // The whole file, so gate 1's context rule (three lines, or the file's start and end) holds.
+  const sourceHunk = (changed: string[]) => [`--- a/${SRC_FILE}`, `+++ b/${SRC_FILE}`, `@@ -1,${4 + changed.filter((l) => !l.startsWith("+")).length} +1,${4 + changed.filter((l) => !l.startsWith("-")).length} @@`, " function get(o) {", "   const x = o;", ...changed, " }", " module.exports = { get };"];
   const testFile = [
     `diff --git a/${TEST_FILE} b/${TEST_FILE}`,
     "new file mode 100644",
@@ -1302,7 +1303,7 @@ describe("runCycle: auto-merge evidence (#9)", () => {
     '+const { get } = require("./createOrder.js");',
     "+if (get(undefined) !== null) process.exit(1);",
   ];
-  const FIX = [...sourceHunk(["+  if (!x) return null;", "   return x.total;"]), ...testFile, ""].join("\n");
+  const FIX = [...sourceHunk(["+  if (x == null) return null;", "   return x.total;"]), ...testFile, ""].join("\n");
   // Correct, and tested, but not one of the allowed classes: a person merges it.
   const OTHER_FIX = [...sourceHunk(["-  return x.total;", "+  return x ? x.total : null;"]), ...testFile, ""].join("\n");
   const stackIncident: Incident = { ...incident, stackTrace: `TypeError: Cannot read properties of undefined\n    at get (/workspace/${SRC_FILE}:3:12)` };
@@ -1313,7 +1314,7 @@ describe("runCycle: auto-merge evidence (#9)", () => {
     cfgOver = { verifyCommand: `node ${TEST_FILE}`, ...cfgOver };
     return {
       ...deps(model, {}, opened),
-      load: async () => ({ subject: { incident: stackIncident, status: "new" }, files: [{ path: SRC_FILE, content: "" }], sourceDir: src, baseRevision: "rev1" }),
+      load: async () => ({ subject: { incident: stackIncident, status: "new" }, files: [{ path: SRC_FILE, content: "" }], sourceDir: src, baseRevision: "rev1", repoFiles: [SRC_FILE] }),
       openPullRequest: async (req) => {
         opened.push(req);
         return { number: 7, url: "https://example.test/pull/7", headSha: HEAD };
@@ -1362,8 +1363,24 @@ describe("runCycle: auto-merge evidence (#9)", () => {
     expect(calls.at(-1)).toMatchObject({ path: "human", rule: "auto-merge-gate1" });
   });
 
+  it("a patch whose verified files are not the files gate 1 read is handed to a person (#200)", async () => {
+    const calls: NotifyRequest[] = [];
+    const notify = async (req: NotifyRequest) => (calls.push(req), { state: "sent" as const, attempts: 1 });
+    const opened: PullRequestRequest[] = [];
+    // git wrote one more file than the headers named (as `--- test/src/x.ts` would make it): the verifier saw it.
+    const verify: LoopDeps["verify"] = async (req) => {
+      const real = await verifyPatch(req);
+      return req.patch === FIX ? { ...real, changedFiles: [...real.changedFiles, "functions/src/inventory.js"] } : real;
+    };
+    await runCycle(mergeDeps(scripted({ triage: [act], fix: [fixWithTest], review: [held] }), true, { notify, verify }, opened), key);
+    expect((await cycleDoc()).summary.merge).toMatchObject({ state: "skipped", gate1: "fail" });
+    expect(String((await cycleDoc()).summary.merge.reason)).toContain("files-differ-from-verified");
+    expect(opened[0]!.autoMerge).toBeUndefined();
+    expect(calls.at(-1)).toMatchObject({ path: "human", rule: "auto-merge-gate1" });
+  });
+
   it("records that nothing can show 'fails before' when the patch has no test", async () => {
-    const noTest = [...sourceHunk(["+  if (!x) return null;", "   return x.total;"]), ""].join("\n");
+    const noTest = [...sourceHunk(["+  if (x == null) return null;", "   return x.total;"]), ""].join("\n");
     cfgOver = { verifyCommand: "true" };
     await runCycle(mergeDeps(scripted({ triage: [act], fix: [fixOf(noTest)], review: [held] }), true), key);
     const s = (await cycleDoc()).summary;

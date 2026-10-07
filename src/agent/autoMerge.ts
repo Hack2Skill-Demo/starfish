@@ -12,8 +12,10 @@
  *   gate 2     certainty: a pure function of the cycle's run record (`certaintyGate`): a structural cause, the test
  *              FAILING before the fix and the gate PASSING after it on the exact patch, the adversarial review
  *              approving that same patch with nothing broken or flagged, and a counter-check that counted errors;
- *   the PR     still open, from `starfish/<cycle>`, its head the very commit Starfish built from the verified patch, and
- *              every named required check (`verifyChecks`) a success on that head;
+ *   the PR     still open, from `starfish/<cycle>` into the configured base branch (a retargeted PR is refused, #186),
+ *              its head the very commit Starfish built from the verified patch, and every run of every named required
+ *              check (`verifyChecks`, posted by `verifyCheckApp`, #205) a success on that head: all of them, re-runs
+ *              included (`filter=all`), and a head whose runs cannot all be read is handed to a person;
  *   evidence   posted on the pull request as one comment BEFORE the merge; a merge with no evidence does not happen.
  * Then one squash merge, with GitHub told the exact head (`sha`), so a head that moved refuses.
  *
@@ -36,7 +38,7 @@ import { OPEN_INCIDENT_STATUSES, type Incident, type IncidentStatus } from "../t
 import type { BlastRadius } from "./blastRadius.js";
 import { sanitizeEvent, type CycleConfig } from "./cycle.js";
 import { pathsFromStack } from "./pass.js";
-import { summarizeChecks } from "./reconcile.js";
+import { requiredRuns, summarizeChecks } from "./reconcile.js";
 
 // ---- Switches --------------------------------------------------------------------------------------------------
 
@@ -120,10 +122,17 @@ export function mergeRecordAtOpen(input: {
   pr: PullRequestResult;
   patchSha256: string;
   incident: Pick<Incident, "stackTrace" | "errorCode" | "errorName">;
+  /**
+   * The checkout's whole file list (`LoopSubject.repoFiles`). The stack is matched against all of it, as the pass
+   * matches it: a frame that ends like the changed file but is another file of the repository (`admin/orders/index.ts`
+   * against `orders/index.ts`) must not count, and only the full list can show the tie (#203). Empty: no frame counts.
+   */
+  repoFiles: readonly string[];
   now: Date;
 }): Record<string, string | number | boolean | null> {
   const { gate1, pr } = input;
-  const causeFrame = gate1.sourceFile !== undefined && pathsFromStack(input.incident.stackTrace, [gate1.sourceFile], [], 5).includes(gate1.sourceFile);
+  const causeFrame =
+    gate1.sourceFile !== undefined && input.repoFiles.includes(gate1.sourceFile) && pathsFromStack(input.incident.stackTrace, input.repoFiles, [], 5).includes(gate1.sourceFile);
   const head = pr.headSha !== undefined && SHA1_RE.test(pr.headSha) ? pr.headSha : null;
   const reason = !gate1.allowed ? `gate1:${gate1.problems.join(",")}` : head === null ? "head-unknown" : null;
   return {
@@ -171,8 +180,9 @@ export function mergeEvidenceText(input: EvidenceInput): string {
     "",
     "### Gate 1: low blast radius",
     "",
-    `- Class: ${codeSpan(merge.fixClass, 40)}, in one function of ${codeSpan(merge.sourceFile, 200)}`,
-    "- Hard-exclude list (auth and access control, security rules, money paths, secrets, schema, dependencies, CI config, shared packages): nothing touched",
+    `- Class: ${codeSpan(merge.fixClass, 40)}, in one hunk of ${codeSpan(merge.sourceFile, 200)} with no function or class boundary between its changed lines and at least three lines of context on each side (fewer only at the file's start or end); any other file is a new test file made only of added lines (an existing test file is never changed)`,
+    "- The files the verify gate saw the patch change are exactly the files this check read",
+    "- Hard-exclude list (auth and access control, security rules, money paths, secrets, schema, dependencies, CI config, shared packages): no path word and no changed line matched it, and no statement that decides something in the whole enclosing function (as the base revision has it) names access control, money or a secret (a word match, not a proof)",
     "",
     "### Gate 2: certainty",
     "",
@@ -187,6 +197,8 @@ export function mergeEvidenceText(input: EvidenceInput): string {
     "",
     ...(named.length > 0 ? named.map((c) => `- ${codeSpan(c.name, 100)}: ${inert(c.conclusion ?? c.status, 20)} (check run ${c.id}${c.url ? `, ${codeSpan(c.url, 200)}` : ""})`) : ["- none"]),
     "",
+    "Every run of each named check counts, re-runs included. Runs are counted only from the configured GitHub App; that tells apps apart, not workflows: every GitHub Actions workflow in this repository posts as the same app.",
+    "",
     `If this error comes back within ${input.fastRevertMinutes} minutes of the merge, Starfish opens and merges a revert of it, and tells a person.`,
     "",
     `Run: ${codeSpan(input.cycleId, 128)}`,
@@ -199,7 +211,7 @@ export function mergeEvidenceText(input: EvidenceInput): string {
 
 export type AutoMergeConfig = Pick<
   StarfishConfig,
-  "environment" | "incidentCollection" | "runCollection" | "verifyChecks" | "maxPrChecksPerPass" | "maxMergesPerDay" | "mergeCheckWaitMinutes" | "fastRevertMinutes"
+  "environment" | "incidentCollection" | "runCollection" | "verifyChecks" | "verifyCheckApp" | "maxPrChecksPerPass" | "maxMergesPerDay" | "mergeCheckWaitMinutes" | "fastRevertMinutes"
 > &
   CycleConfig;
 
@@ -322,8 +334,10 @@ export async function escalate(
 const SKIP_WORDS: Record<string, string> = {
   "checks-failed": "A required check failed on the pull request's head.",
   "checks-timeout": "The required checks did not finish in time.",
+  "checks-unreadable": "Starfish could not read every check run on the pull request's head, so a failure among them could not be ruled out.",
   "no-required-checks": "No required check is named, so nothing proves the pull request's head is green.",
   "head-changed": "The pull request's head is no longer the commit Starfish built from the verified patch.",
+  "wrong-base": "The pull request no longer targets the configured base branch, so Starfish will not merge it anywhere.",
   "base-changed-same-file": "The base branch changed the same file after the fix was verified, so the merge was never tested.",
   "base-unknown": "Starfish could not tell what changed on the base branch since the fix was verified.",
   "daily-merge-cap": "Today's auto-merge cap is reached.",
@@ -372,6 +386,15 @@ export async function runAutoMergeStep(deps: AutoMergeDeps): Promise<AutoMergeSu
     const headSha = merge.headSha;
     const now = d.now();
     const isPending = (m: Rec) => m.state === "pending";
+    // A PR retargeted to another base is refused by the client (#186): a decision for a person, not an error to retry.
+    const readPr = async (n: number) => {
+      try {
+        return await client.readPullRequest(cycle.id, n);
+      } catch (err) {
+        if (ruleOf(err) === "wrong-base") return "wrong-base" as const;
+        throw err;
+      }
+    };
 
     const skip = async (reason: string, from: (m: Rec) => boolean = isPending): Promise<"skipped" | "unchanged"> => {
       const escalation = QUIET.has(reason) ? "none" : await escalate(d, cycle, `auto-merge-${reason.split(":")[0]}`, skipSentence(reason));
@@ -385,8 +408,8 @@ export async function runAutoMergeStep(deps: AutoMergeDeps): Promise<AutoMergeSu
       if (Number.isFinite(claimedAt) && now.getTime() - claimedAt < CLAIM_STALE_MS) return "unchanged";
       const stillMerging = (m: Rec) => m.state === "merging" && m.claimedAt === merge.claimedAt;
       if (typeof number === "number") {
-        const pr = await client.readPullRequest(cycle.id, number);
-        if (pr.state === "merged" && pr.headSha === headSha && pr.mergeCommitSha) {
+        const pr = await readPr(number);
+        if (pr !== "wrong-base" && pr.state === "merged" && pr.headSha === headSha && pr.mergeCommitSha) {
           return (await recordMerged(d, cycle, merge, pr.mergeCommitSha, pr.mergedAt ?? now.toISOString(), stillMerging)) ? "merged" : "unchanged";
         }
       }
@@ -418,7 +441,8 @@ export async function runAutoMergeStep(deps: AutoMergeDeps): Promise<AutoMergeSu
       .get();
     if (!reverted.empty) return skip("incident-reverted-before");
 
-    const pr = await client.readPullRequest(cycle.id, number);
+    const pr = await readPr(number);
+    if (pr === "wrong-base") return skip("wrong-base");
     if (pr.state === "closed") return skip("pr-closed");
     if (pr.state === "merged") return skip("pr-merged-by-person");
     if (pr.headSha !== headSha) return skip("head-changed");
@@ -435,8 +459,15 @@ export async function runAutoMergeStep(deps: AutoMergeDeps): Promise<AutoMergeSu
     }
     if (typeof merge.sourceFile !== "string" || changed.includes(merge.sourceFile)) return skip("base-changed-same-file");
 
-    const runs = cfg.verifyChecks.length > 0 ? await client.listCheckRuns(headSha) : [];
-    const checks = summarizeChecks(runs, cfg.verifyChecks);
+    let runs: Awaited<ReturnType<MergeClient["listCheckRuns"]>> = [];
+    try {
+      if (cfg.verifyChecks.length > 0) runs = await client.listCheckRuns(headSha);
+    } catch (err) {
+      // Runs read only in part could hide the failure that matters (#205): a person decides, it is not retried.
+      if (ruleOf(err) === "too-many-check-runs") return skip("checks-unreadable");
+      throw err;
+    }
+    const checks = summarizeChecks(runs, cfg.verifyChecks, cfg.verifyCheckApp);
     if (checks.checks === "not-configured") return skip("no-required-checks");
     if (checks.checks === "failed") return skip("checks-failed");
     if (checks.checks !== "passed") {
@@ -465,7 +496,7 @@ export async function runAutoMergeStep(deps: AutoMergeDeps): Promise<AutoMergeSu
     }
 
     try {
-      await client.commentOnPullRequest(cycle.id, number, mergeEvidenceText({ cycleId: cycle.id, summary, checks: runs, requiredChecks: cfg.verifyChecks, headSha, fastRevertMinutes: cfg.fastRevertMinutes }));
+      await client.commentOnPullRequest(cycle.id, number, mergeEvidenceText({ cycleId: cycle.id, summary, checks: requiredRuns(runs, cfg.verifyChecks, cfg.verifyCheckApp), requiredChecks: cfg.verifyChecks, headSha, fastRevertMinutes: cfg.fastRevertMinutes }));
     } catch {
       return skipClaimed("evidence-not-posted");
     }

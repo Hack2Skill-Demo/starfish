@@ -50,7 +50,7 @@ const pr = (number: number, over: Record<string, unknown> = {}) => ({
   merged_at: null,
   closed_at: null,
   head: { ref: "starfish/inc1_r0", sha: HEAD, repo: { full_name: REPO } },
-  base: { repo: { full_name: REPO } },
+  base: { ref: "main", repo: { full_name: REPO } },
   ...over,
 });
 
@@ -129,6 +129,8 @@ describe("mergePullRequest", () => {
     await expect(client().mergePullRequest("inc1_r0", 7, HEAD, { title: "t", body: "b" })).rejects.toMatchObject({ rule: "unexpected-response" });
     pulls["7"] = () => ({ status: 200, json: pr(7, { head: { ref: "starfish/inc1_r0", sha: HEAD, repo: { full_name: "evil/fork" } } }) });
     await expect(client().mergePullRequest("inc1_r0", 7, HEAD, { title: "t", body: "b" })).rejects.toMatchObject({ rule: "wrong-repository" });
+    pulls["7"] = () => ({ status: 200, json: pr(7, { base: { ref: "production", repo: { full_name: REPO } } }) });
+    await expect(client().mergePullRequest("inc1_r0", 7, HEAD, { title: "t", body: "b" })).rejects.toMatchObject({ rule: "wrong-base" }); // retargeted (#186)
     await expect(client().mergePullRequest("inc1_r0", 7, "short", { title: "t", body: "b" })).rejects.toMatchObject({ rule: "invalid-request" });
     expect(requests.filter((r) => r.method === "PUT")).toEqual([]);
   });

@@ -347,7 +347,7 @@ describe("loadConfig: the isolated verify job", () => {
 
 describe("loadConfig: the CI-backed verify step", () => {
   beforeEach(() => {
-    for (const k of ["STARFISH_VERIFY_ISOLATION", "STARFISH_VERIFY_CHECKS"]) vi.stubEnv(k, "");
+    for (const k of ["STARFISH_VERIFY_ISOLATION", "STARFISH_VERIFY_CHECKS", "STARFISH_VERIFY_CHECK_APP"]) vi.stubEnv(k, "");
     vi.stubEnv("GOOGLE_CLOUD_PROJECT", "home-project");
   });
   afterEach(() => vi.unstubAllEnvs());
@@ -357,6 +357,11 @@ describe("loadConfig: the CI-backed verify step", () => {
     vi.stubEnv("STARFISH_VERIFY_ISOLATION", " GitHub-Actions ");
     vi.stubEnv("STARFISH_VERIFY_CHECKS", " verify , lint ,, ");
     expect(loadConfig()).toMatchObject({ verifyIsolation: "github-actions", verifyChecks: ["verify", "lint"] });
+  });
+  it("counts the named checks only from GitHub Actions unless another app is configured (#205)", () => {
+    expect(loadConfig().verifyCheckApp).toBe("github-actions");
+    vi.stubEnv("STARFISH_VERIFY_CHECK_APP", " our-ci ");
+    expect(loadConfig().verifyCheckApp).toBe("our-ci");
   });
   it("refuses a list of checks that is absurd rather than quietly dropping part of it", () => {
     vi.stubEnv("STARFISH_VERIFY_CHECKS", Array.from({ length: 21 }, (_, i) => `c${i}`).join(","));

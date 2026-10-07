@@ -30,7 +30,8 @@
  *     keyed by the cycle id so a retry after a timeout cannot open a second one; the loop itself never merges
  *     and never deploys.
  *   - AUTO-MERGE EVIDENCE (#9). Only where auto-merge could apply (`autoMergeAllowed`, dry run off), the loop runs
- *     gate 1 on the proposed patch (blastRadius.ts), and, when it passes, runs the patch's TESTS ALONE on the base
+ *     gate 1 on the proposed patch (blastRadius.ts) with the changed file's content read from the base checkout
+ *     (`readBaseFiles`), and, when it passes, runs the patch's TESTS ALONE (new test files only) on the base
  *     revision through the same verifier, so the run record shows the test failing before the fix (`summary.before`).
  *     When it opens the pull request it records the candidate (`summary.merge`); merging is the agent pass's
  *     separate step (autoMerge.ts). A candidate that fails gate 1 is handed to a person at once.
@@ -72,7 +73,9 @@ import { verifyPatch, type VerifyConfig, type VerifyRequest, type VerifyResult }
 import { causeClass, type ReconsiderPolicy } from "./reconsider.js";
 import { isIndexIncident, runIndexPath, type IndexHealWiring } from "./indexPath.js";
 import { linkFromEvent, linkIncident } from "./incidentLinks.js";
-import { assessBlastRadius, testOnlyPatch, type BlastRadius } from "./blastRadius.js";
+import { lstat, readFile, realpath } from "node:fs/promises";
+import { join } from "node:path";
+import { assessBlastRadius, judgedTheVerifiedFiles, parsePatch, testOnlyPatch, type BlastRadius } from "./blastRadius.js";
 import { mergeRecordAtOpen } from "./autoMerge.js";
 import { sha256 } from "./reviewer.js";
 
@@ -84,6 +87,11 @@ export interface LoopSubject {
   /** A checkout of the target repo at `baseRevision`, never modified. */
   sourceDir: string;
   baseRevision: string;
+  /**
+   * Every file of that checkout, as the stack trace was matched against (assemble.ts): gate 2's structural cause is
+   * judged against the same list (#203). Absent: no stack frame can tie the cause to the changed file.
+   */
+  repoFiles?: readonly string[];
 }
 
 export interface PullRequestRequest {
@@ -698,7 +706,11 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
       // ---- auto-merge evidence (#9): gate 1, then the patch's tests alone on the base revision -----------------
       let gate1: BlastRadius | undefined;
       if (await autoMergeOn()) {
-        gate1 = assessBlastRadius(fix.patch, { excludedPaths: [...cfg.patchExcludedPaths, ...cfg.autoMergeExcludedPaths] });
+        gate1 = assessBlastRadius(fix.patch, {
+          excludedPaths: [...cfg.patchExcludedPaths, ...cfg.autoMergeExcludedPaths],
+          // Gate 1 judges the whole function around the change, as the base revision has it (#202).
+          baseFiles: await readBaseFiles(loaded.sourceDir, fix.patch),
+        });
         if (gate1.allowed) {
           stop = await halted();
           if (stop) return stop;
@@ -742,6 +754,11 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
           continue;
         }
         return await handOver(factsOf(loaded), "human", `verify-${verified.rule}`, verified.reason, `verify-${verified.rule}`, "human");
+      }
+      // Gate 1 read the patch's headers; the verify gate saw what `git apply` actually wrote. Unless they are the same
+      // files, gate 1 judged a different change from the one that was verified, and it does not hold (#200).
+      if (gate1?.allowed && !judgedTheVerifiedFiles(gate1, verified.changedFiles)) {
+        gate1 = { ...gate1, allowed: false, problems: [...gate1.problems, "files-differ-from-verified"] };
       }
 
       let review: { verdict: ReviewVerdict; attacks: Attack[] } | undefined;
@@ -830,7 +847,7 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
       });
       // The auto-merge candidate (#9): pending for the pass's merge step, or handed to a person now when gate 1 failed.
       if (gate1) {
-        const record = mergeRecordAtOpen({ gate1, pr, patchSha256: verified.patchSha256, incident: loaded.subject.incident, now: deps.now() });
+        const record = mergeRecordAtOpen({ gate1, pr, patchSha256: verified.patchSha256, incident: loaded.subject.incident, repoFiles: loaded.repoFiles ?? [], now: deps.now() });
         const pending = record.state === "pending";
         await note({
           stage: "merge",
@@ -851,6 +868,41 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
   } finally {
     keeper.stop();
   }
+}
+
+/** The most files, and the largest file, read for gate 1: a patch gate 1 can pass changes one source file. */
+const MAX_BASE_FILES = 4;
+const MAX_BASE_FILE_BYTES = 1024 * 1024;
+
+/**
+ * The base revision's content of the existing files a patch changes, read from the cycle's checkout (#202): what gate 1
+ * judges the enclosing function on. A file is read only when it is a regular file reached with no symbolic link on the
+ * way, inside the checkout, within the size cap, and text; anything else is left out, and gate 1 then refuses (no base
+ * is not a pass). Never throws.
+ */
+export async function readBaseFiles(sourceDir: string, patch: string): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  const paths = [...new Set((parsePatch(patch) ?? []).flatMap((f) => (f.oldPath === null ? [] : [f.oldPath])))].slice(0, MAX_BASE_FILES);
+  let root: string;
+  try {
+    root = await realpath(sourceDir);
+  } catch {
+    return out;
+  }
+  for (const rel of paths) {
+    try {
+      // parsePatch refuses `.`, `..` and empty segments; the real path must also be exactly the joined one (no link).
+      const full = join(root, rel);
+      if ((await realpath(full)) !== full) continue;
+      const st = await lstat(full);
+      if (!st.isFile() || st.size > MAX_BASE_FILE_BYTES) continue;
+      const content = await readFile(full, "utf8");
+      if (!content.includes("\0")) out.set(rel, content);
+    } catch {
+      // Missing or unreadable: left out, and gate 1 refuses.
+    }
+  }
+  return out;
 }
 
 /**

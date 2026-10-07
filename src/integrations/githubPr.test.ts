@@ -45,7 +45,8 @@ let api: {
   repo: () => Reply;
   list: (n: number) => Reply;
   create: (n: number) => Reply;
-  checks?: (commit: string) => Reply;
+  /** One page of a commit's check runs; `filter` is the query's (GitHub's default, `latest`, when absent). */
+  checks?: (commit: string, page: number, filter: string | null) => Reply;
   annotations?: (id: string) => Reply;
   issues?: () => Reply;
   issueCreate?: () => Reply;
@@ -109,7 +110,7 @@ beforeAll(async () => {
       else if (req.method === "GET" && url.pathname.startsWith(`/repos/${REPO}/pulls/`) && api.pull) out = api.pull(url.pathname.split("/")[4]!);
       else if (req.method === "GET" && url.pathname === `/repos/${REPO}/issues` && api.issues) out = api.issues();
       else if (req.method === "POST" && url.pathname === `/repos/${REPO}/issues` && api.issueCreate) out = api.issueCreate();
-      else if (req.method === "GET" && url.pathname.startsWith(`/repos/${REPO}/commits/`) && url.pathname.endsWith("/check-runs") && api.checks) out = api.checks(url.pathname.split("/")[4]!);
+      else if (req.method === "GET" && url.pathname.startsWith(`/repos/${REPO}/commits/`) && url.pathname.endsWith("/check-runs") && api.checks) out = api.checks(url.pathname.split("/")[4]!, Number(url.searchParams.get("page") ?? "1"), url.searchParams.get("filter"));
       else if (req.method === "GET" && url.pathname.startsWith(`/repos/${REPO}/check-runs/`) && api.annotations) out = api.annotations(url.pathname.split("/")[4]!);
       else if (req.method === "DELETE" && url.pathname.startsWith(`/repos/${REPO}/git/refs/heads/`)) {
         // Like GitHub: the branch is really gone afterwards.
@@ -542,7 +543,7 @@ describe("createGithubClient: the CI-backed verify step", () => {
       json: {
         total_count: 2,
         check_runs: [
-          { id: 11, name: "verify", status: "completed", conclusion: "success", html_url: "https://github.com/acme/shop/runs/11", output: { title: "ok", summary: `token ${TOKEN} ${"s".repeat(2000)}` } },
+          { id: 11, name: "verify", status: "completed", conclusion: "success", html_url: "https://github.com/acme/shop/runs/11", app: { slug: "github-actions" }, output: { title: "ok", summary: `token ${TOKEN} ${"s".repeat(2000)}` } },
           { id: 12, name: "lint", status: "in_progress", conclusion: null, html_url: "https://github.com/acme/shop/runs/12", output: null },
           { id: "nope", name: "bad" },
           "junk",
@@ -551,10 +552,36 @@ describe("createGithubClient: the CI-backed verify step", () => {
       },
     });
     const runs = await client().listCheckRuns(commit);
-    expect(runs.map((r) => [r.id, r.name, r.status, r.conclusion])).toEqual([[11, "verify", "completed", "success"], [12, "lint", "in_progress", null]]);
+    expect(runs.map((r) => [r.id, r.name, r.status, r.conclusion, r.app])).toEqual([[11, "verify", "completed", "success", "github-actions"], [12, "lint", "in_progress", null, ""]]);
     expect(runs[0]!.summary.length).toBeLessThanOrEqual(400);
     expect(JSON.stringify(runs)).not.toContain(TOKEN);
-    expect(requests.at(-1)!.path).toBe(`/repos/${REPO}/commits/${commit}/check-runs?per_page=100`);
+    expect(requests.at(-1)!.path).toBe(`/repos/${REPO}/commits/${commit}/check-runs?filter=all&per_page=100&page=1`);
+  });
+
+  it("lists EVERY run, not only the latest of each check: a failure re-run to green is still seen (#205)", async () => {
+    const commit = "d".repeat(40);
+    const run = (id: number, conclusion: string) => ({ id, name: "verify", status: "completed", conclusion, html_url: "", app: { slug: "github-actions" }, output: null });
+    // Like GitHub: the default filter (`latest`) hides the earlier, failed run of the same check.
+    api.checks = (_sha, _page, filter) => ({ status: 200, json: filter === "all" ? { total_count: 2, check_runs: [run(2, "success"), run(1, "failure")] } : { total_count: 1, check_runs: [run(2, "success")] } });
+    expect((await client().listCheckRuns(commit)).map((r) => r.conclusion)).toEqual(["success", "failure"]);
+  });
+
+  it("reads every page, and fails closed when the runs cannot all be read (#205)", async () => {
+    const commit = "d".repeat(40);
+    const page = (from: number, n: number) => Array.from({ length: n }, (_, k) => ({ id: from + k, name: `c${from + k}`, status: "completed", conclusion: "success", html_url: "", app: { slug: "github-actions" }, output: null }));
+    api.checks = (_sha, p) => ({ status: 200, json: { total_count: 230, check_runs: p === 1 ? page(1, 100) : p === 2 ? page(101, 100) : p === 3 ? page(201, 30) : [] } });
+    const before = requests.length;
+    expect(await client().listCheckRuns(commit)).toHaveLength(230);
+    expect(requests.slice(before).map((r) => r.path.replace(/^.*check-runs/, ""))).toEqual(["?filter=all&per_page=100&page=1", "?filter=all&per_page=100&page=2", "?filter=all&per_page=100&page=3"]);
+    // Exactly a full page, and GitHub's count says that is all: no needless extra read.
+    api.checks = () => ({ status: 200, json: { total_count: 100, check_runs: page(1, 100) } });
+    expect(await client().listCheckRuns(commit)).toHaveLength(100);
+    // More pages than the bound: never judged on the part read.
+    api.checks = (_sha, p) => ({ status: 200, json: { total_count: 900, check_runs: page(p * 100, 100) } });
+    await expect(client().listCheckRuns(commit)).rejects.toMatchObject({ rule: "too-many-check-runs" });
+    // Fewer runs than GitHub's own count (a page that came back short): not judged either.
+    api.checks = () => ({ status: 200, json: { total_count: 7, check_runs: page(1, 3) } });
+    await expect(client().listCheckRuns(commit)).rejects.toMatchObject({ rule: "too-many-check-runs" });
   });
 
   it("refuses a ref that is not a full commit id, and reports what the API cannot give", async () => {
@@ -868,6 +895,13 @@ describe("createGithubClient: reading a pull request back (#17)", () => {
     ]) {
       api.pull = () => ({ status: 200, json: bad });
       await expect(client().readPullRequest("inc1_r0", 7), JSON.stringify(bad)).rejects.toBeInstanceOf(GithubError);
+    }
+  });
+
+  it("refuses a pull request retargeted to another base branch, or one that names none (#186)", async () => {
+    for (const base of [{ ref: "production", repo: { full_name: REPO } }, { repo: { full_name: REPO } }]) {
+      api.pull = () => ({ status: 200, json: pull({ base }) });
+      await expect(client().readPullRequest("inc1_r0", 7)).rejects.toMatchObject({ rule: "wrong-base" });
     }
   });
 

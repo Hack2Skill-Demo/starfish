@@ -105,14 +105,20 @@ describe("certaintyGate: gate 2 over the run record", () => {
 
 describe("mergeRecordAtOpen", () => {
   const SRC = "functions/src/orders/createOrder.ts";
-  const patch = `--- a/${SRC}\n+++ b/${SRC}\n@@ -1,3 +1,4 @@\n   const o = get(id);\n+  if (!o) return null;\n   return o;\n }\n`;
-  const gate1 = assessBlastRadius(patch, { excludedPaths: [] });
+  /** A guard in a whole three-line file, judged with that file as its base. */
+  const guarded = (path: string) =>
+    assessBlastRadius(`--- a/${path}\n+++ b/${path}\n@@ -1,3 +1,4 @@\n   const o = get(id);\n+  if (o == null) return null;\n   return o;\n }\n`, {
+      excludedPaths: [],
+      baseFiles: new Map([[path, "  const o = get(id);\n  return o;\n}\n"]]),
+    });
+  const gate1 = guarded(SRC);
   const now = new Date("2026-10-06T12:00:00.000Z");
   const stack = "Error: x\n    at createOrder (/workspace/lib/orders/createOrder.js:12:5)";
+  const repoFiles = [SRC, "functions/src/orders/createOrder.test.ts", "functions/src/index.ts"];
 
   it("is a pending candidate when gate 1 passed and the head is known, with the stack frame tying the cause to the file", () => {
     expect(gate1.allowed).toBe(true);
-    expect(mergeRecordAtOpen({ gate1, pr: { number: 7, url: "u", headSha: HEAD }, patchSha256: P, incident: { stackTrace: stack }, now })).toEqual({
+    expect(mergeRecordAtOpen({ gate1, pr: { number: 7, url: "u", headSha: HEAD }, patchSha256: P, incident: { stackTrace: stack }, repoFiles, now })).toEqual({
       state: "pending",
       number: 7,
       patchSha256: P,
@@ -127,22 +133,36 @@ describe("mergeRecordAtOpen", () => {
   });
 
   it("records no structural cause when the stack names another file, or there is none", () => {
-    expect(mergeRecordAtOpen({ gate1, pr: { number: 7, url: "u", headSha: HEAD }, patchSha256: P, incident: { stackTrace: "at other (/workspace/lib/x/other.js:1:1)" }, now }).causeFrame).toBe(false);
-    expect(mergeRecordAtOpen({ gate1, pr: { number: 7, url: "u", headSha: HEAD }, patchSha256: P, incident: {}, now }).causeFrame).toBe(false);
+    expect(mergeRecordAtOpen({ gate1, pr: { number: 7, url: "u", headSha: HEAD }, patchSha256: P, incident: { stackTrace: "at other (/workspace/lib/x/other.js:1:1)" }, repoFiles, now }).causeFrame).toBe(false);
+    expect(mergeRecordAtOpen({ gate1, pr: { number: 7, url: "u", headSha: HEAD }, patchSha256: P, incident: {}, repoFiles, now }).causeFrame).toBe(false);
+  });
+
+  it("matches the frame against the checkout's whole file list: a frame of another file with the same tail is not the changed file (#203)", () => {
+    const changed = "functions/src/orders/index.ts";
+    const other = "functions/src/admin/orders/index.ts";
+    const g = guarded(changed);
+    expect(g.allowed).toBe(true);
+    const at = (frame: string, files: string[]) =>
+      mergeRecordAtOpen({ gate1: g, pr: { number: 7, url: "u", headSha: HEAD }, patchSha256: P, incident: { stackTrace: `Error: x\n    at h (${frame}:12:20)` }, repoFiles: files, now }).causeFrame;
+    expect(at("/workspace/lib/admin/orders/index.js", [changed, other])).toBe(false);
+    expect(at("/workspace/lib/orders/index.js", [changed, other])).toBe(false); // the same tail as both: a tie
+    expect(at("/workspace/functions/lib/orders/index.js", [changed, other])).toBe(true);
+    // Without the checkout's list nothing ties the frame to the file.
+    expect(at("/workspace/functions/lib/orders/index.js", [])).toBe(false);
   });
 
   it("is skipped when gate 1 failed, or when the opener cannot vouch for the head", () => {
     const bad = assessBlastRadius(`--- a/package.json\n+++ b/package.json\n@@ -1 +1 @@\n-a\n+b\n`, { excludedPaths: [] });
-    expect(mergeRecordAtOpen({ gate1: bad, pr: { number: 7, url: "u", headSha: HEAD }, patchSha256: P, incident: {}, now })).toMatchObject({ state: "skipped", gate1: "fail" });
-    expect(mergeRecordAtOpen({ gate1, pr: { number: 7, url: "u" }, patchSha256: P, incident: {}, now })).toMatchObject({ state: "skipped", reason: "head-unknown", headSha: null });
-    expect(mergeRecordAtOpen({ gate1, pr: { number: 7, url: "u", headSha: "not-a-sha" }, patchSha256: P, incident: {}, now })).toMatchObject({ state: "skipped", reason: "head-unknown" });
+    expect(mergeRecordAtOpen({ gate1: bad, pr: { number: 7, url: "u", headSha: HEAD }, patchSha256: P, incident: {}, repoFiles, now })).toMatchObject({ state: "skipped", gate1: "fail" });
+    expect(mergeRecordAtOpen({ gate1, pr: { number: 7, url: "u" }, patchSha256: P, incident: {}, repoFiles, now })).toMatchObject({ state: "skipped", reason: "head-unknown", headSha: null });
+    expect(mergeRecordAtOpen({ gate1, pr: { number: 7, url: "u", headSha: "not-a-sha" }, patchSha256: P, incident: {}, repoFiles, now })).toMatchObject({ state: "skipped", reason: "head-unknown" });
   });
 });
 
 describe("mergeEvidenceText", () => {
   const checks = [
-    { id: 11, name: "verify", status: "completed", conclusion: "success", url: "https://github.com/acme/demo-shop/actions/runs/1", title: "", summary: "" },
-    { id: 12, name: "unrelated", status: "completed", conclusion: "failure", url: "", title: "", summary: "" },
+    { id: 11, name: "verify", status: "completed", conclusion: "success", url: "https://github.com/acme/demo-shop/actions/runs/1", app: "github-actions", title: "", summary: "" },
+    { id: 12, name: "unrelated", status: "completed", conclusion: "failure", url: "", app: "github-actions", title: "", summary: "" },
   ];
 
   it("states every gate's evidence, the CI run on the head, and the fast-revert promise", () => {
@@ -151,6 +171,13 @@ describe("mergeEvidenceText", () => {
       expect(text).toContain(s);
     }
     expect(text).not.toContain("unrelated"); // only the named checks are evidence
+  });
+
+  it("claims no more than gate 1 and the checks hold: tests only as new files, and an app is not a workflow (#204, #205)", () => {
+    const text = mergeEvidenceText({ cycleId: "inc1_r0", summary: provenSummary(), checks, requiredChecks: ["verify"], headSha: HEAD, fastRevertMinutes: 60 });
+    expect(text).toContain("an existing test file is never changed");
+    expect(text).not.toContain("only gained whole new tests");
+    expect(text).toContain("tells apps apart, not workflows");
   });
 
   it("keeps model text inert and secrets out", () => {

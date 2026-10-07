@@ -5,7 +5,7 @@
 import { Timestamp } from "firebase-admin/firestore";
 import { describe, expect, it } from "vitest";
 import { hourBucketKey } from "../ingest/buckets.js";
-import { recurredAfterMerge } from "./fastRevert.js";
+import { recurredAfterMerge, watchSpan } from "./fastRevert.js";
 
 const cfg = { fastRevertMinutes: 60, fastRevertGraceMinutes: 10 };
 const merged = Date.parse("2026-10-06T12:00:00.000Z");
@@ -42,6 +42,41 @@ describe("recurredAfterMerge", () => {
     const straddling = hourBucketKey(merged); // 12:00-13:00 starts before the grace ends
     expect(recurredAfterMerge({ lastOccurredAt: at(400), occurrencesByHour: { [straddling]: 3 } }, watch, wide)).toBe(false);
     expect(recurredAfterMerge({ lastOccurredAt: at(400), occurrencesByHour: { [inside]: 0 } }, watch, wide)).toBe(false);
+  });
+
+  /** One occurrence a minute from `from` to `to` (minutes from the merge), counted by the hour as the store does. */
+  const firing = (mergedAtMs: number, from: number, to: number) => {
+    const byHour: Record<string, number> = {};
+    for (let t = from; t <= to; t++) {
+      const k = hourBucketKey(mergedAtMs + t * 60_000);
+      byHour[k] = (byHour[k] ?? 0) + 1;
+    }
+    return { lastOccurredAt: Timestamp.fromMillis(mergedAtMs + to * 60_000), occurrencesByHour: byHour };
+  };
+
+  it("sees an error that keeps firing past the window, however late the pass reads it (#201)", () => {
+    // Merged at 10:35; the error never stopped. The pass reads it at 11:43, the last occurrence at 11:38: past the window.
+    const at1035 = Date.parse("2026-10-06T10:35:00.000Z");
+    expect(recurredAfterMerge(firing(at1035, -60, 63), { mergedAtMs: at1035, recurrence: 0 }, cfg)).toBe(true);
+    expect(recurredAfterMerge(firing(at1035, -60, 300), { mergedAtMs: at1035, recurrence: 0 }, cfg)).toBe(true);
+    // Merged at 10:55: no hour starts inside the window (11:05, 11:55]; the first hour after it still counts.
+    const at1055 = Date.parse("2026-10-06T10:55:00.000Z");
+    expect(recurredAfterMerge(firing(at1055, -60, 75), { mergedAtMs: at1055, recurrence: 0 }, cfg)).toBe(true);
+  });
+
+  it("never counts an occurrence from before the merge or from the grace, however late it was ingested (#201)", () => {
+    const at1035 = Date.parse("2026-10-06T10:35:00.000Z");
+    expect(recurredAfterMerge(firing(at1035, -90, -1), { mergedAtMs: at1035, recurrence: 0 }, cfg)).toBe(false);
+    expect(recurredAfterMerge(firing(at1035, -90, 10), { mergedAtMs: at1035, recurrence: 0 }, cfg)).toBe(false);
+    // An hour that starts during the grace is not after it.
+    const at1055 = Date.parse("2026-10-06T10:55:00.000Z");
+    expect(recurredAfterMerge(firing(at1055, 2, 9), { mergedAtMs: at1055, recurrence: 0 }, cfg)).toBe(false);
+  });
+
+  it("keeps the watch open until the last counted hour has ended and been ingested", () => {
+    expect(watchSpan(merged, cfg)).toEqual({ start: merged + 10 * 60_000, end: merged + 60 * 60_000, reach: merged + 60 * 60_000, closesAt: merged + 180 * 60_000 });
+    const at1055 = Date.parse("2026-10-06T10:55:00.000Z");
+    expect(watchSpan(at1055, cfg).reach).toBe(Date.parse("2026-10-06T12:00:00.000Z"));
   });
 
   it("never fires for a retired incident, a window shorter than the grace, or a missing time", () => {
