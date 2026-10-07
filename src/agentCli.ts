@@ -202,7 +202,7 @@ try {
   if (indexHeal) {
     try {
       const obs = await observeIndexHeals({ db, config: cfg, probe: indexProbe, now: () => new Date() });
-      console.log(`agent: ${obs.considered} index heal(s) under observation, ${obs.waiting} still in their window`);
+      console.log(`agent: ${obs.considered} index heal(s) under observation, ${obs.waiting} still in their window, ${obs.uncovered} waiting for ingest to read through theirs`);
       for (const d of obs.decided) console.log(`  ${d.cycleId}: index heal ${d.runtime}`);
       for (const e of obs.errors) console.error(`  ${e.cycleId}: index heal not decided: ${e.message}`);
     } catch (err) {

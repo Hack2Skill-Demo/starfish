@@ -311,6 +311,28 @@ async function narrowPending(db: Firestore, refs: StateRefs, window: IngestWindo
   }));
 }
 
+/**
+ * How far ingest has read this target's logs: every window up to the returned time is committed to the store. Null when
+ * that is not known (no state, another target's state, an unreadable checkpoint), never "now" or zero. Read-only; for
+ * a check that must not take a stalled ingest for a quiet incident (#188). Reads the target's own state document, else
+ * the legacy single one when it was written for this target, as `readState` does. A failed read throws.
+ */
+export async function readIngestCheckpoint(
+  db: Firestore,
+  runCollection: string,
+  target: RunState["target"]
+): Promise<Date | null> {
+  const runs = db.collection(runCollection);
+  const [own, legacy] = await Promise.all([runs.doc(stateDocId(target)).get(), runs.doc(LEGACY_STATE_DOC).get()]);
+  const snap = own.exists ? own : legacy.exists && belongsTo(legacy, target) ? legacy : null;
+  if (snap === null) return null;
+  try {
+    return parseState(snap, target).checkpoint ?? null;
+  } catch {
+    return null;
+  }
+}
+
 /** True when a state document was written for `target`. */
 function belongsTo(snap: DocumentSnapshot, target: RunState["target"]): boolean {
   const saved = (snap.data() as Record<string, unknown> | undefined)?.target as Partial<RunState["target"]> | undefined;

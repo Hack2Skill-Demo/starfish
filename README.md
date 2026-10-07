@@ -405,8 +405,9 @@ evidence pull request adds the same entry to the repository's index file (`STARF
 opener as a code fix: the diff is computed and self-checked in code (`src/indexheal/indexFilePatch.ts`; every existing
 entry kept) and the text is a fixed template, no model. Merging it is left to a person. After the pass, the job checks
 earlier heals (`src/indexheal/observe.ts`): **healed** only when no occurrence was recorded since READY through
-`STARFISH_INDEX_OBSERVE_MINUTES` (plus the ingest lag) and the query still passes at the end; otherwise recurred,
-query-failing or unverified. Starfish does not measure the traffic in that window (the replayed query stands in for
+`STARFISH_INDEX_OBSERVE_MINUTES` (plus the ingest lag), ingest's checkpoint shows it read the logs through that window
+(a stalled ingest records no occurrences either, so until it has, the heal keeps observing, and a day later it is
+unverified), and the query still passes at the end; otherwise recurred, query-failing or unverified. Starfish does not measure the traffic in that window (the replayed query stands in for
 it), and it never resolves the incident itself. Runs and the incident page show the index stage and its runtime state.
 Refusals, the daily cap, a failed build, a query still failing after READY, and an index file it cannot extend go to a
 person (Slack when configured). **Never run:** none of the Admin REST calls, the probe's Firestore query or a real
