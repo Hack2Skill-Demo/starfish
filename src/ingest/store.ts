@@ -34,9 +34,10 @@
  * A RETIRED incident (retire.ts) keeps its key as a tombstone: the key still names it and still holds
  * the windows it applied, so a window replayed after the retire is still a "duplicate". Occurrences
  * dated at or before `retiredAt` (ingest reads behind the clock, so a batch can hold some) are the
- * failure that was retired: they accrue onto the retired incident, which stays closed. Anything later
- * opens a NEW incident (never a `recurred` one) and the key moves to it. No lookup by query ever
- * returns a retired incident.
+ * failure that was retired: while the key still names the retired incident they accrue onto it, and it
+ * stays closed. Anything later opens a NEW incident (never a `recurred` one) and the key moves to it;
+ * windows are read in order, so an earlier occurrence arriving after that would have to be later than
+ * the ingest lag allows for. No lookup by query ever returns a retired incident.
  *
  * Incidents written before keys existed have none; the first upsert finds them
  * by query, as before, and writes the key that pins them from then on.
