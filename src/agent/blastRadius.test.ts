@@ -73,6 +73,24 @@ describe("parsePatch", () => {
   });
 });
 
+describe("assessBlastRadius: a default or a field write that changes what the code does is not a fix class", () => {
+  it.each([
+    ["`?? <literal>` that swallows the rest of an expression", ["  const item = get(id);", "-  const level = item.count + extra;", "+  const level = item.count ?? 0 + extra;", "   return level;"]],
+    ["`?? <literal>` that swallows a comparison", ["  const n = count(id);", "-  if (n > limit) return n;", "+  if (n ?? 0 > limit) return n;", "   return 0;"]],
+    ["a non-null default inside a condition", ["  const item = get(id);", "-  if (item.hidden) return level;", "+  if (item.hidden ?? true) return level;", "   return 0;"]],
+    ["a non-null default behind a negation", ["  const item = get(id);", "-  const shown = !item.hidden;", "+  const shown = !(item.hidden ?? false);", "   return shown;"]],
+    ["a field written only when a call returns something (the call runs twice)", ["  await ref.set({", "    total: data.total,", "-    number: nextNumber(),", "+    ...(nextNumber() !== undefined && { number: nextNumber() }),", "  });"]],
+    ["a field skipped when null (an explicit null meant to clear it)", ["  await ref.set({", "    total: data.total,", "-    note: data.note,", "+    ...(data.note != null && { note: data.note }),", "  });"]],
+  ])("refuses %s", (_name, body) => {
+    expect(gate(diff(SRC, body as string[]))).toMatchObject({ allowed: false });
+  });
+
+  it("still allows a default that ends its expression, and a null default in a condition", () => {
+    expect(gate(diff(SRC, ["  const o = get(id);", "-  const n = f(o.items.length, 1);", "+  const n = f(o.items?.length ?? 0, 1);", "   return n;"])).allowed).toBe(true);
+    expect(gate(diff(SRC, ["  const o = get(id);", "-  if (o.items.length) return o;", "+  if (o.items?.length ?? null) return o;", "   return null;"])).allowed).toBe(true);
+  });
+});
+
 describe("assessBlastRadius: the allowed classes", () => {
   it.each([
     ["an early return when a value is missing", guard, "null-guard"],

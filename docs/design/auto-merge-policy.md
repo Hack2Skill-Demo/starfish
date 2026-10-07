@@ -67,9 +67,10 @@ changed block one class: *null guard* (an early `return;`, `return null`, `retur
 `throw` when a value is null or undefined, said explicitly: `x == null`, `x === null`,
 `x === undefined`, `x == undefined`, `typeof x === "undefined"`, or `||` of those; never `!x`, which
 is also true for 0, `""`, `false` and `NaN`, and never `return true` or another value, which is a
-change to what the function decides; or `?.`/`?? <literal>` added to an otherwise unchanged line),
+change to what the function decides; or `?.`/`?? <literal>` added to an otherwise unchanged line, the
+literal ending its expression (not `a ?? 0 + b`) and, inside a condition, only `null`/`undefined`),
 *missing `await`* (`await ` added to an otherwise unchanged call), *Firestore `undefined` field*
-(`key: v` becomes `...(v !== undefined && { key: v })` or `key: v ?? null`). The hard-exclude list
+(`key: v` becomes `...(v !== undefined && { key: v })` or `key: v ?? null`, `v` a plain reference, never a call). The hard-exclude list
 matches path words (access control includes owner, guard, policy, App Check, verify and can) and
 changed lines: auth and access control, security rules, money paths, secrets and crypto, schema,
 dependencies and lockfiles (and any import or require), CI and deploy config, shared packages, plus

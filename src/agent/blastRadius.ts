@@ -550,7 +550,13 @@ function isAddedGuard(added: readonly string[]): boolean {
 }
 
 const OPTIONAL_RE = /\?\.(?=[[(])|\?\./g;
-const NULLISH_RE = new RegExp(String.raw`\s*\?\?\s*${LITERAL}`, "g");
+// The literal must end its expression: `??` binds looser than arithmetic and comparison, so `a ?? 0 + b` is `a ?? (0 + b)`
+// and would drop `b` while reading like a default.
+const NULLISH_RE = new RegExp(String.raw`\s*\?\?\s*${LITERAL}(?=\s*(?:[)\],;}]|$))`, "g");
+// A default inside a decision (`if`/`while`, a ternary's test, `&&`/`||`, a negation) changes which way it goes unless
+// it is null or undefined: `if (x.hidden ?? true)` takes the branch for a missing value (#202).
+const DECIDES_RE = /\b(?:if|while)\s*\(|&&|\|\||!|\?(?![?.])/;
+const NON_NULL_DEFAULT_RE = new RegExp(String.raw`\?\?\s*(?!(?:null|undefined)\b)${LITERAL}`);
 const stripOptional = (s: string) => s.replace(/\?\.(?=[[(])/g, "").replace(/\?\./g, ".").replace(NULLISH_RE, "");
 const markers = (s: string) => count(s, OPTIONAL_RE) + count(s, /\?\?/g);
 
@@ -559,6 +565,7 @@ function isOptionalChaining(removed: string, added: string): boolean {
   if (markers(added) <= markers(removed)) return false;
   // Every `??` in the added line must be followed by a literal: one followed by an expression could call anything.
   if (count(added, /\?\?/g) !== count(added, NULLISH_RE)) return false;
+  if (DECIDES_RE.test(added.replace(/\?\?|\?\./g, "")) && NON_NULL_DEFAULT_RE.test(added)) return false;
   return norm(stripOptional(added)) === norm(stripOptional(removed)) && norm(added) !== norm(removed);
 }
 
@@ -579,7 +586,8 @@ function isAddedAwait(removed: string, added: string): boolean {
 
 const KEY = String.raw`[A-Za-z_$][\w$]*`;
 const FIELD_RE = new RegExp(String.raw`^(${KEY})\s*(?::\s*(.+?))?\s*,?$`);
-const SPREAD_RE = new RegExp(String.raw`^\.\.\.\(\s*(.+?)\s*!==?\s*(?:undefined|null)\s*&&\s*\{\s*(${KEY})\s*(?::\s*(.+?))?\s*\}\s*\)\s*,?$`);
+const SPREAD_RE = new RegExp(String.raw`^\.\.\.\(\s*(.+?)\s*!==\s*undefined\s*&&\s*\{\s*(${KEY})\s*(?::\s*(.+?))?\s*\}\s*\)\s*,?$`);
+const PLAIN_REF_RE = new RegExp(String.raw`^${REF}$`);
 const COALESCE_RE = new RegExp(String.raw`^(${KEY})\s*:\s*(.+?)\s*\?\?\s*null\s*,?$`);
 
 /** `key: value` written only when defined (`...(value !== undefined && { key: value })`) or as `value ?? null`. */
@@ -589,6 +597,9 @@ function isUndefinedField(removed: string, added: string): boolean {
   const key = r[1]!;
   const value = norm(r[2] ?? key); // shorthand `key,` is `key: key`
   if (/[,;]$/.test(value) || value.includes("=>")) return false;
+  // A plain reference only: a call would run twice in the spread form (the value checked is not the value written),
+  // and `!= null` would also drop an explicit null meant to clear the field.
+  if (!PLAIN_REF_RE.test(value)) return false;
   const s = SPREAD_RE.exec(norm(added));
   if (s) return norm(s[1]!) === value && s[2] === key && norm(s[3] ?? key) === value;
   const c = COALESCE_RE.exec(norm(added));
