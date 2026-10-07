@@ -31,8 +31,12 @@
  *     so the transaction sees `resolved` and takes the recurrence transition,
  *     exactly once: any later transaction sees `recurred`;
  *   - hourly buckets are merged from a read no other writer can slip past.
- * A RETIRED incident (retire.ts) is invisible to all of this: its key is removed and no lookup returns it,
- * so the same error firing again opens a new incident rather than a `recurred` one.
+ * A RETIRED incident (retire.ts) keeps its key as a tombstone: the key still names it and still holds
+ * the windows it applied, so a window replayed after the retire is still a "duplicate". Occurrences
+ * dated at or before `retiredAt` (ingest reads behind the clock, so a batch can hold some) are the
+ * failure that was retired: they accrue onto the retired incident, which stays closed. Anything later
+ * opens a NEW incident (never a `recurred` one) and the key moves to it. No lookup by query ever
+ * returns a retired incident.
  *
  * Incidents written before keys existed have none; the first upsert finds them
  * by query, as before, and writes the key that pins them from then on.
@@ -367,10 +371,15 @@ async function upsertInTransaction(
   // A window this fingerprint already took is a replay: write nothing, count nothing.
   if (input.windowId !== undefined && applied.includes(input.windowId)) return "duplicate";
   const keyed = await readKeyedIncident(db, tx, store, keySnap, fingerprint);
-  // The key names a document that still holds this fingerprint: it decides.
+  // A key that names a retired incident is a tombstone (retire.ts): the fingerprint was freed, so there
+  // is no open incident to look for, and the lookup below must not adopt an older document either.
+  const tombstone = keyed !== null && isRetired(keyed) ? keyed : null;
+  // The key names a live document that still holds this fingerprint: it decides.
   // Otherwise (no key yet, or a stale one) fall back to the lookup that
   // predates keys, so incidents stored before them are adopted, not forked.
-  const target = keyed ?? (await findUnkeyedIncident(db, tx, store, input.environment, fingerprint));
+  const target = tombstone
+    ? null
+    : (keyed ?? (await findUnkeyedIncident(db, tx, store, input.environment, fingerprint)));
 
   // Written when the pointer moves, and whenever a window must be recorded; an
   // unchanged key with nothing to record is left alone (no write for nothing).
@@ -388,6 +397,19 @@ async function upsertInTransaction(
     };
     tx.set(keyRef, key);
   };
+
+  if (tombstone) {
+    const retired = tombstone.data() as StoredIncident;
+    const retiredAtMs = tsMillis(retired.retiredAt);
+    // Logs are read with a lag, so a batch can hold occurrences from BEFORE the retire. They are the
+    // failure that was retired, not a new one: count them on the retired incident, which stays closed
+    // (status, triage and recurrence untouched), as the resolved path below does for a resolution.
+    if (retiredAtMs != null && input.lastOccurredAt.getTime() <= retiredAtMs) {
+      tx.update(tombstone.ref, buildAccrualUpdate(retired, input, now));
+      pointKeyAt(tombstone.id);
+      return "updated";
+    }
+  }
 
   const data = target?.data() as StoredIncident | undefined;
   if (target && data && isOpen(data.status)) {
@@ -415,9 +437,9 @@ async function upsertInTransaction(
     return "recurred";
   }
 
-  // Nothing to accrue onto, or the keyed incident was ignored: an ignored
-  // incident is never re-opened, so the occurrence opens a fresh one, and
-  // the key moves to it.
+  // Nothing to accrue onto, the keyed incident was ignored, or it was retired
+  // before this occurrence: neither is ever re-opened, so the occurrence opens
+  // a fresh one, and the key moves to it.
   const ref = db.collection(store.incidentCollection).doc();
   tx.set(ref, buildNewIncident(input, fingerprint, now));
   pointKeyAt(ref.id);
@@ -446,7 +468,10 @@ function holdsFingerprint(snap: DocumentSnapshot, fingerprint: string): boolean 
   return fingerprintOf(d.functionName, d.errorMessage, d.signalSource) === fingerprint;
 }
 
-/** The incident the key points at, when it exists and still holds the fingerprint. */
+/**
+ * The incident the key points at, when it exists and still holds the fingerprint. A retired one is
+ * returned too: the caller treats it as a tombstone, never as a target to reopen.
+ */
 async function readKeyedIncident(
   db: Firestore,
   tx: Transaction,
@@ -459,9 +484,7 @@ async function readKeyedIncident(
   const snap = await tx.get(db.collection(store.incidentCollection).doc(incidentId));
   // Re-verify against content rather than trusting the pointer: a stale key or a
   // rewritten document can't cause a wrong merge.
-  // A retired incident has been closed for good and its fingerprint freed (retire.ts): a key that still
-  // points at one is stale, and the occurrence opens a new incident instead of reopening it.
-  return snap.exists && holdsFingerprint(snap, fingerprint) && !isRetired(snap) ? snap : null;
+  return snap.exists && holdsFingerprint(snap, fingerprint) ? snap : null;
 }
 
 /**

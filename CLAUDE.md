@@ -139,8 +139,9 @@ src/
                    again is re-opened as `recurred` (a regression). One transaction per
                    upsert, through a per-(environment, fingerprint) key document
     trigger        admin-only "run ingest now": the same runIngest, audited before it runs
-    retire         admin closes an incident for good and frees its fingerprint (key removed, audited);
-                   store.ts treats a retired incident as absent, so the next occurrence is a new one
+    retire         admin closes an incident for good and frees its fingerprint (audited); the key stays as a
+                   tombstone (applied windows kept): a later occurrence opens a new incident, an earlier one
+                   (ingest lag) accrues onto the retired one without reopening it
     counterCheck   independent raw-log recount + redacted samples
     monitoring     Cloud Monitoring failure counts per function (#19): injectable reader, REST adapter, bounded,
                    null when unavailable (never zero); aggregate annotates a function's log incidents in the window
@@ -148,8 +149,9 @@ src/
     aggregate      reads one window of logs and folds it into the store (each upsert carries
                    the window id, so a replayed window counts once)
     window         (start, end] windows: pure planning; ids come from the boundaries
-    run            one scheduled run: resolve runtime settings, replay the pending window or plan
-                   the next, advance the checkpoint only after it all commits, write last_run
+    run            one scheduled run: resolve runtime settings (refuses on an unusable document with no
+                   last-good), replay the pending window or plan the next, advance the checkpoint only
+                   after it all commits, write last_run. State per (watched project, environment)
   agent/triage.ts  stage 1 of the agent loop (#8): act/notify/decline for one incident; deterministic
                    gates before the model, local validation after it; run by `pnpm agent` (deployable, never run)
   agent/fixer.ts   stage 2: minimal patch or honest decline from a stubbed-testable model call;

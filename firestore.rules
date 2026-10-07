@@ -265,8 +265,10 @@ service cloud.firestore {
     // starfish_runs/last_run  the outcome of the latest run, for the UI: when it ran, over what
     //                         window, what it found, whether it was capped or failed. Counts and
     //                         field names only, never log text.
-    // starfish_runs/state     the checkpoint and the window in flight. Engine-only: a client that
-    //                         could move it could make the engine skip or re-read stretches of logs.
+    // starfish_runs/state_<h> the checkpoint and the window in flight, one per (watched project,
+    //                         environment); `state` is the pre-#198 single one, moved on first write.
+    //                         Engine-only: a client that could move it could make the engine skip or
+    //                         re-read stretches of logs.
     // Clients never write either. A guest reads last_run only for the demo environment, like incidents.
     match /starfish_runs/last_run {
       allow get: if isOperator() || guestGet();
@@ -375,7 +377,7 @@ service cloud.firestore {
             || (request.resource.data.criticalOccurrences is int && request.resource.data.criticalOccurrences >= 1 && request.resource.data.criticalOccurrences <= 1000000));
     }
 
-    // Everything else is closed (including starfish_runs/state and starfish_escalations).
+    // Everything else is closed (including the starfish_runs state documents and starfish_escalations).
     match /{document=**} {
       allow read, write: if false;
     }

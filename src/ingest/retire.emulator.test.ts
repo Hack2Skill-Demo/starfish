@@ -8,7 +8,7 @@ import { deleteApp, initializeApp } from "firebase-admin/app";
 import { getFirestore, Timestamp } from "firebase-admin/firestore";
 import type { Firestore } from "firebase-admin/firestore";
 import { retireIncident, type RetireConfig } from "./retire.js";
-import { upsertIncident, type IncidentInput } from "./store.js";
+import { upsertIncident, type IncidentInput, type IncidentStoreConfig } from "./store.js";
 import { SEEDED_SECRETS } from "./testSecrets.js";
 
 if (!process.env.FIRESTORE_EMULATOR_HOST) {
@@ -19,7 +19,7 @@ const app = initializeApp({ projectId: "demo-starfish-rules" }, "retire-emulator
 const db: Firestore = getFirestore(app, "retire-tests");
 afterAll(() => deleteApp(app));
 
-let cfg: RetireConfig;
+let cfg: RetireConfig & IncidentStoreConfig;
 beforeEach(async () => {
   const run = randomUUID().slice(0, 8);
   cfg = { incidentCollection: `incidents_${run}`, incidentKeyCollection: `keys_${run}`, usersCollection: `users_${run}`, auditCollection: `audit_${run}` };
@@ -48,7 +48,7 @@ const resolve = (id: string, atMs: number) =>
 const retire = (id: string, uid = "admin1", reason = "demo reset") => retireIncident(db, cfg, id, uid, reason, new Date(t0.getTime() + 60_000));
 
 describe("retireIncident", () => {
-  it("closes the incident for good, keeping its history, and removes its key", async () => {
+  it("closes the incident for good, keeping its history, and keeps its key as a tombstone (#197)", async () => {
     await upsert(occurrence(t0.getTime(), 5));
     const [doc] = await incidents();
 
@@ -58,7 +58,39 @@ describe("retireIncident", () => {
     expect(after).toMatchObject({ status: "resolved", retired: true, retiredBy: "admin1", statusChangedBy: "admin1", occurrenceCount: 5 });
     expect(after.retiredAt.toMillis()).toBe(t0.getTime() + 60_000);
     expect(after.resolvedAt.toMillis()).toBe(t0.getTime() + 60_000);
-    expect(await keys()).toHaveLength(0);
+    expect((await keys()).map((k) => k.get("incidentId"))).toEqual([doc!.id]);
+  });
+
+  it("counts a window replayed after the retire once: no second incident (#197)", async () => {
+    // A run commits a window, the incident is retired, and the run's retry replays that same window.
+    expect(await upsert({ ...occurrence(t0.getTime(), 5), windowId: "w1" })).toBe("new");
+    const [doc] = await incidents();
+    await retire(doc!.id);
+
+    expect(await upsert({ ...occurrence(t0.getTime(), 5), windowId: "w1" })).toBe("duplicate");
+
+    const docs = await incidents();
+    expect(docs).toHaveLength(1);
+    expect(docs[0]!.get("occurrenceCount")).toBe(5);
+  });
+
+  it("counts occurrences from before the retire on the retired incident, without reopening it (#197)", async () => {
+    await upsert({ ...occurrence(t0.getTime(), 2), windowId: "w1" });
+    const [doc] = await incidents();
+    await retire(doc!.id); // at t0 + 60 s
+
+    // Ingest reads behind the clock: the next window still holds an occurrence from before the retire.
+    expect(await upsert({ ...occurrence(t0.getTime() + 30_000, 3), windowId: "w2" })).toBe("updated");
+
+    const docs = await incidents();
+    expect(docs).toHaveLength(1);
+    expect(docs[0]!.data()).toMatchObject({ status: "resolved", retired: true, occurrenceCount: 5 });
+    expect(docs[0]!.data().recurrenceCount).toBeUndefined();
+    // Its window is recorded too, so replaying it changes nothing.
+    expect(await upsert({ ...occurrence(t0.getTime() + 30_000, 3), windowId: "w2" })).toBe("duplicate");
+    // An occurrence after the retire still opens a new incident.
+    expect(await upsert({ ...occurrence(t0.getTime() + 90_000), windowId: "w3" })).toBe("new");
+    expect(await incidents()).toHaveLength(2);
   });
 
   it("makes the same error open a NEW incident instead of reopening this one as a regression", async () => {
@@ -90,7 +122,7 @@ describe("retireIncident", () => {
     // The operator action firestore.rules allows from ignored.
     await db.collection(cfg.incidentCollection).doc(doc!.id).update({ status: "new" });
 
-    expect(await upsert(occurrence(t0.getTime() + 1000))).toBe("new");
+    expect(await upsert(occurrence(t0.getTime() + 3_600_000))).toBe("new");
     expect(await incidents()).toHaveLength(2);
     expect((await db.collection(cfg.incidentCollection).doc(doc!.id).get()).data()!.occurrenceCount).toBe(1);
   });
@@ -125,11 +157,11 @@ describe("retireIncident", () => {
     expect(await audit()).toHaveLength(1);
   });
 
-  it("does not remove a key that has already moved on to a newer incident", async () => {
+  it("does not touch a key that has already moved on to a newer incident", async () => {
     await upsert(occurrence());
     const [first] = await incidents();
     await retire(first!.id);
-    await upsert(occurrence(t0.getTime() + 1000));
+    await upsert(occurrence(t0.getTime() + 3_600_000));
     const newKey = (await keys())[0]!.get("incidentId");
 
     // A second admin retires the OLD one again (it is already retired): the new key stays.
