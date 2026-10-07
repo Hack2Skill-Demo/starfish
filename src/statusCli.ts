@@ -5,6 +5,8 @@
  * is a correct answer. --min-entries is about the last run (log entries it processed), --min-incidents
  * about the store.
  * Needs credentials for the project (`gcloud auth application-default login`), or the emulator.
+ * It resolves the runtime settings the way the engine does (#190), and so, like each engine run, may save the
+ * engine's last-good copy of a valid settings document, or remove it when there is none: best effort, never fatal.
  */
 import { parseArgs } from "node:util";
 import { initializeApp } from "firebase-admin/app";

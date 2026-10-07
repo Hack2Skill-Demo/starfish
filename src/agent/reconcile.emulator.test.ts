@@ -79,7 +79,7 @@ describe("selectPrCycles", () => {
     await seed("e_r0", 5, { state: "running" });
     await seed("f_r0", 6, { environment: "prod" });
     expect(await selectPrCycles(db, cfg, 10)).toEqual([
-      { cycleId: "b_r0", number: 2, key: { incidentId: "b", environment: "demo", recurrence: 0 } },
+      { cycleId: "b_r0", number: 2, key: { incidentId: "b", environment: "demo", recurrence: 0 }, url: "https://github.com/acme/shop/pull/2" },
       { cycleId: "c_r0", number: 3, key: { incidentId: "c", environment: "demo", recurrence: 0 } },
       { cycleId: "a_r0", number: 1, key: { incidentId: "a", environment: "demo", recurrence: 0 } },
     ]);
@@ -186,8 +186,23 @@ describe("reconcilePullRequests", () => {
     await seed("c_r0", 3);
     const gh = fakeGithub({ 1: { state: "merged", mergedAt: "2026-10-06T11:30:00.000Z" }, 2: { state: "closed" }, 3: { state: "closed" } });
     expect(await reconcilePullRequests({ db, config: cfg, client: gh.client, now: () => t0 })).toMatchObject({ recorded: 3, errors: [] });
-    expect((await incidents.doc("a").get()).data()).toEqual({ environment: "demo", status: "logged", githubPrNumber: 1, githubPrState: "merged" });
+    expect((await incidents.doc("a").get()).data()).toEqual({
+      environment: "demo",
+      status: "logged",
+      githubPrNumber: 1,
+      githubPrUrl: "https://github.com/acme/shop/pull/1",
+      githubPrState: "merged",
+    });
     expect((await incidents.doc("b").get()).data()!.githubPrState).toBe("open"); // a later recurrence: not this cycle's
     expect((await incidents.doc("c").get()).data()).not.toHaveProperty("githubPrState"); // another PR's link
+  });
+
+  it("repairs an incident link whose first copy failed, on a read that changes nothing (#194)", async () => {
+    const incidents = db.collection(cfg.incidentCollection);
+    await incidents.doc("a").set({ environment: "demo", status: "new" });
+    await seed("a_r0", 1, { summary: { pr: { opened: true, number: 1, url: "https://github.com/acme/shop/pull/1" }, prState: { state: "open", checks: "pending", checkedAt: "2026-10-06T11:00:00.000Z" } } });
+    const gh = fakeGithub({ 1: { state: "open" } });
+    await reconcilePullRequests({ db, config: { ...cfg, verifyChecks: [] }, client: gh.client, now: () => t0 });
+    expect((await incidents.doc("a").get()).data()).toMatchObject({ githubPrNumber: 1, githubPrUrl: "https://github.com/acme/shop/pull/1", githubPrState: "open" });
   });
 });

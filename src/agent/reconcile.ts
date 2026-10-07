@@ -64,6 +64,8 @@ export interface PrCycle {
   number: number;
   /** The cycle's incident and recurrence, when its record names them: where the PR's state is copied (#194). */
   key?: CycleKey;
+  /** The PR's URL as the cycle recorded it, so the incident's link can be written in full (#194). */
+  url?: string;
 }
 
 const SETTLED_CHECKS: readonly string[] = ["passed", "failed", "not-configured"];
@@ -75,10 +77,10 @@ const SETTLED_CHECKS: readonly string[] = ["passed", "failed", "not-configured"]
 export async function selectPrCycles(db: Firestore, cfg: ReconcileConfig, limit: number): Promise<PrCycle[]> {
   if (!Number.isInteger(limit) || limit < 1) return [];
   const snap = await db.collection(cfg.cycleCollection).where("environment", "==", cfg.environment).orderBy("updatedAt", "desc").limit(MAX_SCAN).get();
-  const found: { cycleId: string; number: number; key?: CycleKey; checkedMs: number }[] = [];
+  const found: { cycleId: string; number: number; key?: CycleKey; url?: string; checkedMs: number }[] = [];
   for (const doc of snap.docs) {
     const d = doc.data();
-    const pr = d.summary?.pr as { opened?: unknown; number?: unknown } | undefined;
+    const pr = d.summary?.pr as { opened?: unknown; number?: unknown; url?: unknown } | undefined;
     // A seeded synthetic cycle (seedDemo.ts) names a pull request that does not exist: never read from GitHub (#192).
     if (d.synthetic === true || d.state !== "done" || pr?.opened !== true || typeof pr.number !== "number" || !Number.isInteger(pr.number) || pr.number < 1) continue;
     const prior = d.summary?.prState as { state?: unknown; checks?: unknown; checkedAt?: unknown } | undefined;
@@ -88,12 +90,13 @@ export async function selectPrCycles(db: Firestore, cfg: ReconcileConfig, limit:
       typeof d.incidentId === "string" && typeof d.environment === "string" && Number.isInteger(d.recurrence)
         ? { incidentId: d.incidentId, environment: d.environment, recurrence: d.recurrence as number }
         : undefined;
-    found.push({ cycleId: doc.id, number: pr.number, ...(key && { key }), checkedMs: Number.isFinite(checked) ? checked : -Infinity });
+    const url = typeof pr.url === "string" ? pr.url : undefined;
+    found.push({ cycleId: doc.id, number: pr.number, ...(key && { key }), ...(url !== undefined && { url }), checkedMs: Number.isFinite(checked) ? checked : -Infinity });
   }
   return found
     .sort((a, b) => a.checkedMs - b.checkedMs)
     .slice(0, limit)
-    .map(({ cycleId, number, key }) => ({ cycleId, number, ...(key && { key }) }));
+    .map(({ cycleId, number, key, url }) => ({ cycleId, number, ...(key && { key }), ...(url !== undefined && { url }) }));
 }
 
 export interface ReconcileDeps {
@@ -121,7 +124,7 @@ export async function reconcilePullRequests(deps: ReconcileDeps): Promise<Reconc
   const { db, config: cfg, client } = deps;
   const picked = await selectPrCycles(db, cfg, cfg.maxPrChecksPerPass);
   const summary: ReconcileSummary = { considered: picked.length, recorded: 0, unchanged: 0, errors: [] };
-  for (const { cycleId, number, key } of picked) {
+  for (const { cycleId, number, key, url } of picked) {
     try {
       // The time BEFORE the reads orders this observation: whatever it saw was true at that time or later.
       const checkedAt = deps.now().toISOString();
@@ -137,12 +140,19 @@ export async function reconcilePullRequests(deps: ReconcileDeps): Promise<Reconc
         checkedAt,
       });
       if (!written.ok) summary.errors.push({ cycleId, message: `not recorded: ${written.reason}` });
-      else if (written.applied) {
-        summary.recorded += 1;
-        // The incident's PR link shows the same state (#194); best effort, and only the state, never its status.
-        if (key) await linkIncident(db, cfg.incidentCollection, key, { kind: "pr-state", number: pr.number, state: pr.state });
+      else {
+        if (written.applied) summary.recorded += 1;
+        else summary.unchanged += 1;
+        // The incident's PR link shows the same PR and state (#194), never its status. Written on every read, not only
+        // on a change, so a copy that failed before is repaired; best effort. A merged PR with settled checks is not
+        // read again (selectPrCycles), so that last copy is tried twice.
+        if (key) {
+          const link = { kind: "pr-state" as const, number: pr.number, state: pr.state, ...(url !== undefined && { url }) };
+          if (!(await linkIncident(db, cfg.incidentCollection, key, link)) && pr.state === "merged") {
+            await linkIncident(db, cfg.incidentCollection, key, link);
+          }
+        }
       }
-      else summary.unchanged += 1;
     } catch (err) {
       summary.errors.push({ cycleId, message: describeError(err) });
       const rule = (err as { rule?: unknown } | null)?.rule;

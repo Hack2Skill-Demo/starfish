@@ -16,7 +16,7 @@ import type { CycleKey, RunEvent } from "./cycle.js";
 export type IncidentLink =
   | { kind: "issue"; number: number; url: string }
   | { kind: "pr"; number: number; url: string }
-  | { kind: "pr-state"; number: number; state: "open" | "closed" | "merged" };
+  | { kind: "pr-state"; number: number; state: "open" | "closed" | "merged"; url?: string };
 
 const isNumber = (v: unknown): v is number => typeof v === "number" && Number.isInteger(v) && v > 0;
 const isUrl = (v: unknown): v is string => typeof v === "string" && /^https?:\/\//.test(v) && v.length <= 500;
@@ -48,8 +48,10 @@ export async function linkIncident(db: Firestore, incidentCollection: string, ke
         // attempt re-linking the same PR must not overwrite.
         tx.update(ref, { githubPrNumber: link.number, githubPrUrl: link.url, ...(d.githubPrNumber !== link.number && { githubPrState: "open" }) });
       } else {
-        if (d.githubPrNumber !== link.number) return false;
-        tx.update(ref, { githubPrState: link.state });
+        // Written in full on every read reconcile.ts makes, so a link whose first copy failed (the open's, or an earlier
+        // state's) is repaired by the next read. Never over another pull request's link.
+        if (d.githubPrNumber !== undefined && d.githubPrNumber !== link.number) return false;
+        tx.update(ref, { githubPrNumber: link.number, githubPrState: link.state, ...(link.url !== undefined && isUrl(link.url) && { githubPrUrl: link.url }) });
       }
       return true;
     });
