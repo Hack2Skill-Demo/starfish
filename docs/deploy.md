@@ -144,7 +144,7 @@ are separated by `@`, which the script adds: no leading or trailing `@`).
 
 ```bash
 PROJECT_ID=my-project SMOKE_ACTOR_UID=<admin uid> scripts/smoke-gcp.sh   # plants one error, runs the job, checks THAT incident, retires it
-pnpm status                                    # is the engine alive? (needs GOOGLE_CLOUD_PROJECT and STARFISH_ENV)
+pnpm status                                    # is the engine alive? (needs GOOGLE_CLOUD_PROJECT and STARFISH_ENV; a runtime-settings environment overrides it, as for the job)
 gcloud run jobs executions list --job=starfish-ingest --region=us-central1 --project=my-project
 ```
 

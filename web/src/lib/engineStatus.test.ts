@@ -11,6 +11,7 @@ vi.mock("firebase/firestore", () => ({
 }));
 
 import { judgeRun, nextRunAt, readLastRun, type LastRun } from "./engineStatus";
+import { judgeRun as cliJudge, parseRunRecord } from "../../../src/status";
 
 const NOW = Date.parse("2026-10-04T12:00:00.000Z");
 const ts = (ms: number) => ({ toDate: () => new Date(ms) });
@@ -133,5 +134,28 @@ describe("nextRunAt", () => {
     expect(nextRunAt({ startedAt: started })).toBeNull();
     expect(nextRunAt({ intervalMinutes: 5 })).toBeNull();
     expect(nextRunAt(null)).toBeNull();
+  });
+});
+
+// `pnpm status` (src/status.ts) promises a terminal the same verdict this page shows (#190): the same stored record,
+// read by each side's parser and judged by each side's judge, must agree.
+describe("agreement with pnpm status", () => {
+  const cases: [string, Record<string, unknown> | undefined, string][] = [
+    ["ok", stored(), "demo"],
+    ["idle", stored({ outcome: "idle" }), "demo"],
+    ["failed", stored({ outcome: "failed", capped: true, finishedAt: ts(NOW - 500 * 60_000) }), "demo"],
+    ["stale", stored({ finishedAt: ts(NOW - 91 * 60_000) }), "demo"],
+    ["capped", stored({ capped: true }), "demo"],
+    ["another environment", stored(), "prod"],
+    ["no environment recorded", stored({ environment: undefined }), "demo"],
+    ["an unknown outcome", stored({ outcome: "exploded" }), "demo"],
+    ["no finish time", stored({ finishedAt: undefined }), "demo"],
+    ["no record at all", undefined, "demo"],
+  ];
+
+  it.each(cases)("%s", async (_name, data, env) => {
+    mocks.data = data;
+    const ui = judgeRun(await readLastRun({} as Firestore, "r"), env, NOW, 90).state;
+    expect(cliJudge(parseRunRecord(data), env, new Date(NOW), 90)).toBe(ui);
   });
 });

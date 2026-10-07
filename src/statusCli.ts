@@ -11,6 +11,7 @@ import { initializeApp } from "firebase-admin/app";
 import { getFirestore } from "firebase-admin/firestore";
 import { loadConfig } from "./config.js";
 import { LAST_RUN_DOC } from "./ingest/run.js";
+import { RuntimeConfigLoader } from "./runtimeSettings.js";
 import { describeStatus, parseRunRecord, unmetMinimums } from "./status.js";
 import { INCIDENT_STATUSES } from "./types.js";
 
@@ -36,9 +37,14 @@ for (const [flag, n] of [["--min-incidents", minIncidents], ["--min-entries", mi
   }
 }
 
-const config = loadConfig();
-initializeApp({ projectId: config.projectId });
-const db = getFirestore(config.databaseId);
+const base = loadConfig();
+initializeApp({ projectId: base.projectId });
+const db = getFirestore(base.databaseId);
+// The environment the engine runs under is the runtime settings' one (an admin can change it in the UI), resolved the
+// way src/ingest/run.ts resolves it; the env var is only its default.
+const resolved = await new RuntimeConfigLoader(base).resolve(db);
+const config = resolved.config;
+if (resolved.problems.length > 0) console.log(`runtime settings unusable (${resolved.problems.join("; ")}); using the ${resolved.source} configuration`);
 
 const runSnap = await db.collection(config.runCollection).doc(LAST_RUN_DOC).get();
 
@@ -61,6 +67,6 @@ const report = describeStatus({
 });
 console.log(`project ${config.projectId}, database ${config.databaseId}`);
 for (const line of report.lines) console.log(line);
-const unmet = unmetMinimums({ run, counts }, { incidents: minIncidents, entries: minEntries });
+const unmet = unmetMinimums({ run, environment: config.environment, counts },{ incidents: minIncidents, entries: minEntries });
 for (const line of unmet) console.log(line);
 process.exit(report.state === "ok" && unmet.length === 0 ? 0 : 1);

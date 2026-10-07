@@ -12,8 +12,13 @@ import { OPEN_INCIDENT_STATUSES } from "./types.js";
 
 export type EngineState = "ok" | "failed" | "stale" | "capped" | "never";
 
+/** The outcomes run.ts records; a record with any other is unusable, as in the UI. */
+export type RunOutcome = "ok" | "failed" | "idle";
+
 export interface RunRecord {
-  outcome: string;
+  /** The environment the run was for: the runtime settings' one, which can differ from this shell's env var. */
+  environment: string;
+  outcome: RunOutcome;
   finishedAt: Date;
   windows: number;
   capped: boolean;
@@ -30,10 +35,12 @@ export function parseRunRecord(data: Record<string, unknown> | undefined): RunRe
   if (data === undefined) return null;
   const finished = (data.finishedAt as { toDate?: () => Date } | undefined)?.toDate?.();
   if (finished === undefined || Number.isNaN(finished.getTime())) return null;
-  if (typeof data.outcome !== "string") return null;
+  const outcome = data.outcome;
+  if (outcome !== "ok" && outcome !== "failed" && outcome !== "idle") return null;
   const totals = (data.totals ?? {}) as Record<string, unknown>;
   return {
-    outcome: data.outcome,
+    environment: typeof data.environment === "string" ? data.environment : "",
+    outcome,
     finishedAt: finished,
     windows: num(data.windows),
     capped: data.capped === true,
@@ -48,9 +55,12 @@ export function parseRunRecord(data: Record<string, unknown> | undefined): RunRe
   };
 }
 
-/** failed beats stale beats capped beats ok; no record at all is "never". */
-export function judgeRun(run: RunRecord | null, now: Date, staleMinutes: number): EngineState {
-  if (run === null) return "never";
+/**
+ * failed beats stale beats capped beats ok; no record at all is "never", and so is a record for another
+ * environment (the label was changed): it is not this environment's run.
+ */
+export function judgeRun(run: RunRecord | null, environment: string, now: Date, staleMinutes: number): EngineState {
+  if (run === null || run.environment !== environment) return "never";
   if (run.outcome === "failed") return "failed";
   if (now.getTime() - run.finishedAt.getTime() > staleMinutes * 60_000) return "stale";
   if (run.capped) return "capped";
@@ -68,13 +78,14 @@ export function totalIncidents(counts: Record<string, number>): number {
  * entry has read the one that was planted, which the incident total alone cannot show.
  */
 export function unmetMinimums(
-  input: { run: RunRecord | null; counts: Record<string, number> },
+  input: { run: RunRecord | null; environment: string; counts: Record<string, number> },
   min: { incidents: number; entries: number }
 ): string[] {
   const unmet: string[] = [];
   const found = totalIncidents(input.counts);
   if (found < min.incidents) unmet.push(`expected at least ${min.incidents} incident(s), found ${found}`);
-  const entries = input.run?.totals.entriesProcessed ?? 0;
+  // A run for another environment read none of this one's entries.
+  const entries = input.run?.environment === input.environment ? input.run.totals.entriesProcessed : 0;
   if (entries < min.entries) unmet.push(`expected the last run to process at least ${min.entries} log entr${min.entries === 1 ? "y" : "ies"}, it processed ${entries}`);
   return unmet;
 }
@@ -93,11 +104,13 @@ export function describeStatus(input: {
   counts: Record<string, number>;
 }): StatusReport {
   const { run, now, staleMinutes, environment, counts } = input;
-  const state = judgeRun(run, now, staleMinutes);
+  const state = judgeRun(run, environment, now, staleMinutes);
   const lines: string[] = [];
 
   if (run === null) {
     lines.push("engine: never recorded a run (the job has not run, or could not write the store)");
+  } else if (run.environment !== environment) {
+    lines.push(`engine: never recorded a run for "${environment}" (the last run recorded was for "${run.environment}")`);
   } else {
     const minutes = Math.max(0, Math.round((now.getTime() - run.finishedAt.getTime()) / 60_000));
     const t = run.totals;

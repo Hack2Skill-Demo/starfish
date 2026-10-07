@@ -17,7 +17,8 @@
 # retires afterwards (src/ingest/retire.ts). The check is of THAT incident (a starfish-smoke incident whose last
 # occurrence is after the plant), so it holds on a project that has real errors of its own. If cleanup fails the
 # script says which incident to delete and exits non-zero. STARFISH_ENV must be the label the job was deployed with
-# (default dev). Do it before the public demo is shown, not during it.
+# (default dev); an environment the admin set in the runtime settings overrides it, for the job and the checks alike.
+# Do it before the public demo is shown, not during it.
 # Needs: a deployed job, roles/logging.logWriter on the watched project, application-default credentials
 # (gcloud auth application-default login) for the checks.
 set -euo pipefail
