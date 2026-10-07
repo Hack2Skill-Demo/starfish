@@ -355,10 +355,25 @@ describe("healIndex: a restart after the create", () => {
     expect(h.admin.create).not.toHaveBeenCalled();
   });
 
-  it("prefers the live inventory over a persisted operation when the index is listed", async () => {
+  it("prefers the live inventory over a persisted operation when the index is listed, and still says this cycle created it (#191)", async () => {
+    const op = "projects/demo-app-1/databases/(default)/operations/x";
     const h = harness({ list: [[live("READY")]] });
-    expect(await healIndex(ERROR(), SETTINGS, h.deps, { priorOperation: "projects/demo-app-1/databases/(default)/operations/x" })).toMatchObject({ outcome: "ready", created: false });
+    expect(await healIndex(ERROR(), SETTINGS, h.deps, { priorOperation: op })).toMatchObject({ outcome: "ready", created: true, operation: op });
     expect(h.admin.getOperation).not.toHaveBeenCalled();
+    expect(h.admin.create).not.toHaveBeenCalled();
+  });
+
+  it("an index still building from this cycle's earlier create is reported as created by it once READY (#191)", async () => {
+    const op = "projects/demo-app-1/databases/(default)/operations/x";
+    const h = harness({ list: [[live("CREATING")], [live("READY")]] });
+    expect(await healIndex(ERROR(), SETTINGS, h.deps, { priorOperation: op })).toMatchObject({ outcome: "ready", created: true, operation: op });
+    expect(h.admin.create).not.toHaveBeenCalled();
+  });
+
+  it("an index listed with no operation of this cycle behind it is not claimed as created", async () => {
+    const h = harness({ list: [[live("READY")]] });
+    expect(await healIndex(ERROR(), SETTINGS, h.deps, { priorAttempt: true })).toMatchObject({ outcome: "ready", created: false });
+    expect((await healIndex(ERROR(), SETTINGS, harness({ list: [[live("READY")]] }).deps)) as { operation?: string }).not.toHaveProperty("operation");
   });
 });
 

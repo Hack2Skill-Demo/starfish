@@ -930,7 +930,7 @@ describe("pullRequestText: the missing-index evidence pull request (#11)", () =>
 
   it("says when the index was found rather than created, and when the file is new", () => {
     const { body } = pullRequestText(request({ index: { ...index, created: false, fileCreated: true }, verify: undefined }));
-    expect(body).toContain("it was not created by this run");
+    expect(body).toContain("this cycle has no recorded create operation for it");
     expect(body).toContain("This pull request creates `firestore.indexes.json`");
   });
 
