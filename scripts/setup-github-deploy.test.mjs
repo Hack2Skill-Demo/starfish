@@ -122,7 +122,7 @@ describe("scripts/setup-github-deploy.sh", () => {
     const r = setup(dry);
     const line = r.out.split("\n").find((l) => l.includes("roles/resourcemanager.projectIamAdmin")) ?? "";
     expect(line).toContain("^;^expression=");
-    expect(line).toContain("hasOnly(['roles/logging.viewer','roles/datastore.user','roles/aiplatform.user','roles/run.builder','roles/monitoring.viewer'])");
+    expect(line).toContain("hasOnly(['roles/logging.viewer','roles/datastore.user','roles/aiplatform.user','roles/run.builder','roles/monitoring.viewer','roles/firebaseauth.viewer'])");
     // Every project-level role deploy-gcp.sh binds is inside that list, so the limit does not stop the deploy.
     // With every part of the deploy turned on: the agent (both isolations), the admin API and the Monitoring signal (#176).
     const full = { DEPLOY_AGENT: "1", AGENT_REPO: "acme/shop", VERIFY_CHECKS: "verify", DEPLOY_ADMIN_API: "1" };
@@ -142,6 +142,7 @@ describe("scripts/setup-github-deploy.sh", () => {
       const bound = [...`${deploy.stdout}`.replace(/\\/g, "").matchAll(/projects add-iam-policy-binding \S+ --member=\S+ --role=(roles\/[\w.]+)/g)].map((m) => m[1]);
       expect(bound.length).toBeGreaterThan(0);
       if (extra.STARFISH_MONITORING_ENABLED) expect(bound).toContain("roles/monitoring.viewer");
+      if (extra.DEPLOY_ADMIN_API) expect(bound).toContain("roles/firebaseauth.viewer");
       for (const role of bound) expect(line, `${role} is bound by deploy-gcp.sh`).toContain(`'${role}'`);
     }
   });

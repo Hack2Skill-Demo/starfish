@@ -50,6 +50,32 @@ describe("admin API: who may call", () => {
     }
   });
 
+  it("records why a token was refused for the operator, never for the caller, and never the token", async () => {
+    const reasons: string[] = [];
+    const permission = Object.assign(new Error(`Lookup failed: PERMISSION_DENIED for ${TOKEN}${"A".repeat(60)}`), { code: "auth/internal-error" });
+    const { api } = fakes({ verifyToken: () => Promise.reject(permission), onRefused: (r: string) => void reasons.push(r) });
+    const r = await api(post("/api/ingest/run"));
+    expect(r.status).toBe(401);
+    expect(JSON.stringify(r.body)).toBe('{"error":"sign in again"}');
+    expect(reasons).toHaveLength(1);
+    expect(reasons[0]).toContain("auth/internal-error");
+    expect(reasons[0]).toContain("PERMISSION_DENIED");
+    expect(reasons[0]).not.toContain(TOKEN);
+    expect(reasons[0]).not.toContain("AAAAAAAA");
+    expect(reasons[0]!.length).toBeLessThanOrEqual(300);
+    // No token at all is recorded too, with its own reason.
+    await api({ method: "POST", path: "/api/ingest/run" });
+    expect(reasons[1]).toBe("no token");
+  });
+
+  it("answers the same 401 when recording the reason itself throws", async () => {
+    const { api, calls } = fakes({ verifyToken: () => Promise.reject(new Error("x")), onRefused: () => { throw new Error("log failed"); } });
+    const r = await api(post("/api/ingest/run"));
+    expect(r.status).toBe(401);
+    expect(JSON.stringify(r.body)).toBe('{"error":"sign in again"}');
+    expect(calls).toEqual([]);
+  });
+
   it("passes the verified uid, and nothing the caller says about itself, to the admin check", async () => {
     const { api, calls } = fakes();
     await api(post("/api/ingest/run", { body: { uid: "someone-else", roles: ["admin"] } }));

@@ -26,7 +26,7 @@
 # repository and no other environment can present a token), the deployer account, and the roles docs/deploy.md lists.
 # What it does NOT make: a key (none exists), the GitHub environment, or the repository variables: it prints them for you.
 #
-# The deployer is powerful, and bounded (#145). Granting roles on the project is limited by an IAM condition to the five
+# The deployer is powerful, and bounded (#145). Granting roles on the project is limited by an IAM condition to the six
 # the deploy script binds. Service accounts: it may create and read them (a custom role), never set their IAM policy,
 # except on the agent's own account with cloud-run-job. Secrets and buckets: only Starfish's, by name, through conditions.
 # What is still project-wide: Cloud Run, Cloud Build, Artifact Registry, Scheduler, Firestore and the rules (the table in
@@ -173,9 +173,10 @@ bucket_is() { echo "resource.name == \"projects/_/buckets/$1\" || resource.name.
 BUCKETS="resource.name.startsWith(\"projects/_/buckets/run-sources-$PROJECT_ID-\") || $(bucket_is "${PROJECT_ID}_cloudbuild")"
 [ "$VERIFY_ISOLATION" != "cloud-run-job" ] || BUCKETS="$BUCKETS || $(bucket_is "$VERIFY_BUCKET")"
 bind "$PROJECT_ID" roles/storage.admin "$BUCKETS"
-# Granting roles is limited to the five the deploy script binds (roles/monitoring.viewer only with STARFISH_MONITORING_ENABLED=true,
-# #176): the deployer cannot hand itself, or anyone, any other.
-GRANTABLE="api.getAttribute('iam.googleapis.com/modifiedGrantsByRole', []).hasOnly(['roles/logging.viewer','roles/datastore.user','roles/aiplatform.user','roles/run.builder','roles/monitoring.viewer'])"
+# Granting roles is limited to the six the deploy script binds (roles/monitoring.viewer only with STARFISH_MONITORING_ENABLED=true,
+# #176; roles/firebaseauth.viewer only for the admin API's account, which checks every token for revocation): the deployer
+# cannot hand itself, or anyone, any other.
+GRANTABLE="api.getAttribute('iam.googleapis.com/modifiedGrantsByRole', []).hasOnly(['roles/logging.viewer','roles/datastore.user','roles/aiplatform.user','roles/run.builder','roles/monitoring.viewer','roles/firebaseauth.viewer'])"
 bind "$PROJECT_ID" roles/resourcemanager.projectIamAdmin "$GRANTABLE"
 for other in "$WATCHED_PROJECT_ID" "$VERTEX_PROJECT_ID"; do
   [ "$other" != "$PROJECT_ID" ] || continue

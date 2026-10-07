@@ -260,7 +260,7 @@ apparent over-engineering is scar tissue from real incidents, and the tests in
   `retired`: a retired incident never triggers a revert
 - ingest can be run on demand by an admin (`src/ingest/trigger.ts`): the **same** `runIngest` as a scheduled
   run (same windows, checkpoint and last-run record, and two together converge), behind an admin check
-  made from the operator record and an audit entry written before the run. The admin API (see above) is the endpoint that calls it: never deployed; the Incidents page has a "Run ingest now" button for admins when the site knows the admin API's URL (built, never run against a real service). The short schedule for recording the demo is the `SCHEDULE` of
+  made from the operator record and an audit entry written before the run. The admin API (see above) is the endpoint that calls it: deployed once to the demo project (2026-10-07); the Incidents page has a "Run ingest now" button for admins when the site knows the admin API's URL, and it ran once from the deployed UI as an admin. Retire has not been tried against the deployed service. The short schedule for recording the demo is the `SCHEDULE` of
   the deploy script (#6; the ingest job has been deployed once, to the demo project, and `scripts/ingest-cadence.sh` changes the tick); a setting nothing reads would be a control that does nothing
 - a fingerprint ignores what varies per occurrence (ids, paths, timestamps, counts) but not
   what makes a bug distinct (status codes, quoted property names), and treats a function's
