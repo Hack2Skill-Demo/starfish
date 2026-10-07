@@ -67,6 +67,6 @@ const report = describeStatus({
 });
 console.log(`project ${config.projectId}, database ${config.databaseId}`);
 for (const line of report.lines) console.log(line);
-const unmet = unmetMinimums({ run, environment: config.environment, counts },{ incidents: minIncidents, entries: minEntries });
+const unmet = unmetMinimums({ run, environment: config.environment, counts }, { incidents: minIncidents, entries: minEntries });
 for (const line of unmet) console.log(line);
 process.exit(report.state === "ok" && unmet.length === 0 ? 0 : 1);
