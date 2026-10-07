@@ -185,8 +185,9 @@ export interface StoredIncident {
   /** Uid of the admin who retired it. */
   retiredBy?: string;
   /**
-   * An operator asked the agent to triage this incident again (#8): server time, set under firestore.rules on an open
-   * incident only. A declined cycle decided before it is reconsidered (src/agent/reconsider.ts), within the daily cap.
+   * An operator asked the agent to triage this incident again (#8): server time, allowed by firestore.rules on an open
+   * incident only; no UI sends it yet. A declined cycle decided before it is reconsidered (src/agent/reconsider.ts),
+   * within the daily cap.
    */
   retriageRequestedAt?: Timestamp;
   /** Uid of the operator who asked. For the UI; never sent to the model. */
