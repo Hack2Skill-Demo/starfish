@@ -68,8 +68,12 @@ describe("scripts/deploy-gcp.sh", () => {
       const r = deploy({ ...admin, WATCHED_PROJECT_ID: "app-proj" });
       const member = "--member=serviceAccount:starfish-admin-api@star-proj.iam.gserviceaccount.com";
       const lines = r.out.split("\n").filter((l) => l.includes(member));
-      expect(lines.map((l) => l.match(/--role=(\S+)/)?.[1]).sort()).toEqual(["roles/datastore.user", "roles/logging.viewer"]);
+      expect(lines.map((l) => l.match(/--role=(\S+)/)?.[1]).sort()).toEqual(["roles/datastore.user", "roles/firebaseauth.viewer", "roles/logging.viewer"]);
       expect(lines.find((l) => l.includes("roles/logging.viewer"))).toContain("add-iam-policy-binding app-proj");
+      // Every token is checked for revocation (an Auth lookup): without this role every sign-in gets the one 401.
+      expect(lines.find((l) => l.includes("roles/firebaseauth.viewer"))).toContain("add-iam-policy-binding star-proj");
+      // No other account gets it.
+      expect(r.out.split("\n").filter((l) => l.includes("roles/firebaseauth.viewer") && !l.includes(member))).toEqual([]);
       expect(lines.find((l) => l.includes("roles/datastore.user"))).toContain('resource.name == "projects/star-proj/databases/starfish"');
       // The engine's account gains nothing from it.
       const engine = (out) => out.split("\n").filter((l) => l.includes("--member=serviceAccount:starfish-engine@")).length;

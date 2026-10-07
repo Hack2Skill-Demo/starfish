@@ -34,6 +34,8 @@ const handle = createAdminApi({
   // an account that is disabled, or whose tokens were revoked, is cut off at once rather than when its token expires (up
   // to an hour). Any failure here, a lookup that could not be made included, is the one 401 (adminApi.ts).
   verifyToken: async (token) => ({ uid: (await getAuth().verifyIdToken(token, true)).uid }),
+  // Cloud Run reads a JSON line on stdout as a structured log entry. The caller still gets only the one 401.
+  onRefused: (reason) => console.log(JSON.stringify({ severity: "WARNING", message: "admin API refused a call", reason })),
   // #12: only when STARFISH_ADMIN_API_APPCHECK is on. verifyToken checks the signature, expiry, audience (this project)
   // and issuer; it throws for anything else, which adminApi.ts turns into the one 401.
   ...(config.adminApiRequireAppCheck && {

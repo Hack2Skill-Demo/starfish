@@ -5,8 +5,8 @@ starts on a cron, under its own service account, with the image built from the `
 
 > **Status: the ingest part has run once, on the demo project (2026-10-05)**, from a terminal: the ingest job and its
 > schedule, followed by the smoke test (`scripts/smoke-gcp.sh`). The agent job
-> (`DEPLOY_AGENT=1`), the verify job and the admin API (`DEPLOY_ADMIN_API=1`) have **never been deployed**, and the
-> GitHub Actions workflows below have **never run**. The script's whole plan is pinned by `scripts/deploy-gcp.test.mjs`
+> (`DEPLOY_AGENT=1`) and the verify job have **never been deployed**. The admin API (`DEPLOY_ADMIN_API=1`) was deployed once
+> on 2026-10-07 (see its section), and the GitHub Actions workflows below have **never run**. The script's whole plan is pinned by `scripts/deploy-gcp.test.mjs`
 > (a dry run), and CI builds the image.
 
 ## Run it
@@ -249,10 +249,11 @@ set them for `setup-github-deploy.sh` as you set them for the deploy.
 there, see "The build is denied" below.
 
 > **`projectIamAdmin` is the powerful one.** A principal that can set IAM policy can grant itself anything.
-> Limit it to the five roles the script grants on a project (the engine's three, which the agent and the admin API also get,
-> `roles/run.builder` for the build account, and `roles/monitoring.viewer` on the watched project, which the engine's and the
-> admin API's accounts get only with `STARFISH_MONITORING_ENABLED=true`, #176) with an IAM condition on the deployer's own binding:
-> `api.getAttribute('iam.googleapis.com/modifiedGrantsByRole', []).hasOnly(['roles/logging.viewer','roles/datastore.user','roles/aiplatform.user','roles/run.builder','roles/monitoring.viewer'])`.
+> Limit it to the six roles the script grants on a project (the engine's three, which the agent and the admin API also get,
+> `roles/run.builder` for the build account, `roles/monitoring.viewer` on the watched project, which the engine's and the
+> admin API's accounts get only with `STARFISH_MONITORING_ENABLED=true`, #176, and `roles/firebaseauth.viewer`, which only the
+> admin API's account gets) with an IAM condition on the deployer's own binding:
+> `api.getAttribute('iam.googleapis.com/modifiedGrantsByRole', []).hasOnly(['roles/logging.viewer','roles/datastore.user','roles/aiplatform.user','roles/run.builder','roles/monitoring.viewer','roles/firebaseauth.viewer'])`.
 > `scripts/setup-github-deploy.sh` applies this condition. The script's own grants stay inside that list (a test
 > checks that every project-level role `deploy-gcp.sh` binds is in it, with the agent, the admin API and the Monitoring signal on too), but this has not been tried: the script reads and writes
 > the whole policy, and a conditioned `getIamPolicy` may need adjusting.
@@ -526,7 +527,7 @@ DRY_RUN=1 DEPLOY_AGENT=1 AGENT_REPO=owner/name VERIFY_ISOLATION=cloud-run-job VE
 `DEPLOY_ADMIN_API=1 ADMIN_API_ORIGINS=https://<your-site>.web.app scripts/deploy-gcp.sh` also deploys a Cloud Run **service**,
 `starfish-admin`, from the ingest job's own image (no second build), under **its own account**, `starfish-admin-api`
 (`ADMIN_SA_NAME`; #146): a public service shares an identity with nothing else. That account holds what one ingest run and a
-retire need, `logging.viewer` on the watched project and `datastore.user` conditioned to Starfish's database, and nothing more:
+retire need, `logging.viewer` on the watched project, `datastore.user` conditioned to Starfish's database and `firebaseauth.viewer` on Starfish's project (every token is checked for revocation with one account lookup; without that role every sign-in gets the same 401, which reads as an expired session), and nothing more:
 no Gemini (ingest makes no model call), no secret but Twilio's when they are given (#37: the phone escalation's webhooks and opt-in routes, `POST /twilio/*` and `POST /api/oncall/people/<id>/send-code|confirm`, all a 404 without them). Two
 actions, both admin-only, both audited, both the functions that already existed (`triggerIngest`, `retireIncident`); with Twilio
 mounted, the two opt-in routes too, admin-only and audited the same way (`sendConfirmationCode`, `confirmNumber`, #172):
@@ -550,7 +551,9 @@ is sent.
 not revoked: a disabled account is refused at once), and
 its uid is all that is believed; whether that uid is an admin is read from `starfish_users/{uid}.roles` on every call,
 so revoking the role stops the next request even though the token lives an hour. One 401 for any bad token, one 403
-for a non-admin; no error text from inside ever leaves. A header token, not a cookie, so another site cannot make a
+for a non-admin; no error text from inside ever leaves. The reason for a 401 is written to the service's own log, not
+sent to the caller (a `WARNING` entry, "admin API refused a call", with the error's code and a bounded message, token-shaped
+strings removed), so a missing Auth permission can be told from an expired session. A header token, not a cookie, so another site cannot make a
 browser send it; browsers are allowed only from `ADMIN_API_ORIGINS`. For a script (the demo's reset), sign a
 dedicated admin account in through the Firebase Auth REST API and send its ID token.
 
@@ -569,7 +572,11 @@ engine's own counts, a failed one says it failed. Order: deploy the service with
 with that URL: `VITE_STARFISH_ADMIN_API_URL=<url> PROJECT_ID=<p> scripts/deploy-web.sh`.
 
 > **Status: written; tested with stubs for every rule and over a real local HTTP server; the deploy plan is pinned by a dry
-> run. Never deployed, and the real token check against Firebase Auth has never run.**
+> run. Deployed once to the demo project on 2026-10-07 from a terminal. The real token check against Firebase Auth ran there: an
+> unauthenticated call got the 401, every sign-in got the same 401 until the service's account was given
+> `roles/firebaseauth.viewer` by hand (the revocation check is an Auth lookup; the script now grants it), and then
+> "Run ingest now" ran from the UI as an admin. Retire, the Twilio routes, App Check and a call from another origin have not
+> been exercised, and `GET /healthz` is not reachable on a `run.app` URL (Google's front end answers it).**
 
 ## Recording the demo: a shorter tick, and a run now (#65)
 
@@ -610,8 +617,8 @@ The ingest path ran once on a real project (the demo project, 2026-10-05); the s
 - **The web UI** deploys to Hosting with `scripts/deploy-web.sh`, from a terminal (run once, on the demo project,
   2026-10-05) or from the Deploy web UI workflow above (never run).
 - **An alert when ingestion stops.** The UI shows it; nothing pages anyone (an item on #6).
-- **The admin API has never been deployed.** It exists ([above](#the-admin-api-run-ingest-now-and-retire-an-incident-63-65)) and the UI has
-  its two buttons, which appear only once the site is built with the service's URL. Without it, for recording a demo, see [the cadence script](#recording-the-demo-a-shorter-tick-and-a-run-now-65).
+- **The admin API has run once, not fully.** It was deployed to the demo project on 2026-10-07 and "Run ingest now" worked from the UI
+  ([above](#the-admin-api-run-ingest-now-and-retire-an-incident-63-65)); Retire has not been tried against it. The UI's two buttons appear only once the site is built with the service's URL. Without it, for recording a demo, see [the cadence script](#recording-the-demo-a-shorter-tick-and-a-run-now-65).
 - **The agent has never run on a real project.** The agent job deploys with `DEPLOY_AGENT=1`, verified by the target's
   CI or by a separate credential-less job ([above](#the-agent-and-where-its-tests-run-74)); `in-process` verification is
   not a sandbox and is for a machine with nothing to protect.

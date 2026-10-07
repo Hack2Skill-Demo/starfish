@@ -216,7 +216,7 @@ src/
   adminApi.ts      the admin API's rules (#63, #65): a Firebase ID token -> uid, admin from the operator record on every call, `POST /api/ingest/run`
                    and `POST /api/incidents/<id>/retire` (with Twilio, the on-call opt-in `send-code`/`confirm`, every admin's attempt audited
                    without the number or the code, #172), one 401, bounded body, CORS allowlist, one ingest at a time. `adminApiServer.ts` is its HTTP
-                   shell, `adminApiCli.ts` the Cloud Run service (`DEPLOY_ADMIN_API=1`): written and tested, never deployed
+                   shell, `adminApiCli.ts` the Cloud Run service (`DEPLOY_ADMIN_API=1`): deployed once to the demo project (2026-10-07), "Run ingest now" run from the UI; Retire and the Twilio routes not yet tried
   operators.ts     grant a person an operator record (the first admin; `pnpm grant-operator --project <id>`, which refuses if the shell's project differs and reads the store before creating an account); the closed collection can't be written from the UI
   status.ts        judges the engine's last_run record (`pnpm status`): the same verdicts as the UI's engine line
   (repo root)      Dockerfile = the engine image the Cloud Run job runs; scripts/deploy-gcp.sh deploys it
@@ -312,7 +312,7 @@ React 19, Vite, Tailwind 4, react-router, TanStack Query; Starfish's own theme i
   (`STARFISH_DATABASE_ID` / `VITE_STARFISH_DATABASE_ID`), which `firebase.json` targets for
   rules and indexes. Never deploy `firestore.rules` to the watched app's database: a rules
   file governs a whole database and would replace the app's own rules.
-- **Admin controls:** an admin sees "Run ingest now" (Incidents) and "Retire" (an incident) when the build has `VITE_STARFISH_ADMIN_API_URL`; they call the admin API with the ID token (`web/src/lib/adminApi.ts`, `components/AdminActions.tsx`). Hiding them is not the gate: the API re-checks the role. Built and unit-tested; never run against a deployed service.
+- **Admin controls:** an admin sees "Run ingest now" (Incidents) and "Retire" (an incident) when the build has `VITE_STARFISH_ADMIN_API_URL`; they call the admin API with the ID token (`web/src/lib/adminApi.ts`, `components/AdminActions.tsx`). Hiding them is not the gate: the API re-checks the role. Built and unit-tested; "Run ingest now" has run once against the deployed service (2026-10-07), Retire has not.
 - **Engine status:** Overview, Incidents and Runs show a line from `{runCollection}/last_run` (`web/src/lib/engineStatus.ts`):
   failed, stopped (older than `VITE_STARFISH_STALE_MINUTES`), capped, or never recorded. Read errors say nothing. When the
   job knows its schedule (`STARFISH_INGEST_SCHEDULE`, set by the deploy and cadence scripts) it records the interval, and the

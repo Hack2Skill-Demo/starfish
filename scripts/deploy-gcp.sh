@@ -727,14 +727,16 @@ if [ "$DEPLOY_ADMIN_API" = "1" ]; then
     [ -n "$ADMIN_IMAGE" ] || die "could not read the image of job $JOB_NAME"
   fi
   # Its own account (#146): a public service should not share an identity with anything else. It holds what one ingest
-  # run and a retire need (src/adminApiCli.ts: Firebase Auth's public keys need no role; the watched project's logs;
-  # Starfish's database, read and write) and nothing more: no Gemini (ingest makes no model call), and no secret but
-  # Twilio's when they are given (#37: it serves Twilio's webhooks and texts the opt-in codes).
+  # run and a retire need (src/adminApiCli.ts: Firebase Auth read, because every token is checked for revocation with
+  # one account lookup; the watched project's logs; Starfish's database, read and write) and nothing more: no Gemini
+  # (ingest makes no model call), and no secret but Twilio's when they are given (#37: it serves Twilio's webhooks and
+  # texts the opt-in codes). Without the Auth role every sign-in gets the same 401, which reads as an expired session.
   if ! exists gcloud iam service-accounts describe "$ADMIN_SA" --project="$PROJECT_ID"; then
     run gcloud iam service-accounts create "$ADMIN_SA_NAME" --project="$PROJECT_ID" \
       --display-name="Starfish admin API (run ingest now, retire)"
   fi
   bind "$WATCHED_PROJECT_ID" "$ADMIN_SA" roles/logging.viewer
+  bind "$PROJECT_ID" "$ADMIN_SA" roles/firebaseauth.viewer   # verifyIdToken(token, true) looks the account up
   # "Run ingest now" is the same ingest, so with the Monitoring signal on it reads the same metrics (#19).
   if [ "$STARFISH_MONITORING_ENABLED" = "true" ]; then
     bind "$WATCHED_PROJECT_ID" "$ADMIN_SA" roles/monitoring.viewer

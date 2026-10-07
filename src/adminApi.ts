@@ -60,9 +60,26 @@ export interface ApiResponse {
   text?: string;
 }
 
+/**
+ * A short account of why a token was refused, for the service's own log and never for the caller: the error's code and
+ * its message, cut to a bound, with every long run of token characters removed so a credential cannot reach the log.
+ */
+export function refusalReason(e: unknown): string {
+  const code = typeof (e as { code?: unknown } | null)?.code === "string" ? (e as { code: string }).code : "";
+  const message = e instanceof Error ? e.message : typeof e === "string" ? e : "";
+  const text = `${code} ${message}`.replace(/[A-Za-z0-9._~+/=-]{40,}/g, "[removed]").replace(/\s+/g, " ").trim();
+  return text.slice(0, 300) || "refused";
+}
+
 export interface AdminApiDeps {
   /** The uid in a valid Firebase ID token; throws for anything else. */
   verifyToken(idToken: string): Promise<{ uid: string }>;
+  /**
+   * Told why a call got the 401, so an operator can tell a missing Auth permission from an expired session. The reason
+   * is a short, bounded string with anything token-shaped removed (`refusalReason`); it never reaches the caller, who
+   * only ever sees the one message. Absent: nothing is recorded. A throw here is swallowed.
+   */
+  onRefused?(reason: string): void;
   runIngest(actorUid: string): Promise<TriggerResult>;
   retire(incidentId: string, actorUid: string, reason: string): Promise<RetireResult>;
   /**
@@ -155,7 +172,12 @@ export function createAdminApi(deps: AdminApiDeps): (req: ApiRequest) => Promise
       }
       if (!match) throw new Error("no token");
       uid = (await deps.verifyToken(match[1]!)).uid;
-    } catch {
+    } catch (e) {
+      try {
+        deps.onRefused?.(refusalReason(e));
+      } catch {
+        // Recording why must never change the answer.
+      }
       return reply(401, { error: "sign in again" });
     }
 
