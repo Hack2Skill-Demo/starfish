@@ -19,7 +19,6 @@ import { selectCandidates } from "./pass.js";
 import { FIX_SYSTEM } from "./fixer.js";
 import { verifyPatch } from "./verifyGate.js";
 import { REVIEW_SYSTEM } from "./reviewer.js";
-import { verifyPatch } from "./verifyGate.js";
 import { TRIAGE_SYSTEM, type AskJson } from "./triage.js";
 import { SEEDED_SECRETS } from "../ingest/testSecrets.js";
 import { testConfig } from "../testConfig.js";
