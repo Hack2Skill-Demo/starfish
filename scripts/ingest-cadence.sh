@@ -21,8 +21,9 @@
 #
 # `now` runs the same job a schedule tick would (same windows, checkpoint and last-run record), so two runs started
 # together converge instead of double-counting (scenario ING-13). It is NOT the admin-only, audited trigger #65 asks
-# for: whoever holds roles/run.developer on the job can do this. That trigger (src/ingest/trigger.ts has the function
-# behind it) still needs an authenticated endpoint.
+# for: whoever holds roles/run.developer on the job can do this. That trigger is the admin API's POST /api/ingest/run
+# (src/adminApi.ts over src/ingest/trigger.ts; DEPLOY_ADMIN_API=1 in scripts/deploy-gcp.sh): built and tested, never
+# deployed.
 # Needs: gcloud, and roles to update the Scheduler job (`recording`/`restore`) or run the Cloud Run job (`now`).
 set -euo pipefail
 

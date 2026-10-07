@@ -24,13 +24,14 @@ on:
       - '!web/**/*.test.ts'
       - '!web/**/*.test.tsx'
       - 'src/settingsSchema.ts'
+      - 'src/oncallSchema.ts'
       - 'firebase.json'
       - 'scripts/deploy-web.sh'
       - '.github/workflows/deploy-web.yml'
   workflow_dispatch:
     inputs:
       dry_run:
-        description: Print the plan and change nothing (still builds and signs in, so it proves the Workload Identity setup)
+        description: Print the plan and change nothing (the build is printed, not run); two read-only gcloud calls check the Workload Identity sign-in
         type: boolean
         default: false
 
@@ -88,6 +89,23 @@ jobs:
         with:
           workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
           service_account: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
+
+      # gcloud for the check below, and for the script's own calls (linking a site to its web app, the uptime check).
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+
+      # In a dry run the script's reads fail open (a read it cannot make is planned as "missing"), and the auth step above
+      # only writes a credentials file, so neither shows that the sign-in works. These two read-only calls do, and fail
+      # the run when it does not: Google exchanges this job's OIDC token at the Workload Identity provider (this
+      # repository, the `deploy` environment), the deployer account is impersonated, and that account reads the project
+      # and its own account. Nothing else is checked: not the roles the deploy itself needs. Never run.
+      - name: Check the sign-in (dry run only)
+        if: inputs.dry_run
+        env:
+          PROJECT_ID: ${{ vars.STARFISH_GCP_PROJECT_ID }}
+          GCP_DEPLOY_SERVICE_ACCOUNT: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
+        run: |
+          gcloud projects describe "$PROJECT_ID" --format='value(projectId)'
+          gcloud iam service-accounts describe "$GCP_DEPLOY_SERVICE_ACCOUNT" --project="$PROJECT_ID" --format='value(email)'
 
       # Values reach the script through the environment, never by interpolation into the shell text.
       # An unset variable is an empty string, which the script treats as "use my default".

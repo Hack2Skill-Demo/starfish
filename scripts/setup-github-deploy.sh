@@ -26,7 +26,7 @@
 # repository and no other environment can present a token), the deployer account, and the roles docs/deploy.md lists.
 # What it does NOT make: a key (none exists), the GitHub environment, or the repository variables: it prints them for you.
 #
-# The deployer is powerful, and bounded (#145). Granting roles on the project is limited by an IAM condition to the four
+# The deployer is powerful, and bounded (#145). Granting roles on the project is limited by an IAM condition to the five
 # the deploy script binds. Service accounts: it may create and read them (a custom role), never set their IAM policy,
 # except on the agent's own account with cloud-run-job. Secrets and buckets: only Starfish's, by name, through conditions.
 # What is still project-wide: Cloud Run, Cloud Build, Artifact Registry, Scheduler, Firestore and the rules (the table in
@@ -173,8 +173,9 @@ bucket_is() { echo "resource.name == \"projects/_/buckets/$1\" || resource.name.
 BUCKETS="resource.name.startsWith(\"projects/_/buckets/run-sources-$PROJECT_ID-\") || $(bucket_is "${PROJECT_ID}_cloudbuild")"
 [ "$VERIFY_ISOLATION" != "cloud-run-job" ] || BUCKETS="$BUCKETS || $(bucket_is "$VERIFY_BUCKET")"
 bind "$PROJECT_ID" roles/storage.admin "$BUCKETS"
-# Granting roles is limited to the four the deploy script binds: the deployer cannot hand itself, or anyone, any other.
-GRANTABLE="api.getAttribute('iam.googleapis.com/modifiedGrantsByRole', []).hasOnly(['roles/logging.viewer','roles/datastore.user','roles/aiplatform.user','roles/run.builder'])"
+# Granting roles is limited to the five the deploy script binds (roles/monitoring.viewer only with STARFISH_MONITORING_ENABLED=true,
+# #176): the deployer cannot hand itself, or anyone, any other.
+GRANTABLE="api.getAttribute('iam.googleapis.com/modifiedGrantsByRole', []).hasOnly(['roles/logging.viewer','roles/datastore.user','roles/aiplatform.user','roles/run.builder','roles/monitoring.viewer'])"
 bind "$PROJECT_ID" roles/resourcemanager.projectIamAdmin "$GRANTABLE"
 for other in "$WATCHED_PROJECT_ID" "$VERTEX_PROJECT_ID"; do
   [ "$other" != "$PROJECT_ID" ] || continue
@@ -223,8 +224,11 @@ cat <<NEXT
      STARFISH_ENV                   = (the label you deployed with, e.g. demo)
      STARFISH_WEB_HOSTING_SITE      = (your Hosting site, e.g. ocean-starfish)
      STARFISH_SCHEDULE              = (e.g. */5 * * * *; empty means hourly)
-     STARFISH_EXTRA_ENV_VARS        = (e.g. STARFISH_EXCLUDED_SERVICES=starfish,starfish-ingest,starfish-agent,traffic-*,control-*,stub-*)
+     STARFISH_EXTRA_ENV_VARS        = (e.g. STARFISH_EXCLUDED_SERVICES=starfish,starfish-ingest,starfish-agent,starfish-admin,traffic-*,control-*,stub-*)
+     STARFISH_DEPLOY_ADMIN_API      = (1 to deploy the admin API too, with STARFISH_ADMIN_API_ORIGINS = https://<your site>.web.app)
 3. To deploy on every merge to main that changes what runs, also set:   STARFISH_DEPLOY_ON_MERGE = true
    Until you do, the workflows only run when you start them (Actions > Deploy engine / Deploy web UI > Run workflow).
-4. Try it first: Actions > Deploy engine > Run workflow, with "dry_run" ticked. It signs in, so it proves this setup.
+4. Try it first: Actions > Deploy engine > Run workflow, with "dry_run" ticked. Besides printing the plan, it makes two read-only
+   calls as the deployer (describe the project, describe the deployer account), which fail the run unless the pool, the
+   provider and the workloadIdentityUser binding work. They do not check the deployer's other roles: the first real run does.
 NEXT

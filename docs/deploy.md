@@ -3,10 +3,11 @@
 `scripts/deploy-gcp.sh` puts the ingest on Google Cloud: a Cloud Run **job** that Cloud Scheduler
 starts on a cron, under its own service account, with the image built from the `Dockerfile`.
 
-> **Status: written and tested, not deployed.** The script's plan is pinned by
-> `scripts/deploy-gcp.test.mjs` (a dry run), and CI builds the image. It has **not** been run
-> against a real project, so the first real run may need a fix. Issue #6 stays open until a
-> scheduled run writes incidents that the UI shows.
+> **Status: the ingest part has run once, on the demo project (2026-10-05)**, from a terminal: the ingest job and its
+> schedule, followed by the smoke test (`scripts/smoke-gcp.sh`). The agent job
+> (`DEPLOY_AGENT=1`), the verify job and the admin API (`DEPLOY_ADMIN_API=1`) have **never been deployed**, and the
+> GitHub Actions workflows below have **never run**. The script's whole plan is pinned by `scripts/deploy-gcp.test.mjs`
+> (a dry run), and CI builds the image.
 
 ## Run it
 
@@ -24,6 +25,16 @@ all): `PROJECT_ID`, `REGION`, `WATCHED_PROJECT_ID`, `VERTEX_PROJECT_ID`, `STARFI
 `SCHEDULE='*/5 * * * *'`; the default is hourly. It is idempotent: run it again to ship a new
 image or change the schedule. Each name may appear once in a job's settings: an `EXTRA_ENV_VARS` entry that repeats a name the
 script sets (or one set twice) is refused before anything changes, so a setting is never silently replaced (#147).
+
+**Taking a name out of `EXTRA_ENV_VARS` or `AGENT_EXTRA_ENV_VARS` does not unset it.** Every job is deployed with
+`gcloud ... --update-env-vars`, which changes the names it is given and keeps every other one as it was deployed. So the
+switches that let Starfish act on its own are always set by the script, to the engine's default, unless a list sets them
+(#174): `STARFISH_AUTO_MERGE=false`, `STARFISH_AUTO_MERGE_TARGETS=` (none), `STARFISH_PHONE_ESCALATION=false`,
+`STARFISH_INDEX_AUTO_APPLY=false`, `STARFISH_INDEX_ALLOWED_TARGETS=` (none), `STARFISH_REVIEW_REQUIRED=true`, on every job
+the run deploys, and `STARFISH_DRY_RUN=true` on the agent. Remove one from the list and the next deploy turns it off. Any
+other name keeps its last deployed value when it leaves a list: to undo it, set it to its default
+(`.env.example`) instead of deleting it. The script does not switch to `--set-env-vars`, which would replace the whole set:
+whether that leaves the secrets mounted with `--update-secrets` in place has not been checked.
 `STARFISH_MONITORING_ENABLED=true` turns on the Cloud Monitoring failure signal (#19): the script sets it on the ingest
 job (and the admin API) and only then grants their accounts `roles/monitoring.viewer` on the watched project and enables
 the Monitoring API there. It is refused in `EXTRA_ENV_VARS`, so the setting and its role can't disagree. Turning it off
@@ -119,10 +130,14 @@ protection rule or a ruleset on the repository, including who may bypass it.
 
 The engine's job logs under `cloud_run_job`; the default log resource types are `cloud_function` and
 `cloud_run_revision`. So with the defaults Starfish does not ingest its own failures. As a second guard,
-the deploy sets `STARFISH_EXCLUDED_SERVICES=starfish,<job name>` on the job (#32: matched on the exact
+the deploy sets `STARFISH_EXCLUDED_SERVICES=starfish,<job name>,<admin API service>` on the job (#32: matched on the exact
 name, not a prefix; a trailing `*` in the list does exclude a prefix, such as the demo app's `control-*`), so adding `cloud_run_job` to `STARFISH_LOG_RESOURCE_TYPES` later still would not make
-the engine read itself. An explicit `STARFISH_EXCLUDED_SERVICES` in `EXTRA_ENV_VARS` replaces it, so keep the defaults in it: for the demo app,
-`EXTRA_ENV_VARS='STARFISH_EXCLUDED_SERVICES=starfish,starfish-ingest,starfish-agent,traffic-*,control-*,stub-*'` (the entries
+the engine read itself. The admin API's service name (`starfish-admin`, `ADMIN_SERVICE_NAME`) is in that list on every
+deploy, with or without `DEPLOY_ADMIN_API=1` (#177): a later run that leaves the admin API out (the Actions workflow
+without `STARFISH_DEPLOY_ADMIN_API`, say) must not start ingesting the service an earlier run deployed, and a name no
+service has costs nothing. The agent's list adds the agent job and, with `cloud-run-job`, the verify job.
+An explicit `STARFISH_EXCLUDED_SERVICES` in `EXTRA_ENV_VARS` replaces it, so keep the defaults in it: for the demo app,
+`EXTRA_ENV_VARS='STARFISH_EXCLUDED_SERVICES=starfish,starfish-ingest,starfish-agent,starfish-admin,traffic-*,control-*,stub-*'` (the entries
 are separated by `@`, which the script adds: no leading or trailing `@`).
 
 ## After the first deploy
@@ -234,10 +249,12 @@ set them for `setup-github-deploy.sh` as you set them for the deploy.
 there, see "The build is denied" below.
 
 > **`projectIamAdmin` is the powerful one.** A principal that can set IAM policy can grant itself anything.
-> Limit it to the four roles the script grants on a project (the engine's three, which the agent and the admin API also get, and `roles/run.builder` for the build account) with an IAM condition on the deployer's own binding:
-> `api.getAttribute('iam.googleapis.com/modifiedGrantsByRole', []).hasOnly(['roles/logging.viewer','roles/datastore.user','roles/aiplatform.user','roles/run.builder'])`.
+> Limit it to the five roles the script grants on a project (the engine's three, which the agent and the admin API also get,
+> `roles/run.builder` for the build account, and `roles/monitoring.viewer` on the watched project, which the engine's and the
+> admin API's accounts get only with `STARFISH_MONITORING_ENABLED=true`, #176) with an IAM condition on the deployer's own binding:
+> `api.getAttribute('iam.googleapis.com/modifiedGrantsByRole', []).hasOnly(['roles/logging.viewer','roles/datastore.user','roles/aiplatform.user','roles/run.builder','roles/monitoring.viewer'])`.
 > `scripts/setup-github-deploy.sh` applies this condition. The script's own grants stay inside that list (a test
-> checks that every project-level role `deploy-gcp.sh` binds is in it, with the agent and the admin API deployed too), but this has not been tried: the script reads and writes
+> checks that every project-level role `deploy-gcp.sh` binds is in it, with the agent, the admin API and the Monitoring signal on too), but this has not been tried: the script reads and writes
 > the whole policy, and a conditioned `getIamPolicy` may need adjusting.
 >
 > **The condition only governs the project's own policy.** A grant on a service account, a secret, a bucket or a Cloud Run job
@@ -271,6 +288,7 @@ defaults when empty.
 | `STARFISH_DEPLOY_AGENT`, `STARFISH_AGENT_REPO` | `DEPLOY_AGENT`, `AGENT_REPO` | set `1` and `owner/name` to deploy the agent too ([below](#the-agent-and-where-its-tests-run-74)); default off |
 | `STARFISH_VERIFY_ISOLATION`, `STARFISH_VERIFY_CHECKS`, `STARFISH_VERIFY_COMMAND` | `VERIFY_ISOLATION`, `VERIFY_CHECKS`, `VERIFY_COMMAND` | `github-actions` (default) with the check names that must pass, or `cloud-run-job` with a command |
 | `STARFISH_VERIFY_TIMEOUT_SECONDS`, `STARFISH_VERIFY_BUCKET`, `STARFISH_AGENT_BASE_BRANCH`, `STARFISH_AGENT_SCHEDULE`, `STARFISH_AGENT_EXTRA_ENV_VARS` | `VERIFY_TIMEOUT_SECONDS`, `VERIFY_BUCKET`, `AGENT_BASE_BRANCH`, `AGENT_SCHEDULE`, `AGENT_EXTRA_ENV_VARS` | default 600, `<project>-starfish-verify`, `main`, `30 * * * *` |
+| `STARFISH_DEPLOY_ADMIN_API`, `STARFISH_ADMIN_API_ORIGINS` | `DEPLOY_ADMIN_API`, `ADMIN_API_ORIGINS` | set `1` and the site's origin to deploy the admin API too ([below](#the-admin-api-run-ingest-now-and-retire-an-incident-63-65)); default off. Its service name is kept out of ingest either way (#177) |
 
 `BUDGET_USD` and `BILLING_ACCOUNT` are not wired: a budget lives on the billing account, which the deployer
 has no role on. Create the budget once from a terminal (`docs/setup.md`).
@@ -282,19 +300,29 @@ part least likely to work first time; if it fails, deploy once with the box tick
 **What the run log holds:** the script's own progress lines and `gcloud` output. The workflow never turns on
 shell tracing, passes no secret, and the auth step writes a credentials *file* that refers to the token exchange rather
 than holding a key. A real run is the check that no value leaks, and it has not happened (#75's done-when).
-A `dry_run` still signs in, so it is the cheapest proof that the pool, provider and bindings work before the
-deployer has any project role.
+
+**What a `dry_run` checks (#175).** The script's dry run makes no `gcloud` call, and the auth step only writes a
+credentials file, so neither touches Google. A `dry_run` therefore adds one step before the script, "Check the sign-in",
+with two read-only calls that fail the run if they fail: `gcloud projects describe "$PROJECT_ID"` and
+`gcloud iam service-accounts describe <the deployer> --project="$PROJECT_ID"`. They pass only if Google accepts this job's
+OIDC token at the provider (this repository's id, the `deploy` environment), the job may act as the deployer
+(`roles/iam.workloadIdentityUser`), and the deployer may read the project (`resourcemanager.projects.get`) and its own
+account (`iam.serviceAccounts.get`, in `starfishDeployer`). They check none of the other roles the deploy needs: the
+first real run is that check. This step has never run.
 
 ## Deploy the web UI from GitHub Actions (#92)
 
 `.github/workflows/deploy-web.yml` runs `scripts/deploy-web.sh`, unchanged: **Actions → Deploy web UI → Run
 workflow**. It uses the same Workload Identity pool, provider, `starfish-deployer` account and `deploy`
 environment as the engine deploy above, so there is nothing new to set up in the pool; it runs by hand, or on a push to `main` that
-changes `web/` when `STARFISH_DEPLOY_ON_MERGE` is `true`; keyless, uses no GitHub secret, and has the same decisions on trigger and approval (follow whatever you
+changes `web/` or an engine file the UI bundles (`src/settingsSchema.ts`, `src/oncallSchema.ts`; a test derives the list from
+the UI's imports, #178) when `STARFISH_DEPLOY_ON_MERGE` is `true`; keyless, uses no GitHub secret, and has the same decisions on trigger and approval (follow whatever you
 chose for the engine). Unlike the engine deploy it runs `pnpm install --frozen-lockfile` first, because it builds the UI.
+Its `dry_run` prints the plan, the build included, without running it, and makes the same two read-only sign-in calls as
+the engine's (above); the script's own reads in a dry run fail open, so they check nothing.
 
-> **Status: written and pinned by a test (`scripts/deploy-workflow.test.mjs`), never run, and the script itself
-> has only been dry-run tested.** Whether the Firebase CLI accepts the federated credentials the auth step
+> **Status: written and pinned by a test (`scripts/deploy-workflow.test.mjs`), never run. The script itself ran once
+> from a terminal, on the demo project (2026-10-05).** Whether the Firebase CLI accepts the federated credentials the auth step
 > writes (Application Default Credentials) is **not verified**; that is the first thing a run will show. If it
 > does not, the fallback is still `firebase login` and `scripts/deploy-web.sh` from a terminal.
 
@@ -302,8 +330,8 @@ chose for the engine). Unlike the engine deploy it runs `pnpm install --frozen-l
 will name what is missing): Firebase Hosting Admin (`roles/firebasehosting.admin`) to create the site and release
 to it (and to link an existing site to the web app, below), and a role holding `firebase.apps.create` for the
 one-time web-app registration (the script registers a web app named `starfish` when the project has none by that
-name). Keep both off the engine's runtime identity. Linking an existing site also needs `gcloud` signed in on the
-runner, which this workflow does not set up; until it does, link the site once from a terminal or the console.
+name). Keep both off the engine's runtime identity. Linking an existing site also uses `gcloud`, which the workflow sets
+up with the federated credentials (never run); if that call fails, link the site once from a terminal or the console.
 
 **The site must be linked to a web app (#156).** On a Hosting site that is not the project's default one,
 `/__/firebase/init.json` carries the config of the web app linked to that site; with none linked it has no `appId`
@@ -528,8 +556,10 @@ dedicated admin account in through the Firebase Auth REST API and send its ID to
 
 **It is public on the network on purpose** (`--allow-unauthenticated`: a browser must reach it, so Cloud Run's own IAM check
 cannot be the gate), capped at two instances, with no rate limit beyond that. An organisation policy that forbids public
-services will refuse the deploy line. Its name is added to `STARFISH_EXCLUDED_SERVICES` so its own errors are never ingested; an
-explicit list in `EXTRA_ENV_VARS` replaces that default, and the script warns if it leaves the service out.
+services will refuse the deploy line. Its name is in the default `STARFISH_EXCLUDED_SERVICES` of every deploy, with or without
+`DEPLOY_ADMIN_API=1` (#177), so its own errors are never ingested; an explicit list in `EXTRA_ENV_VARS` replaces that default,
+and the script warns if it leaves the service out (on a run that deploys it). From GitHub Actions, set the repository variables
+`STARFISH_DEPLOY_ADMIN_API=1` and `STARFISH_ADMIN_API_ORIGINS`.
 
 **The buttons.** The web UI shows an admin "Run ingest now" on the Incidents page and "Retire" on an incident, only when the site is
 built with `VITE_STARFISH_ADMIN_API_URL=<the service URL>` (a bad or non-https value shows nothing). They send the signed-in admin's
@@ -577,8 +607,8 @@ The ingest path ran once on a real project (the demo project, 2026-10-05); the s
 
 ## Not covered
 
-- **The web UI** deploys to Hosting with `scripts/deploy-web.sh`, from a terminal or from the Deploy web UI
-  workflow above (never run).
+- **The web UI** deploys to Hosting with `scripts/deploy-web.sh`, from a terminal (run once, on the demo project,
+  2026-10-05) or from the Deploy web UI workflow above (never run).
 - **An alert when ingestion stops.** The UI shows it; nothing pages anyone (an item on #6).
 - **The admin API has never been deployed.** It exists ([above](#the-admin-api-run-ingest-now-and-retire-an-incident-63-65)) and the UI has
   its two buttons, which appear only once the site is built with the service's URL. Without it, for recording a demo, see [the cadence script](#recording-the-demo-a-shorter-tick-and-a-run-now-65).
