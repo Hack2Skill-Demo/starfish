@@ -17,8 +17,9 @@
  *   - no path, and no changed line of the source file, hits the hard-exclude list: auth or access control, security
  *     rules, money paths, secrets and crypto, schema, dependencies and lockfiles, imports, CI and deploy config,
  *     shared packages, or anything the deployment excludes from patches (`patchExcludedPaths`) or from auto-merge
- *     (`autoMergeExcludedPaths`). Access control is also checked on the hunk's unchanged context lines: a guard added
- *     right above an ownership check is a change to that check (#202);
+ *     (`autoMergeExcludedPaths`). Access control is also checked on the hunk's unchanged context lines that decide
+ *     something (a comparison, a condition, a return or a throw): a guard added right above an ownership check is a
+ *     change to that check (#202);
  *   - every changed block of the source file is ONE allowed class, the same one throughout:
  *       null-guard                 an early exit added when a value is missing (`if (!order) return null;`): `return;`,
  *                                  `return null`, `return undefined` or a `throw`, never a value that changes what the
@@ -259,6 +260,14 @@ const LINE_RULES: readonly [string, RegExp][] = [
 ];
 
 const ACCESS_CONTROL_LINE = LINE_RULES.find(([category]) => category === "access-control")![1];
+/**
+ * A context line that DECIDES something: a comparison, a condition, a boolean operator, a return or a throw. With an
+ * access-control word on it (`return doc.ownerId === user.uid;`, `if (!context.auth)`) it is an authorization check, and
+ * a guard added next to it changes that check (#202). A line that only carries such a word (`uid,` in a write) does not
+ * decide anything, and is left to the changed-line rule.
+ */
+const DECIDING_LINE = /[!=]==?|[<>]=?|&&|\|\||\?|\b(if|return|throw|while|case)\b/;
+const isAccessCheck = (text: string) => ACCESS_CONTROL_LINE.test(text) && DECIDING_LINE.test(text);
 
 export function excludedLineCategories(text: string): string[] {
   return LINE_RULES.filter(([, re]) => re.test(text)).map(([category]) => category);
@@ -490,7 +499,7 @@ export function assessBlastRadius(patch: string, cfg: BlastRadiusConfig): BlastR
   for (const l of [...added, ...removed]) for (const c of excludedLineCategories(l.text)) problems.add(`excluded:${c}`);
   // The lines around the change are what it changes the meaning of: an early exit right above an ownership check is a
   // change to that check, whatever the guard's own line says (#202).
-  if (lines.some((l) => l.kind === " " && ACCESS_CONTROL_LINE.test(l.text))) problems.add("excluded:access-control");
+  if (lines.some((l) => l.kind === " " && isAccessCheck(l.text))) problems.add("excluded:access-control");
 
   // Blocks of consecutive changed lines: each must be one class, and all the same one.
   const classes = new Set<FixClass | null>();

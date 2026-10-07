@@ -108,6 +108,12 @@ describe("assessBlastRadius: never on unsure (adversarial diffs)", () => {
 
   it("refuses a guard whose context is an ownership check: the guard changes what that check decides (#202)", () => {
     refused(diff(SRC, ["  const doc = await get(id);", "+  if (!doc) return null;", "   return doc.ownerId === user.uid;"]), "excluded:access-control");
+    refused(diff(SRC, ["  if (!context.auth) throw new HttpsError(\"unauthenticated\");", "+  if (!order) return null;", "   return order.total;"]), "excluded:access-control");
+  });
+
+  it("does not take a context line that only carries an access word for a check: the order's owner written with it", () => {
+    const write = diff(SRC, ["  await ref.set({", "    uid,", "    items: input.items,", "-    couponCode: input.couponCode,", "+    ...(input.couponCode !== undefined && { couponCode: input.couponCode }),", "    status: \"pending\",", "  });"]);
+    expect(gate(write)).toMatchObject({ allowed: true, fixClass: "firestore-undefined-field" });
   });
 
   it("refuses a line changed beyond the class", () => {

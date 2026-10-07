@@ -63,8 +63,9 @@ matches path words (access control includes owner, guard, policy, App Check, ver
 changed lines: auth and access control, security rules, money paths, secrets and crypto, schema,
 dependencies and lockfiles (and any import or require), CI and deploy config, shared packages, plus
 `STARFISH_PATCH_EXCLUDED_PATHS` and `STARFISH_AUTO_MERGE_EXCLUDED_PATHS`. Access control is also
-matched on the hunk's unchanged context lines: a guard right above an ownership check changes that
-check. It is a word match, not a proof. Unsure is never allowed.
+matched on the hunk's unchanged context lines that decide something (a comparison, a condition, a
+`return` or a `throw`): a guard right above an ownership check changes that check. It is a word
+match, not a proof. Unsure is never allowed.
 
 **Gate 2 as built.** All five from the run record: (1) structural cause: triage decided `act`, the
 fixer proposed, and the incident's own stack trace names the changed file, matched against the
