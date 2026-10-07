@@ -197,6 +197,22 @@ describe("StarfishAuthProvider", () => {
     mocks.auth.currentUser = { getIdToken: mocks.getIdToken };
     renderProvider();
     await waitFor(() => expect(mocks.authSignOut).toHaveBeenCalled());
+    expect(mocks.queryClear).toHaveBeenCalled();
+  });
+
+  it("clears the signed-in operator's cached data when the session ends however it ends, so a guest after them sees none of it (#195)", async () => {
+    renderProvider();
+    await act(() => mocks.tokenListener!({ uid: "op-1", isAnonymous: false }));
+    expect(mocks.queryClear).not.toHaveBeenCalled();
+    // Signed out from elsewhere (another tab, a revoked token): only the null token event arrives here.
+    await act(() => mocks.tokenListener!(null));
+    expect(mocks.queryClear).toHaveBeenCalledTimes(1);
+    await act(() => mocks.tokenListener!({ uid: "guest-1", isAnonymous: true }));
+    expect(mocks.queryClear).toHaveBeenCalledTimes(1);
+    // A null event with nobody signed in before has nothing to clear.
+    await act(() => mocks.tokenListener!(null));
+    await act(() => mocks.tokenListener!(null));
+    expect(mocks.queryClear).toHaveBeenCalledTimes(2);
   });
 
   it("treats permission-denied as definitive, not network", () => {

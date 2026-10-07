@@ -8,7 +8,8 @@
  *   2. the target guard (allowlist, never Starfish's own database);
  *   3. the switches: `indexAutoApply` explicitly on, `dryRun` off, the automation switch on;
  *   4. the live inventory (read-only): an equal index that exists or is still building is reconciled, never created twice,
- *      which is also how a crash after a create is recovered: the next run finds the building index;
+ *      which is also how a crash after a create is recovered: the next run finds the building index (and, when this cycle
+ *      persisted the create's operation, reports it as created by the cycle, with that operation);
  *   5. an operation an earlier attempt of this cycle already started (`opts.priorOperation`): waited on, never repeated;
  *   6. the per-target daily cap, then the database's index count (the Admin API's inventory of every collection group):
  *      at or above the configured limit nothing is created and a person decides (Firestore caps indexes per database);
@@ -153,8 +154,11 @@ async function heal(errorText: string, settings: HealSettings, deps: HealDeps, o
     return { outcome: "dry-run", spec, repoFile, live: live === undefined ? "absent" : live.state === "READY" ? "ready" : "building", probe };
   }
 
-  if (live?.state === "READY") return { outcome: "ready", spec, repoFile, created: false, probe: "not-configured" };
-  if (live !== undefined) return waitForIndex(spec, repoFile, settings, deps);
+  // An earlier attempt of this cycle whose create returned an operation did create it, even when the inventory is what
+  // finds it now (#191): a resumed heal reports that, with the operation, rather than "already there".
+  const earlier: Earlier = opts.priorOperation !== undefined ? { created: true, operation: opts.priorOperation } : { created: false };
+  if (live?.state === "READY") return { outcome: "ready", spec, repoFile, ...earlier, probe: "not-configured" };
+  if (live !== undefined) return waitForIndex(spec, repoFile, settings, deps, earlier);
   // An earlier attempt created it and persisted the operation, and the inventory does not show it yet: wait on that.
   if (opts.priorOperation !== undefined) return waitForOperation(spec, repoFile, opts.priorOperation, settings, deps);
   if (opts.priorAttempt === true) {
@@ -205,16 +209,20 @@ async function waitForOperation(spec: IndexSpec, repoFile: RepoFileState, operat
   }
 }
 
+/** Whether an earlier attempt of this cycle created the index the inventory shows, and its operation when it did. */
+type Earlier = { created: true; operation: string } | { created: false };
+
 /** An equal index was already building (an earlier attempt, or someone else): wait on its state, creating nothing. */
-async function waitForIndex(spec: IndexSpec, repoFile: RepoFileState, s: HealSettings, deps: HealDeps): Promise<HealOutcome> {
+async function waitForIndex(spec: IndexSpec, repoFile: RepoFileState, s: HealSettings, deps: HealDeps, earlier: Earlier): Promise<HealOutcome> {
+  const op = earlier.created ? { operation: earlier.operation } : {};
   const deadline = deps.now() + s.maxWaitMs;
   for (;;) {
     await deps.sleep(s.pollMs);
     const found = (await deps.admin.list(spec)).find((l) => sameIndex(spec, l));
-    if (found?.state === "READY") return { outcome: "ready", spec, repoFile, created: false, probe: "not-configured" };
+    if (found?.state === "READY") return { outcome: "ready", spec, repoFile, ...earlier, probe: "not-configured" };
     if (found === undefined || found.state === "NEEDS_REPAIR") {
-      return { outcome: "build-failed", spec, reason: "The index that was building is gone or needs repair." };
+      return { outcome: "build-failed", spec, ...op, reason: "The index that was building is gone or needs repair." };
     }
-    if (deps.now() >= deadline) return { outcome: "timeout", spec };
+    if (deps.now() >= deadline) return { outcome: "timeout", spec, ...op };
   }
 }

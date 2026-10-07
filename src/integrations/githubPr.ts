@@ -389,7 +389,7 @@ export function indexPullRequestText(req: PullRequestRequest, index: IndexEviden
     "",
     index.created
       ? `Starfish created that one index in ${where} with a single Admin API call, waited until it was READY, and replayed the configured query, which now succeeds.`
-      : `That index already exists in ${where} and is READY (it was not created by this run), and the configured query now succeeds.`,
+      : `That index already exists in ${where} and is READY (this cycle has no recorded create operation for it), and the configured query now succeeds.`,
     "",
     `This pull request ${index.fileCreated ? "creates" : "adds the same entry to"} \`${code(index.indexFile, 200)}\`, so the repository matches what is in production. Merging it changes nothing in production by itself.`,
     "",

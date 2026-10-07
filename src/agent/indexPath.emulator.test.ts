@@ -426,9 +426,22 @@ describe("runCycle: the index path across a restart", () => {
 });
 
 describe("observeIndexHeals", () => {
-  const cfg = () => ({ cycleCollection: `cycles_${run}`, incidentCollection: `incidents_${run}`, environment: "demo", ingestLagMinutes: 5 });
+  const cfg = () => ({
+    cycleCollection: `cycles_${run}`,
+    incidentCollection: `incidents_${run}`,
+    runCollection: `runs_${run}`,
+    watchedProjectId: "demo-app-1",
+    environment: "demo",
+    ingestLagMinutes: 5,
+  });
   const readyAt = t0.toISOString();
   const until = new Date(t0.getTime() + 60 * 60_000).toISOString();
+  /** Ingest's checkpoint for the target, as src/ingest/run.ts writes it. */
+  async function ingested(through: Date, target = { watchedProjectId: "demo-app-1", environment: "demo" }) {
+    await db.collection(`runs_${run}`).doc("state").set({ target, checkpoint: Timestamp.fromDate(through) });
+  }
+  // Ingest has read through every window unless a test says otherwise.
+  beforeEach(() => ingested(new Date(t0.getTime() + 65 * 60_000)));
   async function seed(id: string, lastOccurredAt: Date, over: Record<string, unknown> = {}) {
     await db.collection(`incidents_${run}`).doc(id).set({ environment: "demo", lastOccurredAt: Timestamp.fromDate(lastOccurredAt) });
     await db
@@ -495,6 +508,34 @@ describe("observeIndexHeals", () => {
     });
     expect(r.errors).toHaveLength(1);
     expect((await db.collection(`cycles_${run}`).doc("e1_r0").get()).data()!.summary.index.runtime).toBe("observing");
+  });
+
+  it("a stalled ingest is not a quiet window (#188): no checkpoint, one short of the window, or another target's keeps it observing", async () => {
+    await seed("s1", new Date(t0.getTime() - 60_000));
+    const probe = vi.fn(passed);
+    const at70 = () => new Date(t0.getTime() + 70 * 60_000);
+    await db.collection(`runs_${run}`).doc("state").delete();
+    expect(await observeIndexHeals({ db, config: cfg(), probe, now: at70 })).toMatchObject({ uncovered: 1, decided: [] });
+    await ingested(new Date(t0.getTime() + 59 * 60_000));
+    expect(await observeIndexHeals({ db, config: cfg(), probe, now: at70 })).toMatchObject({ uncovered: 1, decided: [] });
+    await ingested(new Date(t0.getTime() + 65 * 60_000), { watchedProjectId: "other-app", environment: "demo" });
+    expect(await observeIndexHeals({ db, config: cfg(), probe, now: at70 })).toMatchObject({ uncovered: 1, decided: [] });
+    expect(probe).not.toHaveBeenCalled();
+    expect((await db.collection(`cycles_${run}`).doc("s1_r0").get()).data()!.summary.index.runtime).toBe("observing");
+
+    // Once ingest has read through the window, the same record is a quiet one.
+    await ingested(new Date(t0.getTime() + 60 * 60_000));
+    expect((await observeIndexHeals({ db, config: cfg(), probe, now: at70 })).decided).toEqual([{ cycleId: "s1_r0", runtime: "healed" }]);
+  });
+
+  it("an occurrence after READY is recurred even when ingest has not caught up; a window never covered is unverified after a day", async () => {
+    await db.collection(`runs_${run}`).doc("state").delete();
+    await seed("c1", new Date(t0.getTime() + 5 * 60_000));
+    await seed("c2", new Date(t0.getTime() - 60_000));
+    const r = await observeIndexHeals({ db, config: cfg(), probe: passed, now: () => new Date(t0.getTime() + 60 * 60_000 + 24 * 3600_000) });
+    expect(Object.fromEntries(r.decided.map((d) => [d.cycleId, d.runtime]))).toEqual({ c1_r0: "recurred", c2_r0: "unverified" });
+    const c2 = (await db.collection(`cycles_${run}`).doc("c2_r0").get()).data()!.summary.index;
+    expect(c2.runtimeBasis).toContain("ingest had not read the logs through the window");
   });
 });
 

@@ -71,6 +71,7 @@ import { triageIncident, type AskJson, type TriageSubject } from "./triage.js";
 import { verifyPatch, type VerifyConfig, type VerifyRequest, type VerifyResult } from "./verifyGate.js";
 import { causeClass, type ReconsiderPolicy } from "./reconsider.js";
 import { isIndexIncident, runIndexPath, type IndexHealWiring } from "./indexPath.js";
+import { linkFromEvent, linkIncident } from "./incidentLinks.js";
 import { assessBlastRadius, testOnlyPatch, type BlastRadius } from "./blastRadius.js";
 import { mergeRecordAtOpen } from "./autoMerge.js";
 import { sha256 } from "./reviewer.js";
@@ -315,6 +316,9 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
   const note = async (event: RunEvent) => {
     const r = await recordEvent(db, cfg, id, owner, deps.now(), event);
     if (!r.ok) throw new LeaseLost();
+    // An issue filed or a PR opened is also linked from the incident, for the UI (#194). Never throws.
+    const link = linkFromEvent(event);
+    if (link) await linkIncident(db, cfg.incidentCollection, key, link);
   };
   const finish = async (state: Exclude<CycleState, "running">, outcome: string, path?: CyclePath, decision?: DeclineDecision): Promise<LoopResult> => {
     const r = await finishCycle(db, cfg, id, owner, deps.now(), state, outcome, path, decision);

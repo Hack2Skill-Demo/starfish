@@ -12,6 +12,7 @@ import { initializeApp } from "firebase-admin/app";
 import { getFirestore } from "firebase-admin/firestore";
 import { loadConfig } from "./config.js";
 import { retireIncident } from "./ingest/retire.js";
+import { RuntimeConfigLoader } from "./runtimeSettings.js";
 import { judgeSmoke, SMOKE_FUNCTION, type SmokeIncident } from "./smokeCheck.js";
 
 const { values } = parseArgs({
@@ -28,9 +29,11 @@ if (values.cleanup && !values.actor) {
   process.exit(2);
 }
 
-const config = loadConfig();
-initializeApp({ projectId: config.projectId });
-const db = getFirestore(config.databaseId);
+const base = loadConfig();
+initializeApp({ projectId: base.projectId });
+const db = getFirestore(base.databaseId);
+// The engine files incidents under the runtime settings' environment (src/ingest/run.ts), not necessarily the env var's.
+const config = (await new RuntimeConfigLoader(base).resolve(db)).config;
 
 const snap = await db
   .collection(config.incidentCollection)

@@ -7,8 +7,9 @@
  *  - The expanded row shows the underlying cause (`errorDetail`) and the
  *    engine's triage state.
  *  - GitHub issue / PR links appear when those fields exist, and only as https
- *    URLs. Nothing writes them onto the incident yet: the agent's issue and PR
- *    opener (src/integrations/githubPr.ts) records its results on the cycle.
+ *    URLs. The agent copies them onto the incident when it files the issue or
+ *    opens the PR, and the PR's later state when it reads it back
+ *    (src/agent/incidentLinks.ts); the cycle's run record stays the source.
  */
 import { Fragment, useState } from "react";
 import { SyntheticBadge } from "../components/SyntheticBadge";

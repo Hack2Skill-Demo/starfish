@@ -55,7 +55,7 @@ export interface IncidentRow {
   triageState?: string;
   tenantId?: string;
   sourceProjectId?: string;
-  /** Present once GitHub integration files an issue (not built yet). */
+  /** Copied onto the incident by the agent when it files the issue or opens the PR (src/agent/incidentLinks.ts). */
   githubIssueNumber?: number;
   githubIssueUrl?: string;
   githubPrNumber?: number;

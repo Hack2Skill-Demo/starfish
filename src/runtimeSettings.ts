@@ -107,7 +107,13 @@ export class RuntimeConfigLoader {
 
   /** Never throws. */
   async resolve(db: Firestore): Promise<ResolvedConfig> {
-    const collection = db.collection(this.base.settingsCollection);
+    // Inside a try like the read (#189): an invalid collection path throws synchronously here.
+    let collection: ReturnType<Firestore["collection"]>;
+    try {
+      collection = db.collection(this.base.settingsCollection);
+    } catch (err) {
+      return this.fallback(undefined, [`settings read failed: ${errorLabel(err)}`]);
+    }
 
     let data: unknown;
     try {
@@ -138,10 +144,10 @@ export class RuntimeConfigLoader {
   }
 
   private async fallback(
-    collection: ReturnType<Firestore["collection"]>,
+    collection: ReturnType<Firestore["collection"]> | undefined,
     problems: string[]
   ): Promise<ResolvedConfig> {
-    this.lastGood ??= await this.readPersistedLastGood(collection);
+    this.lastGood ??= collection && (await this.readPersistedLastGood(collection));
     if (this.lastGood) {
       return { config: applySettings(this.base, this.lastGood), source: "last-good", problems, actionsAllowed: true };
     }

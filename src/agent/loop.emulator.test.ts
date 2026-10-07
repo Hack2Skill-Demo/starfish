@@ -621,6 +621,42 @@ describe("runCycle: the pull request is opened once per cycle", () => {
   });
 });
 
+describe("runCycle: the incident links to its issue and pull request (#194)", () => {
+  const openIssue: LoopDeps["openIssue"] = async () => ({ number: 5, url: "https://example.test/issues/5" });
+  const incidentDoc = async () => (await db.collection(`incidents_${cfg}`).doc("inc1").get()).data()!;
+
+  it("writes the issue and PR number and URL onto the incident, and nothing else of it", async () => {
+    cfgOver = { incidentCollection: `incidents_${cfg}` };
+    await db.collection(`incidents_${cfg}`).doc("inc1").set({ environment: "demo", status: "acknowledged", occurrenceCount: 42 });
+    const r = await runCycle(deps(scripted({ triage: [act], fix: [fixOf(GOOD_PATCH)], review: [held] }), { openIssue }), key);
+    expect(r).toMatchObject({ outcome: "pr-opened" });
+    expect(await incidentDoc()).toEqual({
+      environment: "demo",
+      status: "acknowledged",
+      occurrenceCount: 42,
+      githubIssueNumber: 5,
+      githubIssueUrl: "https://example.test/issues/5",
+      githubPrNumber: 7,
+      githubPrUrl: "https://example.test/pull/7",
+      githubPrState: "open",
+    });
+  });
+
+  it("does not link a regression to the PR of the cycle before it", async () => {
+    cfgOver = { incidentCollection: `incidents_${cfg}` };
+    await db.collection(`incidents_${cfg}`).doc("inc1").set({ environment: "demo", status: "recurred", recurrenceCount: 1 });
+    await runCycle(deps(scripted({ triage: [act], fix: [fixOf(GOOD_PATCH)], review: [held] }), { openIssue }), key);
+    expect(await incidentDoc()).toEqual({ environment: "demo", status: "recurred", recurrenceCount: 1 });
+  });
+
+  it("links nothing in a dry run", async () => {
+    cfgOver = { incidentCollection: `incidents_${cfg}`, dryRun: true };
+    await db.collection(`incidents_${cfg}`).doc("inc1").set({ environment: "demo", status: "new" });
+    await runCycle(deps(scripted({ triage: [act], fix: [fixOf(GOOD_PATCH)], review: [held] }), { openIssue }), key);
+    expect(await incidentDoc()).toEqual({ environment: "demo", status: "new" });
+  });
+});
+
 describe("runCycle: telling a person (#17)", () => {
   const notifyDecision = { decision: "notify", reasoning: "The API is not enabled.", suspectedCause: "Translation API disabled" };
   const summaryNotify = async () => (await cycleDoc()).summary?.notify;

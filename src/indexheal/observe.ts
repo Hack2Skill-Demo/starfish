@@ -5,26 +5,47 @@
  *
  *   recurred        the incident occurred again after the index was READY (its `lastOccurredAt` is later);
  *   query-failing   it stayed quiet, but the configured query does not pass any more;
- *   unverified      no probe can be run for it now (the probe was removed from the configuration), or the incident is gone;
+ *   unverified      no probe can be run for it now (the probe was removed from the configuration), the incident is gone,
+ *                   or ingest still had not read the logs through the window a day after it ended;
  *   healed          no occurrence since READY, for the whole window, and the configured query passes at its end.
  *
- * "Quiet" is the incident's own record: no occurrence since READY. Starfish does not measure the traffic that would
- * have run the query in that window; the replayed probe at the end is what stands in for it, and the record says so.
+ * "Quiet" is the incident's own record: no occurrence since READY, and only once ingest's checkpoint for this target
+ * (src/ingest/run.ts) is at or past the window's end. A stalled ingest records no occurrences either, so a window it
+ * has not read through (or no checkpoint at all) is not covered, never quiet: the cycle keeps observing. Starfish does
+ * not measure the traffic that would have run the query in that window; the replayed probe at the end is what stands
+ * in for it, and the record says so.
  *
  * Only `summary.index.runtime` (and when it was decided) is written, on a cycle still `observing`, in a transaction: the
  * cycle's state and path are not changed, and the incident is never touched. Resolving it stays a person's decision.
  * A probe or read that fails leaves the cycle observing, to be tried at the next pass.
  */
 import type { Firestore, Timestamp } from "firebase-admin/firestore";
+import { readIngestCheckpoint } from "../ingest/run.js";
 import { COLLECTION_RE, DATABASE_RE, FIELD_PATH_RE, PROJECT_RE, type IndexSpec } from "./createIndexUrl.js";
 import type { ProbeVerdict } from "./probe.js";
 
 export type RuntimeVerdict = "healed" | "recurred" | "query-failing" | "unverified";
 
+/** How long after its window a heal waits for ingest to read through it before it is recorded unverified. */
+export const UNCOVERED_GIVE_UP_MS = 24 * 3600_000;
+
+const QUIET_BASIS = "no occurrence since READY with ingest read through the window, and the configured query replayed at the end; traffic is not measured";
+const UNCOVERED_BASIS = "ingest had not read the logs through the window a day after it ended; nothing was concluded from the incident's record";
+
 export interface ObserveDeps {
   db: Firestore;
-  /** `ingestLagMinutes`: an occurrence inside the window may reach the store this much later, so the decision waits for it. */
-  config: { cycleCollection: string; incidentCollection: string; environment: string; ingestLagMinutes: number };
+  /**
+   * `ingestLagMinutes`: an occurrence inside the window may reach the store this much later, so the decision waits for it.
+   * `runCollection` and `watchedProjectId` name the ingest checkpoint that must cover the window.
+   */
+  config: {
+    cycleCollection: string;
+    incidentCollection: string;
+    runCollection: string;
+    watchedProjectId: string;
+    environment: string;
+    ingestLagMinutes: number;
+  };
   probe: (spec: IndexSpec) => Promise<ProbeVerdict>;
   now: () => Date;
   /** The most cycles looked at in one go. */
@@ -35,6 +56,8 @@ export interface ObserveSummary {
   considered: number;
   /** Still inside their window. */
   waiting: number;
+  /** Past their window, but ingest has not read the logs through it yet (or its checkpoint is unknown): still observing. */
+  uncovered: number;
   decided: { cycleId: string; runtime: RuntimeVerdict }[];
   /** Cycles left observing because a read or the probe failed. */
   errors: { cycleId: string; message: string }[];
@@ -72,7 +95,13 @@ export async function observeIndexHeals(deps: ObserveDeps): Promise<ObserveSumma
     .where("summary.index.runtime", "==", "observing")
     .limit(deps.limit ?? 20)
     .get();
-  const out: ObserveSummary = { considered: 0, waiting: 0, decided: [], errors: [] };
+  const out: ObserveSummary = { considered: 0, waiting: 0, uncovered: 0, decided: [], errors: [] };
+  // Read once per call, when a cycle first needs it; a failed read is that cycle's error, and is tried again for the next.
+  let checkpoint: { at: Date | null } | undefined;
+  const ingestedThrough = async (): Promise<Date | null> => {
+    checkpoint ??= { at: await readIngestCheckpoint(db, cfg.runCollection, { watchedProjectId: cfg.watchedProjectId, environment: cfg.environment }) };
+    return checkpoint.at;
+  };
   for (const doc of snap.docs) {
     const d = doc.data();
     out.considered += 1;
@@ -88,6 +117,7 @@ export async function observeIndexHeals(deps: ObserveDeps): Promise<ObserveSumma
       continue;
     }
     let runtime: RuntimeVerdict;
+    let basis = QUIET_BASIS;
     try {
       const incident = typeof d.incidentId === "string" ? await db.collection(cfg.incidentCollection).doc(d.incidentId).get() : null;
       const last = incident?.exists ? tsMs(incident.data()?.lastOccurredAt) : null;
@@ -95,14 +125,26 @@ export async function observeIndexHeals(deps: ObserveDeps): Promise<ObserveSumma
       if (!incident?.exists || spec === null) runtime = "unverified";
       else if (last !== null && last > readyAt) runtime = "recurred";
       else {
-        const probe = await deps.probe(spec);
-        runtime = probe.state === "passed" ? "healed" : probe.state === "not-configured" ? "unverified" : "query-failing";
+        // No occurrence recorded is "quiet" only if ingest read the logs through the window (#188).
+        const through = await ingestedThrough();
+        if (through === null || through.getTime() < until) {
+          if (now.getTime() < until + UNCOVERED_GIVE_UP_MS) {
+            out.uncovered += 1;
+            continue;
+          }
+          runtime = "unverified";
+          basis = UNCOVERED_BASIS;
+        } else {
+          const probe = await deps.probe(spec);
+          runtime = probe.state === "passed" ? "healed" : probe.state === "not-configured" ? "unverified" : "query-failing";
+        }
       }
     } catch (err) {
       out.errors.push({ cycleId: doc.id, message: err instanceof Error ? err.name : "error" });
       continue;
     }
     const decided = runtime;
+    const decidedBasis = basis;
     const applied = await db.runTransaction(async (tx) => {
       const fresh = await tx.get(doc.ref);
       const r = (fresh.data()?.summary as Record<string, { runtime?: unknown } | undefined> | undefined)?.index;
@@ -110,7 +152,7 @@ export async function observeIndexHeals(deps: ObserveDeps): Promise<ObserveSumma
       tx.update(doc.ref, {
         "summary.index.runtime": decided,
         "summary.index.runtimeCheckedAt": now.toISOString(),
-        "summary.index.runtimeBasis": "no occurrence since READY, and the configured query replayed at the end; traffic is not measured",
+        "summary.index.runtimeBasis": decidedBasis,
       });
       return true;
     });

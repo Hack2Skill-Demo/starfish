@@ -4,8 +4,8 @@
  * evidence, and a decline that is re-triaged every pass is a model bill with no new answer. So a declined cycle is
  * reopened only when something changed AFTER the decision:
  *
- *   operator   an operator asked for a retriage (`retriageRequestedAt` on the incident, set from the UI under
- *              firestore.rules, later than the decision);
+ *   operator   an operator asked for a retriage (`retriageRequestedAt` on the incident, later than the decision; an
+ *              operator's write of it is allowed by firestore.rules, but no UI sends it yet);
  *   burst      the incident's occurrences grew by at least `reconsiderBurstOccurrences` since the decision;
  *   cause      the incident's structural cause changed: an error code, name or HTTP status appeared or changed, or a
  *              detail or stack trace became available (ingest backfills these when an error recurs: an incident often

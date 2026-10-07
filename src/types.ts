@@ -77,8 +77,11 @@ export interface LogCounterCheck {
  *
  * - `new`          just aggregated, nobody has looked at it
  * - `acknowledged` an operator is aware of it
- * - `logged`       tracked in an external issue (set automatically once one is filed)
- * - `resolved`     fixed; manually, or automatically when the linked issue closes
+ * - `logged`       tracked in an external issue. Reserved: nothing sets it yet.
+ *                  An operator can't (firestore.rules), and the agent filing the
+ *                  issue only links it (`githubIssueUrl`)
+ * - `resolved`     fixed. Set by an operator (or an admin's retire); never
+ *                  automatically, not when the linked issue closes or the PR merges
  * - `recurred`     a REGRESSION: it was `resolved` and its fingerprint fired again,
  *                  so the fix didn't hold. Set by the engine on the resolved document
  *                  itself (src/ingest/store.ts), which keeps the broken resolution in
@@ -155,11 +158,16 @@ export interface StoredIncident {
   statusChangedBy?: string;
   /** Set when an operator resolves the incident; cleared on any other status. */
   resolvedAt?: Timestamp;
-  /** The linked issue and fix PR. Read by the UI; nothing writes them yet (GitHub integration isn't built). */
+  /**
+   * The linked issue and fix PR, read by the UI. Copied from the cycle's run record by the agent when it files the
+   * issue or opens the PR, and the PR's state when it reads the PR back (src/agent/incidentLinks.ts); cleared by a
+   * recurrence (src/ingest/store.ts). Never run against real GitHub.
+   */
   githubIssueNumber?: number;
   githubIssueUrl?: string;
   githubPrNumber?: number;
   githubPrUrl?: string;
+  githubPrState?: "open" | "closed" | "merged";
   /** How many times a resolved incident has come back. Absent until the first regression. */
   recurrenceCount?: number;
   /** When the latest regression was seen. */
@@ -177,8 +185,9 @@ export interface StoredIncident {
   /** Uid of the admin who retired it. */
   retiredBy?: string;
   /**
-   * An operator asked the agent to triage this incident again (#8): server time, set under firestore.rules on an open
-   * incident only. A declined cycle decided before it is reconsidered (src/agent/reconsider.ts), within the daily cap.
+   * An operator asked the agent to triage this incident again (#8): server time, allowed by firestore.rules on an open
+   * incident only; no UI sends it yet. A declined cycle decided before it is reconsidered (src/agent/reconsider.ts),
+   * within the daily cap.
    */
   retriageRequestedAt?: Timestamp;
   /** Uid of the operator who asked. For the UI; never sent to the model. */
