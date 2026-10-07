@@ -20,7 +20,14 @@
 #   SCHEDULE_TIME_ZONE   Default Etc/UTC
 #   EXTRA_ENV_VARS       more engine settings for the job, "@"-separated: "STARFISH_MODEL=x@STARFISH_LOOKBACK_HOURS=6"
 #                        (see .env.example for every name; "@" so a value can hold commas). Each name once: a name the
-#                        script already sets, or one set twice, is refused. Added to the agent's and the admin API's too
+#                        script already sets, or one set twice, is refused. Added to the agent's and the admin API's too.
+#                        Taking a name out of either list does NOT unset it on a job deployed earlier: every job is
+#                        deployed with --update-env-vars, which keeps a name it is not given. So each switch that lets
+#                        Starfish act on its own is always set by this script, to the engine's safe default, unless a list
+#                        sets it (#174): STARFISH_AUTO_MERGE=false, STARFISH_AUTO_MERGE_TARGETS= (none),
+#                        STARFISH_PHONE_ESCALATION=false, STARFISH_INDEX_AUTO_APPLY=false, STARFISH_INDEX_ALLOWED_TARGETS=
+#                        (none), STARFISH_REVIEW_REQUIRED=true, and on the agent STARFISH_DRY_RUN=true. Any other name
+#                        taken out of a list keeps the value it was last deployed with: set it to its default instead
 #   STARFISH_GITHUB_TOKEN  if set, stored as a new version of the starfish-github-token secret. Not
 #                        GITHUB_TOKEN: that name is the Actions workflow's own token, and many shells export a
 #                        personal one, neither of which should reach Secret Manager by accident. Only the agent's
@@ -79,7 +86,9 @@
 #   ADMIN_SA_NAME        the admin API's service account. Default starfish-admin-api
 #   ADMIN_API_ORIGINS    the operator UI's origin(s), comma-separated, allowed to call it from a browser, e.g.
 #                        https://my-site.web.app. Empty: no browser may (a server-side caller is not affected)
-#   ADMIN_SERVICE_NAME   Default starfish-admin (never ingested: it is added to STARFISH_EXCLUDED_SERVICES)
+#   ADMIN_SERVICE_NAME   Default starfish-admin. Never ingested: it is in the default STARFISH_EXCLUDED_SERVICES of every
+#                        deploy, with or without DEPLOY_ADMIN_API=1, so a run that leaves the admin API out does not start
+#                        ingesting the one an earlier run deployed (#177)
 #   SKIP_FIRESTORE_RULES=1   do not deploy firestore.rules and firestore.indexes.json
 #   RUN_AFTER_DEPLOY=1       execute the job once and wait for it
 #   BUILD_SERVICE_ACCOUNT   the account Cloud Run builds the image as, which is granted roles/run.builder. Default: the
@@ -155,8 +164,9 @@ if [ "$TWILIO_SET" != "0" ]; then
   [[ "$STARFISH_TWILIO_FROM_NUMBER" =~ ^\+[1-9][0-9]{6,14}$ ]] || die "STARFISH_TWILIO_FROM_NUMBER is not an E.164 number (+15551234567)"
   TWILIO_GIVEN=1
 fi
+# Checked on every run: the name goes into every job's STARFISH_EXCLUDED_SERVICES (#177).
+case "$ADMIN_SERVICE_NAME" in ''|*[!a-z0-9-]*|-*|*-) die "ADMIN_SERVICE_NAME must be lowercase letters, digits and hyphens: $ADMIN_SERVICE_NAME" ;; esac
 if [ "$DEPLOY_ADMIN_API" = "1" ]; then
-  case "$ADMIN_SERVICE_NAME" in ''|*[!a-z0-9-]*|-*|*-) die "ADMIN_SERVICE_NAME must be lowercase letters, digits and hyphens: $ADMIN_SERVICE_NAME" ;; esac
   case "$ADMIN_API_ORIGINS" in *[[:space:]]*|*[\"\'\@]*) die "ADMIN_API_ORIGINS is a comma-separated list of origins like https://my-site.web.app: $ADMIN_API_ORIGINS" ;; esac
 fi
 # The lists are joined with "@" by this script, so an empty entry (a leading, trailing or doubled "@") would reach gcloud as
@@ -264,6 +274,23 @@ unique_names() { # unique_names <what> <list>
   done
 }
 
+# The switches that let Starfish act on its own (src/config.ts), each with the engine's default, which is the safe one
+# (#174). --update-env-vars keeps a name it is not given, so a switch taken out of EXTRA_ENV_VARS or AGENT_EXTRA_ENV_VARS
+# would otherwise stay as an earlier deploy set it. Each one the job's extra lists do not set is set here to its default,
+# on every job this deploys (EXTRA_ENV_VARS reaches all three). An empty value is an empty list, as unset is.
+# The agent's dry run follows the same rule below, apart: only AGENT_EXTRA_ENV_VARS may turn it off.
+SAFETY_DEFAULTS="STARFISH_AUTO_MERGE=false STARFISH_AUTO_MERGE_TARGETS= STARFISH_PHONE_ESCALATION=false STARFISH_INDEX_AUTO_APPLY=false STARFISH_INDEX_ALLOWED_TARGETS= STARFISH_REVIEW_REQUIRED=true"
+safety_defaults() { # safety_defaults <the job's extra settings, "@"-separated>: "@NAME=default" for each switch they leave out
+  local pair out=""
+  for pair in $SAFETY_DEFAULTS; do
+    case "@$1@" in
+      *"@${pair%%=*}="*) ;;
+      *) out="$out@$pair" ;;
+    esac
+  done
+  printf '%s' "$out"
+}
+
 # Every job's settings are composed here, before anything is changed, so a list that would be refused (a name set
 # twice) stops the deploy before it starts.
 ENV_VARS="GOOGLE_CLOUD_PROJECT=$PROJECT_ID@STARFISH_WATCHED_PROJECT_ID=$WATCHED_PROJECT_ID@STARFISH_VERTEX_PROJECT_ID=$VERTEX_PROJECT_ID"
@@ -273,9 +300,11 @@ ENV_VARS="$ENV_VARS@STARFISH_INGEST_SCHEDULE=$SCHEDULE"
 # Always set, false included, so a redeploy with it off turns off a job deployed with it on (--update-env-vars keeps
 # a name it is not given).
 ENV_VARS="$ENV_VARS@STARFISH_MONITORING_ENABLED=$STARFISH_MONITORING_ENABLED"
-# With the admin API, its service name is never ingested either: its errors would otherwise become incidents.
-ADMIN_EXCLUDED=""
-[ "$DEPLOY_ADMIN_API" != "1" ] || ADMIN_EXCLUDED=",$ADMIN_SERVICE_NAME"
+ENV_VARS="$ENV_VARS$(safety_defaults "$EXTRA_ENV_VARS")"
+# The admin API's service name is never ingested either: its errors would otherwise become incidents. Always, not only
+# when this run deploys it (#177): a run without DEPLOY_ADMIN_API=1 would otherwise rewrite the list without it while
+# the service an earlier run deployed is still serving. A name no service has costs nothing.
+ADMIN_EXCLUDED=",$ADMIN_SERVICE_NAME"
 # An explicit list replaces the default, so it must name the admin service too (or cover it with a prefix like starfish-*).
 if [ "$DEPLOY_ADMIN_API" = "1" ]; then
   case "@$EXTRA_ENV_VARS" in
@@ -326,6 +355,7 @@ if [ "$DEPLOY_AGENT" = "1" ]; then
     *@STARFISH_DRY_RUN=*) ;;
     *) AGENT_ENV="$AGENT_ENV@STARFISH_DRY_RUN=true" ;;
   esac
+  AGENT_ENV="$AGENT_ENV$(safety_defaults "$EXTRA_ENV_VARS@$AGENT_EXTRA_ENV_VARS")"
   unique_names "the agent job" "$AGENT_ENV"
 fi
 if [ "$DEPLOY_ADMIN_API" = "1" ]; then

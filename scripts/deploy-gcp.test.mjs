@@ -3,7 +3,7 @@
 // prints the token. The plan is printed with bash's %q, whose escaping differs between bash
 // versions, so assertions compare the output with its backslashes removed.
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, writeFileSync, chmodSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -42,7 +42,8 @@ describe("scripts/deploy-gcp.sh", () => {
 
     it("deploys nothing of it by default", () => {
       const r = deploy(dry);
-      expect(r.out).not.toContain("starfish-admin");
+      expect(r.out).not.toContain("gcloud run deploy");
+      expect(r.out).not.toContain("starfish-admin-api");
       expect(r.out).not.toContain("--allow-unauthenticated");
     });
 
@@ -80,6 +81,16 @@ describe("scripts/deploy-gcp.sh", () => {
       const withAgent = deploy({ ...admin, DEPLOY_AGENT: "1", AGENT_REPO: "o/r", VERIFY_CHECKS: "verify", STARFISH_GITHUB_TOKEN: "x" });
       expect(withAgent.out).toContain("starfish,starfish-ingest,starfish-agent,starfish-admin");
       expect(deploy({ ...admin, ADMIN_SERVICE_NAME: "ops-admin" }).out).toContain("starfish,starfish-ingest,ops-admin");
+    });
+
+    it("keeps it out of ingest on a run that does not deploy it too, so a later run cannot undo the exclusion (#177)", () => {
+      const jobLine = (out) => out.split("\n").find((l) => l.includes("gcloud run jobs deploy starfish-ingest")) ?? "";
+      expect(jobLine(deploy(dry).out)).toMatch(/STARFISH_EXCLUDED_SERVICES=starfish,starfish-ingest,starfish-admin( |@|$)/);
+      expect(jobLine(deploy({ ...dry, ADMIN_SERVICE_NAME: "ops-admin" }).out)).toMatch(/STARFISH_EXCLUDED_SERVICES=starfish,starfish-ingest,ops-admin( |@|$)/);
+      const agentOnly = deploy({ ...dry, DEPLOY_AGENT: "1", AGENT_REPO: "o/r", VERIFY_CHECKS: "verify", STARFISH_GITHUB_TOKEN: "x" });
+      expect(agentOnly.out).toContain("STARFISH_EXCLUDED_SERVICES=starfish,starfish-ingest,starfish-agent,starfish-admin@");
+      // The name reaches every job's settings, so it is checked on every run.
+      expect(deploy({ ...dry, ADMIN_SERVICE_NAME: "Bad_Name" }).status).not.toBe(0);
     });
 
     it("warns when an explicit exclusion list leaves the service out, and not when it covers it", () => {
@@ -255,6 +266,82 @@ describe("scripts/deploy-gcp.sh", () => {
     expect(deploy({ ...dry, RUN_AFTER_DEPLOY: "1" }).out).toContain("gcloud run jobs execute starfish-ingest");
   });
 
+  describe("the switches that let Starfish act on its own (#174)", () => {
+    // --update-env-vars keeps a name it is not given: a switch taken out of a list must be set back to off, not left on.
+    const switches = {
+      STARFISH_AUTO_MERGE: "false",
+      STARFISH_AUTO_MERGE_TARGETS: "",
+      STARFISH_PHONE_ESCALATION: "false",
+      STARFISH_INDEX_AUTO_APPLY: "false",
+      STARFISH_INDEX_ALLOWED_TARGETS: "",
+      STARFISH_REVIEW_REQUIRED: "true",
+    };
+    const agentEnv = { DEPLOY_AGENT: "1", AGENT_REPO: "o/r", VERIFY_CHECKS: "verify", STARFISH_GITHUB_TOKEN: "x" };
+    const adminEnv = { DEPLOY_ADMIN_API: "1" };
+    // The "@"-separated settings of one deployed job or service: each name's value, and how many times it is set.
+    const settings = (out, command) => {
+      const l = out.split("\n").find((x) => x.includes(command)) ?? "";
+      const list = /--update-env-vars=\^@\^(.*?)(?= --[a-z]|$)/.exec(l)?.[1] ?? "";
+      const values = {};
+      const counts = {};
+      for (const entry of list.split("@")) {
+        const name = entry.slice(0, entry.indexOf("="));
+        values[name] = entry.slice(entry.indexOf("=") + 1);
+        counts[name] = (counts[name] ?? 0) + 1;
+      }
+      return { values, counts };
+    };
+    const jobs = ["gcloud run jobs deploy starfish-ingest", "gcloud run jobs deploy starfish-agent", "gcloud run deploy starfish-admin"];
+
+    it("sets each one to the engine's default, off, on every job it deploys, when no list sets it", () => {
+      const r = deploy({ ...dry, ...agentEnv, ...adminEnv });
+      expect(r.status).toBe(0);
+      for (const job of jobs) {
+        const { values } = settings(r.out, job);
+        for (const [name, value] of Object.entries(switches)) expect(values[name], `${job}: ${name}`).toBe(value);
+      }
+      expect(settings(r.out, jobs[1]).values.STARFISH_DRY_RUN).toBe("true");
+    });
+
+    it("leaves a switch a list sets to that list, set once, and still defaults the others", () => {
+      const r = deploy({
+        ...dry, ...agentEnv, ...adminEnv,
+        EXTRA_ENV_VARS: "STARFISH_INDEX_AUTO_APPLY=true@STARFISH_INDEX_ALLOWED_TARGETS=projects/a/databases/b",
+        AGENT_EXTRA_ENV_VARS: "STARFISH_AUTO_MERGE=true@STARFISH_AUTO_MERGE_TARGETS=o/r@STARFISH_PHONE_ESCALATION=true",
+      });
+      expect(r.status).toBe(0);
+      const agent = settings(r.out, jobs[1]);
+      for (const name of Object.keys(switches)) expect(agent.counts[name], name).toBe(1);
+      expect(agent.values.STARFISH_AUTO_MERGE).toBe("true");
+      expect(agent.values.STARFISH_AUTO_MERGE_TARGETS).toBe("o/r");
+      expect(agent.values.STARFISH_PHONE_ESCALATION).toBe("true");
+      expect(agent.values.STARFISH_INDEX_AUTO_APPLY).toBe("true");
+      expect(agent.values.STARFISH_REVIEW_REQUIRED).toBe("true");
+      // AGENT_EXTRA_ENV_VARS reaches the agent alone: the ingest job and the admin API keep auto-merge and phoning off.
+      for (const job of [jobs[0], jobs[2]]) {
+        const { values, counts } = settings(r.out, job);
+        expect(values.STARFISH_AUTO_MERGE, job).toBe("false");
+        expect(values.STARFISH_PHONE_ESCALATION, job).toBe("false");
+        expect(values.STARFISH_INDEX_AUTO_APPLY, job).toBe("true");
+        expect(counts.STARFISH_INDEX_AUTO_APPLY, job).toBe(1);
+      }
+    });
+
+    it("turns a switch off again on the next deploy once it is taken out of the list", () => {
+      const on = deploy({ ...dry, ...agentEnv, AGENT_EXTRA_ENV_VARS: "STARFISH_AUTO_MERGE=true@STARFISH_AUTO_MERGE_TARGETS=o/r" });
+      expect(settings(on.out, jobs[1]).values.STARFISH_AUTO_MERGE).toBe("true");
+      const off = deploy({ ...dry, ...agentEnv, AGENT_EXTRA_ENV_VARS: "STARFISH_MAX_CYCLES_PER_PASS=1" });
+      expect(settings(off.out, jobs[1]).values.STARFISH_AUTO_MERGE).toBe("false");
+      expect(settings(off.out, jobs[1]).values.STARFISH_AUTO_MERGE_TARGETS).toBe("");
+    });
+
+    it("says so in its header", () => {
+      const header = readFileSync(script, "utf8").split("\nset -euo pipefail")[0];
+      for (const name of Object.keys(switches)) expect(header).toContain(name);
+      expect(header).toContain("--update-env-vars, which keeps a name it is not given");
+    });
+  });
+
   describe("STARFISH_MONITORING_ENABLED (#19)", () => {
     const watched = { ...dry, WATCHED_PROJECT_ID: "app-proj" };
     const jobLine = (out) => out.split("\n").find((l) => l.includes("gcloud run jobs deploy starfish-ingest")) ?? "";
@@ -401,7 +488,7 @@ describe("scripts/deploy-gcp.sh: the agent and its isolated verify job (#74), VE
     expect(job).toContain("STARFISH_GITHUB_REPO=acme/shop");
     expect(job).toContain("STARFISH_DRY_RUN=true");
     expect(job).not.toContain("in-process");
-    expect(job).toContain("STARFISH_EXCLUDED_SERVICES=starfish,starfish-ingest,starfish-agent,starfish-verify");
+    expect(job).toContain("STARFISH_EXCLUDED_SERVICES=starfish,starfish-ingest,starfish-agent,starfish-admin,starfish-verify");
   });
 
   it("refuses a setting that would move the verify step: the script owns how it is isolated", () => {

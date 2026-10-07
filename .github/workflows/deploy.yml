@@ -36,7 +36,7 @@ on:
   workflow_dispatch:
     inputs:
       dry_run:
-        description: Print the plan and change nothing (still signs in, so it proves the Workload Identity setup)
+        description: Print the plan and change nothing; two read-only gcloud calls check the Workload Identity sign-in
         type: boolean
         default: false
       run_after_deploy:
@@ -104,6 +104,20 @@ jobs:
 
       - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
 
+      # A dry run of the script makes no gcloud call, and the auth step above only writes a credentials file, so neither
+      # shows that the sign-in works. These two read-only calls do, and fail the run when it does not: Google exchanges
+      # this job's OIDC token at the Workload Identity provider (this repository, the `deploy` environment), the deployer
+      # account is impersonated, and that account reads the project and its own account. Nothing else is checked: not
+      # the roles the deploy itself needs. Never run.
+      - name: Check the sign-in (dry run only)
+        if: inputs.dry_run
+        env:
+          PROJECT_ID: ${{ vars.STARFISH_GCP_PROJECT_ID }}
+          GCP_DEPLOY_SERVICE_ACCOUNT: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
+        run: |
+          gcloud projects describe "$PROJECT_ID" --format='value(projectId)'
+          gcloud iam service-accounts describe "$GCP_DEPLOY_SERVICE_ACCOUNT" --project="$PROJECT_ID" --format='value(email)'
+
       # Values reach the script through the environment, never by interpolation into the shell text.
       # An unset variable is an empty string, which the script treats as "use my default".
       - name: Deploy
@@ -129,6 +143,8 @@ jobs:
           VERIFY_TIMEOUT_SECONDS: ${{ vars.STARFISH_VERIFY_TIMEOUT_SECONDS }}
           VERIFY_BUCKET: ${{ vars.STARFISH_VERIFY_BUCKET }}
           STARFISH_MONITORING_ENABLED: ${{ vars.STARFISH_MONITORING_ENABLED }}
+          DEPLOY_ADMIN_API: ${{ vars.STARFISH_DEPLOY_ADMIN_API }}
+          ADMIN_API_ORIGINS: ${{ vars.STARFISH_ADMIN_API_ORIGINS }}
           DRY_RUN: ${{ inputs.dry_run && '1' || '0' }}
           RUN_AFTER_DEPLOY: ${{ inputs.run_after_deploy && '1' || '0' }}
           SKIP_FIRESTORE_RULES: ${{ inputs.skip_firestore_rules && '1' || '0' }}
