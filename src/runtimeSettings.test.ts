@@ -384,6 +384,19 @@ describe("RuntimeConfigLoader", () => {
     expect(fresh).toMatchObject({ source: "env", actionsAllowed: false });
   });
 
+  it("never throws when the collection itself can't be named (#189): last good in memory, else the defaults with actions refused", async () => {
+    const bad = { collection: () => { throw Object.assign(new Error("invalid path"), { name: "InvalidArgument" }); } } as unknown as Firestore;
+    await expect(new RuntimeConfigLoader(base).resolve(bad)).resolves.toMatchObject({
+      source: "env",
+      actionsAllowed: false,
+      problems: ["settings read failed: InvalidArgument"],
+    });
+
+    const loader = new RuntimeConfigLoader(base);
+    await loader.resolve(fakeDb({ [SETTINGS_DOC]: valid }).db);
+    await expect(loader.resolve(bad)).resolves.toMatchObject({ source: "last-good", actionsAllowed: true });
+  });
+
   it("treats a deleted document as a reset to the defaults, and discards what was good before it", async () => {
     const { db, docs, deleted } = fakeDb({ [SETTINGS_DOC]: valid });
     const loader = new RuntimeConfigLoader(base);

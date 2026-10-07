@@ -452,12 +452,13 @@ export function loadConfig(): StarfishConfig {
     projectId,
     watchedProjectId: process.env.STARFISH_WATCHED_PROJECT_ID || projectId,
     vertexProjectId: process.env.STARFISH_VERTEX_PROJECT_ID || projectId,
-    location: process.env.GOOGLE_CLOUD_LOCATION ?? "us-central1",
-    model: process.env.STARFISH_MODEL ?? "gemini-3.1-pro-preview",
-    environment: process.env.STARFISH_ENV ?? "dev",
-    settingsCollection: process.env.STARFISH_SETTINGS_COLLECTION ?? "starfish_settings",
-    incidentCollection: process.env.STARFISH_INCIDENT_COLLECTION ?? "incidents",
-    incidentKeyCollection: process.env.STARFISH_INCIDENT_KEY_COLLECTION ?? "incident_keys",
+    // Set-but-blank is unset (#189): an empty environment label or collection name is never what was meant.
+    location: textOr(process.env.GOOGLE_CLOUD_LOCATION, "us-central1"),
+    model: textOr(process.env.STARFISH_MODEL, "gemini-3.1-pro-preview"),
+    environment: textOr(process.env.STARFISH_ENV, "dev"),
+    settingsCollection: textOr(process.env.STARFISH_SETTINGS_COLLECTION, "starfish_settings"),
+    incidentCollection: textOr(process.env.STARFISH_INCIDENT_COLLECTION, "incidents"),
+    incidentKeyCollection: textOr(process.env.STARFISH_INCIDENT_KEY_COLLECTION, "incident_keys"),
     databaseId: process.env.STARFISH_DATABASE_ID || "starfish",
     servicePatterns: parseServicePatterns(process.env.STARFISH_SERVICE_PATTERNS),
     verifyCommand: (process.env.STARFISH_VERIFY_COMMAND ?? "").trim(),
@@ -470,7 +471,7 @@ export function loadConfig(): StarfishConfig {
     verifyChecks: parseVerifyChecks(process.env.STARFISH_VERIFY_CHECKS),
     verifyJobName: (process.env.STARFISH_VERIFY_JOB ?? "").trim(),
     verifyBucket: (process.env.STARFISH_VERIFY_BUCKET ?? "").trim(),
-    verifyJobRegion: (process.env.STARFISH_VERIFY_JOB_REGION ?? "").trim() || process.env.GOOGLE_CLOUD_LOCATION || "us-central1",
+    verifyJobRegion: textOr(process.env.STARFISH_VERIFY_JOB_REGION, textOr(process.env.GOOGLE_CLOUD_LOCATION, "us-central1")),
     maxCyclesPerPass: positiveNumber(process.env.STARFISH_MAX_CYCLES_PER_PASS, 3, "STARFISH_MAX_CYCLES_PER_PASS"),
     maxPrChecksPerPass: positiveNumber(process.env.STARFISH_MAX_PR_CHECKS_PER_PASS, 10, "STARFISH_MAX_PR_CHECKS_PER_PASS"),
     maxCyclesPerDay: positiveNumber(process.env.STARFISH_MAX_CYCLES_PER_DAY, 30, "STARFISH_MAX_CYCLES_PER_DAY"),
@@ -663,7 +664,7 @@ export function loadChildProcessBasics(): { PATH?: string; HOME?: string } {
  * LANG for its locale. HOME is not here: the gate gives the command a scratch home of its own.
  */
 export function loadVerifyCommandBasics(): { PATH?: string; LANG: string } {
-  return { PATH: process.env.PATH, LANG: process.env.LANG ?? "C.UTF-8" };
+  return { PATH: process.env.PATH, LANG: textOr(process.env.LANG, "C.UTF-8") };
 }
 
 /** Where the replay harness (`pnpm replay`, src/scoreboard/replay.ts, #10) reads its corpus and writes its results. */
@@ -764,6 +765,11 @@ function validApiRoot(raw: string | undefined, fallback: string, name: string): 
     throw new Error(`${name} must be https (or http to localhost)`);
   }
   return v.replace(/\/+$/, "");
+}
+
+/** The value trimmed, or the default when it is unset or blank. */
+function textOr(raw: string | undefined, fallback: string): string {
+  return (raw ?? "").trim() || fallback;
 }
 
 /** A number above zero, or the default when unset. A window of zero or negative length would never advance. */

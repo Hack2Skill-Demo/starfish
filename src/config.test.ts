@@ -42,6 +42,31 @@ describe("loadConfig: the projects", () => {
     expect(loadConfig()).toMatchObject({ watchedProjectId: "home-project", vertexProjectId: "home-project" });
   });
 
+  it("a blank region, model, environment or collection name means unset, not an empty string (#189)", () => {
+    for (const k of [
+      "GOOGLE_CLOUD_LOCATION",
+      "STARFISH_MODEL",
+      "STARFISH_ENV",
+      "STARFISH_SETTINGS_COLLECTION",
+      "STARFISH_INCIDENT_COLLECTION",
+      "STARFISH_INCIDENT_KEY_COLLECTION",
+      "STARFISH_VERIFY_JOB_REGION",
+    ]) {
+      vi.stubEnv(k, "  ");
+    }
+    expect(loadConfig()).toMatchObject({
+      location: "us-central1",
+      model: "gemini-3.1-pro-preview",
+      environment: "dev",
+      settingsCollection: "starfish_settings",
+      incidentCollection: "incidents",
+      incidentKeyCollection: "incident_keys",
+      verifyJobRegion: "us-central1",
+    });
+    vi.stubEnv("STARFISH_ENV", " demo ");
+    expect(loadConfig().environment).toBe("demo");
+  });
+
   it("refuses to start without a project, with a message that says what to do", () => {
     vi.stubEnv("GOOGLE_CLOUD_PROJECT", "");
     expect(() => loadConfig()).toThrow("GOOGLE_CLOUD_PROJECT is not set");
