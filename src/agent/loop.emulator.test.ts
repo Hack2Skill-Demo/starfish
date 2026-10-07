@@ -622,7 +622,7 @@ describe("runCycle: the pull request is opened once per cycle", () => {
 });
 
 describe("runCycle: the incident links to its issue and pull request (#194)", () => {
-  const openIssue = async (_req: IssueRequest) => ({ number: 5, url: "https://example.test/issues/5" });
+  const openIssue: LoopDeps["openIssue"] = async () => ({ number: 5, url: "https://example.test/issues/5" });
   const incidentDoc = async () => (await db.collection(`incidents_${cfg}`).doc("inc1").get()).data()!;
 
   it("writes the issue and PR number and URL onto the incident, and nothing else of it", async () => {
