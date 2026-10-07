@@ -95,10 +95,14 @@ export default function Overview() {
     retry: false,
   });
 
-  const counts = cycles ? countCycles(cycles, now) : null;
-  const incidentCounts = incidents.data ? countIncidents(incidents.data.rows) : null;
-  const series = incidents.data ? hourlySeries(incidents.data.rows, now, WINDOW_HOURS) : null;
-  const kpis = cycles ? runKpis(cycles) : null;
+  // A read that failed shows no figure, never the last one it had (#195): TanStack Query keeps `data` after a failed
+  // refetch, and a runs listener that errored keeps its last rows, which may be another session's.
+  const shownCycles = cyclesFailed ? null : cycles;
+  const shownIncidents = incidents.isError ? undefined : incidents.data;
+  const counts = shownCycles ? countCycles(shownCycles, now) : null;
+  const incidentCounts = shownIncidents ? countIncidents(shownIncidents.rows) : null;
+  const series = shownIncidents ? hourlySeries(shownIncidents.rows, now, WINDOW_HOURS) : null;
+  const kpis = shownCycles ? runKpis(shownCycles) : null;
   const rate = series ? errorRate(series) : null;
   const total = series ? series.reduce((sum, b) => sum + b.count, 0) : 0;
   const peak = series ? Math.max(...series.map((b) => b.count), 0) : 0;
@@ -116,10 +120,11 @@ export default function Overview() {
       </div>
 
       <section aria-label="Counts" className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
-        <Tile label="Waiting on a human" value={counts?.waitingHuman} to="/runs?state=waiting-human" note="runs" />
+        <Tile label="Waiting on a human" value={counts?.waitingHuman} failed={cyclesFailed} to="/runs?state=waiting-human" note="runs" />
         <Tile
           label="Healed on its own"
           value={counts?.healed}
+          failed={cyclesFailed}
           to="/runs?heal=healed"
           note={
             counts && counts.healed === 0
@@ -127,38 +132,43 @@ export default function Overview() {
               : "missing-index heals that held through their window"
           }
         />
-        <Tile label="Runs in progress" value={counts?.inProgress} to="/runs?state=running" note={counts && counts.stalled > 0 ? `${counts.stalled} with no worker` : "a worker holds them now"} />
-        <Tile label="Open incidents" value={incidentCounts?.open} to="/incidents" note={`last ${WINDOW_HOURS} hours`} />
-        <Tile label="Regressions" value={incidentCounts?.regressions} to="/incidents" note="open, came back after a fix" />
+        <Tile label="Runs in progress" value={counts?.inProgress} failed={cyclesFailed} to="/runs?state=running" note={counts && counts.stalled > 0 ? `${counts.stalled} with no worker` : "a worker holds them now"} />
+        <Tile label="Open incidents" value={incidentCounts?.open} failed={incidents.isError} to="/incidents" note={`last ${WINDOW_HOURS} hours`} />
+        <Tile label="Regressions" value={incidentCounts?.regressions} failed={incidents.isError} to="/incidents" note="open, came back after a fix" />
       </section>
       <section aria-label="Key figures" className="grid grid-cols-2 gap-3 lg:grid-cols-4">
         <Kpi
           label="Pull requests opened"
           value={kpis ? ratioText(kpis.pullRequests) : undefined}
+          failed={cyclesFailed}
           note={kpis && kpis.finished === 0 ? "no finished runs yet" : "of finished runs"}
           to="/runs?path=pr"
         />
         <Kpi
           label="Failed runs"
           value={kpis ? ratioText(kpis.failed) : undefined}
+          failed={cyclesFailed}
           note={kpis && kpis.finished === 0 ? "no finished runs yet" : "of finished runs, timeouts included"}
           to="/runs?path=failed"
         />
         <Kpi
           label="Median run length"
           value={kpis ? (kpis.medianRunMs === undefined ? "–" : formatDuration(kpis.medianRunMs)) : undefined}
+          failed={cyclesFailed}
           note={kpis && kpis.medianRunMs !== undefined ? `over ${kpis.finished} finished runs` : "no finished runs yet"}
           to="/runs"
         />
         <Kpi
           label="Untriaged incidents"
-          value={incidentCounts && incidents.data ? countUntriaged(incidents.data.rows).toLocaleString() : undefined}
+          value={shownIncidents ? countUntriaged(shownIncidents.rows).toLocaleString() : undefined}
+          failed={incidents.isError}
           note={`open, no agent decision yet, last ${WINDOW_HOURS} hours`}
           to="/incidents"
         />
         <Kpi
           label="Errors this hour"
           value={rate ? rate.thisHour.toLocaleString() : undefined}
+          failed={incidents.isError}
           note={rate ? `previous ${WINDOW_HOURS - 1} hours: ${rate.baseline.toFixed(1)} per hour` : "no incident data"}
           to="/incidents"
         />
@@ -187,7 +197,9 @@ export default function Overview() {
       <div className="grid gap-4 lg:grid-cols-2">
         <section aria-label="What the agent did" className="rounded-lg border border-gray-200 bg-white p-4 dark:border-gray-700 dark:bg-gray-800">
           <h2 className="font-medium text-gray-900 dark:text-white">What the agent did</h2>
-          {!counts ? (
+          {cyclesFailed ? (
+            <p role="alert" className="mt-2 text-sm text-error-700 dark:text-error-400">Couldn&apos;t read the runs.</p>
+          ) : !counts ? (
             <p className="mt-2 text-sm text-gray-600 dark:text-gray-400">Loading…</p>
           ) : counts.total === 0 ? (
             <p className="mt-2 text-sm text-gray-600 dark:text-gray-400">
@@ -217,13 +229,15 @@ export default function Overview() {
 
         <section aria-label="Latest runs" className="rounded-lg border border-gray-200 bg-white p-4 dark:border-gray-700 dark:bg-gray-800">
           <h2 className="font-medium text-gray-900 dark:text-white">Latest runs</h2>
-          {!cycles ? (
+          {cyclesFailed ? (
+            <p role="alert" className="mt-2 text-sm text-error-700 dark:text-error-400">Couldn&apos;t read the runs.</p>
+          ) : !shownCycles ? (
             <p className="mt-2 text-sm text-gray-600 dark:text-gray-400">Loading…</p>
-          ) : cycles.length === 0 ? (
+          ) : shownCycles.length === 0 ? (
             <p className="mt-2 text-sm text-gray-600 dark:text-gray-400">No runs yet.</p>
           ) : (
             <ul className="mt-2 divide-y divide-gray-200 text-sm dark:divide-gray-700">
-              {cycles.slice(0, 5).map((c) => {
+              {shownCycles.slice(0, 5).map((c) => {
                 const status = runStatus(c, now);
                 return (
                   <li key={c.id} className="flex flex-wrap items-center justify-between gap-2 py-2">
@@ -269,14 +283,14 @@ export default function Overview() {
   );
 }
 
-function Tile({ label, value, to, note }: { label: string; value: number | undefined; to: string; note: string }) {
+function Tile({ label, value, failed = false, to, note }: { label: string; value: number | undefined; failed?: boolean; to: string; note: string }) {
   return (
     <Link to={to} className="rounded-lg border border-gray-200 bg-white p-4 hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-800 dark:hover:bg-gray-700">
       <p className="text-sm text-gray-700 dark:text-gray-300">{label}</p>
       <p className="mt-1 text-2xl font-semibold text-gray-900 dark:text-white" data-testid={`tile-${label}`}>
-        {value === undefined ? "…" : value.toLocaleString()}
+        {failed ? "–" : value === undefined ? "…" : value.toLocaleString()}
       </p>
-      <p className="mt-1 text-xs text-gray-600 dark:text-gray-400">{note}</p>
+      <p className="mt-1 text-xs text-gray-600 dark:text-gray-400">{failed ? "couldn't be read" : note}</p>
     </Link>
   );
 }
@@ -285,14 +299,14 @@ function ratioText({ count, of }: Ratio): string {
   return of === 0 ? "–" : `${count} of ${of}`;
 }
 
-function Kpi({ label, value, note, to }: { label: string; value: string | undefined; note: string; to: string }) {
+function Kpi({ label, value, failed = false, note, to }: { label: string; value: string | undefined; failed?: boolean; note: string; to: string }) {
   return (
     <Link to={to} className="rounded-lg border border-gray-200 bg-white p-4 hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-800 dark:hover:bg-gray-700">
       <p className="text-sm text-gray-700 dark:text-gray-300">{label}</p>
       <p className="mt-1 text-2xl font-semibold text-gray-900 dark:text-white" data-testid={`kpi-${label}`}>
-        {value ?? "…"}
+        {failed ? "–" : (value ?? "…")}
       </p>
-      <p className="mt-1 text-xs text-gray-600 dark:text-gray-400">{note}</p>
+      <p className="mt-1 text-xs text-gray-600 dark:text-gray-400">{failed ? "couldn't be read" : note}</p>
     </Link>
   );
 }

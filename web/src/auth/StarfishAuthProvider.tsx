@@ -72,6 +72,10 @@ export function StarfishAuthProvider({
       setUser(fbUser);
 
       if (!fbUser) {
+        // Whoever was signed in is gone, however they went (a sign-out here, a failed focus-time token check, a
+        // session ended in another tab): their cached data must not be shown to whoever comes next, a guest
+        // included (#195). Nobody was signed in before: nothing cached to clear.
+        if (lastResolvedUid.current !== undefined) queryClient.clear();
         lastResolvedUid.current = undefined;
         setRoles([]);
         setLoading(false);
@@ -131,6 +135,7 @@ export function StarfishAuthProvider({
         } catch (error) {
           if (!isNetworkError(error)) {
             console.debug("[StarfishAuthProvider] token invalid, signing out:", error);
+            queryClient.clear();
             await auth.signOut();
           }
         }
@@ -142,7 +147,7 @@ export function StarfishAuthProvider({
     };
     document.addEventListener("visibilitychange", handleVisibilityChange);
     return () => document.removeEventListener("visibilitychange", handleVisibilityChange);
-  }, [auth]);
+  }, [auth, queryClient]);
 
   // One guest attempt at a time, and none after a deliberate sign-out: someone who just
   // signed out is heading to the sign-in page, not asking to be a guest again. Only the

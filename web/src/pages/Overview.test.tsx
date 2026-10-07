@@ -43,9 +43,9 @@ const incident = (over: Partial<IncidentRow> = {}): IncidentRow => ({
   firstOccurredAt: "", lastOccurredAt: "", status: "new", recurrenceCount: 0, ...over,
 });
 
-function renderPage() {
+function renderPage(client = new QueryClient({ defaultOptions: { queries: { retry: false } } })) {
   return render(
-    <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+    <QueryClientProvider client={client}>
       <MemoryRouter>
         <Overview />
       </MemoryRouter>
@@ -168,6 +168,26 @@ describe("Overview page", () => {
     act(() => mocks.cyclesErr!(new Error("denied")));
     expect(screen.getByTestId("headline")).toHaveTextContent("The agent's runs couldn't be read.");
     expect(await screen.findByText("Couldn't read the incidents.")).toBeInTheDocument();
+  });
+
+  it("stops showing the last figures once a read fails, instead of passing them off as current (#195)", async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    mocks.listIncidents.mockResolvedValue({ rows: [incident(), incident({ id: "i2", status: "recurred", recurrenceCount: 1 })], capped: false });
+    renderPage(client);
+    act(() => mocks.cyclesCb!([cycle("a", { state: "waiting-human", path: "pr" })], false));
+    await waitFor(() => expect(tile("Open incidents")).toHaveTextContent("2"));
+    expect(tile("Waiting on a human")).toHaveTextContent("1");
+
+    mocks.listIncidents.mockRejectedValue(new Error("denied"));
+    await act(() => client.refetchQueries());
+    act(() => mocks.cyclesErr!(new Error("denied")));
+    for (const label of ["Open incidents", "Regressions", "Waiting on a human", "Runs in progress", "Healed on its own"]) {
+      expect(tile(label), label).toHaveTextContent("–");
+    }
+    expect(screen.getByTestId("kpi-Untriaged incidents")).toHaveTextContent("–");
+    expect(screen.getByTestId("kpi-Pull requests opened")).toHaveTextContent("–");
+    expect(within(screen.getByRole("region", { name: "Latest runs" })).getByText("Couldn't read the runs.")).toBeInTheDocument();
+    expect(within(screen.getByRole("region", { name: "What the agent did" })).getByText("Couldn't read the runs.")).toBeInTheDocument();
   });
 
   it("says when run counts cover only the most recent runs", () => {
