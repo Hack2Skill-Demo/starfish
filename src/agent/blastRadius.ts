@@ -41,7 +41,7 @@
  *
  * What this cannot know from a diff: whether the enclosing function is async (a missing `await` in a non-async
  * function is a compile error the verify gate catches), that an object literal is really a Firestore write, or what a
- * new test file does to state other tests share.
+ * new test file does to state other tests share (or to a test process they share, where the runner has one).
  */
 import { isExcludedPath } from "./verifyGate.js";
 

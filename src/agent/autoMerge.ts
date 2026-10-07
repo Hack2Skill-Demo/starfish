@@ -180,7 +180,7 @@ export function mergeEvidenceText(input: EvidenceInput): string {
     "",
     "### Gate 1: low blast radius",
     "",
-    `- Class: ${codeSpan(merge.fixClass, 40)}, in one hunk of ${codeSpan(merge.sourceFile, 200)} with no function or class boundary between its changed lines and at least three lines of context on each side; any other file is a new test file made only of added lines (an existing test file is never changed)`,
+    `- Class: ${codeSpan(merge.fixClass, 40)}, in one hunk of ${codeSpan(merge.sourceFile, 200)} with no function or class boundary between its changed lines and at least three lines of context on each side (fewer only at the file's start or end); any other file is a new test file made only of added lines (an existing test file is never changed)`,
     "- The files the verify gate saw the patch change are exactly the files this check read",
     "- Hard-exclude list (auth and access control, security rules, money paths, secrets, schema, dependencies, CI config, shared packages): no path word and no changed line matched it, and no statement that decides something in the whole enclosing function (as the base revision has it) names access control, money or a secret (a word match, not a proof)",
     "",

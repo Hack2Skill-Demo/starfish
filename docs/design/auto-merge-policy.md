@@ -60,7 +60,9 @@ of added lines: **tests come only as new files, and a test file that already exi
 changed.** A removed line can disable the test that judges the patch, and so can an added one (a
 block comment, an early `return;`, `.skip`, a matcher re-defined with `expect.extend`, a spy, a
 global changed at collection time); that list cannot be completed, so no change to an existing test
-file is allowed. What this cannot stop: a new test file that changes state other tests share. Every
+file is allowed. What this cannot stop: a new test file that changes state other tests share, or,
+where the target's runner runs every test file in one process, one that ends that process early
+("fails before" only shows the new test failing without the fix). Every
 changed block one class: *null guard* (an early `return;`, `return null`, `return undefined` or
 `throw` when a value is null or undefined, said explicitly: `x == null`, `x === null`,
 `x === undefined`, `x == undefined`, `typeof x === "undefined"`, or `||` of those; never `!x`, which
