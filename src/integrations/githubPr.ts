@@ -75,7 +75,8 @@ export type GithubRule =
   | "head-changed"
   | "not-mergeable"
   | "intervening-changes"
-  | "revert-not-possible";
+  | "revert-not-possible"
+  | "too-many-check-runs";
 
 /** Thrown for anything that stopped the pull request. Never carries the token. */
 export class GithubError extends Error {
@@ -737,7 +738,9 @@ export function createGithubClient(cfg: GithubPrConfig, deps: GithubPrDeps): Git
     return branch;
   }
 
+  /** GitHub's largest page of check runs, and how many pages are read before the list counts as not read (#205). */
   const MAX_CHECKS = 100;
+  const MAX_CHECK_PAGES = 5;
   const MAX_ANNOTATIONS = 20;
   const bounded = (v: unknown, max: number) => scrub(typeof v === "string" ? v.slice(0, max) : "");
 
@@ -761,36 +764,54 @@ export function createGithubClient(cfg: GithubPrConfig, deps: GithubPrDeps): Git
     return findExisting(branch);
   }
 
+  /**
+   * EVERY check run on a commit: `filter=all`, so a run that failed is still listed after a re-run of the same check
+   * succeeded (GitHub's default, `latest`, would show only the newest, #205), page by page. More than
+   * `MAX_CHECK_PAGES` pages, or fewer runs than GitHub's own count says it has, throws `too-many-check-runs`: a list read
+   * only in part could hide the one failure that matters, so it is never judged as passed.
+   */
   async function listCheckRuns(commit: string): Promise<CheckRun[]> {
     if (!/^[0-9a-f]{40}$/.test(commit)) throw new GithubError("invalid-request", "A check run is looked up by a full commit id.");
-    const r = await call("GET", `/repos/${cfg.githubRepo}/commits/${commit}/check-runs?per_page=${MAX_CHECKS}`);
-    if (r.status !== 200) throw failure(r.status, r.headers, r.json);
-    const runs = (r.json as { check_runs?: unknown } | null)?.check_runs;
-    if (!Array.isArray(runs)) throw new GithubError("unexpected-response", "GitHub's list of check runs was not a list");
     const out: CheckRun[] = [];
-    for (const item of runs.slice(0, MAX_CHECKS)) {
-      const c = item as {
-        id?: unknown;
-        name?: unknown;
-        status?: unknown;
-        conclusion?: unknown;
-        html_url?: unknown;
-        app?: { slug?: unknown } | null;
-        output?: { title?: unknown; summary?: unknown } | null;
-      };
-      if (typeof c.id !== "number" || typeof c.name !== "string" || typeof c.status !== "string") continue;
-      out.push({
-        id: c.id,
-        name: bounded(c.name, 200),
-        status: c.status,
-        conclusion: typeof c.conclusion === "string" ? c.conclusion : null,
-        url: typeof c.html_url === "string" ? c.html_url.slice(0, 300) : "",
-        app: typeof c.app?.slug === "string" ? c.app.slug.slice(0, 100) : "",
-        title: bounded(c.output?.title, 200),
-        summary: bounded(c.output?.summary, 400),
-      });
+    let seen = 0;
+    for (let page = 1; ; page++) {
+      const r = await call("GET", `/repos/${cfg.githubRepo}/commits/${commit}/check-runs?filter=all&per_page=${MAX_CHECKS}&page=${page}`);
+      if (r.status !== 200) throw failure(r.status, r.headers, r.json);
+      const body = r.json as { check_runs?: unknown; total_count?: unknown } | null;
+      const runs = body?.check_runs;
+      if (!Array.isArray(runs)) throw new GithubError("unexpected-response", "GitHub's list of check runs was not a list");
+      if (runs.length > MAX_CHECKS) throw new GithubError("unexpected-response", "GitHub sent a longer page of check runs than was asked for");
+      seen += runs.length;
+      for (const item of runs) {
+        const c = item as {
+          id?: unknown;
+          name?: unknown;
+          status?: unknown;
+          conclusion?: unknown;
+          html_url?: unknown;
+          app?: { slug?: unknown } | null;
+          output?: { title?: unknown; summary?: unknown } | null;
+        };
+        if (typeof c.id !== "number" || typeof c.name !== "string" || typeof c.status !== "string") continue;
+        out.push({
+          id: c.id,
+          name: bounded(c.name, 200),
+          status: c.status,
+          conclusion: typeof c.conclusion === "string" ? c.conclusion : null,
+          url: typeof c.html_url === "string" ? c.html_url.slice(0, 300) : "",
+          app: typeof c.app?.slug === "string" ? c.app.slug.slice(0, 100) : "",
+          title: bounded(c.output?.title, 200),
+          summary: bounded(c.output?.summary, 400),
+        });
+      }
+      const total = typeof body?.total_count === "number" ? body.total_count : undefined;
+      const last = runs.length < MAX_CHECKS || (total !== undefined && seen >= total);
+      if (last) {
+        if (total !== undefined && seen < total) throw new GithubError("too-many-check-runs", `GitHub counts ${total} check runs on the commit but listed ${seen}: not judged on part of them.`);
+        return out;
+      }
+      if (page >= MAX_CHECK_PAGES) throw new GithubError("too-many-check-runs", `More than ${MAX_CHECKS * MAX_CHECK_PAGES} check runs on the commit: not judged on part of them.`);
     }
-    return out;
   }
 
   async function annotations(checkRunId: number): Promise<CheckAnnotation[]> {

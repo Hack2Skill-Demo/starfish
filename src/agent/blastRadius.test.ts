@@ -2,17 +2,39 @@
  * Gate 1 of auto-merge (#9): what a diff may be and still be merged without a person. Each allowed class is shown
  * passing once, and then every way to get past it that we could think of is shown failing: unsure is never allowed.
  */
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { assessBlastRadius, excludedPathCategories, isTestPath, judgedTheVerifiedFiles, parsePatch, testOnlyPatch } from "./blastRadius.js";
+import { assessBlastRadius, excludedPathCategories, isTestPath, judgedTheVerifiedFiles, parsePatch, testOnlyPatch, type BlastRadiusConfig } from "./blastRadius.js";
 
-const cfg = { excludedPaths: [] as string[] };
-const gate = (patch: string, over = cfg) => assessBlastRadius(patch, over);
+/**
+ * The base revision of every file a patch changes, as the patch's own old side: each hunk's context and removed lines
+ * at its line numbers, gaps blank. The helpers below start every hunk at line 1 and end it with the file, so this is the
+ * whole file.
+ */
+function basesOf(patch: string): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const f of parsePatch(patch) ?? []) {
+    if (f.oldPath === null) continue;
+    const lines: string[] = [];
+    for (const h of f.hunks) {
+      let at = h.oldStart - 1;
+      for (const l of h.lines) if (l.kind !== "+") lines[at++] = l.text;
+    }
+    out.set(f.oldPath, Array.from(lines, (l) => l ?? "").join("\n") + "\n");
+  }
+  return out;
+}
+const gate = (patch: string, over: Partial<BlastRadiusConfig> = {}) => assessBlastRadius(patch, { excludedPaths: [], baseFiles: basesOf(patch), ...over });
 
-/** One hunk on one file: `body` is the hunk's lines with their ` `, `-`, `+` prefixes. */
-function diff(path: string, body: string[], start = 10): string {
-  const old = body.filter((l) => !l.startsWith("+")).length;
-  const neu = body.filter((l) => !l.startsWith("-")).length;
-  return [`diff --git a/${path} b/${path}`, `--- a/${path}`, `+++ b/${path}`, `@@ -${start},${old} +${start},${neu} @@`, ...body].join("\n") + "\n";
+/** A handler around every hunk the helpers build: the change is inside one function, with the file's start and end. */
+const PRE = [" export async function handler(id, data) {", "   const started = Date.now();", '   log("start", id);'];
+const POST = ['   log("done", started);', " }"];
+/** One hunk on one file, wrapped in PRE/POST: `body` is the hunk's lines with their ` `, `-`, `+` prefixes. */
+function diff(path: string, body: string[], wrap = true): string {
+  const all = wrap ? [...PRE, ...body, ...POST] : body;
+  const old = all.filter((l) => !l.startsWith("+")).length;
+  const neu = all.filter((l) => !l.startsWith("-")).length;
+  return [`diff --git a/${path} b/${path}`, `--- a/${path}`, `+++ b/${path}`, `@@ -1,${old} +1,${neu} @@`, ...all].join("\n") + "\n";
 }
 const SRC = "functions/src/orders/createOrder.ts";
 const TEST = "functions/src/orders/createOrder.test.ts";
@@ -27,8 +49,8 @@ const addedTest = [
   "+});",
 ].join("\n") + "\n";
 
-const guard = diff(SRC, ["  const order = await load(id);", "+  if (!order) return null;", "   return order.total;"]);
-const guardBlock = diff(SRC, ["  const order = await load(id);", "+  if (!order || order.items === undefined) {", "+    return undefined;", "+  }", "   return order.items;"]);
+const guard = diff(SRC, ["  const order = await load(id);", "+  if (order == null) return null;", "   return order.total;"]);
+const guardBlock = diff(SRC, ["  const order = await load(id);", "+  if (order === null || order === undefined || order.items === undefined) {", "+    return undefined;", "+  }", "   return order.items;"]);
 const chaining = diff(SRC, ["  const order = await load(id);", "-  const n = order.items.length;", "+  const n = order?.items?.length ?? 0;", "   return n;"]);
 const missingAwait = diff(SRC, ["  const ref = db.collection(\"orders\").doc(id);", "-  ref.set(data);", "+  await ref.set(data);", "   return ref.id;"]);
 const undefinedField = diff(SRC, ["  await ref.set({", "    total: data.total,", "-    couponCode: data.couponCode,", "+    ...(data.couponCode !== undefined && { couponCode: data.couponCode }),", "  });"]);
@@ -38,7 +60,7 @@ describe("parsePatch", () => {
   it("reads files, hunks and line kinds, with or without a diff --git header", () => {
     const files = parsePatch(guard + addedTest)!;
     expect(files.map((f) => [f.oldPath, f.newPath])).toEqual([[SRC, SRC], [null, TEST]]);
-    expect(files[0]!.hunks[0]!.lines.map((l) => l.kind)).toEqual([" ", "+", " "]);
+    expect(files[0]!.hunks[0]!.lines.map((l) => l.kind)).toEqual([" ", " ", " ", " ", "+", " ", " ", " "]);
     expect(parsePatch("--- a/x.ts\n+++ b/x.ts\n@@ -1 +1 @@\n-a\n+b\n")).toHaveLength(1);
   });
   it("is null (unsure) for anything it does not understand", () => {
@@ -100,15 +122,15 @@ describe("assessBlastRadius: never on unsure (adversarial diffs)", () => {
 
   it("refuses an access-control path, whatever its word for it (#202)", () => {
     for (const path of ["src/guards/isOwner.ts", "src/policies/canRead.ts", "src/firebase/appCheck.ts", "functions/src/verifyRequest.ts", "src/app-check/x.ts", "src/canShip.ts"]) {
-      const r = gate(diff(path, ["  const doc = get(id);", "+  if (!doc) return null;", "   return doc.total;"]));
+      const r = gate(diff(path, ["  const doc = get(id);", "+  if (doc == null) return null;", "   return doc.total;"]));
       expect(r.problems, path).toContain("excluded:access-control");
     }
     expect(excludedPathCategories("src/scanner/cancel.ts")).toEqual([]); // "can" is a word, not a prefix
   });
 
   it("refuses a guard whose context is an ownership check: the guard changes what that check decides (#202)", () => {
-    refused(diff(SRC, ["  const doc = await get(id);", "+  if (!doc) return null;", "   return doc.ownerId === user.uid;"]), "excluded:access-control");
-    refused(diff(SRC, ["  if (!context.auth) throw new HttpsError(\"unauthenticated\");", "+  if (!order) return null;", "   return order.total;"]), "excluded:access-control");
+    refused(diff(SRC, ["  const doc = await get(id);", "+  if (doc == null) return null;", "   return doc.ownerId === user.uid;"]), "excluded:access-control");
+    refused(diff(SRC, ["  if (!context.auth) throw new HttpsError(\"unauthenticated\");", "+  if (order == null) return null;", "   return order.total;"]), "excluded:access-control");
   });
 
   it("does not take a context line that only carries an access word for a check: the order's owner written with it", () => {
@@ -127,7 +149,7 @@ describe("assessBlastRadius: never on unsure (adversarial diffs)", () => {
   });
 
   it("refuses two classes in one patch", () => {
-    refused(diff(SRC, ["  const o = get(id);", "+  if (!o) return null;", "   x();", "-  ref.set(o);", "+  await ref.set(o);", "  y();"]), "mixed-classes");
+    refused(diff(SRC, ["  const o = get(id);", "+  if (o == null) return null;", "   x();", "-  ref.set(o);", "+  await ref.set(o);", "  y();"]), "mixed-classes");
   });
 
   it("refuses more than one function: two hunks, a definition between the changes, a module-level line", () => {
@@ -146,29 +168,60 @@ describe("assessBlastRadius: never on unsure (adversarial diffs)", () => {
     refused(addedTest, "no-source-change");
   });
 
-  it("refuses a test file that loses lines: deleting the test that judges a patch must not pass", () => {
-    refused(guard + diff(TEST, [" it(\"x\", () => {", "-  expect(f()).toBe(1);", " });"]), "test-lines-removed");
+  it("refuses any change to a test file that already exists: tests may only be added as new files (#204)", () => {
+    // Losing a line: deleting the test that judges a patch.
+    refused(guard + diff(TEST, [' it("x", () => {', "-  expect(f()).toBe(1);", " });"], false), "existing-test-file-changed");
+    // Gaining lines can switch existing tests off just as well. A deny-list of what added lines may not say cannot be
+    // completed: a whole new describe can still re-define a matcher the existing tests use (the review's proof).
+    const extend = [
+      " import { describe, it, expect } from \"vitest\";",
+      ' import { createOrder } from "./createOrder";',
+      " ",
+      '+describe("no coupon", () => { expect.extend({ toThrow: () => ({ pass: true, message: () => "" }) }); it("works", () => { expect(createOrder({})).toBeDefined(); }); });',
+      ' describe("createOrder", () => {',
+      '   it("rejects zero", () => {',
+      "     expect(() => createOrder({ qty: 0 })).toThrow();",
+    ];
+    refused(guard + diff(TEST, extend, false), "existing-test-file-changed");
+    for (const added of [
+      ['+it("works without a coupon", async () => {', "+  expect(await createOrder({})).toEqual({ total: 0, items: [] });", "+});"],
+      ['+vi.spyOn(console, "error").mockImplementation(() => {});'],
+      ['+Object.defineProperty(globalThis, "fetch", { value: () => null });'],
+      ['+it.skip("x", () => {});'],
+      ["+    return;"],
+    ]) {
+      refused(guard + diff(TEST, [" });", ...added, ' it("y", () => {});'], false), "existing-test-file-changed");
+    }
   });
 
-  it("refuses added test lines that switch existing tests off: only whole new tests may be added to a test file (#204)", () => {
-    const into = (lines: string[]) => guard + diff(TEST, [' it("x", async () => {', ...lines, " });"]);
-    const assertion = "   expect(await createOrder({ sku: 1 })).toBe(false);";
-    refused(into(["+    /*", assertion, "+    */"]), "test-lines-disable-tests");
-    refused(into(["+    return;", assertion]), "test-lines-not-whole-tests");
-    refused(into(["+    if (false) {", assertion, "+    }"]), "test-lines-not-whole-tests");
-    refused(into(["+    false &&", assertion]), "test-lines-not-whole-tests");
-    refused(into(["+    const s = `", assertion, "+    `;"]), "test-lines-not-whole-tests");
-    refused(into(['+    it(/"/); if (false) { it(/"/);', assertion, '+    it(/"/); } it(/"/);']), "test-lines-not-whole-tests"); // a regex hiding a quote
-    refused(guard + diff(TEST, ['+it.skip("x", () => {});', ' it("y", () => {});']), "test-lines-disable-tests");
-    refused(guard + diff(TEST, ['+vi.mock("./createOrder");', ' it("y", () => {});']), "test-lines-disable-tests");
-    refused(guard + diff(TEST, [' });', '+xit("x", () => {});']), "test-lines-disable-tests");
+  it("still allows a new test file, and only one made of added lines", () => {
+    expect(gate(guard + addedTest)).toMatchObject({ allowed: true, testFiles: [TEST] });
+    expect(gate(addedTest + guard)).toMatchObject({ allowed: true, testFiles: [TEST] });
   });
 
-  it("allows whole new tests added to an existing test file", () => {
-    const added = [" });", "+", '+it("works without a coupon", async () => {', "+  expect(await createOrder({})).toEqual({ total: 0, items: [] });", "+});", " "];
-    expect(gate(guard + diff(TEST, added))).toMatchObject({ allowed: true, testFiles: [TEST] });
-    const each = [" });", '+it.each([[1, "a"], [2, "b"]])("case %s", (n, s) => {', "+  // it holds", "+  expect(f(n)).toBe(s);", "+});"];
-    expect(gate(guard + diff(TEST, each)).allowed).toBe(true);
+  it("refuses a new test file that is not a test by name, or a mock or snapshot directory's file", () => {
+    const created = (path: string) =>
+      [`diff --git a/${path} b/${path}`, "new file mode 100644", "--- /dev/null", `+++ b/${path}`, "@@ -0,0 +1 @@", "+export const x = 1;"].join("\n") + "\n";
+    for (const path of ["test/helpers.ts", "tests/setup.js", "src/__tests__/__mocks__/db.test.ts", "test/__snapshots__/a.test.ts.snap"]) {
+      const r = gate(guard + created(path));
+      expect(r.allowed, path).toBe(false);
+      expect(r.problems, path).toContain("test-file-not-a-test");
+    }
+  });
+
+  it("refuses a carriage return, a Unicode line or paragraph separator, or another control character anywhere (#204)", () => {
+    // The review's proof: JS ends a line at a lone CR, so this "comment" runs `return;` and unregisters the tests after it.
+    const crInExisting = [' describe("shipOrder", () => {', '+  it("none", () => { expect(f()).toBeUndefined(); });', "+  // covered elsewhere\r  return;", '   it("rejects zero", () => {'];
+    refused(guard + diff(TEST, crInExisting, false), "control-characters");
+    const inNewTest = addedTest.replace("+});", "+}); // done\r  process.exitCode = 0;");
+    refused(guard + inNewTest, "control-characters");
+    for (const ch of ["\u2028", "\u2029", "\u0000", "\u000b", "\u000c", "\u001b", "\u007f", "\u0085", "\u200b", "\u202e", "\u2066", "\ufeff"]) {
+      refused(diff(SRC, ["  const order = await load(id);", `+  if (order == null) return null; //${ch}`, "   return order.total;"]), "control-characters");
+      refused(diff(SRC, [`  const order = await load(id); //${ch}`, "+  if (order == null) return null;", "   return order.total;"]), "control-characters");
+    }
+    // A tab is ordinary, and a CRLF file's line endings are not a lone CR.
+    expect(gate(diff(SRC, ["  const order = await load(id);", "+\tif (order == null) return null;", "   return order.total;"])).allowed).toBe(true);
+    expect(gate(guard.replace(/\n/g, "\r\n")).allowed).toBe(true);
   });
 
   it("refuses a header path git would read differently, and a rename hidden in the headers (#200)", () => {
@@ -196,7 +249,7 @@ describe("assessBlastRadius: never on unsure (adversarial diffs)", () => {
   });
 
   it("refuses a change too large or too spread out to be one small fix", () => {
-    const big = ["  const o = get(id);", ...Array.from({ length: 9 }, (_, i) => `+  if (!o${i}) return null;`), "   return o;"];
+    const big = ["  const o = get(id);", ...Array.from({ length: 9 }, (_, i) => `+  if (o${i} == null) return null;`), "   return o;"];
     refused(diff(SRC, big), "change-too-large");
   });
 
@@ -206,7 +259,7 @@ describe("assessBlastRadius: never on unsure (adversarial diffs)", () => {
 });
 
 describe("assessBlastRadius: the hard-exclude list", () => {
-  const guardIn = (path: string) => diff(path, ["  const o = get(id);", "+  if (!o) return null;", "   return o;"]);
+  const guardIn = (path: string) => diff(path, ["  const o = get(id);", "+  if (o == null) return null;", "   return o;"]);
   it.each([
     ["functions/src/auth/verify.ts", "access-control"],
     ["functions/src/authMiddleware.ts", "access-control"],
@@ -258,6 +311,109 @@ describe("assessBlastRadius: the hard-exclude list", () => {
   it("does not exclude ordinary product code", () => {
     expect(excludedPathCategories(SRC)).toEqual([]);
     expect(excludedPathCategories(TEST)).toEqual([]);
+  });
+});
+
+describe("assessBlastRadius: a null guard checks for null or undefined, never for any falsy value (#202)", () => {
+  const at = (cond: string) => gate(diff(SRC, ["  const o = await load(id);", `+  if (${cond}) return null;`, "   return o.total;"]));
+  it.each(["o == null", "o === null", "o === undefined", "o == undefined", 'typeof o === "undefined"', "typeof o == 'undefined'", "null == o", "undefined === o", "o == null || o.items == null", "o?.items === undefined"])(
+    "allows `if (%s)`",
+    (cond) => {
+      expect(at(cond)).toMatchObject({ allowed: true, fixClass: "null-guard" });
+    }
+  );
+  it.each(["!o", "!o.items", "!o?.items", "o == null || !o.items", "!o || o.items == null", "!!o", "o == 0", "o === false", 'o === ""', "o != null"])("refuses `if (%s)`: true for 0, \"\", false or NaN too", (cond) => {
+    expect(at(cond)).toMatchObject({ allowed: false });
+    expect(at(cond).problems).toContain("not-an-allowed-class");
+  });
+});
+
+describe("assessBlastRadius: the whole function in the base file, not only the context the patch chose (#202)", () => {
+  const FILE = "functions/src/docs/denialReason.ts";
+  /** One function, and a line after it; `line2` is its second line, a decision far from the change. */
+  const base = (line2: string) =>
+    [
+      "export function denialReason(doc: Doc, user: User): string | null {",
+      line2,
+      "  const a = 1;",
+      "  const b = 2;",
+      "  const c = 3;",
+      "  const meta = doc.meta;",
+      "  log(meta);",
+      "  const d = 4;",
+      "  const e = 5;",
+      "  const f = 6;",
+      "  return null;",
+      "}",
+      "",
+      "export const other = 1;",
+    ].join("\n") + "\n";
+  /** The guard after `const meta`, with three lines of context on each side, in a file whose line 1 is `first`. */
+  const hunkAt = (first: number) =>
+    diff(FILE, ["   const b = 2;", "   const c = 3;", "   const meta = doc.meta;", "+  if (meta == null) return null;", "   log(meta);", "   const d = 4;", "   const e = 5;"], false)
+      .replace("@@ -1,", `@@ -${first + 3},`)
+      .replace(" +1,", ` +${first + 3},`);
+  const patch = hunkAt(1);
+  const withBase = (line2: string) => gate(hunkAt(1 + line2.split("\n").length - 1), { baseFiles: new Map([[FILE, base(line2)]]) });
+  /** The same function after `before` (whole lines). */
+  const after = (before: string[]) => gate(hunkAt(before.length + 1), { baseFiles: new Map([[FILE, [...before, base("  const z = 0;")].join("\n")]]) });
+
+  it("allows the guard when nothing in the function decides access, money or a secret", () => {
+    expect(withBase("  const z = 0;")).toMatchObject({ allowed: true, fixClass: "null-guard" });
+  });
+
+  it.each([
+    ["an ownership check", "  if (doc.ownerId !== user.uid) return \"not yours\";", "excluded:access-control"],
+    ["an auth check over two lines", "  if (\n    !context.auth\n  ) throw new Error(\"x\");", "excluded:access-control"],
+    ["a return of an ownership test, split over lines", "  if (gone(doc)) return (\n    doc.owner\n  );", "excluded:access-control"],
+    ["a money decision", "  if (order.amount > 0) charge(order);", "excluded:money"],
+    ["a secret compared", "  if (signature !== expected) throw new Error(\"bad\");", "excluded:secrets"],
+  ])("refuses the guard when the function holds %s outside the hunk", (_name, line2, problem) => {
+    const r = withBase(line2);
+    expect(r.allowed).toBe(false);
+    expect(r.problems).toContain(problem);
+  });
+
+  it("judges only the enclosing function: a check in another function of the file does not count", () => {
+    expect(after(["export function isOwner(doc: Doc, uid: string): boolean {", "  return doc.ownerId === uid;", "}", ""])).toMatchObject({ allowed: true });
+    expect(after(["export const isOwner = (doc: Doc, uid: string): boolean => {", "  return doc.ownerId === uid;", "};", ""])).toMatchObject({ allowed: true });
+  });
+
+  it("judges the whole file when it cannot delimit the function for certain", () => {
+    for (const odd of ["const s = 'unterminated", "const r = /unterminated", "const t = `${"]) {
+      const r = after(["export function isOwner(doc: Doc, uid: string): boolean {", "  return doc.ownerId === uid;", "}", odd]);
+      expect(r.allowed, odd).toBe(false);
+      expect(r.problems, odd).toContain("excluded:access-control");
+    }
+  });
+
+  it("refuses with no base content (fail closed), and when the base does not hold the hunk's lines", () => {
+    expect(gate(patch, { baseFiles: new Map() })).toMatchObject({ allowed: false, problems: expect.arrayContaining(["base-not-available"]) });
+    expect(gate(patch, { baseFiles: undefined })).toMatchObject({ allowed: false, problems: expect.arrayContaining(["base-not-available"]) });
+    expect(gate(patch, { baseFiles: new Map([[FILE, base("  const z = 0;").replace("const meta = doc.meta", "const meta = doc.other")]]) })).toMatchObject({ allowed: false, problems: expect.arrayContaining(["base-mismatch"]) });
+  });
+
+  it("refuses a hunk with fewer than 3 lines of context on a side, unless that side is the file's start or end", () => {
+    const thin = diff(FILE, ["   const c = 3;", "   const meta = doc.meta;", "+  if (meta == null) return null;", "   log(meta);"], false).replace("@@ -1,", "@@ -5,").replace(" +1,", " +5,");
+    expect(gate(thin, { baseFiles: new Map([[FILE, base("  const z = 0;")]]) })).toMatchObject({ allowed: false, problems: expect.arrayContaining(["too-little-context"]) });
+    // The helpers' hunks start at line 1 and end with the file: less context is all there is.
+    expect(gate(guard)).toMatchObject({ allowed: true });
+  });
+
+  it("keeps the demo's CODE-01 fix allowed, judged against the fixture's real handler", () => {
+    const fixture = JSON.parse(readFileSync(new URL("../../fixtures/incidents/firestore-undefined-field.json", import.meta.url), "utf8")) as { context: { path: string; excerpt: string }[] };
+    const { path, excerpt } = fixture.context[0]!;
+    const lines = excerpt.split("\n");
+    const at = lines.findIndex((l) => l.trim() === "couponCode: input.couponCode,");
+    expect(at).toBeGreaterThan(3);
+    const hunk = [
+      ...lines.slice(at - 3, at).map((l) => ` ${l}`),
+      `-${lines[at]!}`,
+      "+    ...(input.couponCode !== undefined && { couponCode: input.couponCode }),",
+      ...lines.slice(at + 1, at + 4).map((l) => ` ${l}`),
+    ];
+    const fix = diff(path, hunk, false).replace("@@ -1,", `@@ -${at - 2},`).replace(" +1,", ` +${at - 2},`);
+    expect(gate(fix, { baseFiles: new Map([[path, excerpt + "\n"]]) })).toMatchObject({ allowed: true, fixClass: "firestore-undefined-field", problems: [] });
   });
 });
 

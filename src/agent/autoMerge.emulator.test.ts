@@ -98,7 +98,7 @@ const cycle = async (id: string) => (await db.collection(cfg.cycleCollection).do
 const success: CheckRun = { id: 11, name: "verify", status: "completed", conclusion: "success", url: "https://github.com/acme/demo-shop/actions/runs/1", app: "github-actions", title: "", summary: "" };
 
 function fakeGithub(
-  opts: { pr?: Partial<PullRequestState>; readError?: Error; revertReadError?: Error; checks?: CheckRun[]; mergeError?: Error; commentError?: Error; revertError?: Error; revertPr?: Partial<PullRequestState>; changed?: string[] | Error } = {}
+  opts: { pr?: Partial<PullRequestState>; readError?: Error; revertReadError?: Error; checks?: CheckRun[] | Error; mergeError?: Error; commentError?: Error; revertError?: Error; revertPr?: Partial<PullRequestState>; changed?: string[] | Error } = {}
 ) {
   const calls: string[] = [];
   const merges: { id: string; number: number; sha: string }[] = [];
@@ -113,6 +113,7 @@ function fakeGithub(
     },
     listCheckRuns: async (sha) => {
       calls.push(`checks ${sha.slice(0, 4)}`);
+      if (opts.checks instanceof Error) throw opts.checks;
       return opts.checks ?? [success];
     },
     filesChangedSince: async (rev) => {
@@ -245,6 +246,8 @@ describe("runAutoMergeStep: merges only what every switch and gate allows", () =
     ["a failed required check", { checks: [{ ...success, conclusion: "failure" }] }, "checks-failed"],
     ["a required check never reported, past the wait", { checks: [] }, "checks-timeout"],
     ["a head that moved since it was verified", { pr: { headSha: "d".repeat(40) } }, "head-changed"],
+    // GitHub listed fewer runs than it counts, or more than Starfish reads: never judged on part of them (#205).
+    ["check runs it cannot all read", { checks: new GithubError("too-many-check-runs", "more than 500") }, "checks-unreadable"],
   ])("refuses %s", async (_name, gh0, reason) => {
     if (reason === "checks-timeout") clock = new Date(t0.getTime() + 121 * 60_000);
     await seed("inc1_r0");
@@ -449,6 +452,14 @@ describe("runFastRevertStep: reverts Starfish's own merge when the incident come
     await runFastRevertStep(revertDeps(gh.client));
     expect(gh.merges).toEqual([]);
     expect((await cycle("inc1_r0")).summary.revert).toMatchObject({ state: "escalated", reason: "checks-failed" });
+  });
+
+  it("does not merge a revert whose check runs cannot all be read (#205)", async () => {
+    await seed("inc1_r0", proven({ merge: { state: "merged", mergeSha: MERGED }, revert: { state: "pending", mergeSha: MERGED, number: 8, headSha: REVERT_HEAD, openedAt: t0.toISOString() } }));
+    const gh = fakeGithub({ checks: new GithubError("too-many-check-runs", "more than 500") });
+    expect(await runFastRevertStep(revertDeps(gh.client))).toMatchObject({ escalated: 1, errors: [] });
+    expect(gh.merges).toEqual([]);
+    expect((await cycle("inc1_r0")).summary.revert).toMatchObject({ state: "escalated", reason: "checks-unreadable" });
   });
 
   it("does not merge a revert retargeted to another base branch: a person is told, once (#186)", async () => {

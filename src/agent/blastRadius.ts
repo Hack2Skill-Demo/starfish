@@ -1,27 +1,34 @@
 /**
  * Gate 1 of auto-merge (#9, docs/design/auto-merge-policy.md): LOW BLAST RADIUS, a static check on the verified diff.
- * Pure: it reads the patch text and nothing else, and it never runs anything.
+ * Pure: it reads the patch text and the base revision's content of the file it changes (passed in, never read here),
+ * and it never runs anything.
  *
  * A patch passes only when ALL of this holds:
  *   - it parses as a plain unified diff (no binary, no mode change, no rename, copy or delete), every `---`/`+++` path
  *     in git's `a/`/`b/` form, naming the same file on both sides and in its `diff --git` line: the file read here is
  *     the file `git apply` writes (#200). The loop also requires gate 1's files to be exactly the files the verify gate
  *     saw change (loop.ts);
- *   - exactly ONE production source file changes, an existing JavaScript/TypeScript file, in ONE hunk, and nothing
- *     between its first and last changed line starts or ends a function: one function or handler is touched;
- *   - every other file is a test file (by path), and only GAINS lines: a patch that removes a test line could pass by
- *     disabling the test that judges it. Added lines could do that too (`/*` … `*\/`, an early `return;`, `.skip`), so
- *     in a test file that already exists each run of added lines must be whole new `it`/`test`/`describe` calls and
- *     nothing else, and no added line may open or close a block comment, skip or focus a test, mock a module or exit
- *     the process (#204). A new test file has no existing test to switch off, and is not limited this way;
+ *   - nothing in it is a control character other than a tab and a line's own end: no lone carriage return, no Unicode
+ *     line or paragraph separator, no zero-width or bidirectional mark. JavaScript ends a line where a reader of the diff
+ *     does not, so `// note<CR>return;` is a comment to a diff and a `return` to the test runner (#204);
+ *   - exactly ONE production source file changes, an existing JavaScript/TypeScript file, in ONE hunk with at least three
+ *     lines of context on each side (fewer only at the file's start or end), and nothing between its first and last
+ *     changed line starts or ends a function: one function or handler is touched;
+ *   - every other file is a NEW test file (`--- /dev/null`, named `*.test.*` or `*.spec.*`, outside `__mocks__` and
+ *     `__snapshots__`) made only of added lines. A test file that already exists is never changed: a removed line can
+ *     disable the test that judges the patch, and so can an added one (a block comment, an early `return;`, `.skip`, a
+ *     matcher re-defined with `expect.extend`, a spy), a list that cannot be completed (#204);
  *   - no path, and no changed line of the source file, hits the hard-exclude list: auth or access control, security
  *     rules, money paths, secrets and crypto, schema, dependencies and lockfiles, imports, CI and deploy config,
  *     shared packages, or anything the deployment excludes from patches (`patchExcludedPaths`) or from auto-merge
- *     (`autoMergeExcludedPaths`). Access control is also checked on the hunk's unchanged context lines that decide
- *     something (a comparison, a condition, a return or a throw): a guard added right above an ownership check is a
- *     change to that check (#202);
+ *     (`autoMergeExcludedPaths`). Access control, money and secrets are also checked on every statement that DECIDES
+ *     something (a comparison, a condition, a return or a throw) in the whole enclosing function as the base revision
+ *     has it, not only in the context the patch's author chose to show: a guard added above an ownership check is a
+ *     change to that check (#202). Without that base content, or when it does not hold the hunk's lines, nothing passes;
  *   - every changed block of the source file is ONE allowed class, the same one throughout:
- *       null-guard                 an early exit added when a value is missing (`if (!order) return null;`): `return;`,
+ *       null-guard                 an early exit added when a value is null or undefined, said so explicitly
+ *                                  (`if (order == null) return null;`, `=== undefined`, `typeof x === "undefined"`, and
+ *                                  `||` of those; never `!x`, which is also true for 0, "", false and NaN): `return;`,
  *                                  `return null`, `return undefined` or a `throw`, never a value that changes what the
  *                                  function decides (`return true`, #202); or `?.` / `?? <literal>` added to a line that
  *                                  is otherwise unchanged;
@@ -33,7 +40,8 @@
  * NOT ALLOWED. A refusal here never blocks the pull request; it only means a person merges it.
  *
  * What this cannot know from a diff: whether the enclosing function is async (a missing `await` in a non-async
- * function is a compile error the verify gate catches), or that an object literal is really a Firestore write.
+ * function is a compile error the verify gate catches), that an object literal is really a Firestore write, or what a
+ * new test file does to state other tests share.
  */
 import { isExcludedPath } from "./verifyGate.js";
 
@@ -47,6 +55,8 @@ export interface DiffLine {
 
 export interface Hunk {
   oldStart: number;
+  /** How many lines of the old file the hunk covers. */
+  oldCount: number;
   newStart: number;
   lines: DiffLine[];
 }
@@ -77,6 +87,11 @@ export interface BlastRadius {
 export interface BlastRadiusConfig {
   /** The deployment's patch exclusions (verifyGate.ts) and its auto-merge-only exclusions. */
   excludedPaths: readonly string[];
+  /**
+   * The base revision's content of the files the patch changes, by path (the loop reads them from its checkout). The
+   * source file's must be here: without it the enclosing function cannot be judged, and nothing passes.
+   */
+  baseFiles?: ReadonlyMap<string, string>;
 }
 
 const MAX_TEST_FILES = 3;
@@ -102,7 +117,10 @@ function stripPath(raw: string, prefix: "a/" | "b/"): string | null | undefined 
   // A quoted path is git's spelling of an unusual name: not something to reason about here.
   if (p.startsWith('"')) return undefined;
   if (!p.startsWith(prefix) || p.length === prefix.length) return undefined;
-  return p.slice(prefix.length);
+  const path = p.slice(prefix.length);
+  // `..`, `.` or an empty segment names the file by a way round: never the plain path the rest of the gate reasons on.
+  if (path.split("/").some((seg) => seg === "" || seg === "." || seg === "..")) return undefined;
+  return path;
 }
 
 /**
@@ -172,8 +190,8 @@ export function parsePatch(patch: string): FileDiff[] | null {
     const h = HUNK_RE.exec(line);
     if (h) {
       if (!cur || (cur.oldPath === null && cur.newPath === null)) return null;
-      cur.hunks.push({ oldStart: Number(h[1]), newStart: Number(h[3]), lines: [] });
       oldLeft = h[2] === undefined ? 1 : Number(h[2]);
+      cur.hunks.push({ oldStart: Number(h[1]), oldCount: oldLeft, newStart: Number(h[3]), lines: [] });
       newLeft = h[4] === undefined ? 1 : Number(h[4]);
       continue;
     }
@@ -259,86 +277,242 @@ const LINE_RULES: readonly [string, RegExp][] = [
   ["schema", /schema|migration|createIndex|setRules|\bindex(es)?\b/i],
 ];
 
-const ACCESS_CONTROL_LINE = LINE_RULES.find(([category]) => category === "access-control")![1];
 /**
- * A context line that DECIDES something: a comparison, a condition, a boolean operator, a return or a throw. With an
- * access-control word on it (`return doc.ownerId === user.uid;`, `if (!context.auth)`) it is an authorization check, and
- * a guard added next to it changes that check (#202). A line that only carries such a word (`uid,` in a write) does not
- * decide anything, and is left to the changed-line rule.
+ * Text that DECIDES something: a comparison, a condition, a boolean operator, a return or a throw. With an access-control,
+ * money or secrets word in it (`return doc.ownerId === user.uid;`, `if (!context.auth)`, `if (order.amount > 0)`) it is
+ * such a check, and a guard added in the same function changes what that check is reached with (#202). Text that only
+ * carries such a word (`uid,` in a write, `const total = priceItems(items);`) decides nothing.
  */
-const DECIDING_LINE = /[!=]==?|[<>]=?|&&|\|\||\?|\b(if|return|throw|while|case)\b/;
-const isAccessCheck = (text: string) => ACCESS_CONTROL_LINE.test(text) && DECIDING_LINE.test(text);
+const DECIDING = /[!=]==?|[<>]=?|&&|\|\||\?|\b(if|return|throw|while|case)\b/;
+const DECISION_CATEGORIES = ["access-control", "money", "secrets"];
+const DECISION_RULES = LINE_RULES.filter(([category]) => DECISION_CATEGORIES.includes(category));
+const decisionCategories = (text: string): string[] => (DECIDING.test(text) ? DECISION_RULES.filter(([, re]) => re.test(text)).map(([c]) => c) : []);
 
 export function excludedLineCategories(text: string): string[] {
   return LINE_RULES.filter(([, re]) => re.test(text)).map(([category]) => category);
 }
 
-// ---- Test files: what added lines may be -----------------------------------------------------------------------
-
-/** Added lines that switch tests off or reach past their own test, anywhere in an existing test file (#204). */
-const TEST_LINE_NEVER: readonly RegExp[] = [
-  /\/\*|\*\//, // a block comment can swallow the existing lines between two added ones
-  /\.\s*(skip|only|todo|skipIf|runIf|fails)\b/, // skips or focuses tests
-  /\b(xit|xtest|xdescribe|fit|fdescribe)\s*\(/,
-  /\b(vi|jest)\s*\.\s*(mock|doMock|unmock|hoisted|stubGlobal|stubEnv|resetModules)\b/, // vi.mock is hoisted to the whole file
-  /\bprocess\s*\.\s*(exit|abort|kill)\b/,
-];
-/** A whole-line comment with nothing in it that could matter if it were really inside a string. */
-const PLAIN_COMMENT_LINE = /^\s*\/\/[^"'`${}()[\]\\]*$/;
-const WHOLE_TESTS = /^(?:\s*(?:it|test|describe)(?:\.each\(\))?\(\)\s*;?)+\s*$/;
-const CLOSE: Readonly<Record<string, string>> = { "(": ")", "[": "]", "{": "}" };
+// ---- Characters ------------------------------------------------------------------------------------------------
 
 /**
- * True when `added` (one run of consecutive added lines) is whole new `it`/`test`/`describe` calls and nothing else:
- * every bracket it opens it closes, it never closes one it did not open, and at its own top level there is nothing but
- * those calls. Anything else (`return;`, `if (false) {` … `}`, `false &&`) could change an existing test it sits in or
- * next to. Read with a scanner, not a parser, so it reads only what it can read for certain: plain strings and
- * templates without `${`, and no `/` at all (a regex literal, a division and a comment cannot be told apart without a
- * parser). Anything else is a refusal.
+ * Anything a reader of a diff does not see as what a JavaScript engine sees: C0 controls but the tab (a lone carriage
+ * return among them: JS ends a line there, a diff does not), DEL and C1 controls (NEL), the Unicode line and paragraph
+ * separators (line ends to JS), and the zero-width, bidirectional, invisible-operator and byte-order marks that make
+ * text read differently from how it runs (#204).
  */
-function isWholeNewTests(added: readonly string[]): boolean {
-  const text = added.filter((l) => !PLAIN_COMMENT_LINE.test(l)).join("\n");
-  const stack: string[] = [];
-  let top = "";
-  let quote: string | null = null;
-  for (let i = 0; i < text.length; i++) {
-    const ch = text[i]!;
-    if (quote !== null) {
-      if (ch === "\\") i++;
-      else if (ch === quote) quote = null;
-      else if (ch === "\n" && quote !== "`") return false;
-      else if (quote === "`" && ch === "$" && text[i + 1] === "{") return false;
-      continue;
-    }
-    if (ch === '"' || ch === "'" || ch === "`") quote = ch;
-    else if (ch === "/" || text.startsWith("<!--", i) || text.startsWith("-->", i)) return false;
-    else if (ch in CLOSE) {
-      if (stack.length === 0) top += ch;
-      stack.push(CLOSE[ch]!);
-    } else if (ch === ")" || ch === "]" || ch === "}") {
-      if (stack.pop() !== ch) return false;
-      if (stack.length === 0) top += ch;
-    } else if (stack.length === 0) top += ch;
-  }
-  return quote === null && stack.length === 0 && WHOLE_TESTS.test(top);
+function isControlCharacter(cp: number): boolean {
+  return (
+    (cp < 0x20 && cp !== 0x09) ||
+    (cp >= 0x7f && cp <= 0x9f) ||
+    (cp >= 0x200b && cp <= 0x200f) ||
+    (cp >= 0x2028 && cp <= 0x202e) ||
+    (cp >= 0x2060 && cp <= 0x206f) ||
+    cp === 0xfeff ||
+    (cp >= 0xfff9 && cp <= 0xfffb)
+  );
 }
 
-/** Why a test file's added lines are not allowed: empty when they are. */
-function testAdditionProblems(t: FileDiff): string[] {
-  const out = new Set<string>();
-  // A new file has no existing test to switch off; one that exists may only gain whole new tests.
-  if (t.oldPath === null) return [];
-  for (const h of t.hunks) {
-    if (h.lines.some((l) => l.kind === "+" && TEST_LINE_NEVER.some((re) => re.test(l.text)))) out.add("test-lines-disable-tests");
-    let run: string[] = [];
-    for (const l of [...h.lines, { kind: " ", text: "" } as DiffLine]) {
-      if (l.kind === "+") run.push(l.text);
-      else if (run.length > 0) {
-        if (run.some((x) => x.trim() !== "") && !isWholeNewTests(run)) out.add("test-lines-not-whole-tests");
-        run = [];
+/** True when `text` holds a control character other than a tab and its `\n` or `\r\n` line ends. */
+function hasControlCharacter(text: string): boolean {
+  for (const line of text.replace(/\r\n/g, "\n").split("\n")) {
+    for (const ch of line) if (isControlCharacter(ch.codePointAt(0)!)) return true;
+  }
+  return false;
+}
+
+// ---- Test files ------------------------------------------------------------------------------------------------
+
+/** A test by its name (`*.test.ts`, `*.spec.js`), not a mock, a snapshot or a helper beside the tests. */
+const TEST_FILE_NAME = /\.(test|spec)\.[cm]?[jt]sx?$/i;
+const TEST_SUPPORT_DIR = /(^|\/)(__mocks__|__snapshots__|__fixtures__|fixtures)\//i;
+
+/** Why a test file in the patch is not allowed: empty when it is a new test file made only of added lines. */
+function testFileProblems(t: FileDiff): string[] {
+  // An existing test file is never changed: removed lines can disable the test that judges the patch, and added ones
+  // can too, in more ways than a list can name (#204). Tests come as new files only.
+  if (t.oldPath !== null) return ["existing-test-file-changed"];
+  const out: string[] = [];
+  if (!TEST_FILE_NAME.test(t.newPath ?? "") || TEST_SUPPORT_DIR.test(t.newPath ?? "")) out.push("test-file-not-a-test");
+  if (t.hunks.some((h) => h.lines.some((l) => l.kind !== "+"))) out.push("test-lines-removed");
+  return out;
+}
+
+// ---- The base file: the function around the change -------------------------------------------------------------
+
+/** Words after which a `/` starts a regular expression, not a division. */
+const BEFORE_EXPRESSION = new Set(["return", "typeof", "case", "do", "else", "in", "of", "new", "delete", "void", "throw", "instanceof", "yield", "await"]);
+
+interface Scanned {
+  /** Each top-level `{ … }` (not inside another `{`): where its statement starts, and its braces, as offsets. */
+  blocks: { start: number; open: number; close: number }[];
+  /** The text with every comment blanked (line ends kept), so a word in a comment decides nothing. */
+  code: string;
+}
+
+/**
+ * The top-level blocks of a JavaScript/TypeScript file, read with a scanner, not a parser: strings, templates (with
+ * `${…}` nested), comments and regular expressions are skipped so a brace in them does not count. Null when anything is
+ * not read for certain (an unterminated string, template, comment or regex, a bracket closed by another kind, brackets
+ * left open): the caller then judges the whole file.
+ */
+function scanBlocks(text: string): Scanned | null {
+  const n = text.length;
+  const stack: string[] = []; // "{", "${", "(", "["
+  const blocks: Scanned["blocks"] = [];
+  const code = text.split("");
+  const blank = (from: number, to: number) => {
+    for (let k = from; k < to; k++) if (code[k] !== "\n") code[k] = " ";
+  };
+  const braceDepth = () => stack.filter((x) => x === "{" || x === "${").length;
+  let stmtStart = 0;
+  let openAt = -1;
+  let regexOk = true;
+  /** From inside a template literal at `j`: past its closing backtick, or past a `${` (pushed). -1: unterminated. */
+  const template = (j: number): number => {
+    for (; j < n; j++) {
+      const c = text[j];
+      if (c === "\\") j++;
+      else if (c === "`") return j + 1;
+      else if (c === "$" && text[j + 1] === "{") {
+        stack.push("${");
+        return j + 2;
       }
     }
+    return -1;
+  };
+  let i = 0;
+  while (i < n) {
+    const ch = text[i]!;
+    if (ch === "/" && text[i + 1] === "/") {
+      const e = text.indexOf("\n", i);
+      const end = e < 0 ? n : e;
+      blank(i, end);
+      i = end;
+      continue;
+    }
+    if (ch === "/" && text[i + 1] === "*") {
+      const e = text.indexOf("*/", i + 2);
+      if (e < 0) return null;
+      blank(i, e + 2);
+      i = e + 2;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      let j = i + 1;
+      for (; j < n && text[j] !== ch; j++) {
+        if (text[j] === "\\") j++;
+        else if (text[j] === "\n") return null;
+      }
+      if (j >= n) return null;
+      i = j + 1;
+      regexOk = false;
+      continue;
+    }
+    if (ch === "`") {
+      i = template(i + 1);
+      if (i < 0) return null;
+      regexOk = false;
+      continue;
+    }
+    if (ch === "/") {
+      if (!regexOk) {
+        i++;
+        regexOk = true;
+        continue;
+      }
+      let j = i + 1;
+      let inClass = false;
+      for (; j < n; j++) {
+        const c = text[j];
+        if (c === "\\") j++;
+        else if (c === "\n") return null;
+        else if (inClass) inClass = c !== "]";
+        else if (c === "[") inClass = true;
+        else if (c === "/") break;
+      }
+      if (j >= n) return null;
+      i = j + 1;
+      while (i < n && /[a-z]/i.test(text[i]!)) i++;
+      regexOk = false;
+      continue;
+    }
+    if (ch === "{" || ch === "(" || ch === "[") {
+      if (ch === "{" && braceDepth() === 0) openAt = i;
+      stack.push(ch);
+      regexOk = true;
+      i++;
+      continue;
+    }
+    if (ch === "}") {
+      const top = stack.pop();
+      if (top === "${") {
+        i = template(i + 1);
+        if (i < 0) return null;
+        regexOk = false;
+        continue;
+      }
+      if (top !== "{") return null;
+      if (braceDepth() === 0) {
+        blocks.push({ start: stmtStart, open: openAt, close: i });
+        if (stack.length === 0) stmtStart = i + 1;
+      }
+      regexOk = true;
+      i++;
+      continue;
+    }
+    if (ch === ")" || ch === "]") {
+      if (stack.pop() !== (ch === ")" ? "(" : "[")) return null;
+      regexOk = false;
+      i++;
+      continue;
+    }
+    if (/[A-Za-z_$]/.test(ch)) {
+      let j = i + 1;
+      while (j < n && /[\w$]/.test(text[j]!)) j++;
+      regexOk = BEFORE_EXPRESSION.has(text.slice(i, j));
+      i = j;
+      continue;
+    }
+    if (/[0-9]/.test(ch)) {
+      while (i < n && /[\w.]/.test(text[i]!)) i++;
+      regexOk = false;
+      continue;
+    }
+    if (ch === ";" && stack.length === 0) stmtStart = i + 1;
+    if (!/\s/.test(ch)) regexOk = true;
+    i++;
   }
+  if (stack.length > 0) return null;
+  return { blocks, code: code.join("") };
+}
+
+/**
+ * The text of the top-level statement around base lines `lo`..`hi` (0-based, inclusive): the function, handler or class
+ * the change is in, from where its statement starts to its closing brace, comments blanked. The whole file when the
+ * scanner cannot read it for certain, or no one block holds both lines: wider is never less safe.
+ */
+function enclosingText(base: string, lo: number, hi: number): string {
+  const scanned = scanBlocks(base);
+  if (scanned === null) return base;
+  const lineStarts = [0];
+  for (let k = 0; k < base.length; k++) if (base[k] === "\n") lineStarts.push(k + 1);
+  const lineOf = (offset: number) => {
+    let line = 0;
+    while (line + 1 < lineStarts.length && lineStarts[line + 1]! <= offset) line++;
+    return line;
+  };
+  const block = scanned.blocks.find((b) => lineOf(b.open) <= lo && lineOf(b.close) >= hi);
+  if (!block) return base;
+  return scanned.code.slice(lineStarts[lineOf(block.start)]!, block.close + 1);
+}
+
+/**
+ * The decision categories (access control, money, secrets) of the statements in `text`: split at `;`, `{` and `}`, so a
+ * condition written over several lines (`if (\n  !context.auth\n)`) is read whole.
+ */
+function decisionsIn(text: string): string[] {
+  const out = new Set<string>();
+  for (const part of text.split(/[;{}]/)) for (const c of decisionCategories(part)) out.add(c);
   return [...out];
 }
 
@@ -360,10 +534,11 @@ const count = (s: string, re: RegExp) => (s.match(re) ?? []).length;
 
 const LITERAL = String.raw`(?:null|undefined|true|false|-?\d+(?:\.\d+)?|""|''|"[^"\\\n]*"|'[^'\\\n]*'|\[\]|\{\})`;
 const REF = String.raw`[A-Za-z_$][\w$]*(?:\??\.[A-Za-z_$][\w$]*|\?\.\[\d+\]|\[\d+\])*`;
-const MISSING_ATOM = String.raw`(?:!\s*${REF}|${REF}\s*===?\s*(?:null|undefined)|(?:null|undefined)\s*===?\s*${REF}|typeof\s+${REF}\s*===?\s*["']undefined["'])`;
-// What the guard does: leave with nothing, or throw. Never `return true`, a number or a string: on a falsy value (`!x`
-// matches any) that is a change to what the function decides, not a null guard (#202). Nor `continue`/`break`, which
-// skip work the same way.
+// Null or undefined, said so: `x == null`, `x === undefined`, `typeof x === "undefined"`. Never `!x`, which is also
+// true for 0, "", false and NaN: an exit on those is a change to what the function decides, not a null guard (#202).
+const MISSING_ATOM = String.raw`(?:${REF}\s*===?\s*(?:null|undefined)|(?:null|undefined)\s*===?\s*${REF}|typeof\s+${REF}\s*===?\s*["']undefined["'])`;
+// What the guard does: leave with nothing, or throw. Never `return true`, a number or a string: that is a change to what
+// the function decides, not a null guard (#202). Nor `continue`/`break`, which skip work the same way.
 const ACTION = String.raw`(?:return(?:\s+(?:null|undefined))?|throw\s+new\s+[A-Z][\w$]*\(\s*(?:"[^"\\\n]*"|'[^'\\\n]*')?\s*\))`;
 const GUARD_RE = new RegExp(
   String.raw`^if\s*\(\s*${MISSING_ATOM}(?:\s*\|\|\s*${MISSING_ATOM})*\s*\)\s*(?:\{\s*${ACTION}\s*;?\s*\}|${ACTION}\s*;?)$`
@@ -441,6 +616,8 @@ function classifyBlock(removed: readonly string[], added: readonly string[]): Fi
 export function assessBlastRadius(patch: string, cfg: BlastRadiusConfig): BlastRadius {
   const problems = new Set<string>();
   const done = (extra: Partial<BlastRadius> = {}): BlastRadius => ({ allowed: problems.size === 0, testFiles: [], problems: [...problems], ...extra });
+  // Before anything is read: a line end JavaScript sees and a diff does not makes every later reading wrong (#204).
+  if (hasControlCharacter(patch)) problems.add("control-characters");
   const files = parsePatch(patch);
   if (files === null) {
     problems.add("diff-not-understood");
@@ -464,10 +641,7 @@ export function assessBlastRadius(patch: string, cfg: BlastRadiusConfig): BlastR
   }
 
   if (tests.length > MAX_TEST_FILES) problems.add("too-many-test-files");
-  for (const t of tests) {
-    if (t.hunks.some((h) => h.lines.some((l) => l.kind === "-"))) problems.add("test-lines-removed");
-    for (const p of testAdditionProblems(t)) problems.add(p);
-  }
+  for (const t of tests) for (const p of testFileProblems(t)) problems.add(p);
 
   if (sources.length !== 1) {
     problems.add(sources.length === 0 ? "no-source-change" : "more-than-one-file");
@@ -483,7 +657,8 @@ export function assessBlastRadius(patch: string, cfg: BlastRadiusConfig): BlastR
     return done({ sourceFile, testFiles });
   }
 
-  const lines = src.hunks[0]!.lines;
+  const hunk = src.hunks[0]!;
+  const lines = hunk.lines;
   const changedAt = lines.flatMap((l, i) => (l.kind === " " ? [] : [i]));
   if (changedAt.length === 0) {
     problems.add("no-source-change");
@@ -499,7 +674,8 @@ export function assessBlastRadius(patch: string, cfg: BlastRadiusConfig): BlastR
   for (const l of [...added, ...removed]) for (const c of excludedLineCategories(l.text)) problems.add(`excluded:${c}`);
   // The lines around the change are what it changes the meaning of: an early exit right above an ownership check is a
   // change to that check, whatever the guard's own line says (#202).
-  if (lines.some((l) => l.kind === " " && isAccessCheck(l.text))) problems.add("excluded:access-control");
+  for (const l of lines) if (l.kind === " ") for (const c of decisionCategories(l.text)) problems.add(`excluded:${c}`);
+  for (const p of baseProblems(src, hunk, first, last, cfg.baseFiles)) problems.add(p);
 
   // Blocks of consecutive changed lines: each must be one class, and all the same one.
   const classes = new Set<FixClass | null>();
@@ -522,6 +698,42 @@ export function assessBlastRadius(patch: string, cfg: BlastRadiusConfig): BlastR
   if (fixClass === undefined) problems.add(classes.size > 1 && !classes.has(null) ? "mixed-classes" : "not-an-allowed-class");
 
   return done({ sourceFile, testFiles, ...(fixClass && { fixClass }) });
+}
+
+/** Lines of context a hunk must show on each side of its change, unless that side is the file's start or end. */
+const MIN_CONTEXT = 3;
+
+/**
+ * What the source file's base content says against the change (#202): it must be there, hold the hunk's lines where the
+ * hunk says, show at least `MIN_CONTEXT` lines of context on each side (fewer only at the file's start or end), and the
+ * whole function around the change must decide nothing about access control, money or secrets. Fail closed: no base, or
+ * one that does not match, is a problem.
+ */
+function baseProblems(src: FileDiff, hunk: Hunk, first: number, last: number, baseFiles: ReadonlyMap<string, string> | undefined): string[] {
+  const raw = src.oldPath === null ? undefined : baseFiles?.get(src.oldPath);
+  if (raw === undefined) return ["base-not-available"];
+  if (hasControlCharacter(raw)) return ["control-characters"];
+  const base = raw.replace(/\r\n/g, "\n").split("\n");
+  if (base.at(-1) === "") base.pop();
+  const out: string[] = [];
+
+  // The hunk's old side, line by line, against the base: the file judged here is the file the patch applies to.
+  const start = hunk.oldStart - 1;
+  const old = hunk.lines.filter((l) => l.kind !== "+");
+  if (start < 0 || start + old.length > base.length || old.some((l, k) => l.text !== base[start + k])) return ["base-mismatch"];
+
+  const lead = first;
+  const trail = hunk.lines.length - 1 - last;
+  const atStart = start === 0;
+  const atEnd = start + hunk.oldCount === base.length;
+  if ((lead < MIN_CONTEXT && !atStart) || (trail < MIN_CONTEXT && !atEnd)) out.push("too-little-context");
+
+  // The base lines on each side of the change (0-based): the last one before it, the first one after it.
+  const oldIndex = (i: number) => start + hunk.lines.slice(0, i).filter((l) => l.kind !== "+").length;
+  const lo = Math.max(0, oldIndex(first) - 1);
+  const hi = Math.min(base.length - 1, oldIndex(last + 1));
+  for (const c of decisionsIn(enclosingText(base.join("\n"), lo, hi))) out.push(`excluded:${c}`);
+  return out;
 }
 
 /**

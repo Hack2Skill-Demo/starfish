@@ -68,9 +68,10 @@ export interface StarfishConfig {
   verifyChecks: string[];
   /**
    * The GitHub App whose check runs count as `verifyChecks` (its slug; `github-actions` by default): a run of the same
-   * name posted by any other app is ignored, so another app or token with `checks: write` cannot stand in for the
-   * target's CI (#205). Used wherever the named checks are judged: the CI verifier, the reconcile step, auto-merge and
-   * fast-revert.
+   * name posted by any other GitHub App is ignored (#205). It tells apps apart, not workflows: every GitHub Actions
+   * workflow in the target repository, and anything holding a workflow's `GITHUB_TOKEN`, posts as `github-actions`, so
+   * another workflow in that repository can still post a run of the same name. Used wherever the named checks are
+   * judged: the CI verifier, the reconcile step, auto-merge and fast-revert.
    */
   verifyCheckApp: string;
   /** The Cloud Run job that runs the verify command when `verifyIsolation` is `cloud-run-job`. */

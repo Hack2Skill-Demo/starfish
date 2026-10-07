@@ -37,8 +37,9 @@ type CheckSummary = Pick<PrStateRecord, "checks" | "checksPassed" | "checksRequi
 
 /**
  * The runs that can stand for the named required checks: the right name, posted by the configured app
- * (`verifyCheckApp`, `github-actions` by default). A run of that name from any other app is not the target's CI and is
- * ignored: it can neither pass nor hide a failure (#205).
+ * (`verifyCheckApp`, `github-actions` by default). A run of that name from any other GitHub App is ignored: it can neither
+ * pass nor hide a failure (#205). The slug does not tell workflows apart: every workflow in the target repository posts
+ * as `github-actions`.
  */
 export function requiredRuns(runs: readonly CheckRun[], required: readonly string[], app: string): CheckRun[] {
   return runs.filter((r) => required.includes(r.name) && r.app === app);

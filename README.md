@@ -125,7 +125,8 @@ demo target behind a default-off switch** (#9) and **has never run against real 
 is eligible only if the deployment lists it in `STARFISH_AUTO_MERGE_TARGETS` (the demo), an admin
 turns `autoMerge` on in Settings, dry run is off and the merge freeze is off. Gate 1 is a static
 check of the diff (one allowed class: null guard, missing `await`, Firestore `undefined` field; one
-function; nothing on the hard-exclude list); gate 2 is the evidence (structural cause, the test
+function, judged whole as the base revision has it; tests only as new files; nothing on the
+hard-exclude list); gate 2 is the evidence (structural cause, the test
 failing before the fix and the gate passing after it on the exact patch, the review approving that
 patch with nothing flagged, a counter-check above zero). Any gate that fails leaves the PR open and
 tells a person. Fast-revert is built with it: the same incident seen again within N minutes of the

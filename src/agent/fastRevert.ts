@@ -141,6 +141,7 @@ const SENTENCES: Record<string, string> = {
   "revert-not-possible": "the merge does not revert cleanly",
   "checks-failed": "a required check failed on the revert",
   "checks-timeout": "the revert's required checks did not finish in time",
+  "checks-unreadable": "Starfish could not read every check run on the revert, so a failure among them could not be ruled out",
   "no-required-checks": "no required check is named, so nothing proves the revert is green",
   "head-changed": "the revert's head moved",
   "wrong-base": "the revert pull request no longer targets the configured base branch",
@@ -247,7 +248,15 @@ export async function runFastRevertStep(deps: FastRevertDeps): Promise<FastRever
     }
     if (pr.state === "closed") return giveUp("revert-closed", same("pending"));
     if (pr.headSha !== headSha) return giveUp("head-changed", same("pending"));
-    const checks = summarizeChecks(cfg.verifyChecks.length > 0 ? await client.listCheckRuns(headSha) : [], cfg.verifyChecks, cfg.verifyCheckApp);
+    let runs: Awaited<ReturnType<RevertClient["listCheckRuns"]>> = [];
+    try {
+      if (cfg.verifyChecks.length > 0) runs = await client.listCheckRuns(headSha);
+    } catch (err) {
+      // Runs read only in part could hide the failure that matters (#205): a person decides, it is not retried.
+      if (ruleOf(err) === "too-many-check-runs") return giveUp("checks-unreadable", same("pending"));
+      throw err;
+    }
+    const checks = summarizeChecks(runs, cfg.verifyChecks, cfg.verifyCheckApp);
     if (checks.checks === "not-configured") return giveUp("no-required-checks", same("pending"));
     if (checks.checks === "failed") return giveUp("checks-failed", same("pending"));
     if (checks.checks !== "passed") {

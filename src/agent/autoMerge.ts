@@ -14,7 +14,8 @@
  *              approving that same patch with nothing broken or flagged, and a counter-check that counted errors;
  *   the PR     still open, from `starfish/<cycle>` into the configured base branch (a retargeted PR is refused, #186),
  *              its head the very commit Starfish built from the verified patch, and every run of every named required
- *              check (`verifyChecks`, posted by `verifyCheckApp`, #205) a success on that head;
+ *              check (`verifyChecks`, posted by `verifyCheckApp`, #205) a success on that head: all of them, re-runs
+ *              included (`filter=all`), and a head whose runs cannot all be read is handed to a person;
  *   evidence   posted on the pull request as one comment BEFORE the merge; a merge with no evidence does not happen.
  * Then one squash merge, with GitHub told the exact head (`sha`), so a head that moved refuses.
  *
@@ -179,9 +180,9 @@ export function mergeEvidenceText(input: EvidenceInput): string {
     "",
     "### Gate 1: low blast radius",
     "",
-    `- Class: ${codeSpan(merge.fixClass, 40)}, in one hunk of ${codeSpan(merge.sourceFile, 200)} with no function or class boundary between its changed lines; any other file is a new test file, or an existing one that only gained whole new tests`,
+    `- Class: ${codeSpan(merge.fixClass, 40)}, in one hunk of ${codeSpan(merge.sourceFile, 200)} with no function or class boundary between its changed lines and at least three lines of context on each side; any other file is a new test file made only of added lines (an existing test file is never changed)`,
     "- The files the verify gate saw the patch change are exactly the files this check read",
-    "- Hard-exclude list (auth and access control, security rules, money paths, secrets, schema, dependencies, CI config, shared packages): no path word and no changed line matched it (a word match, not a proof)",
+    "- Hard-exclude list (auth and access control, security rules, money paths, secrets, schema, dependencies, CI config, shared packages): no path word and no changed line matched it, and no statement that decides something in the whole enclosing function (as the base revision has it) names access control, money or a secret (a word match, not a proof)",
     "",
     "### Gate 2: certainty",
     "",
@@ -195,6 +196,8 @@ export function mergeEvidenceText(input: EvidenceInput): string {
     "### CI on this head",
     "",
     ...(named.length > 0 ? named.map((c) => `- ${codeSpan(c.name, 100)}: ${inert(c.conclusion ?? c.status, 20)} (check run ${c.id}${c.url ? `, ${codeSpan(c.url, 200)}` : ""})`) : ["- none"]),
+    "",
+    "Every run of each named check counts, re-runs included. Runs are counted only from the configured GitHub App; that tells apps apart, not workflows: every GitHub Actions workflow in this repository posts as the same app.",
     "",
     `If this error comes back within ${input.fastRevertMinutes} minutes of the merge, Starfish opens and merges a revert of it, and tells a person.`,
     "",
@@ -331,6 +334,7 @@ export async function escalate(
 const SKIP_WORDS: Record<string, string> = {
   "checks-failed": "A required check failed on the pull request's head.",
   "checks-timeout": "The required checks did not finish in time.",
+  "checks-unreadable": "Starfish could not read every check run on the pull request's head, so a failure among them could not be ruled out.",
   "no-required-checks": "No required check is named, so nothing proves the pull request's head is green.",
   "head-changed": "The pull request's head is no longer the commit Starfish built from the verified patch.",
   "wrong-base": "The pull request no longer targets the configured base branch, so Starfish will not merge it anywhere.",
@@ -455,7 +459,14 @@ export async function runAutoMergeStep(deps: AutoMergeDeps): Promise<AutoMergeSu
     }
     if (typeof merge.sourceFile !== "string" || changed.includes(merge.sourceFile)) return skip("base-changed-same-file");
 
-    const runs = cfg.verifyChecks.length > 0 ? await client.listCheckRuns(headSha) : [];
+    let runs: Awaited<ReturnType<MergeClient["listCheckRuns"]>> = [];
+    try {
+      if (cfg.verifyChecks.length > 0) runs = await client.listCheckRuns(headSha);
+    } catch (err) {
+      // Runs read only in part could hide the failure that matters (#205): a person decides, it is not retried.
+      if (ruleOf(err) === "too-many-check-runs") return skip("checks-unreadable");
+      throw err;
+    }
     const checks = summarizeChecks(runs, cfg.verifyChecks, cfg.verifyCheckApp);
     if (checks.checks === "not-configured") return skip("no-required-checks");
     if (checks.checks === "failed") return skip("checks-failed");

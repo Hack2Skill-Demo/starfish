@@ -163,11 +163,13 @@ src/
                    auto-merge may apply it also runs gate 1 and the "fails before" run (`summary.before`) and records
                    the candidate (`summary.merge` pending); it never merges itself. Gate 1 holds only if its files are
                    exactly the files the verify gate saw change
-  agent/blastRadius.ts  auto-merge gate 1 (#9), pure: a conservative diff classifier (null guard that leaves with
-                   nothing or throws, missing await, Firestore undefined field; one file, one hunk, one function; paths in
-                   git's a/ b/ form, no rename; an existing test file may only gain whole new it/test/describe calls) and
-                   the hard-exclude list (auth, rules, money, secrets, schema, dependencies/imports, CI/config, shared
-                   code; access control also on the hunk's context). Unsure is never allowed
+  agent/blastRadius.ts  auto-merge gate 1 (#9), pure: a conservative diff classifier (null guard on an explicit null/undefined
+                   check, never `!x`, that leaves with nothing or throws; missing await; Firestore undefined field; one
+                   file, one hunk with 3 lines of context, one function; paths in git's a/ b/ form, no rename; no control
+                   characters; tests only as new files) and the hard-exclude list (auth, rules, money, secrets, schema,
+                   dependencies/imports, CI/config, shared code; access control, money and secrets also on every deciding
+                   statement of the whole enclosing function in the base file, which the loop passes in). Unsure is never
+                   allowed
   agent/autoMerge.ts  the switches (`mergeBlockedBy`), gate 2 (`certaintyGate`, pure over the run record; the stack
                    frame matched against the checkout's whole file list) and the merge step after the pass: fresh
                    switches + incident status, gates, PR into the configured base with the head Starfish built, every

@@ -8,7 +8,8 @@
  *      Nothing the patch contains is executed. A refusal is returned as it is and nothing is pushed.
  *   2. The patch is pushed as one commit on `starfish/<cycle>` on top of the pinned revision (githubPr.ts).
  *   3. The named check runs on that exact commit, posted by `verifyCheckApp` (GitHub Actions unless configured; a run of
- *      that name from another app is ignored, #205), are waited for. All of them must succeed. The commit is the evidence:
+ *      that name from another GitHub App is ignored, #205, though every workflow of the target repository posts as
+ *      `github-actions`), are waited for. All of them must succeed. The commit is the evidence:
  *      checks belong to a commit, and the commit is the patch applied to the revision it was written against.
  *   4. A branch THIS CALL pushed whose patch did not pass is deleted, so the next draft in the cycle can use the name;
  *      one that passed stays, and the pull request is opened from it (the opener finds it is exactly this change). In a

@@ -25,9 +25,11 @@
    run record (`certaintyGate`, a pure function); the PR still open, from `starfish/<cycle>` into
    the configured base branch (a PR retargeted elsewhere goes to a person), with the head Starfish
    built; every run of every named required check (`STARFISH_VERIFY_CHECKS`) posted by
-   `STARFISH_VERIFY_CHECK_APP` (default `github-actions`; a same-named run from any other app is
-   ignored) a success on that head, so a later success never hides a failure (still running: it
-   waits, at most `STARFISH_MERGE_CHECK_WAIT_MINUTES`); a claim and today's
+   `STARFISH_VERIFY_CHECK_APP` (default `github-actions`; a same-named run from any other GitHub
+   App is ignored, but the slug does not tell workflows apart: every workflow in the target
+   repository posts as `github-actions`) a success on that head, all runs read (`filter=all`, every
+   page up to a bound; more than that goes to a person), so a later success never hides a failure
+   (still running: it waits, at most `STARFISH_MERGE_CHECK_WAIT_MINUTES`); a claim and today's
    merge count in one transaction (`STARFISH_MAX_MERGES_PER_DAY`, default 3); the switches and
    status once more; the evidence posted on the PR as one comment; then one squash merge with
    GitHub told the exact head (`sha`), so a head that moved refuses. Any failure leaves the PR open
@@ -44,28 +46,41 @@ the switch off, never prepares or merges anything.
 
 **Gate 1 as built.** A plain diff whose `---`/`+++` paths are in git's `a/`/`b/` form and name the
 same file on both sides and in the `diff --git` line (no rename, copy, delete, mode change or
-binary), so the file gate 1 reads is the file `git apply` writes; and the loop then requires gate
-1's files to be exactly the files the verify gate saw the patch change. One production file, an
-existing JavaScript/TypeScript file, one hunk, no function or class boundary between the first and
-last changed line, at most 8 lines added and 4 removed. Other files must be test files that lose no
-line; a new test file is not limited further, but in a test file that already exists every run of
-added lines must be whole new `it`/`test`/`describe` calls and nothing else (no `return;`, no
-`if (false) {` around existing lines, no `/` at all, so no comment or regex can hide what a line
-does), and no added line may open or close a block comment, skip or focus a test (`.skip`, `.only`,
-`xit`, …), mock a module or exit the process: added lines must not switch off the assertions that
-judge the patch. What this cannot stop: a new test that changes state other tests share. Every
+binary, no `.`/`..` path segment), so the file gate 1 reads is the file `git apply` writes; and the
+loop then requires gate 1's files to be exactly the files the verify gate saw the patch change. No
+control character anywhere in the patch or the changed file's base content other than a tab and
+the line ends: no lone carriage return, no Unicode line or paragraph separator, no zero-width or
+bidirectional mark, because JavaScript ends a line where a reader of the diff does not
+(`// note<CR>return;` is a comment in the diff and a `return` to the test runner). One production
+file, an existing JavaScript/TypeScript file, one hunk with at least three lines of context on each
+side (fewer only at the file's start or end), no function or class boundary between the first and
+last changed line, at most 8 lines added and 4 removed. Every other file must be a **new** test file
+(`--- /dev/null`, named `*.test.*` or `*.spec.*`, outside `__mocks__` and `__snapshots__`) made only
+of added lines: **tests come only as new files, and a test file that already exists is never
+changed.** A removed line can disable the test that judges the patch, and so can an added one (a
+block comment, an early `return;`, `.skip`, a matcher re-defined with `expect.extend`, a spy, a
+global changed at collection time); that list cannot be completed, so no change to an existing test
+file is allowed. What this cannot stop: a new test file that changes state other tests share. Every
 changed block one class: *null guard* (an early `return;`, `return null`, `return undefined` or
-`throw` when a value is missing, never `return true` or another value, which on a falsy `!x` is a
+`throw` when a value is null or undefined, said explicitly: `x == null`, `x === null`,
+`x === undefined`, `x == undefined`, `typeof x === "undefined"`, or `||` of those; never `!x`, which
+is also true for 0, `""`, `false` and `NaN`, and never `return true` or another value, which is a
 change to what the function decides; or `?.`/`?? <literal>` added to an otherwise unchanged line),
 *missing `await`* (`await ` added to an otherwise unchanged call), *Firestore `undefined` field*
 (`key: v` becomes `...(v !== undefined && { key: v })` or `key: v ?? null`). The hard-exclude list
 matches path words (access control includes owner, guard, policy, App Check, verify and can) and
 changed lines: auth and access control, security rules, money paths, secrets and crypto, schema,
 dependencies and lockfiles (and any import or require), CI and deploy config, shared packages, plus
-`STARFISH_PATCH_EXCLUDED_PATHS` and `STARFISH_AUTO_MERGE_EXCLUDED_PATHS`. Access control is also
-matched on the hunk's unchanged context lines that decide something (a comparison, a condition, a
-`return` or a `throw`): a guard right above an ownership check changes that check. It is a word
-match, not a proof. Unsure is never allowed.
+`STARFISH_PATCH_EXCLUDED_PATHS` and `STARFISH_AUTO_MERGE_EXCLUDED_PATHS`. Access control, money and
+secrets are also matched on every statement that decides something (a comparison, a condition, a
+`return` or a `throw`) in the **whole enclosing function as the base revision has it**, not only in
+the context lines the patch's author chose to show: a guard anywhere above an ownership check
+changes that check. The loop reads the changed file from its checkout of the base revision (no
+symbolic link, within a size cap); gate 1 refuses when that content is missing or does not hold the
+hunk's lines. The function is found with a scanner, not a parser (strings, templates, comments and
+regular expressions skipped; the top-level statement around the change, so a class method is judged
+with its whole class); when it cannot read the file for certain, the whole file is judged. It is a
+word match, not a proof. Unsure is never allowed.
 
 **Gate 2 as built.** All five from the run record: (1) structural cause: triage decided `act`, the
 fixer proposed, and the incident's own stack trace names the changed file, matched against the
