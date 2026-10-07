@@ -24,6 +24,7 @@ let cfg: ReconcileConfig;
 beforeEach(() => {
   cfg = {
     cycleCollection: `cycles_${randomUUID().slice(0, 8)}`,
+    incidentCollection: `incidents_${randomUUID().slice(0, 8)}`,
     leaseSeconds: 300,
     cycleDeadlineMinutes: 60,
     maxCycleAttempts: 3,
@@ -78,11 +79,11 @@ describe("selectPrCycles", () => {
     await seed("e_r0", 5, { state: "running" });
     await seed("f_r0", 6, { environment: "prod" });
     expect(await selectPrCycles(db, cfg, 10)).toEqual([
-      { cycleId: "b_r0", number: 2 },
-      { cycleId: "c_r0", number: 3 },
-      { cycleId: "a_r0", number: 1 },
+      { cycleId: "b_r0", number: 2, key: { incidentId: "b", environment: "demo", recurrence: 0 } },
+      { cycleId: "c_r0", number: 3, key: { incidentId: "c", environment: "demo", recurrence: 0 } },
+      { cycleId: "a_r0", number: 1, key: { incidentId: "a", environment: "demo", recurrence: 0 } },
     ]);
-    expect(await selectPrCycles(db, cfg, 1)).toEqual([{ cycleId: "b_r0", number: 2 }]);
+    expect((await selectPrCycles(db, cfg, 1)).map(({ cycleId, number }) => ({ cycleId, number }))).toEqual([{ cycleId: "b_r0", number: 2 }]);
     expect(await selectPrCycles(db, cfg, 0)).toEqual([]);
   });
 
@@ -173,5 +174,20 @@ describe("reconcilePullRequests", () => {
     await reconcilePullRequests({ db, config: { ...cfg, verifyChecks: [] }, client, now: () => t0 });
     expect(asked).toBe(0);
     expect((await doc("a_r0")).summary.prState).toMatchObject({ checks: "not-configured", checksRequired: 0 });
+  });
+
+  it("copies the PR's state onto the incident's link (#194), only for the same PR and recurrence, and never its status", async () => {
+    const incidents = db.collection(cfg.incidentCollection);
+    await incidents.doc("a").set({ environment: "demo", status: "logged", githubPrNumber: 1, githubPrState: "open" });
+    await incidents.doc("b").set({ environment: "demo", status: "recurred", recurrenceCount: 1, githubPrNumber: 2, githubPrState: "open" });
+    await incidents.doc("c").set({ environment: "demo", status: "new", githubPrNumber: 99 });
+    await seed("a_r0", 1);
+    await seed("b_r0", 2);
+    await seed("c_r0", 3);
+    const gh = fakeGithub({ 1: { state: "merged", mergedAt: "2026-10-06T11:30:00.000Z" }, 2: { state: "closed" }, 3: { state: "closed" } });
+    expect(await reconcilePullRequests({ db, config: cfg, client: gh.client, now: () => t0 })).toMatchObject({ recorded: 3, errors: [] });
+    expect((await incidents.doc("a").get()).data()).toEqual({ environment: "demo", status: "logged", githubPrNumber: 1, githubPrState: "merged" });
+    expect((await incidents.doc("b").get()).data()!.githubPrState).toBe("open"); // a later recurrence: not this cycle's
+    expect((await incidents.doc("c").get()).data()).not.toHaveProperty("githubPrState"); // another PR's link
   });
 });

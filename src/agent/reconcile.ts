@@ -6,8 +6,9 @@
  *
  * What it will not do:
  *   - Write to GitHub. `readPullRequest` and `listCheckRuns` are GETs.
- *   - Change a cycle's outcome, or touch the incident. A merged PR, or a closed issue, never marks an incident healed:
- *     that takes deployment and recovery evidence (#9, #11), which this does not have.
+ *   - Change a cycle's outcome, or the incident's status. A merged PR, or a closed issue, never marks an incident healed:
+ *     that takes deployment and recovery evidence (#9, #11), which this does not have. The PR's state is copied onto
+ *     the incident's `githubPrState` for the UI's link, and nothing else of it is written (incidentLinks.ts).
  *   - Go backwards. Observations are ordered by when GitHub was read, and a merge is final (cycle.ts).
  *   - Read without bound. At most `maxPrChecksPerPass` PRs a pass, chosen among the newest `MAX_SCAN` cycles of this
  *     environment, least recently checked first; a PR whose merge and checks are both settled is not read again. A
@@ -20,9 +21,10 @@ import type { Firestore } from "firebase-admin/firestore";
 import type { StarfishConfig } from "../config.js";
 import { redactPii } from "../ingest/redact.js";
 import type { CheckRun, GithubClient } from "../integrations/githubPr.js";
-import { recordPrState, type CycleConfig, type PrStateRecord } from "./cycle.js";
+import { recordPrState, type CycleConfig, type CycleKey, type PrStateRecord } from "./cycle.js";
+import { linkIncident } from "./incidentLinks.js";
 
-export type ReconcileConfig = Pick<StarfishConfig, "environment" | "verifyChecks" | "maxPrChecksPerPass"> & CycleConfig;
+export type ReconcileConfig = Pick<StarfishConfig, "environment" | "verifyChecks" | "maxPrChecksPerPass" | "incidentCollection"> & CycleConfig;
 export type PrReader = Pick<GithubClient, "readPullRequest" | "listCheckRuns">;
 
 /** Cycles scanned for an opened PR, newest first. Uses the Runs page's (environment, updatedAt) index. */
@@ -60,6 +62,8 @@ export function summarizeChecks(runs: readonly CheckRun[], required: readonly st
 export interface PrCycle {
   cycleId: string;
   number: number;
+  /** The cycle's incident and recurrence, when its record names them: where the PR's state is copied (#194). */
+  key?: CycleKey;
 }
 
 const SETTLED_CHECKS: readonly string[] = ["passed", "failed", "not-configured"];
@@ -71,7 +75,7 @@ const SETTLED_CHECKS: readonly string[] = ["passed", "failed", "not-configured"]
 export async function selectPrCycles(db: Firestore, cfg: ReconcileConfig, limit: number): Promise<PrCycle[]> {
   if (!Number.isInteger(limit) || limit < 1) return [];
   const snap = await db.collection(cfg.cycleCollection).where("environment", "==", cfg.environment).orderBy("updatedAt", "desc").limit(MAX_SCAN).get();
-  const found: { cycleId: string; number: number; checkedMs: number }[] = [];
+  const found: { cycleId: string; number: number; key?: CycleKey; checkedMs: number }[] = [];
   for (const doc of snap.docs) {
     const d = doc.data();
     const pr = d.summary?.pr as { opened?: unknown; number?: unknown } | undefined;
@@ -80,12 +84,16 @@ export async function selectPrCycles(db: Firestore, cfg: ReconcileConfig, limit:
     const prior = d.summary?.prState as { state?: unknown; checks?: unknown; checkedAt?: unknown } | undefined;
     if (prior?.state === "merged" && SETTLED_CHECKS.includes(String(prior.checks))) continue;
     const checked = typeof prior?.checkedAt === "string" ? Date.parse(prior.checkedAt) : NaN;
-    found.push({ cycleId: doc.id, number: pr.number, checkedMs: Number.isFinite(checked) ? checked : -Infinity });
+    const key =
+      typeof d.incidentId === "string" && typeof d.environment === "string" && Number.isInteger(d.recurrence)
+        ? { incidentId: d.incidentId, environment: d.environment, recurrence: d.recurrence as number }
+        : undefined;
+    found.push({ cycleId: doc.id, number: pr.number, ...(key && { key }), checkedMs: Number.isFinite(checked) ? checked : -Infinity });
   }
   return found
     .sort((a, b) => a.checkedMs - b.checkedMs)
     .slice(0, limit)
-    .map(({ cycleId, number }) => ({ cycleId, number }));
+    .map(({ cycleId, number, key }) => ({ cycleId, number, ...(key && { key }) }));
 }
 
 export interface ReconcileDeps {
@@ -113,7 +121,7 @@ export async function reconcilePullRequests(deps: ReconcileDeps): Promise<Reconc
   const { db, config: cfg, client } = deps;
   const picked = await selectPrCycles(db, cfg, cfg.maxPrChecksPerPass);
   const summary: ReconcileSummary = { considered: picked.length, recorded: 0, unchanged: 0, errors: [] };
-  for (const { cycleId, number } of picked) {
+  for (const { cycleId, number, key } of picked) {
     try {
       // The time BEFORE the reads orders this observation: whatever it saw was true at that time or later.
       const checkedAt = deps.now().toISOString();
@@ -129,7 +137,11 @@ export async function reconcilePullRequests(deps: ReconcileDeps): Promise<Reconc
         checkedAt,
       });
       if (!written.ok) summary.errors.push({ cycleId, message: `not recorded: ${written.reason}` });
-      else if (written.applied) summary.recorded += 1;
+      else if (written.applied) {
+        summary.recorded += 1;
+        // The incident's PR link shows the same state (#194); best effort, and only the state, never its status.
+        if (key) await linkIncident(db, cfg.incidentCollection, key, { kind: "pr-state", number: pr.number, state: pr.state });
+      }
       else summary.unchanged += 1;
     } catch (err) {
       summary.errors.push({ cycleId, message: describeError(err) });
