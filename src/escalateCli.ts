@@ -30,7 +30,10 @@ try {
   const t = await runEscalationTick({ db, config: cfg, now: () => new Date(), owner: `escalate-${hostname()}-${randomUUID().slice(0, 8)}`, ...(twilio && { twilio }) });
   if (t.skipped === "off") console.log("escalate: phone escalation is off (STARFISH_PHONE_ESCALATION); nothing done.");
   else if (t.skipped === "policy-unreadable") console.log("escalate: the on-call policy is invalid or unreadable; nothing done.");
-  else console.log(`escalate: ${t.armed} armed, ${t.placed} call(s) placed, ${t.closed} closed${cfg.dryRun ? " (dry run: nothing placed)" : ""}`);
+  else {
+    console.log(`escalate: ${t.armed} armed, ${t.placed} call(s) placed, ${t.closed} closed${cfg.dryRun ? " (dry run: nothing placed)" : ""}`);
+    if (t.scanCapped) console.warn("escalate: the scan of waiting cycles hit its cap; any beyond it are armed on a later tick.");
+  }
 } catch (err) {
   console.error(`escalate: failed: ${redactPii(err instanceof Error ? err.message : String(err)).slice(0, 300)}`);
   process.exit(1);

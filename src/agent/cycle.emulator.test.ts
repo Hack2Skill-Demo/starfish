@@ -8,7 +8,7 @@ import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { deleteApp, initializeApp } from "firebase-admin/app";
 import { getFirestore } from "firebase-admin/firestore";
 import type { Firestore } from "firebase-admin/firestore";
-import { acquireLease, cycleId, finishCycle, recordEvent, recordPrState, releaseLease, renewLease, sanitizeEvent, type CycleConfig, type CycleKey, type PrStateRecord } from "./cycle.js";
+import { acquireLease, countSpend, cycleId, finishCycle, recordEvent, recordPrState, releaseLease, renewLease, sanitizeEvent, type CycleConfig, type CycleKey, type PrStateRecord } from "./cycle.js";
 import { SEEDED_SECRETS } from "../ingest/testSecrets.js";
 import { causeClass } from "./reconsider.js";
 
@@ -197,6 +197,21 @@ describe("releaseLease", () => {
     await acquireLease(db, cfg, key, "a", t0);
     expect(await releaseLease(db, cfg, "inc1_r0", "intruder", at(1), "x")).toEqual({ ok: false, reason: "lease-lost" });
     expect((await cycle()).owner).toBe("a");
+  });
+});
+
+describe("countSpend: the budget and the revision are the cycle's (#182)", () => {
+  it("counts under the fence, and a resumed attempt starts from what earlier ones spent", async () => {
+    const r = await acquireLease(db, cfg, key, "worker-a", t0);
+    expect(r).toMatchObject({ acquired: true, modelCalls: 0, revisions: 0 });
+    expect(await countSpend(db, cfg, "inc1_r0", "worker-a", at(1), "modelCalls")).toEqual({ ok: true, count: 1 });
+    expect(await countSpend(db, cfg, "inc1_r0", "worker-a", at(2), "modelCalls")).toEqual({ ok: true, count: 2 });
+    expect(await countSpend(db, cfg, "inc1_r0", "worker-a", at(3), "revisions")).toEqual({ ok: true, count: 1 });
+    // Another worker takes over once the lease runs out: it goes on from the cycle's counts, and the old one counts nothing.
+    const b = await acquireLease(db, cfg, key, "worker-b", at(400));
+    expect(b).toMatchObject({ acquired: true, attempt: 2, modelCalls: 2, revisions: 1 });
+    expect(await countSpend(db, cfg, "inc1_r0", "worker-a", at(401), "modelCalls")).toEqual({ ok: false, reason: "lease-lost" });
+    expect(await cycle()).toMatchObject({ modelCalls: 2, revisions: 1 });
   });
 });
 
@@ -415,6 +430,7 @@ describe("reconsidering a declined cycle (#8)", () => {
     await setIncident({});
     const r = await acquireLease(db, cfg, key, "a", t0);
     if (!r.acquired) throw new Error("setup");
+    await countSpend(db, cfg, r.cycleId, "a", t0, "modelCalls");
     await recordEvent(db, cfg, r.cycleId, "a", t0, { stage: "triage", type: "decision", summary: "transient", record: { decision: "decline" } });
     await recordEvent(db, cfg, r.cycleId, "a", t0, { stage: "issue", type: "opened", summary: "Issue #7 filed", record: { state: "opened", number: 7, url: "https://x/7" } });
     await finishCycle(db, cfg, r.cycleId, "a", at(1), "declined", "model-decline", "decline", {
@@ -447,7 +463,7 @@ describe("reconsidering a declined cycle (#8)", () => {
     const r = await acquireLease(db, cfg, key, "b", mins(31), { reconsider: policy() });
     expect(r).toMatchObject({ acquired: true, cycleId: "inc1_r0", attempt: 1, resumed: false, reconsidered: "burst" });
     const c = await cycle();
-    expect(c).toMatchObject({ state: "running", owner: "b", attempts: 1, reconsiderCount: 1, reconsideredBecause: "burst", eventCount: 2 });
+    expect(c).toMatchObject({ state: "running", owner: "b", attempts: 1, reconsiderCount: 1, reconsideredBecause: "burst", eventCount: 2, modelCalls: 0, revisions: 0 });
     expect(c.deadlineAt.toMillis()).toBe(mins(31 + 60).getTime());
     expect(c.decision).toBeUndefined();
     expect(c.outcome).toBeUndefined();

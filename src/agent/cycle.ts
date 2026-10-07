@@ -21,6 +21,9 @@
  *            issue and one pull request per recurrence, the events appended after the earlier ones, the earlier
  *            decision moved to `history`, and a fresh deadline and attempt count for the new consideration.
  *   startDays the UTC days the cycle was started or reopened on: what the daily cycle cap counts (pass.ts).
+ *   spend    `modelCalls` and `revisions`: what the cycle has used of its model-call budget and its one revision, counted
+ *            under the fence before each is spent, so a resumed attempt goes on from them instead of from zero (#182). A
+ *            reconsideration starts a fresh count, as it does the attempts; reconsiderations are themselves capped per day.
  *
  * Logical refusals (lease held elsewhere, lease lost, cycle closed) are returned as reasons.
  * Infrastructure failures throw, deliberately: a worker that cannot reach the store must not go
@@ -31,7 +34,7 @@
 import { FieldValue, Timestamp } from "firebase-admin/firestore";
 import type { DocumentReference, Firestore, Transaction } from "firebase-admin/firestore";
 import type { StarfishConfig } from "../config.js";
-import { isSensitiveKey, redactPii } from "../ingest/redact.js";
+import { clipWellFormed, isSensitiveKey } from "../ingest/redact.js";
 import { MAX_DECISION_HISTORY, reconsiderTrigger, recentReconsiderations, utcDay, type ReconsiderPolicy, type ReconsiderTrigger } from "./reconsider.js";
 
 export type CycleConfig = Pick<StarfishConfig, "cycleCollection" | "leaseSeconds" | "cycleDeadlineMinutes" | "maxCycleAttempts">;
@@ -67,8 +70,21 @@ export function cycleId(key: CycleKey): string | null {
 }
 
 export type AcquireResult =
-  | { acquired: true; cycleId: string; attempt: number; resumed: boolean; leaseExpiresAt: Date; reconsidered?: ReconsiderTrigger }
+  | {
+      acquired: true;
+      cycleId: string;
+      attempt: number;
+      resumed: boolean;
+      leaseExpiresAt: Date;
+      reconsidered?: ReconsiderTrigger;
+      /** What earlier attempts of this cycle (this consideration) spent: model calls, revisions (#182). */
+      modelCalls: number;
+      revisions: number;
+    }
   | { acquired: false; reason: "invalid-key" | "held" | "closed" | "waiting-human" | "deadline-passed" | "retries-exhausted" };
+
+/** A stored count, or 0 when it is absent or not a count. */
+const count = (value: unknown): number => (typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : 0);
 
 const ms = (value: unknown): number | undefined => {
   const v = value as { toMillis?: unknown } | null | undefined;
@@ -113,11 +129,13 @@ export async function acquireLease(db: Firestore, cfg: CycleConfig, key: CycleKe
         leaseExpiresAt: Timestamp.fromMillis(expires),
         deadlineAt: Timestamp.fromMillis(deadlineMs),
         eventCount: 0,
+        modelCalls: 0,
+        revisions: 0,
         startDays: [utcDay(now)],
         createdAt: Timestamp.fromDate(now),
         updatedAt: Timestamp.fromDate(now),
       });
-      return { acquired: true, cycleId: id, attempt: 1, resumed: false, leaseExpiresAt: new Date(expires) };
+      return { acquired: true, cycleId: id, attempt: 1, resumed: false, leaseExpiresAt: new Date(expires), modelCalls: 0, revisions: 0 };
     }
 
     const d = snap.data() as Record<string, unknown>;
@@ -139,6 +157,9 @@ export async function acquireLease(db: Firestore, cfg: CycleConfig, key: CycleKe
           leaseExpiresAt: Timestamp.fromMillis(expires),
           deadlineAt: Timestamp.fromMillis(deadlineMs),
           resumeUncounted: false,
+          // A new consideration: a fresh budget, as it gets a fresh deadline and attempt count.
+          modelCalls: 0,
+          revisions: 0,
           reconsideredBecause: trigger,
           reconsiderCount: Number(d.reconsiderCount ?? 0) + 1,
           reconsideredAt: [...recentReconsiderations(d, now).map((t) => Timestamp.fromMillis(t)), Timestamp.fromDate(now)],
@@ -157,7 +178,7 @@ export async function acquireLease(db: Firestore, cfg: CycleConfig, key: CycleKe
           "summary.notify": FieldValue.delete(),
           updatedAt: Timestamp.fromDate(now),
         });
-        return { acquired: true, cycleId: id, attempt: 1, resumed: false, leaseExpiresAt: new Date(expires), reconsidered: trigger };
+        return { acquired: true, cycleId: id, attempt: 1, resumed: false, leaseExpiresAt: new Date(expires), reconsidered: trigger, modelCalls: 0, revisions: 0 };
       }
     }
     if (state !== "running") {
@@ -186,7 +207,7 @@ export async function acquireLease(db: Firestore, cfg: CycleConfig, key: CycleKe
     const expires = leaseEnd(cfg, now, deadlineMs);
     const attempt = renewing || free ? attempts : attempts + 1;
     tx.update(ref, { owner, leaseExpiresAt: Timestamp.fromMillis(expires), attempts: attempt, resumeUncounted: false, updatedAt: Timestamp.fromDate(now) });
-    return { acquired: true, cycleId: id, attempt, resumed: !renewing, leaseExpiresAt: new Date(expires) };
+    return { acquired: true, cycleId: id, attempt, resumed: !renewing, leaseExpiresAt: new Date(expires), modelCalls: count(d.modelCalls), revisions: count(d.revisions) };
   });
 }
 
@@ -219,6 +240,31 @@ export async function renewLease(db: Firestore, cfg: CycleConfig, id: string, ow
   });
 }
 
+/**
+ * Count one model call, or one revision, against the cycle (#182), under the fence: only the lease holder can, and the
+ * count is the cycle's, so an attempt resumed after a release or a takeover goes on from it. Counted BEFORE it is spent,
+ * so a worker that crashes during the call still has it counted. Returns the cycle's count after this one.
+ */
+export async function countSpend(
+  db: Firestore,
+  cfg: CycleConfig,
+  id: string,
+  owner: string,
+  now: Date,
+  what: "modelCalls" | "revisions"
+): Promise<FenceResult & { count?: number }> {
+  const ref = cycleRef(db, cfg, id);
+  return db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    const d = snap.data() as Record<string, unknown> | undefined;
+    if (!snap.exists) return { ok: false, reason: "no-such-cycle" } as const;
+    if (!fence(d, owner, now)) return { ok: false, reason: "lease-lost" } as const;
+    const next = count(d[what]) + 1;
+    tx.update(ref, { [what]: next, updatedAt: Timestamp.fromDate(now) });
+    return { ok: true, count: next } as const;
+  });
+}
+
 export interface RunEvent {
   /** Which stage of the loop: "triage", "fix", "verify", "review", "pr"... */
   stage: string;
@@ -236,7 +282,7 @@ export interface RunEvent {
   record?: Record<string, string | number | boolean | null>;
 }
 
-const clip = (text: string, max: number) => redactPii(String(text)).slice(0, max);
+const clip = (text: string, max: number) => clipWellFormed(text, max);
 
 type Flat = Record<string, string | number | boolean | null>;
 

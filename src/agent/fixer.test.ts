@@ -70,6 +70,12 @@ describe("proposeFix: the outcomes", () => {
     }
   });
 
+  it("never leaves a lone surrogate where it cuts the model's text (#183)", async () => {
+    const r = await proposeFix(request(), stub(answer({ rootCause: "x".repeat(1499) + "😢 tail", rejectedAlternatives: ["y".repeat(399) + "😢"] })).ask);
+    expect(r.rootCause).toBe("x".repeat(1499));
+    expect(r.rejectedAlternatives).toEqual(["y".repeat(399)]);
+  });
+
   it("keeps at most five alternatives, each bounded", async () => {
     const r = await proposeFix(request(), stub(answer({ rejectedAlternatives: Array.from({ length: 9 }, () => "a".repeat(2000)) })).ask);
     expect(r.rejectedAlternatives).toHaveLength(5);

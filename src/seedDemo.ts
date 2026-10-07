@@ -12,7 +12,9 @@
  *     record names no model, because none was called;
  *   - no incident key is written and the fingerprints are not hashes, so a real occurrence can never be
  *     folded into a synthetic incident (store.ts finds open incidents through the key only);
- *   - every incident has a settled cycle for its recurrence, so the agent's pass never selects one (pass.ts).
+ *   - every incident has a settled cycle for its recurrence, so the agent's pass never selects one (pass.ts); and every
+ *     engine scan skips `synthetic: true` itself (pass.ts, reconcile.ts, autoMerge.ts/fastRevert.ts `cyclesInState`,
+ *     the phone escalation's `escalationEligible`), so nothing names a seeded record to GitHub or Twilio (#192).
  *
  * Demo only: it refuses any environment but DEMO_ENVIRONMENT. Ids are fixed, so a re-run replaces what it wrote
  * (with timestamps moved to the new "now") and never duplicates; `removeDemoHistory` deletes exactly those

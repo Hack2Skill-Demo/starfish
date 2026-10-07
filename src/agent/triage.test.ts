@@ -158,6 +158,15 @@ describe("triageIncident: the model's decision", () => {
     expect(r.suspectedCause!.length).toBeLessThanOrEqual(MAX_REASON_LEN);
   });
 
+  it("never leaves a lone surrogate where it cuts the model's text, so the stored record is accepted (#183)", async () => {
+    const r = await triageIncident(
+      { incident: incident(), status: "new" },
+      stub({ decision: "act", reasoning: "x".repeat(MAX_REASON_LEN - 1) + "😢 Payment failed", suspectedCause: "lone \ud83d here" }).ask
+    );
+    expect(r.reason).toBe("x".repeat(MAX_REASON_LEN - 1));
+    expect(Buffer.from(r.suspectedCause!, "utf8").toString("utf8")).toBe(r.suspectedCause);
+  });
+
   it("never throws, whatever the stub does", async () => {
     const ask = vi.fn(() => {
       throw "not even an Error";

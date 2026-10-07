@@ -24,7 +24,7 @@
  * model in its tests.
  */
 import { askJson } from "../vertex.js";
-import { redactCredentials, redactPii, sanitize } from "../ingest/redact.js";
+import { clipWellFormed, redactCredentials, redactPii, sanitize } from "../ingest/redact.js";
 import { renderForTriage } from "./triage.js";
 import { MAX_REVIEW_PATCH_CHARS } from "./reviewer.js";
 import type { AskJson, TriageSubject } from "./triage.js";
@@ -119,7 +119,7 @@ export function renderForFix(req: FixRequest): string {
   return parts.join("\n");
 }
 
-const clip = (text: string, max = MAX_TEXT) => redactPii(text).slice(0, max);
+const clip = (text: string, max = MAX_TEXT) => clipWellFormed(text, max);
 
 /** A plausible unified diff: file headers and at least one hunk. Not a parser; the gate is the judge. */
 function looksLikeUnifiedDiff(patch: string): boolean {

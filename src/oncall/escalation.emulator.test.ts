@@ -10,7 +10,7 @@ import { Timestamp, getFirestore } from "firebase-admin/firestore";
 import type { Firestore } from "firebase-admin/firestore";
 import { testConfig } from "../testConfig.js";
 import type { StarfishConfig } from "../config.js";
-import { runEscalationTick, readPolicy, stepEscalation, type EscalationDeps } from "./escalation.js";
+import { MAX_SCAN, runEscalationTick, readPolicy, stepEscalation, type EscalationDeps } from "./escalation.js";
 import { createTwilioWebhooks, type TwilioWebhookResponse } from "./webhooks.js";
 import { twilioSignature, type TwilioClient } from "./twilio.js";
 import { confirmNumber, sendConfirmationCode } from "./optIn.js";
@@ -175,6 +175,55 @@ describe("when the sequence starts", () => {
     await tick();
     expect(placed).toHaveLength(0);
     expect(await esc()).toMatchObject({ open: false, state: "stopped" });
+  });
+
+  it("arms a new cycle however many old ones wait: the scan reads the last day's, newest first (#185)", async () => {
+    await setPolicy();
+    await seedPeople(ROTA);
+    // More old waiting cycles than one scan reads, each with an id that sorts before the new one ("inc1_r0").
+    const old = at(-3 * 24 * 60);
+    for (let i = 0; i < MAX_SCAN + 10; i++) {
+      await db.collection(cfg.cycleCollection).doc(`aold${String(i).padStart(3, "0")}_r0`).set({
+        incidentId: `aold${i}`,
+        environment: "demo",
+        recurrence: 0,
+        state: "waiting-human",
+        path: "notify",
+        eventCount: 0,
+        summary: { triage: { decision: "notify", rule: "model-notify" }, notify: { state: "sent", attempts: 1, at: old.toISOString() } },
+        createdAt: Timestamp.fromDate(old),
+        updatedAt: Timestamp.fromDate(old),
+      });
+    }
+    clock = at(5);
+    expect(await tick()).toMatchObject({ armed: 1 });
+    expect((await esc())?.state).toBe("waiting");
+  });
+
+  it("says so when the scan read its cap, never silently (#185)", async () => {
+    await setPolicy();
+    for (let i = 0; i < MAX_SCAN; i++) {
+      await db.collection(cfg.cycleCollection).doc(`recent${String(i).padStart(3, "0")}_r0`).set({
+        incidentId: `recent${i}`,
+        environment: "demo",
+        recurrence: 0,
+        state: "waiting-human",
+        path: "draft",
+        eventCount: 0,
+        updatedAt: Timestamp.fromDate(at(1)),
+      });
+    }
+    clock = at(5);
+    expect(await tick()).toMatchObject({ scanCapped: true });
+  });
+
+  it("never arms a seeded synthetic cycle (#192)", async () => {
+    await setPolicy();
+    await seedPeople(ROTA);
+    await db.collection(cfg.cycleCollection).doc(CYCLE).update({ synthetic: true });
+    clock = at(30);
+    expect(await tick()).toMatchObject({ armed: 0, placed: 0 });
+    expect(await esc()).toBeUndefined();
   });
 
   it("places no call on an invalid policy", async () => {
@@ -381,6 +430,22 @@ describe("the call sequence", () => {
     await hook("/twilio/status", { CallStatus: "completed" }, 0);
     expect(await esc()).toMatchObject({ state: "waiting", step: 1, lastOutcome: "link-sent" });
     expect(await types()).toContain("link-sent");
+  });
+
+  it("2: texts nobody when the number was changed mid-call: the new one is pending and never consented (#187)", async () => {
+    await db.collection(cfg.onCallPeopleCollection).doc("p1").update({ phone: "+15550000777", state: "pending" });
+    const r = await hook("/twilio/gather", { Digits: "2" }, 0);
+    expect(r.body).toContain("<Gather");
+    expect(texts).toEqual([]);
+    const failed = (await events()).find((e) => e.type === "link-failed");
+    expect(failed?.data.reason).toBe("no-confirmed-number");
+  });
+
+  it("2: texts nobody when the number is confirmed but is not the one the call was placed to (#187)", async () => {
+    await db.collection(cfg.onCallPeopleCollection).doc("p1").update({ phone: "+15550000777" });
+    await hook("/twilio/gather", { Digits: "2" }, 0);
+    expect(texts).toEqual([]);
+    expect(await types()).toContain("link-failed");
   });
 
   it("3: passes it to the next PERSON at once (the primary's retry is skipped)", async () => {

@@ -17,7 +17,7 @@
  * it but does not close it: merging the index file changes nothing in production, and whether the heal held (and the
  * incident is resolved) stays a person's call.
  *
- * Every refusal or failure that needs a person ends the cycle waiting for one, and tells them (the loop's `announce`).
+ * Every refusal or failure that needs a person ends the cycle waiting for one, and tells them (the loop's `handOver`).
  * A wait that runs out releases the lease, counted, so a later pass resumes polling; the cycle's attempt cap and
  * deadline bound that, and the loop tells a person when either gives the cycle up. Nothing here deletes an index.
  */
@@ -107,7 +107,11 @@ export interface IndexPathContext {
   /** The loop's check before acting: an incident no longer open, or automation off. null: go on. */
   halted: () => Promise<LoopResult | null>;
   stopReason: () => Promise<string | null>;
-  announce: (rule: string, reason: string) => Promise<void>;
+  /**
+   * Ends the cycle waiting for a person, after telling them (the loop's `handOver`): or, when the incident was closed or
+   * automation turned off meanwhile, settles or pauses it as `halted` does, so it is never left waiting with nobody told.
+   */
+  handOver: (rule: string, reason: string, outcome: string, path: CyclePath) => Promise<LoopResult>;
   /**
    * Files (or finds again) the incident's GitHub issue: the loop's own path, recorded as `summary.issue`, nothing filed in
    * a dry run, a failure recorded and never fatal. Resolves to the issue's number, or undefined when none is filed.
@@ -188,8 +192,7 @@ export async function runIndexPath(ctx: IndexPathContext): Promise<LoopResult> {
 
   const human = async (rule: string, summary: string, reason: string, fields: Flat, path: CyclePath = "human"): Promise<LoopResult> => {
     await ctx.note({ stage: "index", type: rule, summary, record: record({ ...fields, rule, reason }) });
-    await ctx.announce(`index-${rule}`, reason);
-    return ctx.finish("waiting-human", `index-${rule}`, path);
+    return ctx.handOver(`index-${rule}`, reason, `index-${rule}`, path);
   };
 
   switch (outcome.outcome) {
@@ -260,7 +263,7 @@ export async function runIndexPath(ctx: IndexPathContext): Promise<LoopResult> {
   // ---- the evidence pull request: the same entry in the repository's index file ------------------------------------
   const notOpened = async (reason: string, state: Exclude<CycleState, "running">, summary: string): Promise<LoopResult> => {
     await ctx.note({ stage: "pr", type: "not-opened", summary, record: { opened: false, reason } });
-    if (state === "waiting-human") await ctx.announce(`index-pr-${reason}`, summary);
+    if (state === "waiting-human") return ctx.handOver(`index-pr-${reason}`, summary, `index-ready-${reason}`, "index");
     return ctx.finish(state, `index-ready-${reason}`, "index");
   };
   const path = ctx.wiring.indexFilePath;

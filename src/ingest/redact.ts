@@ -187,6 +187,15 @@ export function truncate(text: string, max = MAX_TEXT_LEN): string {
   return `${kept}\n…[truncated ${s.length - kept.length} chars]`;
 }
 
+/**
+ * Redact, then cut to at most `max` UTF-16 units, well-formed: a lone surrogate the text already held (model output is
+ * parsed JSON, where one is legal) becomes U+FFFD, and the cut never splits a pair (#126, #183). For short text that is
+ * stored or shown as is, with no truncation note.
+ */
+export function clipWellFormed(text: string, max: number): string {
+  return sliceWellFormed(toWellFormed(redactPii(String(text))), max);
+}
+
 /** Redact then bound, in that order. */
 export function sanitize(text: string | undefined, max = MAX_TEXT_LEN): string | undefined {
   if (text == null) return undefined;

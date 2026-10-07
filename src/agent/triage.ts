@@ -32,7 +32,7 @@
  * contract, testable with a stubbed model, so the orchestration can be put around it.
  */
 import { askJson } from "../vertex.js";
-import { redactPii, sanitize } from "../ingest/redact.js";
+import { clipWellFormed, sanitize } from "../ingest/redact.js";
 import type { ErrorLogSample } from "../ingest/counterCheck.js";
 import { OPEN_INCIDENT_STATUSES, type Incident, type IncidentStatus } from "../types.js";
 
@@ -155,7 +155,7 @@ function counterCheckLine(i: Incident): string {
   }`;
 }
 
-const bound = (text: string, max = MAX_REASON_LEN) => redactPii(text).slice(0, max);
+const bound = (text: string, max = MAX_REASON_LEN) => clipWellFormed(text, max);
 
 function result(decision: TriageDecision, rule: TriageRule, reason: string, suspectedCause?: string): TriageResult {
   return { decision, rule, reason: bound(reason), ...(suspectedCause ? { suspectedCause: bound(suspectedCause) } : {}) };

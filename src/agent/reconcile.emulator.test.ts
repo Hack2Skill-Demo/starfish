@@ -86,6 +86,12 @@ describe("selectPrCycles", () => {
     expect(await selectPrCycles(db, cfg, 0)).toEqual([]);
   });
 
+  it("never picks a seeded synthetic cycle: the pull request it names does not exist (#192)", async () => {
+    await seed("synthetic-demo-x_r0", 103, { synthetic: true });
+    await seed("b_r0", 2);
+    expect(await selectPrCycles(db, cfg, 10)).toEqual([{ cycleId: "b_r0", number: 2 }]);
+  });
+
   it("leaves a merged PR whose checks are settled alone, and keeps reading a merged one whose checks are not", async () => {
     await seed("a_r0", 1, { summary: { pr: { opened: true, number: 1 }, prState: { state: "merged", checks: "passed", checkedAt: "2026-10-06T11:00:00.000Z" } } });
     await seed("b_r0", 2, { summary: { pr: { opened: true, number: 2 }, prState: { state: "merged", checks: "pending", checkedAt: "2026-10-06T11:00:00.000Z" } } });
