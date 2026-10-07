@@ -186,6 +186,7 @@ export function createLoader(deps: AssembleDeps): Loader {
         files,
         sourceDir: checkout.dir,
         baseRevision: checkout.revision,
+        repoFiles: checkout.files,
       };
     },
     async disposeAll() {

@@ -27,6 +27,7 @@ export function testConfig(over: Partial<StarfishConfig> = {}): StarfishConfig {
     verifyTimeoutSeconds: 600,
     verifyIsolation: "none",
     verifyChecks: [],
+    verifyCheckApp: "github-actions",
     verifyJobName: "",
     verifyBucket: "",
     verifyJobRegion: "us-central1",

@@ -61,6 +61,7 @@ export type GithubRule =
   | "invalid-request"
   | "patch-hash-mismatch"
   | "wrong-repository"
+  | "wrong-base"
   | "unauthorized"
   | "forbidden"
   | "rate-limited"
@@ -481,6 +482,8 @@ export interface CheckRun {
   status: string;
   conclusion: string | null;
   url: string;
+  /** The slug of the GitHub App that posted the run (`github-actions`), or "" when GitHub did not say (#205). */
+  app: string;
   /** The run's own one-line title and summary, when it has any. */
   title: string;
   summary: string;
@@ -766,7 +769,15 @@ export function createGithubClient(cfg: GithubPrConfig, deps: GithubPrDeps): Git
     if (!Array.isArray(runs)) throw new GithubError("unexpected-response", "GitHub's list of check runs was not a list");
     const out: CheckRun[] = [];
     for (const item of runs.slice(0, MAX_CHECKS)) {
-      const c = item as { id?: unknown; name?: unknown; status?: unknown; conclusion?: unknown; html_url?: unknown; output?: { title?: unknown; summary?: unknown } | null };
+      const c = item as {
+        id?: unknown;
+        name?: unknown;
+        status?: unknown;
+        conclusion?: unknown;
+        html_url?: unknown;
+        app?: { slug?: unknown } | null;
+        output?: { title?: unknown; summary?: unknown } | null;
+      };
       if (typeof c.id !== "number" || typeof c.name !== "string" || typeof c.status !== "string") continue;
       out.push({
         id: c.id,
@@ -774,6 +785,7 @@ export function createGithubClient(cfg: GithubPrConfig, deps: GithubPrDeps): Git
         status: c.status,
         conclusion: typeof c.conclusion === "string" ? c.conclusion : null,
         url: typeof c.html_url === "string" ? c.html_url.slice(0, 300) : "",
+        app: typeof c.app?.slug === "string" ? c.app.slug.slice(0, 100) : "",
         title: bounded(c.output?.title, 200),
         summary: bounded(c.output?.summary, 400),
       });
@@ -832,7 +844,7 @@ export function createGithubClient(cfg: GithubPrConfig, deps: GithubPrDeps): Git
       closed_at?: unknown;
       merge_commit_sha?: unknown;
       head?: { ref?: unknown; sha?: unknown; repo?: { full_name?: unknown } | null } | null;
-      base?: { repo?: { full_name?: unknown } | null } | null;
+      base?: { ref?: unknown; repo?: { full_name?: unknown } | null } | null;
     } | null;
     const sameRepo = (v: unknown) => typeof v === "string" && v.toLowerCase() === cfg.githubRepo.toLowerCase();
     // Both ends: Starfish pushes its branch to the repository itself, so a PR from a fork's `starfish/<id>` is not its.
@@ -841,6 +853,11 @@ export function createGithubClient(cfg: GithubPrConfig, deps: GithubPrDeps): Git
     }
     if (j?.number !== number || j.head?.ref !== branch) {
       throw new GithubError("unexpected-response", `Pull request #${number} is not from ${branch}.`);
+    }
+    // Anyone with write access can retarget an open PR without touching its head: merging, commenting and reverting
+    // all read it here first, so a PR that no longer targets the configured base is refused for all of them (#186).
+    if (j.base?.ref !== cfg.githubBaseBranch) {
+      throw new GithubError("wrong-base", `Pull request #${number} does not target the configured base branch; nothing was done.`);
     }
     const headSha = j.head.sha;
     if (typeof headSha !== "string" || !/^[0-9a-f]{40}$/.test(headSha)) throw new GithubError("unexpected-response", "GitHub gave no head commit for the pull request.");

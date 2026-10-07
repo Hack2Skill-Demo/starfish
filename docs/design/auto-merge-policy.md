@@ -22,9 +22,12 @@
    a person at once.
 2. *After each agent pass* (`src/agent/autoMerge.ts`), each candidate is taken to merged or to a
    person: the switches and the incident's status read fresh; gate 1 as recorded; gate 2 over the
-   run record (`certaintyGate`, a pure function); the PR still open, from `starfish/<cycle>`, with
-   the head Starfish built; every named required check (`STARFISH_VERIFY_CHECKS`) a success on that
-   head (still running: it waits, at most `STARFISH_MERGE_CHECK_WAIT_MINUTES`); a claim and today's
+   run record (`certaintyGate`, a pure function); the PR still open, from `starfish/<cycle>` into
+   the configured base branch (a PR retargeted elsewhere goes to a person), with the head Starfish
+   built; every run of every named required check (`STARFISH_VERIFY_CHECKS`) posted by
+   `STARFISH_VERIFY_CHECK_APP` (default `github-actions`; a same-named run from any other app is
+   ignored) a success on that head, so a later success never hides a failure (still running: it
+   waits, at most `STARFISH_MERGE_CHECK_WAIT_MINUTES`); a claim and today's
    merge count in one transaction (`STARFISH_MAX_MERGES_PER_DAY`, default 3); the switches and
    status once more; the evidence posted on the PR as one comment; then one squash merge with
    GitHub told the exact head (`sha`), so a head that moved refuses. Any failure leaves the PR open
@@ -39,20 +42,35 @@ allowlist `STARFISH_AUTO_MERGE_TARGETS`. Turning a switch on is a Settings save,
 like every other. Nothing merges while any switch says no; a test pins that a non-demo target, or
 the switch off, never prepares or merges anything.
 
-**Gate 1 as built.** One production file, an existing JavaScript/TypeScript file, one hunk, no
-function or class boundary between the first and last changed line, at most 8 lines added and 4
-removed; other files must be test files that only gain lines; every changed block one class:
-*null guard* (an early `return`/`throw`/`continue` when a value is missing, or `?.`/`?? <literal>`
-added to an otherwise unchanged line), *missing `await`* (`await ` added to an otherwise unchanged
-call), *Firestore `undefined` field* (`key: v` becomes `...(v !== undefined && { key: v })` or
-`key: v ?? null`). The hard-exclude list matches path words and changed lines: auth and access
-control, security rules, money paths, secrets and crypto, schema, dependencies and lockfiles (and
-any import or require), CI and deploy config, shared packages, plus `STARFISH_PATCH_EXCLUDED_PATHS`
-and `STARFISH_AUTO_MERGE_EXCLUDED_PATHS`. Unsure is never allowed.
+**Gate 1 as built.** A plain diff whose `---`/`+++` paths are in git's `a/`/`b/` form and name the
+same file on both sides and in the `diff --git` line (no rename, copy, delete, mode change or
+binary), so the file gate 1 reads is the file `git apply` writes; and the loop then requires gate
+1's files to be exactly the files the verify gate saw the patch change. One production file, an
+existing JavaScript/TypeScript file, one hunk, no function or class boundary between the first and
+last changed line, at most 8 lines added and 4 removed. Other files must be test files that lose no
+line; a new test file is not limited further, but in a test file that already exists every run of
+added lines must be whole new `it`/`test`/`describe` calls and nothing else (no `return;`, no
+`if (false) {` around existing lines, no `/` at all, so no comment or regex can hide what a line
+does), and no added line may open or close a block comment, skip or focus a test (`.skip`, `.only`,
+`xit`, …), mock a module or exit the process: added lines must not switch off the assertions that
+judge the patch. What this cannot stop: a new test that changes state other tests share. Every
+changed block one class: *null guard* (an early `return;`, `return null`, `return undefined` or
+`throw` when a value is missing, never `return true` or another value, which on a falsy `!x` is a
+change to what the function decides; or `?.`/`?? <literal>` added to an otherwise unchanged line),
+*missing `await`* (`await ` added to an otherwise unchanged call), *Firestore `undefined` field*
+(`key: v` becomes `...(v !== undefined && { key: v })` or `key: v ?? null`). The hard-exclude list
+matches path words (access control includes owner, guard, policy, App Check, verify and can) and
+changed lines: auth and access control, security rules, money paths, secrets and crypto, schema,
+dependencies and lockfiles (and any import or require), CI and deploy config, shared packages, plus
+`STARFISH_PATCH_EXCLUDED_PATHS` and `STARFISH_AUTO_MERGE_EXCLUDED_PATHS`. Access control is also
+matched on the hunk's unchanged context lines: a guard right above an ownership check changes that
+check. It is a word match, not a proof. Unsure is never allowed.
 
 **Gate 2 as built.** All five from the run record: (1) structural cause: triage decided `act`, the
-fixer proposed, and the incident's own stack trace names the changed file (a keyword match is not
-enough, and an error code alone does not tie the cause to a file); (2) **fails before, passes
+fixer proposed, and the incident's own stack trace names the changed file, matched against the
+checkout's whole file list as the pass matches it, so a frame of another file with the same tail
+does not count (a keyword match is not enough, and an error code alone does not tie the cause to a
+file); (2) **fails before, passes
 after**: the fixer added a test, the test-only run *failed* for this exact patch hash, and (3) the
 full patch *passed* the verify gate, on the same hash as the PR; (4) the adversarial review
 approved that hash with zero attacks broken and zero flagged (no review, as with
@@ -67,11 +85,21 @@ compile or a flaky one. A patch with no test file cannot show it, and so never a
 
 **Fast-revert as built.** Every merge starts a watch. The incident has come back when it is seen
 again later than `STARFISH_FAST_REVERT_GRACE_MINUTES` (10) after the merge and within
-`STARFISH_FAST_REVERT_MINUTES` (60) of it: its last occurrence, a regression the ingest marked
-`recurred`, or an hour of its occurrence series wholly inside the window. Then Starfish tells a
-person, opens a revert of its own merge commit on `starfish/revert-<cycle>`, and merges it once its
-required checks pass. It escalates instead when a later commit on the base branch touched a file
-the merge touched, when the merge does not revert cleanly, or when a switch forbids merging. A
+`STARFISH_FAST_REVERT_MINUTES` (60) of it: its last occurrence in the window, a regression the
+ingest marked `recurred`, or an hour of its occurrence series that starts after the grace and no
+later than the window's end (for a window that holds no hour boundary, the first hour after the
+grace). The store counts each ingest window in the hour of its latest occurrence, so such an hour
+always holds an occurrence after the grace, never a late-ingested one from before the merge, and an
+error that keeps firing past the window is still seen, whenever the hourly pass reads it. The price:
+a recurrence can be counted from up to an hour past the window's end (two, for a window with no
+hour boundary); and an ingest window longer than an hour (a catch-up after an ingest outage) counts
+all its occurrences in its last hour, which can lie past the hours that count, so that recurrence is
+missed. A watch that saw nothing is cleared a settle hour (for late ingestion) after the last hour
+that counts has ended. On a recurrence Starfish tells a person, opens a revert of its own merge
+commit on `starfish/revert-<cycle>`, and merges it once its required checks pass. It escalates
+instead when a later commit on the base branch touched a file the merge touched, when the merge
+does not revert cleanly, when the revert PR was retargeted to another base branch, or when a switch
+forbids merging. A
 revert is never itself watched, so never reverted; a retired incident never triggers one; an
 incident Starfish already reverted for is not auto-merged again. Reverts do not count against the
 daily cap.

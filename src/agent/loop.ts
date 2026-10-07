@@ -72,7 +72,7 @@ import { verifyPatch, type VerifyConfig, type VerifyRequest, type VerifyResult }
 import { causeClass, type ReconsiderPolicy } from "./reconsider.js";
 import { isIndexIncident, runIndexPath, type IndexHealWiring } from "./indexPath.js";
 import { linkFromEvent, linkIncident } from "./incidentLinks.js";
-import { assessBlastRadius, testOnlyPatch, type BlastRadius } from "./blastRadius.js";
+import { assessBlastRadius, judgedTheVerifiedFiles, testOnlyPatch, type BlastRadius } from "./blastRadius.js";
 import { mergeRecordAtOpen } from "./autoMerge.js";
 import { sha256 } from "./reviewer.js";
 
@@ -84,6 +84,11 @@ export interface LoopSubject {
   /** A checkout of the target repo at `baseRevision`, never modified. */
   sourceDir: string;
   baseRevision: string;
+  /**
+   * Every file of that checkout, as the stack trace was matched against (assemble.ts): gate 2's structural cause is
+   * judged against the same list (#203). Absent: no stack frame can tie the cause to the changed file.
+   */
+  repoFiles?: readonly string[];
 }
 
 export interface PullRequestRequest {
@@ -743,6 +748,11 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
         }
         return await handOver(factsOf(loaded), "human", `verify-${verified.rule}`, verified.reason, `verify-${verified.rule}`, "human");
       }
+      // Gate 1 read the patch's headers; the verify gate saw what `git apply` actually wrote. Unless they are the same
+      // files, gate 1 judged a different change from the one that was verified, and it does not hold (#200).
+      if (gate1?.allowed && !judgedTheVerifiedFiles(gate1, verified.changedFiles)) {
+        gate1 = { ...gate1, allowed: false, problems: [...gate1.problems, "files-differ-from-verified"] };
+      }
 
       let review: { verdict: ReviewVerdict; attacks: Attack[] } | undefined;
       if (cfg.reviewRequired) {
@@ -830,7 +840,7 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
       });
       // The auto-merge candidate (#9): pending for the pass's merge step, or handed to a person now when gate 1 failed.
       if (gate1) {
-        const record = mergeRecordAtOpen({ gate1, pr, patchSha256: verified.patchSha256, incident: loaded.subject.incident, now: deps.now() });
+        const record = mergeRecordAtOpen({ gate1, pr, patchSha256: verified.patchSha256, incident: loaded.subject.incident, repoFiles: loaded.repoFiles ?? [], now: deps.now() });
         const pending = record.state === "pending";
         await note({
           stage: "merge",

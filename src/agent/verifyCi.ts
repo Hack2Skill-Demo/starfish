@@ -7,7 +7,8 @@
  *      (`.github/` is one, so a patch cannot rewrite the workflow that judges it), add no link and change no mode.
  *      Nothing the patch contains is executed. A refusal is returned as it is and nothing is pushed.
  *   2. The patch is pushed as one commit on `starfish/<cycle>` on top of the pinned revision (githubPr.ts).
- *   3. The named check runs on that exact commit are waited for. All of them must succeed. The commit is the evidence:
+ *   3. The named check runs on that exact commit, posted by `verifyCheckApp` (GitHub Actions unless configured; a run of
+ *      that name from another app is ignored, #205), are waited for. All of them must succeed. The commit is the evidence:
  *      checks belong to a commit, and the commit is the patch applied to the revision it was written against.
  *   4. A branch THIS CALL pushed whose patch did not pass is deleted, so the next draft in the cycle can use the name;
  *      one that passed stays, and the pull request is opened from it (the opener finds it is exactly this change). In a
@@ -35,6 +36,7 @@ import { redactPii } from "../ingest/redact.js";
 import type { CheckAnnotation, CheckRun, GithubClient } from "../integrations/githubPr.js";
 import { MAX_OUTPUT_CHARS, verifyPatch, type VerifyRequest, type VerifyResult } from "./verifyGate.js";
 import { VerifyRunnerError } from "./verifyProtocol.js";
+import { requiredRuns } from "./reconcile.js";
 
 export type CiClient = Pick<GithubClient, "pushPatchBranch" | "deleteBranch" | "listCheckRuns" | "annotations">;
 
@@ -47,7 +49,7 @@ export interface CiVerifyDeps {
   pollMs?: number;
 }
 
-export type CiVerifyConfig = Pick<StarfishConfig, "verifyTimeoutSeconds" | "verifyChecks" | "dryRun">;
+export type CiVerifyConfig = Pick<StarfishConfig, "verifyTimeoutSeconds" | "verifyChecks" | "verifyCheckApp" | "dryRun">;
 
 /** Time for a runner to be assigned and start, on top of the limit for the checks themselves. */
 export const CI_SLACK_SECONDS = 600;
@@ -110,7 +112,7 @@ export function createCiVerifier(cfg: CiVerifyConfig, deps: CiVerifyDeps): (req:
       // Step 3.
       const deadline = now() + (cfg.verifyTimeoutSeconds + CI_SLACK_SECONDS) * 1000;
       for (;;) {
-        const runs = (await client.listCheckRuns(commit)).filter((r) => names.includes(r.name));
+        const runs = requiredRuns(await client.listCheckRuns(commit), names, cfg.verifyCheckApp);
         const missing = names.filter((n) => !runs.some((r) => r.name === n));
         const unfinished = runs.filter((r) => r.status !== "completed");
         if (missing.length === 0 && unfinished.length === 0) {

@@ -3,7 +3,7 @@
  * passing once, and then every way to get past it that we could think of is shown failing: unsure is never allowed.
  */
 import { describe, expect, it } from "vitest";
-import { assessBlastRadius, excludedPathCategories, isTestPath, parsePatch, testOnlyPatch } from "./blastRadius.js";
+import { assessBlastRadius, excludedPathCategories, isTestPath, judgedTheVerifiedFiles, parsePatch, testOnlyPatch } from "./blastRadius.js";
 
 const cfg = { excludedPaths: [] as string[] };
 const gate = (patch: string, over = cfg) => assessBlastRadius(patch, over);
@@ -28,7 +28,7 @@ const addedTest = [
 ].join("\n") + "\n";
 
 const guard = diff(SRC, ["  const order = await load(id);", "+  if (!order) return null;", "   return order.total;"]);
-const guardBlock = diff(SRC, ["  const order = await load(id);", "+  if (!order || order.items === undefined) {", "+    return [];", "+  }", "   return order.items;"]);
+const guardBlock = diff(SRC, ["  const order = await load(id);", "+  if (!order || order.items === undefined) {", "+    return undefined;", "+  }", "   return order.items;"]);
 const chaining = diff(SRC, ["  const order = await load(id);", "-  const n = order.items.length;", "+  const n = order?.items?.length ?? 0;", "   return n;"]);
 const missingAwait = diff(SRC, ["  const ref = db.collection(\"orders\").doc(id);", "-  ref.set(data);", "+  await ref.set(data);", "   return ref.id;"]);
 const undefinedField = diff(SRC, ["  await ref.set({", "    total: data.total,", "-    couponCode: data.couponCode,", "+    ...(data.couponCode !== undefined && { couponCode: data.couponCode }),", "  });"]);
@@ -68,9 +68,9 @@ describe("assessBlastRadius: the allowed classes", () => {
     expect(gate(guard + addedTest)).toMatchObject({ allowed: true, fixClass: "null-guard", testFiles: [TEST] });
   });
 
-  it("allows shorthand fields, throw and continue guards, and `return await`", () => {
+  it("allows shorthand fields, a bare return and throw guards, and `return await`", () => {
     expect(gate(diff(SRC, ["  batch.set(ref, {", "-    coupon,", "+    ...(coupon !== undefined && { coupon }),", "  });"])).allowed).toBe(true);
-    expect(gate(diff(SRC, ["  for (const o of list) {", "+    if (o.items == null) continue;", "     total += o.items.length;"])).allowed).toBe(true);
+    expect(gate(diff(SRC, ["  const o = get(id);", "+  if (o.items == null) return;", "   total += o.items.length;"])).allowed).toBe(true);
     expect(gate(diff(SRC, ["  const o = get(id);", '+  if (typeof o === "undefined") throw new NotFoundError("no order");', "   return o;"])).allowed).toBe(true);
     expect(gate(diff(SRC, ["  const ref = doc(id);", "-  return ref.get();", "+  return await ref.get();", " }"])).allowed).toBe(true);
   });
@@ -90,6 +90,24 @@ describe("assessBlastRadius: never on unsure (adversarial diffs)", () => {
     refused(diff(SRC, ["  const o = get(id);", "+  if (!load(id)) return null;", "   return o;"]), "not-an-allowed-class"); // a call in the condition
     refused(diff(SRC, ["  const o = get(id);", "+  if (o != null) return null;", "   return o;"]), "not-an-allowed-class");
     refused(diff(SRC, ["  const o = get(id);", "+  if (!o) return null; deleteAll();", "   return o;"]), "not-an-allowed-class");
+  });
+
+  it("refuses a guard that returns a decision instead of leaving: `!x` is any falsy value, not only a missing one (#202)", () => {
+    for (const exit of ["return true;", "return false;", "return 0;", 'return "ok";', "return [];", "return {};", "continue;", "break;"]) {
+      refused(diff(SRC, ["  const o = get(id);", `+  if (!o.flagged) ${exit}`, "   return check(o);"]), "not-an-allowed-class");
+    }
+  });
+
+  it("refuses an access-control path, whatever its word for it (#202)", () => {
+    for (const path of ["src/guards/isOwner.ts", "src/policies/canRead.ts", "src/firebase/appCheck.ts", "functions/src/verifyRequest.ts", "src/app-check/x.ts", "src/canShip.ts"]) {
+      const r = gate(diff(path, ["  const doc = get(id);", "+  if (!doc) return null;", "   return doc.total;"]));
+      expect(r.problems, path).toContain("excluded:access-control");
+    }
+    expect(excludedPathCategories("src/scanner/cancel.ts")).toEqual([]); // "can" is a word, not a prefix
+  });
+
+  it("refuses a guard whose context is an ownership check: the guard changes what that check decides (#202)", () => {
+    refused(diff(SRC, ["  const doc = await get(id);", "+  if (!doc) return null;", "   return doc.ownerId === user.uid;"]), "excluded:access-control");
   });
 
   it("refuses a line changed beyond the class", () => {
@@ -124,6 +142,44 @@ describe("assessBlastRadius: never on unsure (adversarial diffs)", () => {
 
   it("refuses a test file that loses lines: deleting the test that judges a patch must not pass", () => {
     refused(guard + diff(TEST, [" it(\"x\", () => {", "-  expect(f()).toBe(1);", " });"]), "test-lines-removed");
+  });
+
+  it("refuses added test lines that switch existing tests off: only whole new tests may be added to a test file (#204)", () => {
+    const into = (lines: string[]) => guard + diff(TEST, [' it("x", async () => {', ...lines, " });"]);
+    const assertion = "   expect(await createOrder({ sku: 1 })).toBe(false);";
+    refused(into(["+    /*", assertion, "+    */"]), "test-lines-disable-tests");
+    refused(into(["+    return;", assertion]), "test-lines-not-whole-tests");
+    refused(into(["+    if (false) {", assertion, "+    }"]), "test-lines-not-whole-tests");
+    refused(into(["+    false &&", assertion]), "test-lines-not-whole-tests");
+    refused(into(["+    const s = `", assertion, "+    `;"]), "test-lines-not-whole-tests");
+    refused(into(['+    it(/"/); if (false) { it(/"/);', assertion, '+    it(/"/); } it(/"/);']), "test-lines-not-whole-tests"); // a regex hiding a quote
+    refused(guard + diff(TEST, ['+it.skip("x", () => {});', ' it("y", () => {});']), "test-lines-disable-tests");
+    refused(guard + diff(TEST, ['+vi.mock("./createOrder");', ' it("y", () => {});']), "test-lines-disable-tests");
+    refused(guard + diff(TEST, [' });', '+xit("x", () => {});']), "test-lines-disable-tests");
+  });
+
+  it("allows whole new tests added to an existing test file", () => {
+    const added = [" });", "+", '+it("works without a coupon", async () => {', "+  expect(await createOrder({})).toEqual({ total: 0, items: [] });", "+});", " "];
+    expect(gate(guard + diff(TEST, added))).toMatchObject({ allowed: true, testFiles: [TEST] });
+    const each = [" });", '+it.each([[1, "a"], [2, "b"]])("case %s", (n, s) => {', "+  // it holds", "+  expect(f(n)).toBe(s);", "+});"];
+    expect(gate(guard + diff(TEST, each)).allowed).toBe(true);
+  });
+
+  it("refuses a header path git would read differently, and a rename hidden in the headers (#200)", () => {
+    const evil = "test/src/inventory.ts";
+    const unprefixed = [`--- ${evil}`, `+++ ${evil}`, "@@ -1 +1,2 @@", " x();", '+fetch("https://evil.example/");'].join("\n") + "\n";
+    // git apply (-p1) strips `test/`, and writes src/inventory.ts: a second production file, read here as a test.
+    expect(parsePatch(guard + unprefixed)).toBeNull();
+    refused(guard + unprefixed, "diff-not-understood");
+    refused(guard + [`diff --git a/${evil} b/${evil}`, `--- b/${evil}`, `+++ a/${evil}`, "@@ -1 +1,2 @@", " x();", "+y();"].join("\n") + "\n", "diff-not-understood");
+    // A rename with no `rename from` header: two names in the headers.
+    const renamed = ["diff --git a/src/other.ts b/test/x.test.ts", "--- a/src/other.ts", "+++ b/test/x.test.ts", "@@ -1 +1,2 @@", " x();", "+y();"].join("\n") + "\n";
+    refused(guard + renamed, "rename-or-copy");
+    // diff --git names one file and the headers another.
+    const mismatched = ["diff --git a/src/other.ts b/src/other.ts", "--- a/test/x.test.ts", "+++ b/test/x.test.ts", "@@ -1 +1,2 @@", " x();", "+y();"].join("\n") + "\n";
+    expect(parsePatch(mismatched)).toBeNull();
+    // A diff --git section with no file headers at all.
+    refused(guard + "diff --git a/src/other.ts b/test/x.test.ts\n", "no-file-headers");
   });
 
   it("refuses deletes, renames, mode changes and binary files", () => {
@@ -219,5 +275,16 @@ describe("isTestPath and testOnlyPatch", () => {
     expect(testOnlyPatch(guard)).toBeNull();
     expect(testOnlyPatch(addedTest)).toBeNull();
     expect(testOnlyPatch("garbage")).toBeNull();
+  });
+});
+
+describe("judgedTheVerifiedFiles (#200)", () => {
+  it("holds only when gate 1's files are exactly the files the verify gate saw change", () => {
+    const r = gate(guard + addedTest);
+    expect(judgedTheVerifiedFiles(r, [TEST, SRC])).toBe(true);
+    expect(judgedTheVerifiedFiles(r, [SRC, TEST, "functions/src/inventory.ts"])).toBe(false); // git wrote a file gate 1 never read
+    expect(judgedTheVerifiedFiles(r, [SRC])).toBe(false);
+    expect(judgedTheVerifiedFiles(r, [])).toBe(false);
+    expect(judgedTheVerifiedFiles({ testFiles: [] }, [])).toBe(false);
   });
 });

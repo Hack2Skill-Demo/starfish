@@ -6,8 +6,9 @@
  * The watch. Every merge autoMerge.ts records starts `summary.revert` in `watching`, until `fastRevertMinutes` after the
  * merge. The incident has come back (`recurredAfterMerge`, pure) when it was seen again later than
  * `fastRevertGraceMinutes` after the merge and within the window: its `lastOccurredAt`, a regression the ingest marked
- * (`recurred`, a higher `recurrenceCount`, `lastRecurredAt`), or an hour of its occurrence series lying wholly inside the
- * window. HONESTLY: the window starts at the MERGE, not at the deployment, because Starfish cannot observe when the
+ * (`recurred`, a higher `recurrenceCount`, `lastRecurredAt`), or an hour of its occurrence series that starts after the
+ * grace and no later than the window's end (or the first such hour, for a window shorter than an hour), so an error that
+ * keeps firing past the window is still seen (#201). HONESTLY: the window starts at the MERGE, not at the deployment, because Starfish cannot observe when the
  * target's CI/CD finishes deploying (#9 keeps "start at deployment completion" open). The grace stands in for the deploy:
  * an error seen during it is the old code still running, not the fix failing. A deploy slower than the grace would
  * look like a recurrence; set the grace above the target's deploy time.
@@ -36,7 +37,7 @@ import { summarizeChecks } from "./reconcile.js";
 
 export type FastRevertConfig = Pick<
   StarfishConfig,
-  "environment" | "incidentCollection" | "verifyChecks" | "maxPrChecksPerPass" | "fastRevertMinutes" | "fastRevertGraceMinutes" | "mergeCheckWaitMinutes"
+  "environment" | "incidentCollection" | "verifyChecks" | "verifyCheckApp" | "maxPrChecksPerPass" | "fastRevertMinutes" | "fastRevertGraceMinutes" | "mergeCheckWaitMinutes"
 > &
   CycleConfig;
 
@@ -65,7 +66,10 @@ export interface FastRevertSummary {
   paused?: boolean;
 }
 
-/** After the window closes, the watch keeps reading this long, so an occurrence inside it that was ingested late still counts. */
+/**
+ * After the last hour that counts has ended (`watchSpan`), the watch keeps reading this long, so an occurrence in it that
+ * was ingested late still counts.
+ */
 export const WATCH_SETTLE_MS = 60 * 60_000;
 const HOUR_MS = 60 * 60_000;
 
@@ -73,8 +77,39 @@ type Rec = Record<string, unknown>;
 const rec = (v: unknown): Rec => (typeof v === "object" && v !== null ? (v as Rec) : {});
 
 /**
- * Whether the incident came back after Starfish's merge: seen later than the grace after the merge and no later than the
- * window's end. Pure. A retired incident never has (its fingerprint was freed: a new occurrence is a new incident).
+ * The times a watch works with, from the merge. `start`/`end`: the window, (merge + grace, merge + `fastRevertMinutes`].
+ * `reach`: the latest clock hour whose bucket still counts (see `recurredAfterMerge`): the window's end, or the first
+ * hour after `start` when no hour starts inside the window. `closesAt`: when a watch that saw nothing is cleared: an
+ * occurrence in the hour starting at `reach` can be as late as `reach` + 1 h, and ingest needs the settle hour after it.
+ */
+export function watchSpan(mergedAtMs: number, cfg: Pick<FastRevertConfig, "fastRevertMinutes" | "fastRevertGraceMinutes">): { start: number; end: number; reach: number; closesAt: number } {
+  const start = mergedAtMs + cfg.fastRevertGraceMinutes * 60_000;
+  const end = mergedAtMs + cfg.fastRevertMinutes * 60_000;
+  const firstHourAfterStart = (Math.floor(start / HOUR_MS) + 1) * HOUR_MS;
+  const reach = Math.max(end, firstHourAfterStart);
+  return { start, end, reach, closesAt: reach + HOUR_MS + WATCH_SETTLE_MS };
+}
+
+/**
+ * Whether the incident came back after Starfish's merge: an occurrence later than the grace after the merge, in the
+ * window. Pure. A retired incident never has (its fingerprint was freed: a new occurrence is a new incident).
+ *
+ * What the store keeps is not every occurrence's time, so the evidence is read for what it proves (#201):
+ *   - `lastOccurredAt` is the LATEST occurrence ever seen (store.ts never moves it backwards). In the window: proof.
+ *     Past the window it proves nothing about the window, and an error that kept firing is past it by the time the
+ *     hourly pass reads it.
+ *   - a regression the ingest marked (`recurrenceCount` above the cycle's, `lastRecurredAt` in the window).
+ *   - the hourly buckets. Each ingest window's occurrences are counted in the hour of that window's LATEST occurrence,
+ *     so a bucket whose hour starts after `start` holds at least one occurrence after `start`: never an occurrence
+ *     from before the merge or from the grace, however late it was ingested (a late batch of those lands in an hour
+ *     that starts no later than `start`). Its hour may end after the window; the error that matters is one that keeps
+ *     firing, so a bucket counts when its hour starts no later than `reach` (`watchSpan`): the window's end, or, when
+ *     no hour starts inside the window (a window shorter than an hour), the first hour after `start`. Then an error
+ *     that keeps firing through the window always leaves a counted bucket, once that hour is ingested.
+ * So a recurrence counted here is always an occurrence after the grace, and less than an hour past the window's end
+ * (two, when the window holds no hour boundary). What it can still miss: an ingest window longer than an hour (a catch-up
+ * after an ingest outage, `ingestMaxWindowHours`) counts everything in its last hour, which can lie past `reach`.
+ * A snapshot of `occurrenceCount` at the merge would add nothing: a late batch from before the merge grows it too.
  */
 export function recurredAfterMerge(
   incident: Rec,
@@ -82,17 +117,15 @@ export function recurredAfterMerge(
   cfg: Pick<FastRevertConfig, "fastRevertMinutes" | "fastRevertGraceMinutes">
 ): boolean {
   if (incident.retired === true) return false;
-  const start = merge.mergedAtMs + cfg.fastRevertGraceMinutes * 60_000;
-  const end = merge.mergedAtMs + cfg.fastRevertMinutes * 60_000;
+  const { start, end, reach } = watchSpan(merge.mergedAtMs, cfg);
   if (start >= end) return false;
   const inWindow = (t: number | undefined) => t !== undefined && t > start && t <= end;
   if (inWindow(millis(incident.lastOccurredAt))) return true;
   const recurrences = incident.recurrenceCount;
   if (typeof recurrences === "number" && recurrences > merge.recurrence && inWindow(millis(incident.lastRecurredAt))) return true;
-  // The last occurrence may already be past the window: an hour of the series wholly inside it still shows one.
   for (const [key, count] of Object.entries(rec(incident.occurrencesByHour))) {
     const hourStart = Number(key) * HOUR_MS;
-    if (Number.isFinite(hourStart) && typeof count === "number" && count > 0 && hourStart > start && hourStart + HOUR_MS <= end) return true;
+    if (Number.isFinite(hourStart) && typeof count === "number" && count > 0 && hourStart > start && hourStart <= reach) return true;
   }
   return false;
 }
@@ -110,6 +143,7 @@ const SENTENCES: Record<string, string> = {
   "checks-timeout": "the revert's required checks did not finish in time",
   "no-required-checks": "no required check is named, so nothing proves the revert is green",
   "head-changed": "the revert's head moved",
+  "wrong-base": "the revert pull request no longer targets the configured base branch",
   "revert-closed": "someone closed the revert pull request",
   interrupted: "an earlier attempt was interrupted, and a revert is never retried blindly",
 };
@@ -166,7 +200,7 @@ export async function runFastRevertStep(deps: FastRevertDeps): Promise<FastRever
       const incident = incidentId ? ((await db.collection(cfg.incidentCollection).doc(incidentId).get()).data() ?? {}) : {};
       const recurrence = typeof cycle.data.recurrence === "number" ? cycle.data.recurrence : 0;
       if (!recurredAfterMerge(incident, { mergedAtMs, recurrence }, cfg)) {
-        if (now.getTime() > mergedAtMs + cfg.fastRevertMinutes * 60_000 + WATCH_SETTLE_MS) {
+        if (now.getTime() > watchSpan(mergedAtMs, cfg).closesAt) {
           return (await moveRecord(db, cfg, cycle.id, "revert", same("watching"), { ...revert, state: "clear", decidedAt: nowIso })) ? "cleared" : "unchanged";
         }
         return "waiting";
@@ -200,13 +234,20 @@ export async function runFastRevertStep(deps: FastRevertDeps): Promise<FastRever
     const headSha = revert.headSha;
     if (typeof number !== "number" || typeof headSha !== "string") return giveUp("revert-unknown", same("pending"));
     const revertId = `revert-${cycle.id}`;
-    const pr = await client.readPullRequest(revertId, number);
+    let pr: Awaited<ReturnType<RevertClient["readPullRequest"]>>;
+    try {
+      pr = await client.readPullRequest(revertId, number);
+    } catch (err) {
+      // A revert retargeted to another base is refused by the client (#186): a person decides, it is not retried.
+      if (ruleOf(err) === "wrong-base") return giveUp("wrong-base", same("pending"));
+      throw err;
+    }
     if (pr.state === "merged") {
       return (await moveRecord(db, cfg, cycle.id, "revert", same("pending"), { ...revert, state: "reverted", by: "person", revertSha: pr.mergeCommitSha ?? null, decidedAt: nowIso })) ? "reverted" : "unchanged";
     }
     if (pr.state === "closed") return giveUp("revert-closed", same("pending"));
     if (pr.headSha !== headSha) return giveUp("head-changed", same("pending"));
-    const checks = summarizeChecks(cfg.verifyChecks.length > 0 ? await client.listCheckRuns(headSha) : [], cfg.verifyChecks);
+    const checks = summarizeChecks(cfg.verifyChecks.length > 0 ? await client.listCheckRuns(headSha) : [], cfg.verifyChecks, cfg.verifyCheckApp);
     if (checks.checks === "not-configured") return giveUp("no-required-checks", same("pending"));
     if (checks.checks === "failed") return giveUp("checks-failed", same("pending"));
     if (checks.checks !== "passed") {

@@ -3,18 +3,27 @@
  * Pure: it reads the patch text and nothing else, and it never runs anything.
  *
  * A patch passes only when ALL of this holds:
- *   - it parses as a plain unified diff (no binary, no mode change, no rename, copy or delete);
+ *   - it parses as a plain unified diff (no binary, no mode change, no rename, copy or delete), every `---`/`+++` path
+ *     in git's `a/`/`b/` form, naming the same file on both sides and in its `diff --git` line: the file read here is
+ *     the file `git apply` writes (#200). The loop also requires gate 1's files to be exactly the files the verify gate
+ *     saw change (loop.ts);
  *   - exactly ONE production source file changes, an existing JavaScript/TypeScript file, in ONE hunk, and nothing
  *     between its first and last changed line starts or ends a function: one function or handler is touched;
  *   - every other file is a test file (by path), and only GAINS lines: a patch that removes a test line could pass by
- *     disabling the test that judges it;
+ *     disabling the test that judges it. Added lines could do that too (`/*` … `*\/`, an early `return;`, `.skip`), so
+ *     in a test file that already exists each run of added lines must be whole new `it`/`test`/`describe` calls and
+ *     nothing else, and no added line may open or close a block comment, skip or focus a test, mock a module or exit
+ *     the process (#204). A new test file has no existing test to switch off, and is not limited this way;
  *   - no path, and no changed line of the source file, hits the hard-exclude list: auth or access control, security
  *     rules, money paths, secrets and crypto, schema, dependencies and lockfiles, imports, CI and deploy config,
  *     shared packages, or anything the deployment excludes from patches (`patchExcludedPaths`) or from auto-merge
- *     (`autoMergeExcludedPaths`);
+ *     (`autoMergeExcludedPaths`). Access control is also checked on the hunk's unchanged context lines: a guard added
+ *     right above an ownership check is a change to that check (#202);
  *   - every changed block of the source file is ONE allowed class, the same one throughout:
- *       null-guard                 an early exit added when a value is missing (`if (!order) return null;`), or `?.` /
- *                                  `?? <literal>` added to a line that is otherwise unchanged;
+ *       null-guard                 an early exit added when a value is missing (`if (!order) return null;`): `return;`,
+ *                                  `return null`, `return undefined` or a `throw`, never a value that changes what the
+ *                                  function decides (`return true`, #202); or `?.` / `?? <literal>` added to a line that
+ *                                  is otherwise unchanged;
  *       missing-await              `await ` added to a line that is otherwise unchanged;
  *       firestore-undefined-field  a field written as `key: value` becomes `...(value !== undefined && { key: value })`
  *                                  or `key: value ?? null`.
@@ -81,12 +90,18 @@ const MAX_SPAN = 15;
 const HUNK_RE = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/;
 const EXTENDED_HEADER_RE = /^(index |similarity index |dissimilarity index |old mode |new mode |new file mode |deleted file mode |rename from |rename to |copy from |copy to |Binary files |GIT binary patch)/;
 
-function stripPath(raw: string): string | null | undefined {
+/**
+ * A `---` (prefix `a/`) or `+++` (prefix `b/`) header's path, without its prefix. `git apply` (-p1) strips the FIRST
+ * path component whatever it is, so a header without git's own prefix (`--- test/src/x.ts`) would be read here as one
+ * file and written by git as another (`src/x.ts`, #200): that is not understood, and undefined.
+ */
+function stripPath(raw: string, prefix: "a/" | "b/"): string | null | undefined {
   const p = raw.replace(/\t.*$/, "").trim();
   if (p === "/dev/null") return null;
   // A quoted path is git's spelling of an unusual name: not something to reason about here.
   if (p.startsWith('"')) return undefined;
-  return p.replace(/^[ab]\//, "");
+  if (!p.startsWith(prefix) || p.length === prefix.length) return undefined;
+  return p.slice(prefix.length);
 }
 
 /**
@@ -97,7 +112,7 @@ export function parsePatch(patch: string): FileDiff[] | null {
   const lines = patch.replace(/\r\n/g, "\n").split("\n");
   if (lines.at(-1) === "") lines.pop();
   const files: FileDiff[] = [];
-  let cur: (FileDiff & { start: number }) | undefined;
+  let cur: (FileDiff & { start: number; gitLine?: string }) | undefined;
   let oldLeft = 0;
   let newLeft = 0;
   const close = (end: number) => {
@@ -132,19 +147,24 @@ export function parsePatch(patch: string): FileDiff[] | null {
     if (line.startsWith("\\")) continue;
     if (line.startsWith("diff --git ")) {
       open(i);
+      cur!.gitLine = line;
       continue;
     }
     if (line.startsWith("--- ")) {
       // A `---` header starts a new file unless it follows this file's own `diff --git` and extended headers.
       if (!cur || cur.hunks.length > 0 || cur.oldPath !== null || cur.newPath !== null) open(i);
-      const p = stripPath(line.slice(4));
+      const p = stripPath(line.slice(4), "a/");
       if (p === undefined) return null;
       cur!.oldPath = p;
       const next = lines[i + 1];
       if (next === undefined || !next.startsWith("+++ ")) return null;
-      const q = stripPath(next.slice(4));
-      if (q === undefined) return null;
+      const q = stripPath(next.slice(4), "b/");
+      if (q === undefined || (p === null && q === null)) return null;
       cur!.newPath = q;
+      // Two names are a rename to git, with or without a `rename from` header (#200): never a plain content change.
+      if (p !== null && q !== null && p !== q) cur!.unusual.push("rename-or-copy");
+      // Where `diff --git` names a file, git goes by it: it must name exactly the file the headers do (#200).
+      if (cur!.gitLine !== undefined && cur!.gitLine !== `diff --git a/${p ?? q} b/${q ?? p}`) return null;
       i++;
       continue;
     }
@@ -194,7 +214,7 @@ function words(path: string): string[] {
  * (`autoMergeExcludedPaths`); it cannot take anything away.
  */
 const PATH_WORDS: Readonly<Record<string, readonly string[]>> = {
-  "access-control": ["auth", "authn", "authz", "authorize", "authorization", "authentication", "login", "logout", "signin", "signup", "session", "sessions", "permission", "permissions", "acl", "rbac", "role", "roles", "oauth", "jwt", "token", "tokens", "password", "passwords", "credential", "credentials", "access", "iam", "admin", "admins", "claims"],
+  "access-control": ["auth", "authn", "authz", "authorize", "authorization", "authentication", "login", "logout", "signin", "signup", "session", "sessions", "permission", "permissions", "acl", "rbac", "role", "roles", "oauth", "jwt", "token", "tokens", "password", "passwords", "credential", "credentials", "access", "iam", "admin", "admins", "claims", "owner", "owners", "ownership", "guard", "guards", "policy", "policies", "appcheck", "verify", "can"],
   "security-rules": ["rules"],
   // Where money MOVES or is priced. An order that merely carries a coupon code is not one (the demo's CODE-01 is
   // exactly that); a checkout session, a charge or a price is.
@@ -211,7 +231,14 @@ const DEPENDENCY_FILES = new Set(["package.json", "package-lock.json", "npm-shri
 /** The hard-exclude categories a path falls in. */
 export function excludedPathCategories(path: string): string[] {
   const base = path.split("/").at(-1)!.toLowerCase();
-  const w = new Set(words(path));
+  const list = words(path);
+  const w = new Set(list);
+  // A name written as two words (`appCheck`, `signIn`) is also the one word it spells: only the longer list words are
+  // matched this way, so two short parts never spell a short one by accident.
+  for (let i = 0; i + 1 < list.length; i++) {
+    const joined = list[i]! + list[i + 1]!;
+    if (joined.length >= 6) w.add(joined);
+  }
   const out = Object.entries(PATH_WORDS)
     .filter(([, list]) => list.some((x) => w.has(x)))
     .map(([category]) => category);
@@ -225,14 +252,85 @@ export function excludedPathCategories(path: string): string[] {
 /** What a changed line of production code must never mention. Matched on the line's text, case-insensitively. */
 const LINE_RULES: readonly [string, RegExp][] = [
   ["dependencies", /^\s*(import|export)\b|\brequire\s*\(|\bimport\s*\(/],
-  ["access-control", /auth|token|\brole|permission|admin|claim|password|session|login|credential|\buid\b|\bacl\b|rbac|jwt|allow|deny|isOwner|owner/i],
+  ["access-control", /auth|token|\brole|permission|admin|claim|password|session|login|credential|\buid\b|\bacl\b|rbac|jwt|allow|deny|isOwner|owner|appcheck|\bpolic(?:y|ies)\b/i],
   ["money", /payment|billing|invoice|\bcharge|checkoutSession|stripe|paypal|refund|payout|wallet|subscription|price|amount|currency|balance|ledger|\btax/i],
   ["secrets", /secret|api_?key|apikey|private_?key|crypto|encrypt|decrypt|signature|hmac|cipher|process\.env|\bkey\b/i],
   ["schema", /schema|migration|createIndex|setRules|\bindex(es)?\b/i],
 ];
 
+const ACCESS_CONTROL_LINE = LINE_RULES.find(([category]) => category === "access-control")![1];
+
 export function excludedLineCategories(text: string): string[] {
   return LINE_RULES.filter(([, re]) => re.test(text)).map(([category]) => category);
+}
+
+// ---- Test files: what added lines may be -----------------------------------------------------------------------
+
+/** Added lines that switch tests off or reach past their own test, anywhere in an existing test file (#204). */
+const TEST_LINE_NEVER: readonly RegExp[] = [
+  /\/\*|\*\//, // a block comment can swallow the existing lines between two added ones
+  /\.\s*(skip|only|todo|skipIf|runIf|fails)\b/, // skips or focuses tests
+  /\b(xit|xtest|xdescribe|fit|fdescribe)\s*\(/,
+  /\b(vi|jest)\s*\.\s*(mock|doMock|unmock|hoisted|stubGlobal|stubEnv|resetModules)\b/, // vi.mock is hoisted to the whole file
+  /\bprocess\s*\.\s*(exit|abort|kill)\b/,
+];
+/** A whole-line comment with nothing in it that could matter if it were really inside a string. */
+const PLAIN_COMMENT_LINE = /^\s*\/\/[^"'`${}()[\]\\]*$/;
+const WHOLE_TESTS = /^(?:\s*(?:it|test|describe)(?:\.each\(\))?\(\)\s*;?)+\s*$/;
+const CLOSE: Readonly<Record<string, string>> = { "(": ")", "[": "]", "{": "}" };
+
+/**
+ * True when `added` (one run of consecutive added lines) is whole new `it`/`test`/`describe` calls and nothing else:
+ * every bracket it opens it closes, it never closes one it did not open, and at its own top level there is nothing but
+ * those calls. Anything else (`return;`, `if (false) {` … `}`, `false &&`) could change an existing test it sits in or
+ * next to. Read with a scanner, not a parser, so it reads only what it can read for certain: plain strings and
+ * templates without `${`, and no `/` at all (a regex literal, a division and a comment cannot be told apart without a
+ * parser). Anything else is a refusal.
+ */
+function isWholeNewTests(added: readonly string[]): boolean {
+  const text = added.filter((l) => !PLAIN_COMMENT_LINE.test(l)).join("\n");
+  const stack: string[] = [];
+  let top = "";
+  let quote: string | null = null;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i]!;
+    if (quote !== null) {
+      if (ch === "\\") i++;
+      else if (ch === quote) quote = null;
+      else if (ch === "\n" && quote !== "`") return false;
+      else if (quote === "`" && ch === "$" && text[i + 1] === "{") return false;
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === "`") quote = ch;
+    else if (ch === "/" || text.startsWith("<!--", i) || text.startsWith("-->", i)) return false;
+    else if (ch in CLOSE) {
+      if (stack.length === 0) top += ch;
+      stack.push(CLOSE[ch]!);
+    } else if (ch === ")" || ch === "]" || ch === "}") {
+      if (stack.pop() !== ch) return false;
+      if (stack.length === 0) top += ch;
+    } else if (stack.length === 0) top += ch;
+  }
+  return quote === null && stack.length === 0 && WHOLE_TESTS.test(top);
+}
+
+/** Why a test file's added lines are not allowed: empty when they are. */
+function testAdditionProblems(t: FileDiff): string[] {
+  const out = new Set<string>();
+  // A new file has no existing test to switch off; one that exists may only gain whole new tests.
+  if (t.oldPath === null) return [];
+  for (const h of t.hunks) {
+    if (h.lines.some((l) => l.kind === "+" && TEST_LINE_NEVER.some((re) => re.test(l.text)))) out.add("test-lines-disable-tests");
+    let run: string[] = [];
+    for (const l of [...h.lines, { kind: " ", text: "" } as DiffLine]) {
+      if (l.kind === "+") run.push(l.text);
+      else if (run.length > 0) {
+        if (run.some((x) => x.trim() !== "") && !isWholeNewTests(run)) out.add("test-lines-not-whole-tests");
+        run = [];
+      }
+    }
+  }
+  return [...out];
 }
 
 /**
@@ -254,7 +352,10 @@ const count = (s: string, re: RegExp) => (s.match(re) ?? []).length;
 const LITERAL = String.raw`(?:null|undefined|true|false|-?\d+(?:\.\d+)?|""|''|"[^"\\\n]*"|'[^'\\\n]*'|\[\]|\{\})`;
 const REF = String.raw`[A-Za-z_$][\w$]*(?:\??\.[A-Za-z_$][\w$]*|\?\.\[\d+\]|\[\d+\])*`;
 const MISSING_ATOM = String.raw`(?:!\s*${REF}|${REF}\s*===?\s*(?:null|undefined)|(?:null|undefined)\s*===?\s*${REF}|typeof\s+${REF}\s*===?\s*["']undefined["'])`;
-const ACTION = String.raw`(?:return(?:\s+${LITERAL})?|throw\s+new\s+[A-Z][\w$]*\(\s*(?:"[^"\\\n]*"|'[^'\\\n]*')?\s*\)|continue|break)`;
+// What the guard does: leave with nothing, or throw. Never `return true`, a number or a string: on a falsy value (`!x`
+// matches any) that is a change to what the function decides, not a null guard (#202). Nor `continue`/`break`, which
+// skip work the same way.
+const ACTION = String.raw`(?:return(?:\s+(?:null|undefined))?|throw\s+new\s+[A-Z][\w$]*\(\s*(?:"[^"\\\n]*"|'[^'\\\n]*')?\s*\))`;
 const GUARD_RE = new RegExp(
   String.raw`^if\s*\(\s*${MISSING_ATOM}(?:\s*\|\|\s*${MISSING_ATOM})*\s*\)\s*(?:\{\s*${ACTION}\s*;?\s*\}|${ACTION}\s*;?)$`
 );
@@ -342,7 +443,8 @@ export function assessBlastRadius(patch: string, cfg: BlastRadiusConfig): BlastR
   for (const f of files) {
     for (const u of f.unusual) problems.add(u);
     if (f.newPath === null) {
-      problems.add("file-deleted");
+      // No `---`/`+++` at all is a `diff --git` section of headers only (an empty file, a bare rename): never plain.
+      problems.add(f.oldPath === null ? "no-file-headers" : "file-deleted");
       continue;
     }
     for (const path of new Set([f.oldPath, f.newPath].filter((p): p is string => p !== null))) {
@@ -355,6 +457,7 @@ export function assessBlastRadius(patch: string, cfg: BlastRadiusConfig): BlastR
   if (tests.length > MAX_TEST_FILES) problems.add("too-many-test-files");
   for (const t of tests) {
     if (t.hunks.some((h) => h.lines.some((l) => l.kind === "-"))) problems.add("test-lines-removed");
+    for (const p of testAdditionProblems(t)) problems.add(p);
   }
 
   if (sources.length !== 1) {
@@ -385,6 +488,9 @@ export function assessBlastRadius(patch: string, cfg: BlastRadiusConfig): BlastR
   const removed = lines.filter((l) => l.kind === "-");
   if (added.length > MAX_ADDED || removed.length > MAX_REMOVED) problems.add("change-too-large");
   for (const l of [...added, ...removed]) for (const c of excludedLineCategories(l.text)) problems.add(`excluded:${c}`);
+  // The lines around the change are what it changes the meaning of: an early exit right above an ownership check is a
+  // change to that check, whatever the guard's own line says (#202).
+  if (lines.some((l) => l.kind === " " && ACCESS_CONTROL_LINE.test(l.text))) problems.add("excluded:access-control");
 
   // Blocks of consecutive changed lines: each must be one class, and all the same one.
   const classes = new Set<FixClass | null>();
@@ -407,6 +513,17 @@ export function assessBlastRadius(patch: string, cfg: BlastRadiusConfig): BlastR
   if (fixClass === undefined) problems.add(classes.size > 1 && !classes.has(null) ? "mixed-classes" : "not-an-allowed-class");
 
   return done({ sourceFile, testFiles, ...(fixClass && { fixClass }) });
+}
+
+/**
+ * Whether gate 1 judged exactly the files the verify gate saw the patch change (`VerifyResult.changedFiles`, what
+ * `git apply` really wrote): no more and no fewer (#200). Gate 1 reads headers; this ties them to the tree.
+ */
+export function judgedTheVerifiedFiles(r: Pick<BlastRadius, "sourceFile" | "testFiles">, changedFiles: readonly string[]): boolean {
+  if (r.sourceFile === undefined) return false;
+  const judged = [...new Set([r.sourceFile, ...r.testFiles])].sort();
+  const changed = [...new Set(changedFiles)].sort();
+  return judged.length === changed.length && judged.every((p, i) => p === changed[i]);
 }
 
 /**

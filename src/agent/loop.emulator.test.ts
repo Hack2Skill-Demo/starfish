@@ -19,6 +19,7 @@ import { selectCandidates } from "./pass.js";
 import { FIX_SYSTEM } from "./fixer.js";
 import { verifyPatch } from "./verifyGate.js";
 import { REVIEW_SYSTEM } from "./reviewer.js";
+import { verifyPatch } from "./verifyGate.js";
 import { TRIAGE_SYSTEM, type AskJson } from "./triage.js";
 import { SEEDED_SECRETS } from "../ingest/testSecrets.js";
 import { testConfig } from "../testConfig.js";
@@ -1313,7 +1314,7 @@ describe("runCycle: auto-merge evidence (#9)", () => {
     cfgOver = { verifyCommand: `node ${TEST_FILE}`, ...cfgOver };
     return {
       ...deps(model, {}, opened),
-      load: async () => ({ subject: { incident: stackIncident, status: "new" }, files: [{ path: SRC_FILE, content: "" }], sourceDir: src, baseRevision: "rev1" }),
+      load: async () => ({ subject: { incident: stackIncident, status: "new" }, files: [{ path: SRC_FILE, content: "" }], sourceDir: src, baseRevision: "rev1", repoFiles: [SRC_FILE] }),
       openPullRequest: async (req) => {
         opened.push(req);
         return { number: 7, url: "https://example.test/pull/7", headSha: HEAD };
@@ -1358,6 +1359,22 @@ describe("runCycle: auto-merge evidence (#9)", () => {
     await runCycle(mergeDeps(scripted({ triage: [act], fix: [fixOf(OTHER_FIX, { testAdded: true })], review: [held] }), true, { notify }, opened), key);
     expect(await kinds()).toEqual(["cycle:started", "triage:decision", "fix:proposed", "verify:passed", "review:approve", "pr:opened", "merge:skipped", "notify:pending", "notify:sent"]);
     expect((await cycleDoc()).summary.merge).toMatchObject({ state: "skipped", gate1: "fail" });
+    expect(opened[0]!.autoMerge).toBeUndefined();
+    expect(calls.at(-1)).toMatchObject({ path: "human", rule: "auto-merge-gate1" });
+  });
+
+  it("a patch whose verified files are not the files gate 1 read is handed to a person (#200)", async () => {
+    const calls: NotifyRequest[] = [];
+    const notify = async (req: NotifyRequest) => (calls.push(req), { state: "sent" as const, attempts: 1 });
+    const opened: PullRequestRequest[] = [];
+    // git wrote one more file than the headers named (as `--- test/src/x.ts` would make it): the verifier saw it.
+    const verify: LoopDeps["verify"] = async (req) => {
+      const real = await verifyPatch(req);
+      return req.patch === FIX ? { ...real, changedFiles: [...real.changedFiles, "functions/src/inventory.js"] } : real;
+    };
+    await runCycle(mergeDeps(scripted({ triage: [act], fix: [fixWithTest], review: [held] }), true, { notify, verify }, opened), key);
+    expect((await cycleDoc()).summary.merge).toMatchObject({ state: "skipped", gate1: "fail" });
+    expect(String((await cycleDoc()).summary.merge.reason)).toContain("files-differ-from-verified");
     expect(opened[0]!.autoMerge).toBeUndefined();
     expect(calls.at(-1)).toMatchObject({ path: "human", rule: "auto-merge-gate1" });
   });

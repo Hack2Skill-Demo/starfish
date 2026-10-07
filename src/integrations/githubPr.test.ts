@@ -542,7 +542,7 @@ describe("createGithubClient: the CI-backed verify step", () => {
       json: {
         total_count: 2,
         check_runs: [
-          { id: 11, name: "verify", status: "completed", conclusion: "success", html_url: "https://github.com/acme/shop/runs/11", output: { title: "ok", summary: `token ${TOKEN} ${"s".repeat(2000)}` } },
+          { id: 11, name: "verify", status: "completed", conclusion: "success", html_url: "https://github.com/acme/shop/runs/11", app: { slug: "github-actions" }, output: { title: "ok", summary: `token ${TOKEN} ${"s".repeat(2000)}` } },
           { id: 12, name: "lint", status: "in_progress", conclusion: null, html_url: "https://github.com/acme/shop/runs/12", output: null },
           { id: "nope", name: "bad" },
           "junk",
@@ -551,7 +551,7 @@ describe("createGithubClient: the CI-backed verify step", () => {
       },
     });
     const runs = await client().listCheckRuns(commit);
-    expect(runs.map((r) => [r.id, r.name, r.status, r.conclusion])).toEqual([[11, "verify", "completed", "success"], [12, "lint", "in_progress", null]]);
+    expect(runs.map((r) => [r.id, r.name, r.status, r.conclusion, r.app])).toEqual([[11, "verify", "completed", "success", "github-actions"], [12, "lint", "in_progress", null, ""]]);
     expect(runs[0]!.summary.length).toBeLessThanOrEqual(400);
     expect(JSON.stringify(runs)).not.toContain(TOKEN);
     expect(requests.at(-1)!.path).toBe(`/repos/${REPO}/commits/${commit}/check-runs?per_page=100`);
@@ -868,6 +868,13 @@ describe("createGithubClient: reading a pull request back (#17)", () => {
     ]) {
       api.pull = () => ({ status: 200, json: bad });
       await expect(client().readPullRequest("inc1_r0", 7), JSON.stringify(bad)).rejects.toBeInstanceOf(GithubError);
+    }
+  });
+
+  it("refuses a pull request retargeted to another base branch, or one that names none (#186)", async () => {
+    for (const base of [{ ref: "production", repo: { full_name: REPO } }, { repo: { full_name: REPO } }]) {
+      api.pull = () => ({ status: 200, json: pull({ base }) });
+      await expect(client().readPullRequest("inc1_r0", 7)).rejects.toMatchObject({ rule: "wrong-base" });
     }
   });
 

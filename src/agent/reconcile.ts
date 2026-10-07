@@ -24,7 +24,7 @@ import type { CheckRun, GithubClient } from "../integrations/githubPr.js";
 import { recordPrState, type CycleConfig, type CycleKey, type PrStateRecord } from "./cycle.js";
 import { linkIncident } from "./incidentLinks.js";
 
-export type ReconcileConfig = Pick<StarfishConfig, "environment" | "verifyChecks" | "maxPrChecksPerPass" | "incidentCollection"> & CycleConfig;
+export type ReconcileConfig = Pick<StarfishConfig, "environment" | "verifyChecks" | "verifyCheckApp" | "maxPrChecksPerPass" | "incidentCollection"> & CycleConfig;
 export type PrReader = Pick<GithubClient, "readPullRequest" | "listCheckRuns">;
 
 /** Cycles scanned for an opened PR, newest first. Uses the Runs page's (environment, updatedAt) index. */
@@ -36,26 +36,30 @@ const STOP_RULES: ReadonlySet<string> = new Set(["unauthorized", "forbidden", "r
 type CheckSummary = Pick<PrStateRecord, "checks" | "checksPassed" | "checksRequired" | "failedChecks">;
 
 /**
- * The named required checks on a commit, judged like the CI verifier judges them (verifyCi.ts): only a `success` passes.
- * A re-run leaves several runs with one name; the newest (highest id) is the one that counts. One failed: `failed`.
- * Otherwise one still running: `pending`; one never reported: `missing`; all succeeded: `passed`. None named:
- * `not-configured`, said as such and never as passed.
+ * The runs that can stand for the named required checks: the right name, posted by the configured app
+ * (`verifyCheckApp`, `github-actions` by default). A run of that name from any other app is not the target's CI and is
+ * ignored: it can neither pass nor hide a failure (#205).
  */
-export function summarizeChecks(runs: readonly CheckRun[], required: readonly string[]): CheckSummary {
+export function requiredRuns(runs: readonly CheckRun[], required: readonly string[], app: string): CheckRun[] {
+  return runs.filter((r) => required.includes(r.name) && r.app === app);
+}
+
+/**
+ * The named required checks on a commit, judged like the CI verifier judges them (verifyCi.ts): only the configured
+ * app's runs count (`requiredRuns`), and EVERY run of a name must be a `success`: a newer run that passed does not hide
+ * one that failed (#205). One failed: `failed`. Otherwise one still running: `pending`; a name never reported:
+ * `missing`; all succeeded: `passed`. None named: `not-configured`, said as such and never as passed.
+ */
+export function summarizeChecks(runs: readonly CheckRun[], required: readonly string[], app: string): CheckSummary {
   if (required.length === 0) return { checks: "not-configured", checksPassed: 0, checksRequired: 0 };
-  const latest = new Map<string, CheckRun>();
-  for (const r of runs) {
-    if (!required.includes(r.name)) continue;
-    const seen = latest.get(r.name);
-    if (!seen || r.id > seen.id) latest.set(r.name, r);
-  }
-  const named = required.map((n) => latest.get(n));
-  const passed = named.filter((r) => r?.status === "completed" && r.conclusion === "success").length;
-  const failed = named.filter((r): r is CheckRun => r?.status === "completed" && r.conclusion !== "success");
+  const counted = requiredRuns(runs, required, app);
+  const byName = required.map((n) => counted.filter((r) => r.name === n));
+  const failed = required.filter((_, i) => byName[i]!.some((r) => r.status === "completed" && r.conclusion !== "success"));
+  const passed = byName.filter((rs) => rs.length > 0 && rs.every((r) => r.status === "completed" && r.conclusion === "success")).length;
   const base = { checksPassed: passed, checksRequired: required.length };
-  if (failed.length > 0) return { ...base, checks: "failed", failedChecks: failed.map((r) => r.name).join(", ").slice(0, MAX_FAILED_NAMES) };
-  if (named.some((r) => r !== undefined && r.status !== "completed")) return { ...base, checks: "pending" };
-  if (named.some((r) => r === undefined)) return { ...base, checks: "missing" };
+  if (failed.length > 0) return { ...base, checks: "failed", failedChecks: failed.join(", ").slice(0, MAX_FAILED_NAMES) };
+  if (byName.some((rs) => rs.some((r) => r.status !== "completed"))) return { ...base, checks: "pending" };
+  if (byName.some((rs) => rs.length === 0)) return { ...base, checks: "missing" };
   return { ...base, checks: "passed" };
 }
 
@@ -136,7 +140,7 @@ export async function reconcilePullRequests(deps: ReconcileDeps): Promise<Reconc
         mergedAt: pr.mergedAt,
         closedAt: pr.closedAt,
         headSha: pr.headSha,
-        ...summarizeChecks(runs, cfg.verifyChecks),
+        ...summarizeChecks(runs, cfg.verifyChecks, cfg.verifyCheckApp),
         checkedAt,
       });
       if (!written.ok) summary.errors.push({ cycleId, message: `not recorded: ${written.reason}` });

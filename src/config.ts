@@ -66,6 +66,13 @@ export interface StarfishConfig {
    * repository usually has other checks that say nothing about the patch.
    */
   verifyChecks: string[];
+  /**
+   * The GitHub App whose check runs count as `verifyChecks` (its slug; `github-actions` by default): a run of the same
+   * name posted by any other app is ignored, so another app or token with `checks: write` cannot stand in for the
+   * target's CI (#205). Used wherever the named checks are judged: the CI verifier, the reconcile step, auto-merge and
+   * fast-revert.
+   */
+  verifyCheckApp: string;
   /** The Cloud Run job that runs the verify command when `verifyIsolation` is `cloud-run-job`. */
   verifyJobName: string;
   /** The bucket the source bundle and the result pass through (one day lifecycle); the verifier job has no access to it except per-run signed URLs. */
@@ -469,6 +476,7 @@ export function loadConfig(): StarfishConfig {
     ),
     verifyIsolation: parseVerifyIsolation(process.env.STARFISH_VERIFY_ISOLATION),
     verifyChecks: parseVerifyChecks(process.env.STARFISH_VERIFY_CHECKS),
+    verifyCheckApp: (process.env.STARFISH_VERIFY_CHECK_APP ?? "").trim() || "github-actions",
     verifyJobName: (process.env.STARFISH_VERIFY_JOB ?? "").trim(),
     verifyBucket: (process.env.STARFISH_VERIFY_BUCKET ?? "").trim(),
     verifyJobRegion: textOr(process.env.STARFISH_VERIFY_JOB_REGION, textOr(process.env.GOOGLE_CLOUD_LOCATION, "us-central1")),

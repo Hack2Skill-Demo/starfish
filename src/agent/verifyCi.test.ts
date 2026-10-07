@@ -9,7 +9,7 @@ const PATCH = "--- a/a.ts\n+++ b/a.ts\n@@ -1 +1 @@\n-a\n+b\n";
 const COMMIT = "c".repeat(40);
 const BASE = "b".repeat(40);
 
-const run = (over: Partial<CheckRun> = {}): CheckRun => ({ id: 1, name: "verify", status: "completed", conclusion: "success", url: "https://github.com/acme/shop/runs/1", title: "", summary: "", ...over });
+const run = (over: Partial<CheckRun> = {}): CheckRun => ({ id: 1, name: "verify", status: "completed", conclusion: "success", url: "https://github.com/acme/shop/runs/1", app: "github-actions", title: "", summary: "", ...over });
 const request = (over: Partial<VerifyRequest> = {}): VerifyRequest => ({
   cycleId: "inc1_r0",
   sourceDir: "/unused",
@@ -44,7 +44,7 @@ function harness(opts: { runs?: (poll: number) => CheckRun[]; local?: VerifyResu
     },
   };
   const verify = createCiVerifier(
-    { verifyTimeoutSeconds: 600, verifyChecks: opts.checks ?? ["verify"], dryRun: opts.dryRun ?? false },
+    { verifyTimeoutSeconds: 600, verifyChecks: opts.checks ?? ["verify"], verifyCheckApp: "github-actions", dryRun: opts.dryRun ?? false },
     { client, check: async () => opts.local ?? passedLocally, now: () => t, sleep: async (ms) => void (t += ms), pollMs: 10_000 }
   );
   return { verify, calls, clock: () => t };
@@ -98,6 +98,14 @@ describe("createCiVerifier", () => {
   it("ignores the target's other checks: only the named ones judge", async () => {
     const r = await harness({ runs: () => [run(), run({ id: 2, name: "deploy-preview", conclusion: "failure" })] }).verify(request());
     expect(r.status).toBe("passed");
+  });
+
+  it("counts only the configured app's runs: another app's run of the named check is not the target's CI (#205)", async () => {
+    const h = harness({
+      runs: (poll) => (poll === 0 ? [run({ id: 2, app: "some-bot" })] : [run({ id: 2, app: "some-bot" }), run({ id: 3, conclusion: "failure" })]),
+    });
+    expect(await h.verify(request())).toMatchObject({ status: "failed", rule: "command-failed" });
+    expect(h.calls.filter((c) => c.startsWith("list:"))).toHaveLength(2);
   });
 
   it("needs every named check, and waits for all of them", async () => {
@@ -182,6 +190,6 @@ describe("createCiVerifier", () => {
     await expect(h.verify(request({ cycleId: undefined }))).rejects.toThrow(VerifyRunnerError);
     await expect(h.verify(request({ baseRevision: undefined }))).rejects.toThrow(VerifyRunnerError);
     expect(h.calls).toEqual([]);
-    expect(() => createCiVerifier({ verifyTimeoutSeconds: 1, verifyChecks: [], dryRun: false }, { client: {} as CiClient })).toThrow(VerifyRunnerError);
+    expect(() => createCiVerifier({ verifyTimeoutSeconds: 1, verifyChecks: [], verifyCheckApp: "github-actions", dryRun: false }, { client: {} as CiClient })).toThrow(VerifyRunnerError);
   });
 });
