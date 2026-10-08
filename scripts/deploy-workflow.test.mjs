@@ -92,6 +92,8 @@ describe(".github/workflows/deploy.yml", () => {
     const vars = code(deploy).split("- name: Deploy")[1] ?? "";
     expect(vars).toMatch(/^ {10}DEPLOY_ADMIN_API: \$\{\{ vars\.STARFISH_DEPLOY_ADMIN_API \}\}$/m);
     expect(vars).toMatch(/^ {10}ADMIN_API_ORIGINS: \$\{\{ vars\.STARFISH_ADMIN_API_ORIGINS \}\}$/m);
+    // Whose check runs count (#229): the script refuses STARFISH_VERIFY_* in the extra lists, so this is the only way.
+    expect(vars).toMatch(/^ {10}VERIFY_CHECK_APP: \$\{\{ vars\.STARFISH_VERIFY_CHECK_APP \}\}$/m);
     // The script never receives user input by interpolation into shell text.
     expect(code(deploy).match(/run: [^\n]*\$\{\{/g)).toBeNull();
   });
@@ -175,6 +177,15 @@ describe(".github/workflows/deploy-web.yml", () => {
       expect(webScript, `${name} is not a setting of deploy-web.sh`).toMatch(new RegExp(`^#   ${name}\\b`, "m"));
       if (name !== "DRY_RUN") expect(value, `${name} must come from a repository variable`).toMatch(/^\$\{\{ vars\./);
     }
+  });
+
+  // Without the admin API's URL an Actions deploy builds a UI with the admin controls hidden (#230).
+  it("hands the build the admin API's URL and the stale threshold, through the environment", () => {
+    const env = code(web).split("- name: Deploy")[1] ?? "";
+    expect(env).toMatch(/^ {10}VITE_STARFISH_ADMIN_API_URL: \$\{\{ vars\.STARFISH_WEB_ADMIN_API_URL \}\}$/m);
+    expect(env).toMatch(/^ {10}VITE_STARFISH_STALE_MINUTES: \$\{\{ vars\.STARFISH_WEB_STALE_MINUTES \}\}$/m);
+    const docs = readFileSync(new URL("../docs/deploy.md", import.meta.url), "utf8");
+    for (const name of ["STARFISH_WEB_ADMIN_API_URL", "STARFISH_WEB_STALE_MINUTES"]) expect(docs).toContain(name);
   });
 });
 

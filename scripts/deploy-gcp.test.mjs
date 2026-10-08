@@ -761,3 +761,74 @@ describe("scripts/deploy-gcp.sh: the agent's Slack webhook (#17)", () => {
     expect(r.out).not.toContain("alertsecret");
   });
 });
+
+// --update-env-vars keeps a name it is not given, so a setting the script adds only when it is non-empty would stay on the
+// job after it is cleared (#233). These are always set, empty included, and empty is the engine's default.
+describe("scripts/deploy-gcp.sh: settings that must revert when cleared (#229, #233)", () => {
+  const agent = { ...dry, DEPLOY_AGENT: "1", AGENT_REPO: "acme/shop", VERIFY_CHECKS: "verify" };
+  const admin = { ...dry, DEPLOY_ADMIN_API: "1" };
+  // The "@"-separated settings of one deployed job or service, as [name, value] pairs.
+  const settings = (out, command) => {
+    const l = out.split("\n").find((x) => x.includes(command)) ?? "";
+    const list = /--update-env-vars=\^@\^(.*?)(?= --[a-z]|$)/.exec(l)?.[1] ?? "";
+    return list.split("@").map((e) => [e.slice(0, e.indexOf("=")), e.slice(e.indexOf("=") + 1)]);
+  };
+  const values = (out, command, name) => settings(out, command).filter(([n]) => n === name).map(([, v]) => v);
+  const agentJob = "gcloud run jobs deploy starfish-agent";
+  const adminService = "gcloud run deploy starfish-admin";
+
+  it("sets whose check runs count on the agent, with either isolation, empty meaning the engine's default (#229)", () => {
+    const isolations = [{}, { VERIFY_ISOLATION: "cloud-run-job", VERIFY_COMMAND: "pnpm test" }];
+    for (const isolation of isolations) {
+      const unset = deploy({ ...agent, ...isolation });
+      expect(unset.status).toBe(0);
+      expect(values(unset.out, agentJob, "STARFISH_VERIFY_CHECK_APP")).toEqual([""]);
+      const set = deploy({ ...agent, ...isolation, VERIFY_CHECK_APP: "my-ci-app" });
+      expect(set.status).toBe(0);
+      expect(values(set.out, agentJob, "STARFISH_VERIFY_CHECK_APP")).toEqual(["my-ci-app"]);
+    }
+    // Never on the ingest job or the admin API, which judge no checks.
+    const both = deploy({ ...agent, DEPLOY_ADMIN_API: "1", VERIFY_CHECK_APP: "my-ci-app" });
+    expect(values(both.out, "gcloud run jobs deploy starfish-ingest", "STARFISH_VERIFY_CHECK_APP")).toEqual([]);
+    expect(values(both.out, adminService, "STARFISH_VERIFY_CHECK_APP")).toEqual([]);
+  });
+
+  it("refuses a check app that is not a GitHub App's slug, and the setting through either extra list", () => {
+    for (const bad of ["My-App", "a_b", "a b", "a@b", "-ci", "ci-", "ci/app", "a,b"]) {
+      const r = deploy({ ...agent, VERIFY_CHECK_APP: bad });
+      expect(r.status, bad).not.toBe(0);
+      expect(r.out, bad).toContain("VERIFY_CHECK_APP must be a GitHub App's slug");
+      expect(r.out, bad).not.toContain("gcloud ");
+    }
+    for (const list of ["EXTRA_ENV_VARS", "AGENT_EXTRA_ENV_VARS"]) {
+      const r = deploy({ ...agent, [list]: "STARFISH_VERIFY_CHECK_APP=other-app" });
+      expect(r.status, list).not.toBe(0);
+      expect(r.out, list).toContain("may not set STARFISH_VERIFY_*");
+    }
+  });
+
+  it("always sets the agent's base branch, so clearing AGENT_BASE_BRANCH restores main (#233)", () => {
+    expect(values(deploy({ ...agent, AGENT_BASE_BRANCH: "develop" }).out, agentJob, "STARFISH_GITHUB_BASE_BRANCH")).toEqual(["develop"]);
+    expect(values(deploy(agent).out, agentJob, "STARFISH_GITHUB_BASE_BRANCH")).toEqual([""]);
+    // A list that sets the name keeps it, once; with AGENT_BASE_BRANCH as well it is set twice, and refused.
+    for (const list of ["EXTRA_ENV_VARS", "AGENT_EXTRA_ENV_VARS"]) {
+      const r = deploy({ ...agent, [list]: "STARFISH_GITHUB_BASE_BRANCH=release" });
+      expect(r.status, list).toBe(0);
+      expect(values(r.out, agentJob, "STARFISH_GITHUB_BASE_BRANCH"), list).toEqual(["release"]);
+      const twice = deploy({ ...agent, AGENT_BASE_BRANCH: "develop", [list]: "STARFISH_GITHUB_BASE_BRANCH=release" });
+      expect(twice.status, list).not.toBe(0);
+      expect(twice.out, list).toContain("STARFISH_GITHUB_BASE_BRANCH is set twice");
+    }
+  });
+
+  it("always sets the admin API's browser origins, so clearing ADMIN_API_ORIGINS allows none again (#233)", () => {
+    expect(values(deploy({ ...admin, ADMIN_API_ORIGINS: "https://site.web.app" }).out, adminService, "STARFISH_ADMIN_API_ORIGINS")).toEqual(["https://site.web.app"]);
+    expect(values(deploy(admin).out, adminService, "STARFISH_ADMIN_API_ORIGINS")).toEqual([""]);
+    const listed = deploy({ ...admin, EXTRA_ENV_VARS: "STARFISH_ADMIN_API_ORIGINS=https://hosted.web.app" });
+    expect(listed.status).toBe(0);
+    expect(values(listed.out, adminService, "STARFISH_ADMIN_API_ORIGINS")).toEqual(["https://hosted.web.app"]);
+    const twice = deploy({ ...admin, ADMIN_API_ORIGINS: "https://site.web.app", EXTRA_ENV_VARS: "STARFISH_ADMIN_API_ORIGINS=https://hosted.web.app" });
+    expect(twice.status).not.toBe(0);
+    expect(twice.out).toContain("STARFISH_ADMIN_API_ORIGINS is set twice");
+  });
+});

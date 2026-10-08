@@ -9,7 +9,10 @@
 #                         watched app (or the demo app sharing this project) keeps the default one
 #   STARFISH_ENV          the environment label the UI shows until settings say otherwise. Default dev
 #   STARFISH_DATABASE_ID  the named database the UI reads. Default starfish
-#   VITE_*                any other web setting (web/.env.example) is passed to the build as it is
+#   VITE_*                any other web setting (web/.env.example) is passed to the build as it is, among them:
+#   VITE_STARFISH_ADMIN_API_URL  the admin API's URL (deploy-gcp.sh's DEPLOY_ADMIN_API=1 prints it): an admin then sees "Run
+#                         ingest now" and "Retire". Unset or empty: both are hidden
+#   VITE_STARFISH_STALE_MINUTES  how long after the last run the engine line says "stopped". Unset or empty: 90
 #   DRY_RUN=1             print the commands instead of running them
 #   VITE_STARFISH_APPCHECK_SITE_KEY  optional: build the UI with Firebase App Check (#12; web/.env.example). This only
 #                         makes the UI send tokens; turning ENFORCEMENT on is a separate, project-wide console step

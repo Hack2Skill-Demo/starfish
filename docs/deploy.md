@@ -31,7 +31,10 @@ script sets (or one set twice) is refused before anything changes, so a setting 
 switches that let Starfish act on its own are always set by the script, to the engine's default, unless a list sets them
 (#174): `STARFISH_AUTO_MERGE=false`, `STARFISH_AUTO_MERGE_TARGETS=` (none), `STARFISH_PHONE_ESCALATION=false`,
 `STARFISH_INDEX_AUTO_APPLY=false`, `STARFISH_INDEX_ALLOWED_TARGETS=` (none), `STARFISH_REVIEW_REQUIRED=true`, on every job
-the run deploys, and `STARFISH_DRY_RUN=true` on the agent. Remove one from the list and the next deploy turns it off. Any
+the run deploys, and `STARFISH_DRY_RUN=true` on the agent. Remove one from the list and the next deploy turns it off. The
+names the script fills from its own settings are always set too, empty included (empty is the engine's default), so
+emptying the setting reverts the job: `STARFISH_GITHUB_BASE_BRANCH` (`AGENT_BASE_BRANCH`), `STARFISH_VERIFY_CHECK_APP`
+(`VERIFY_CHECK_APP`) and the admin API's `STARFISH_ADMIN_API_ORIGINS` (`ADMIN_API_ORIGINS`) (#229, #233). Any
 other name keeps its last deployed value when it leaves a list: to undo it, set it to its default
 (`.env.example`) instead of deleting it. The script does not switch to `--set-env-vars`, which would replace the whole set:
 whether that leaves the secrets mounted with `--update-secrets` in place has not been checked.
@@ -244,7 +247,7 @@ set them for `setup-github-deploy.sh` as you set them for the deploy.
 | create and read the service accounts | custom role `starfishDeployer`: `iam.serviceAccounts.create`, `iam.serviceAccounts.get` (and the two creates below). **Not** `roles/iam.serviceAccountAdmin`, which would let it set the IAM policy of every account in the project (#145) |
 | run a job, the admin API and a scheduler call *as* those accounts | `roles/iam.serviceAccountUser`, on `starfish-engine`, `starfish-scheduler`, `starfish-agent`, `starfish-verifier` and `starfish-admin-api` only, not project-wide |
 | with `cloud-run-job`: let the agent's account sign URLs as itself | custom role `starfishServiceAccountIam` (`get`, `getIamPolicy`, `setIamPolicy`) on **`starfish-agent` only**; the deployer already acts as that account, so this reaches no new one |
-| bind the engine's, agent's and admin API's roles | `roles/resourcemanager.projectIamAdmin`, on `PROJECT_ID`, the watched project and the Gemini project, conditioned (see the warning below) |
+| bind the engine's, agent's and admin API's roles | `roles/resourcemanager.projectIamAdmin`, on `PROJECT_ID`, the watched project and the Gemini project, each conditioned to the roles the script binds on **that** project (see the warning below) |
 | create the `starfish` database, deploy rules and indexes | `roles/datastore.owner`, `roles/firebaserules.admin` |
 | create the secrets, grant the agent access, add a version | `secretmanager.secrets.create` (in `starfishDeployer`), and `roles/secretmanager.admin` **conditioned to `starfish-github-token`, `starfish-slack-oncall`, `starfish-slack-alerts` and the three `starfish-twilio-*` secrets by name**: the watched app's secrets, when it shares the project, stay out of reach |
 | build from source and deploy the jobs, bind the scheduler to them | `roles/run.admin`, `roles/cloudbuild.builds.editor`, `roles/artifactregistry.admin`; `storage.buckets.create` and `storage.buckets.list` (in `starfishDeployer`), and `roles/storage.admin` **conditioned to the source bucket** (`run-sources-<project>-*`, or the older `<project>_cloudbuild`) and, with `cloud-run-job`, the verify bucket |
@@ -254,13 +257,22 @@ set them for `setup-github-deploy.sh` as you set them for the deploy.
 there, see "The build is denied" below.
 
 > **`projectIamAdmin` is the powerful one.** A principal that can set IAM policy can grant itself anything.
-> Limit it to the six roles the script grants on a project (the engine's three, which the agent and the admin API also get,
-> `roles/run.builder` for the build account, `roles/monitoring.viewer` on the watched project, which the engine's and the
-> admin API's accounts get only with `STARFISH_MONITORING_ENABLED=true`, #176, and `roles/firebaseauth.viewer`, which only the
-> admin API's account gets) with an IAM condition on the deployer's own binding:
-> `api.getAttribute('iam.googleapis.com/modifiedGrantsByRole', []).hasOnly(['roles/logging.viewer','roles/datastore.user','roles/aiplatform.user','roles/run.builder','roles/monitoring.viewer','roles/firebaseauth.viewer'])`.
-> `scripts/setup-github-deploy.sh` applies this condition. The script's own grants stay inside that list (a test
-> checks that every project-level role `deploy-gcp.sh` binds is in it, with the agent, the admin API and the Monitoring signal on too), but this has not been tried: the script reads and writes
+> Limit it, on each project, to the roles the script grants on **that** project (#228), with an IAM condition on the
+> deployer's own binding there, `api.getAttribute('iam.googleapis.com/modifiedGrantsByRole', []).hasOnly([...])`:
+>
+> | Project | The deployer may grant only |
+> |---|---|
+> | `PROJECT_ID` | `roles/run.builder` (the build account), `roles/datastore.user` (the engine's, the agent's and the admin API's, conditioned to Starfish's database), `roles/firebaseauth.viewer` (the admin API's account only) |
+> | the watched project | `roles/logging.viewer` (the engine, the agent, the admin API), `roles/monitoring.viewer` (the engine and the admin API, only with `STARFISH_MONITORING_ENABLED=true`, #176) |
+> | the Gemini project | `roles/aiplatform.user` (the engine, the agent) |
+>
+> A project that is more than one of these (by default all three are `PROJECT_ID`) gets one binding with the roles of each.
+> So on a watched project of its own, the app's production, the deployer can hand out reading its logs and metrics and
+> nothing else: not a database role or Firebase Auth's viewer, which there would reach the app's data and users (#213).
+> `scripts/setup-github-deploy.sh` applies these conditions, and on a re-run first removes the deployer's `projectIamAdmin`
+> bindings on each project (IAM would otherwise keep an earlier, wider one beside the new one). A test checks each list
+> against what a dry run of `deploy-gcp.sh` binds on each project, with the agent, the admin API and the Monitoring signal
+> on and off, and with the three projects one, two or three. None of this has been tried: the script reads and writes
 > the whole policy, and a conditioned `getIamPolicy` may need adjusting.
 >
 > **The condition only governs the project's own policy.** A grant on a service account, a secret, a bucket or a Cloud Run job
@@ -293,7 +305,8 @@ defaults when empty.
 | `STARFISH_MONITORING_ENABLED` | `STARFISH_MONITORING_ENABLED` | `true` turns on the Cloud Monitoring signal (#19) and grants `roles/monitoring.viewer` on the watched project; default off |
 | `STARFISH_DEPLOY_AGENT`, `STARFISH_AGENT_REPO` | `DEPLOY_AGENT`, `AGENT_REPO` | set `1` and `owner/name` to deploy the agent too ([below](#the-agent-and-where-its-tests-run-74)); default off |
 | `STARFISH_VERIFY_ISOLATION`, `STARFISH_VERIFY_CHECKS`, `STARFISH_VERIFY_COMMAND` | `VERIFY_ISOLATION`, `VERIFY_CHECKS`, `VERIFY_COMMAND` | `github-actions` (default) with the check names that must pass, or `cloud-run-job` with a command |
-| `STARFISH_VERIFY_TIMEOUT_SECONDS`, `STARFISH_VERIFY_BUCKET`, `STARFISH_AGENT_BASE_BRANCH`, `STARFISH_AGENT_SCHEDULE`, `STARFISH_AGENT_EXTRA_ENV_VARS` | `VERIFY_TIMEOUT_SECONDS`, `VERIFY_BUCKET`, `AGENT_BASE_BRANCH`, `AGENT_SCHEDULE`, `AGENT_EXTRA_ENV_VARS` | default 600, `<project>-starfish-verify`, `main`, `30 * * * *` |
+| `STARFISH_VERIFY_CHECK_APP` | `VERIFY_CHECK_APP` | the slug of the GitHub App whose check runs count (#229); default the engine's, `github-actions`. Always set on the agent job, so emptying it restores the default |
+| `STARFISH_VERIFY_TIMEOUT_SECONDS`, `STARFISH_VERIFY_BUCKET`, `STARFISH_AGENT_BASE_BRANCH`, `STARFISH_AGENT_SCHEDULE`, `STARFISH_AGENT_EXTRA_ENV_VARS` | `VERIFY_TIMEOUT_SECONDS`, `VERIFY_BUCKET`, `AGENT_BASE_BRANCH`, `AGENT_SCHEDULE`, `AGENT_EXTRA_ENV_VARS` | default 600, `<project>-starfish-verify`, `main`, `30 * * * *`. The base branch is always set on the agent job, so emptying it restores `main` (#233) |
 | `STARFISH_DEPLOY_ADMIN_API`, `STARFISH_ADMIN_API_ORIGINS` | `DEPLOY_ADMIN_API`, `ADMIN_API_ORIGINS` | set `1` and the site's origin to deploy the admin API too ([below](#the-admin-api-run-ingest-now-and-retire-an-incident-63-65)); default off. Its service name is kept out of ingest either way (#177) |
 
 `BUDGET_USD` and `BILLING_ACCOUNT` are not wired: a budget lives on the billing account, which the deployer
@@ -353,7 +366,9 @@ fix is the console: Project settings → Your apps → the `starfish` web app �
 **Repository variables** (nothing deployment-specific is in the workflow): the same three required ones, plus
 `STARFISH_ENV` (the label the page shows; **`demo` for the public page**), `STARFISH_DATABASE_ID`, and
 `STARFISH_WEB_HOSTING_SITE` (default `<project>-starfish`, its own site so the watched app's keeps the default), and
-optionally `STARFISH_WEB_APPCHECK_SITE_KEY` (App Check, below; unset = off).
+optionally `STARFISH_WEB_APPCHECK_SITE_KEY` (App Check, below; unset = off), `STARFISH_WEB_ADMIN_API_URL` (the admin API's
+URL, built in as `VITE_STARFISH_ADMIN_API_URL`: without it an admin sees no "Run ingest now" or "Retire", #230; [below](#the-admin-api-run-ingest-now-and-retire-an-incident-63-65))
+and `STARFISH_WEB_STALE_MINUTES` (`VITE_STARFISH_STALE_MINUTES`, when the engine line calls a run stopped; unset = 90).
 Anonymous sign-in is **not** turned on by the workflow: it is project-wide (see `setup.md`). Input: `dry_run`.
 
 ### App Check and the uptime check (#12)
@@ -460,6 +475,10 @@ jobs:
   test log. Make the workflow emit annotations (`::error file=...::message`) for failures if you want better revisions.
 - Only **check runs** are read (what GitHub Actions creates); a CI that reports commit statuses instead is not seen. The
   token needs read access to checks as well as write access to contents.
+- Only runs posted by **one GitHub App** count (`STARFISH_VERIFY_CHECK_APP`, default `github-actions`); a run of the same
+  name from any other app is ignored. A CI that posts as another app (its slug, e.g. `my-ci-app`) is named with the script's
+  `VERIFY_CHECK_APP` (#229; neither extra list may set a `STARFISH_VERIFY_*` name). The script sets it on every deploy,
+  empty included, so emptying it restores `github-actions`.
 - **Not exercised:** a real push triggering a real workflow, the check-run names GitHub actually reports for a job or a
   matrix, and rate limits when polling.
 
@@ -574,7 +593,9 @@ built with `VITE_STARFISH_ADMIN_API_URL=<the service URL>` (a bad or non-https v
 ID token; the server re-checks the role, so hiding them from others is a courtesy and not the gate. A finished run reports the
 engine's own counts, a failed one says it failed. Order: deploy the service with `ADMIN_API_ORIGINS` set to the site, read its URL
 (`gcloud run services describe starfish-admin --project <p> --region <r> --format='value(status.url)'`), then redeploy the site
-with that URL: `VITE_STARFISH_ADMIN_API_URL=<url> PROJECT_ID=<p> scripts/deploy-web.sh`.
+with that URL: `VITE_STARFISH_ADMIN_API_URL=<url> PROJECT_ID=<p> scripts/deploy-web.sh`, or, from GitHub Actions, set the
+repository variable `STARFISH_WEB_ADMIN_API_URL` to it and run Deploy web UI (#230; that workflow has never run). Emptying
+`ADMIN_API_ORIGINS` and redeploying takes every browser origin away again: the script always sets it, empty included (#233).
 
 > **Status: written; tested with stubs for every rule and over a real local HTTP server; the deploy plan is pinned by a dry
 > run. Deployed once to the demo project on 2026-10-07 from a terminal. The real token check against Firebase Auth ran there: an
