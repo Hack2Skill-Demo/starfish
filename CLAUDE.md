@@ -208,6 +208,9 @@ src/
                    Starts as root only to run the command as uid 65534 (docker-entrypoint.sh)
   agent/verifyProtocol.ts  the request/result contract and its strict checks (bounded BEFORE redactPii: #96)
   agent/cloudRunJob.ts  production adapters (GCS signed URLs, Cloud Run `jobs.run`): the part never run on a real project
+  agent/integrations.ts  at the start of each `pnpm agent` pass: which credentials the agent job holds (GitHub token, the two Slack
+                   webhooks, Twilio) as booleans in `{runCollection}/integrations`, for the Settings page; never a value, best effort,
+                   and "set" is not "works" (nothing calls the service). The browser can't read the secrets, so this is the only way it knows
   agent/automationSwitch.ts  the kill switch: reads the runtime settings fresh each time the loop asks; fails closed
   agent/reviewer.ts  stage 4: attacks the verified patch; verdict computed from outcomes in code, bound
                    to the patch hash the gate tested. Run by `pnpm agent` (deployable, never run)
@@ -282,7 +285,7 @@ the engine recorded healed, `isHealedRun`; its activity feed is a
 collection-group query over `events`, with its own rule and index), the
 **Incidents** page (under each error, the incident's current run: its state, triage's reason and a link to it, `lib/useIncidentRuns.ts`), a **Runs** page (live subscription to `{cycleCollection}` and its events,
 `web/src/lib/runs.ts`; the waterfall logic is pure in `runsModel.ts`: a step with no event is "not
-reached", a cycle whose lease ran out is not "in progress"), an **incident evidence** page (`/incidents/:id`, `lib/evidence.ts`: only stored records, never a placeholder result), and a **Settings** page: the Gemini, GitHub and Slack connections, an
+reached", a cycle whose lease ran out is not "in progress"), an **incident evidence** page (`/incidents/:id`, `lib/evidence.ts`: only stored records, never a placeholder result), and a **Settings** page: the Gemini, GitHub and Slack connections (GitHub and Slack read `{runCollection}/integrations`, the agent's own report of what it holds: "configured", never "connected", and "not connected yet" until the agent has run and reported), an
 admin editor for the runtime settings (`src/runtimeSettings.ts` reads what it saves), and, for admins only, **On-call** (#37,
 `pages/OnCallEditor.tsx`, `lib/onCallWrite.ts`): the people (numbers shown masked, typed in but never read back), the
 opt-in code, and the call policy.

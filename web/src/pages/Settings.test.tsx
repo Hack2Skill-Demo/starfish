@@ -1,8 +1,12 @@
-import { render, screen } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { act, render, screen, waitFor } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { Ctx, type StarfishAuthCtx } from "../auth/authCore";
 
-vi.mock("../lib/config", () => ({ webConfig: () => ({ firebase: { projectId: "demo" }, environment: "prod" }) }));
+vi.mock("../lib/config", () => ({ webConfig: () => ({ firebase: { projectId: "demo" }, environment: "prod", runCollection: "starfish_runs" }) }));
+vi.mock("../lib/firebase", () => ({ firestore: () => ({}) }));
+const { readIntegrations } = vi.hoisted(() => ({ readIntegrations: vi.fn() }));
+vi.mock("../lib/integrations", async (orig) => ({ ...(await orig<typeof import("../lib/integrations")>()), readIntegrations }));
 vi.mock("../lib/useSettings", () => ({ useEnvironment: () => ({ environment: "staging-eu", ready: true }) }));
 vi.mock("./SettingsEditor", () => ({ SettingsEditor: () => <div>settings editor</div> }));
 vi.mock("./OnCallEditor", () => ({ OnCallEditor: () => <div>on-call editor</div> }));
@@ -19,12 +23,30 @@ function renderSettings(guest = false, role: "admin" | "operator" = "admin") {
     guest,
     enterAsGuest: async () => false,
   };
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
-    <Ctx.Provider value={ctx}>
-      <Settings />
-    </Ctx.Provider>
+    <QueryClientProvider client={client}>
+      <Ctx.Provider value={ctx}>
+        <Settings />
+      </Ctx.Provider>
+    </QueryClientProvider>
   );
 }
+
+const report = (over: Record<string, unknown> = {}) => ({
+  environment: "staging-eu",
+  checkedAt: new Date(),
+  github: false,
+  slackOnCall: false,
+  slackAlerts: false,
+  twilio: false,
+  ...over,
+});
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  readIntegrations.mockResolvedValue(null);
+});
 
 describe("Settings", () => {
   it("reports unbuilt integrations as not connected — never as working", () => {
@@ -32,6 +54,50 @@ describe("Settings", () => {
     const planned = CONNECTIONS.filter((c) => c.state === "planned").map((c) => c.name);
     expect(planned).toEqual(expect.arrayContaining(["GitHub", "Slack"]));
     expect(screen.getAllByText("Not connected yet")).toHaveLength(planned.length);
+  });
+
+  it("says the token is configured, never connected, once the agent has reported one", async () => {
+    readIntegrations.mockResolvedValue(report({ github: true }));
+    renderSettings();
+    expect(await screen.findByText("Token configured")).toBeInTheDocument();
+    expect(screen.getByText(/nothing has checked it against GitHub yet/)).toBeInTheDocument();
+    expect(screen.queryByText(/^Connected/)).toBeNull();
+    // Slack was reported with no webhook, and the rules card says nothing: both stay or turn neutral.
+    expect(screen.getByText("No webhook set")).toBeInTheDocument();
+    expect(screen.getAllByText("Not connected yet")).toHaveLength(1);
+  });
+
+  it("says no token is set when the agent reported none", async () => {
+    readIntegrations.mockResolvedValue(report());
+    renderSettings();
+    expect(await screen.findByText("No token set")).toBeInTheDocument();
+  });
+
+  it("names which Slack webhooks are set", async () => {
+    readIntegrations.mockResolvedValue(report({ slackOnCall: true, slackAlerts: true, twilio: true }));
+    renderSettings();
+    expect(await screen.findByText("Webhook configured")).toBeInTheDocument();
+    expect(screen.getByText(/on-call and alerts webhook is set/)).toBeInTheDocument();
+    expect(screen.getByText(/Twilio credentials are set/)).toBeInTheDocument();
+  });
+
+  it("ignores a report written for another environment", async () => {
+    readIntegrations.mockResolvedValue(report({ github: true, environment: "prod" }));
+    renderSettings();
+    await waitFor(() => expect(readIntegrations).toHaveBeenCalled());
+    expect(screen.queryByText("Token configured")).toBeNull();
+    expect(screen.getAllByText("Not connected yet")).toHaveLength(3);
+  });
+
+  it("keeps 'not connected yet' when the report cannot be read", async () => {
+    readIntegrations.mockRejectedValue(new Error("permission-denied"));
+    renderSettings();
+    // Let the rejection settle inside the test, so it is not left to surface after it.
+    await waitFor(() => expect(readIntegrations).toHaveBeenCalled());
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    expect(screen.getAllByText("Not connected yet")).toHaveLength(3);
   });
 
   it("names the environment the settings resolved, and mounts the editor for an admin", () => {

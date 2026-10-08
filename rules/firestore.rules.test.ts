@@ -750,6 +750,21 @@ describe("ingest run records", () => {
     await assertFails(getDoc(doc(guest(), "starfish_runs/last_run")));
   });
 
+  it("the integrations record reads like the last run: operators, and a guest on the demo only; nobody writes it", async () => {
+    await env.withSecurityRulesDisabled((ctx) =>
+      setDoc(doc(ctx.firestore(), "starfish_runs/integrations"), { environment: "demo", github: true })
+    );
+    await assertSucceeds(getDoc(doc(as("op1"), "starfish_runs/integrations")));
+    await assertSucceeds(getDoc(doc(guest(), "starfish_runs/integrations")));
+    await assertFails(getDoc(doc(anon(), "starfish_runs/integrations")));
+    await assertFails(getDoc(doc(as("nobody"), "starfish_runs/integrations")));
+    await assertFails(setDoc(doc(as("admin1"), "starfish_runs/integrations"), { environment: "demo", github: false }));
+    await env.withSecurityRulesDisabled((ctx) =>
+      setDoc(doc(ctx.firestore(), "starfish_runs/integrations"), { environment: "prod", github: true })
+    );
+    await assertFails(getDoc(doc(guest(), "starfish_runs/integrations")));
+  });
+
   it("a guest reads a last run that was never recorded as missing, not as a refusal (#142)", async () => {
     await env.withSecurityRulesDisabled((ctx) => deleteDoc(doc(ctx.firestore(), "starfish_runs/last_run")));
     const snap = await assertSucceeds(getDoc(doc(guest(), "starfish_runs/last_run")));
