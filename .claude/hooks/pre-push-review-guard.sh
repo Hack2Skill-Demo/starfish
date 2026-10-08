@@ -47,6 +47,11 @@ allow() { exit 0; }
 
 # shellcheck source=lib/segments.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/segments.sh"
+
+# settings.json runs this on EVERY Bash call (no `if` filter, which would miss `"git"`,
+# `\git` and `/usr/bin/git`), so leave at once when no spelling of git can be on the line.
+may_run_git "$cmd" || allow
+
 split_segments "$cmd"
 
 # Walk the tokens after `git`. Global options that TAKE an argument (-C <path>,
@@ -63,10 +68,12 @@ parse_git() {
   # De-quote tokens. `read -a` word-splits the RAW string, so `git "push"` keeps
   # its quote characters in the token and would dodge the subcmd match below. The
   # shell strips these before git runs, so the guard must too (mirrors
-  # git-branch-guard.sh). Subcommands never legitimately contain quotes.
+  # git-branch-guard.sh). Backslashes likewise: `git p\ush` is a push (bare_word).
+  # Subcommands never legitimately contain quotes or backslashes.
   local i
   for i in "${!toks[@]}"; do
-    toks[$i]="${toks[$i]//[\"\'\`]/}"
+    bare_word "${toks[$i]}"
+    toks[$i]="$BARE_WORD"
   done
 
   subcmd=""
