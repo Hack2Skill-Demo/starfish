@@ -1,6 +1,48 @@
 import { describe, expect, it } from "vitest";
-import { advance, escalationEligible, isCritical, personFor, STEPS } from "./escalation.js";
+import type { Firestore, Transaction } from "firebase-admin/firestore";
+import { advance, escalationEligible, inTransaction, isCritical, personFor, STEPS } from "./escalation.js";
 import type { OnCallPerson } from "../oncallSchema.js";
+
+describe("inTransaction (#245)", () => {
+  /** A runner that, like Firestore's, redoes an attempt that failed ABORTED (code 10), up to five times. */
+  const runner = (): Firestore =>
+    ({
+      runTransaction: async <T>(fn: (tx: Transaction) => Promise<T>): Promise<T> => {
+        for (let attempt = 1; ; attempt++) {
+          try {
+            return await fn({} as Transaction);
+          } catch (err) {
+            if ((err as { code?: unknown }).code !== 10 || attempt >= 5) throw err;
+          }
+        }
+      },
+    }) as unknown as Firestore;
+  const closed = () => Object.assign(new Error("3 INVALID_ARGUMENT: Transaction is invalid or closed."), { code: 3 });
+
+  it("redoes an attempt whose read found the transaction closed, within the runner's attempts", async () => {
+    let calls = 0;
+    const r = await inTransaction(runner(), async () => {
+      calls += 1;
+      if (calls === 1) throw closed();
+      return "done";
+    });
+    expect(r).toBe("done");
+    expect(calls).toBe(2);
+  });
+
+  it("gives up after the runner's attempts, and passes any other error through untouched", async () => {
+    await expect(inTransaction(runner(), () => Promise.reject(closed()))).rejects.toMatchObject({ code: 10 });
+    const other = Object.assign(new Error("3 INVALID_ARGUMENT: bad field"), { code: 3 });
+    let calls = 0;
+    await expect(
+      inTransaction(runner(), () => {
+        calls += 1;
+        return Promise.reject(other);
+      })
+    ).rejects.toBe(other);
+    expect(calls).toBe(1);
+  });
+});
 
 const now = new Date("2026-10-06T12:00:00Z");
 const cycle = (over: Record<string, unknown> = {}, notify: Record<string, unknown> = { state: "sent", at: "2026-10-06T11:50:00.000Z" }) => ({

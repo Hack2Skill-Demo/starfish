@@ -57,12 +57,14 @@ const handle = createAdminApi({
         twilio,
         now: () => new Date(),
         // After a call ended the next person need not wait for the next agent pass. The runtime settings (dry run, the
-        // environment) apply as they do to the agent; unusable settings place nothing.
+        // environment) apply as they do to the agent; unusable settings place nothing. A kick places a due call only when
+        // THIS service's own switches allow it, and never closes a sequence because they don't (#225): the deploy does
+        // not give this service the agent's dry run or phone switch, so the agent's next tick decides those.
         kick: async (id) => {
           const resolved = await loader.resolve(db);
           if (!resolved.actionsAllowed) return;
           const policy = await readPolicy(db, resolved.config);
-          if (policy) await stepEscalation({ db, config: resolved.config, now: () => new Date(), owner, twilio }, id, policy);
+          if (policy) await stepEscalation({ db, config: resolved.config, now: () => new Date(), owner, twilio }, id, policy, { kick: true });
         },
       }),
     }),
