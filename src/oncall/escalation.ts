@@ -38,6 +38,7 @@ import type { DocumentReference, DocumentSnapshot, Firestore, Transaction } from
 import type { StarfishConfig } from "../config.js";
 import { appendEventsInTransaction, type RunEvent } from "../agent/cycle.js";
 import { abortIfClosed } from "../ingest/store.js";
+import { refreshPublicCycle } from "../publicViewStore.js";
 import { inQuietHours, maskPhone, parsePerson, parsePolicy, POLICY_DOC, ROLE_LABELS, type OnCallPerson, type OnCallPolicy, type OnCallRole } from "../oncallSchema.js";
 import type { TwilioClient } from "./twilio.js";
 
@@ -60,6 +61,10 @@ export type EscalationConfig = Pick<
   | "phoneEscalation"
   | "onCallAudioUrl"
   | "twilioWebhookUrl"
+  | "publicEnvironments"
+  | "publicIncidentCollection"
+  | "publicCycleCollection"
+  | "publicEventCollection"
 >;
 
 export interface EscalationDeps {
@@ -266,10 +271,14 @@ export async function armEscalations(deps: EscalationDeps, policy: OnCallPolicy)
           data: { waitMinutes: policy.waitMinutes },
           record: { state: "waiting", step: 0, dueAt: dueAt.toISOString() },
         },
-      ]);
+      ], cfg);
       return true;
     });
-    if (created) armed += 1;
+    if (created) {
+      armed += 1;
+      // The cycle's guest copy, from what was just stored (src/publicViewStore.ts, #18). Never throws.
+      await refreshPublicCycle(db, cfg, doc.id);
+    }
   }
   return { armed, capped: waiting.size >= MAX_SCAN };
 }
@@ -354,7 +363,7 @@ export async function stepEscalation(
       tx.get(db.collection(cfg.onCallPeopleCollection).limit(MAX_PEOPLE)),
     ]);
     const c = cycle.data();
-    const note = (events: RunEvent[]) => appendEventsInTransaction(tx, cycleRef, c, now, events);
+    const note = (events: RunEvent[]) => appendEventsInTransaction(tx, cycleRef, c, now, events, cfg);
 
     const stop = stopReason(incident);
     if (stop) {
@@ -472,6 +481,8 @@ export async function stepEscalation(
     ]);
     return { kind: "call", ...chosen };
   });
+  // The sequence's id is its cycle's (armEscalations): bring the cycle's guest copy up to date with any event noted (#18).
+  await refreshPublicCycle(db, cfg, id);
   if (claimed.kind !== "call") return claimed.kind;
 
   // Placed outside the transaction (a transaction may run twice; a call must not). The claim above is what makes it once.
@@ -493,7 +504,7 @@ export async function stepEscalation(
     const c = (await tx.get(cycleRef)).data();
     if (placed.ok) {
       tx.update(ref, { "call.callSid": call.callSid ?? placed.callSid, "call.placedAt": Timestamp.fromDate(now), updatedAt: Timestamp.fromDate(now) });
-      appendEventsInTransaction(tx, cycleRef, c, now, [{ stage: "escalation", type: "placed", summary: "The call is ringing", data: { step: claimed.step } }]);
+      appendEventsInTransaction(tx, cycleRef, c, now, [{ stage: "escalation", type: "placed", summary: "The call is ringing", data: { step: claimed.step } }], cfg);
       return;
     }
     const moved = advance(e, "failed", now);
@@ -501,8 +512,9 @@ export async function stepEscalation(
     appendEventsInTransaction(tx, cycleRef, c, now, [
       { stage: "escalation", type: "refused", summary: `Twilio refused the call: ${placed.reason}`, data: { step: claimed.step, reason: placed.reason } },
       ...moved.events,
-    ]);
+    ], cfg);
   });
+  await refreshPublicCycle(db, cfg, id);
   return placed.ok ? "placed" : "idle";
 }
 

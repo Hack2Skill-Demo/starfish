@@ -26,15 +26,15 @@ import type { Firestore, Timestamp } from "firebase-admin/firestore";
 import { readIngestCheckpoint } from "../ingest/run.js";
 import { COLLECTION_RE, DATABASE_RE, FIELD_PATH_RE, PROJECT_RE, type IndexSpec } from "./createIndexUrl.js";
 import type { ProbeVerdict } from "./probe.js";
+import { INCONCLUSIVE_BASIS, QUIET_BASIS, UNCOVERED_BASIS } from "./runtimeBasis.js";
+import type { PublicViewConfig } from "../publicView.js";
+import { refreshPublicCycle } from "../publicViewStore.js";
 
 export type RuntimeVerdict = "healed" | "recurred" | "query-failing" | "unverified";
 
 /** How long after its window a heal waits for ingest to read through it before it is recorded unverified. */
 export const UNCOVERED_GIVE_UP_MS = 24 * 3600_000;
 
-const QUIET_BASIS = "no occurrence since READY with ingest read through the window, and the configured query replayed at the end; traffic is not measured";
-const UNCOVERED_BASIS = "ingest had not read the logs through the window a day after it ended; nothing was concluded from the incident's record";
-const INCONCLUSIVE_BASIS = "the configured query could not be replayed until a day after the window ended; nothing was concluded from it";
 
 export interface ObserveDeps {
   db: Firestore;
@@ -49,7 +49,7 @@ export interface ObserveDeps {
     watchedProjectId: string;
     environment: string;
     ingestLagMinutes: number;
-  };
+  } & PublicViewConfig;
   probe: (spec: IndexSpec) => Promise<ProbeVerdict>;
   now: () => Date;
   /** The most cycles looked at in one go. */
@@ -169,7 +169,11 @@ export async function observeIndexHeals(deps: ObserveDeps): Promise<ObserveSumma
       });
       return true;
     });
-    if (applied) out.decided.push({ cycleId: doc.id, runtime: decided });
+    if (applied) {
+      out.decided.push({ cycleId: doc.id, runtime: decided });
+      // The verdict is shown to guests too: the cycle's guest copy, from what was just stored (#18). Never throws.
+      await refreshPublicCycle(db, cfg, doc.id, cfg.environment);
+    }
   }
   return out;
 }

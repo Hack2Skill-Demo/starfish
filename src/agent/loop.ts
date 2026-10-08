@@ -330,7 +330,7 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
     if (!r.ok) throw new LeaseLost();
     // An issue filed or a PR opened is also linked from the incident, for the UI (#194). Never throws.
     const link = linkFromEvent(event);
-    if (link) await linkIncident(db, cfg.incidentCollection, key, link);
+    if (link) await linkIncident(db, cfg, key, link);
   };
   const finish = async (state: Exclude<CycleState, "running">, outcome: string, path?: CyclePath, decision?: DeclineDecision): Promise<LoopResult> => {
     const r = await finishCycle(db, cfg, id, owner, deps.now(), state, outcome, path, decision);

@@ -33,8 +33,10 @@ import { fingerprintOf } from "./fingerprint.js";
 import { redactPii, sliceWellFormed, toWellFormed } from "./redact.js";
 import { abortIfClosed } from "./store.js";
 import type { StoredIncident } from "../types.js";
+import { isPublicEnvironment, type PublicViewConfig } from "../publicView.js";
 
-export type RetireConfig = Pick<StarfishConfig, "incidentCollection" | "usersCollection" | "auditCollection">;
+/** With the public-view settings: a retired incident's guest copy is removed (src/publicView.ts, #18). */
+export type RetireConfig = Pick<StarfishConfig, "incidentCollection" | "usersCollection" | "auditCollection"> & PublicViewConfig;
 
 export type RetireResult =
   | { ok: true; alreadyRetired: boolean }
@@ -76,6 +78,8 @@ export async function retireIncident(
       updatedAt: Timestamp.fromDate(now),
     });
     // The incident key is not touched: it stays as the tombstone the store reads (see above).
+    // A retired incident is gone from every list, guests' included: its guest copy goes in the same transaction (#18).
+    if (isPublicEnvironment(cfg, data.environment)) tx.delete(db.collection(cfg.publicIncidentCollection).doc(incidentId));
 
     tx.create(db.collection(cfg.auditCollection).doc(), {
       action: "retire-incident",

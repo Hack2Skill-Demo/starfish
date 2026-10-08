@@ -16,7 +16,7 @@ the few steps only a person with the console can do.
 | Decision | Recommendation | Why |
 |---|---|---|
 | **Which project** | The demo project (the same-project decision on #6) | Starfish and the demo app share it; the deploy scopes every grant so they do not read each other's data (#32). |
-| **Environment label** | `STARFISH_ENV=demo` for the public demo | `firestore.rules` lets a guest read only incidents labelled `demo`. Any other label and the public page is empty. |
+| **Environment label** | `STARFISH_ENV=demo` for the public demo | `firestore.rules` lets a guest read only the trimmed copies of records labelled `demo` (#18; the engine writes them for `STARFISH_PUBLIC_ENVIRONMENTS`, default `demo`). Any other label and the public page is empty. |
 | **Anonymous sign-in** | On only for the public demo, and only after reading #32 | It is project-wide. A private deployment leaves it off and requires an operator account. |
 | **Schedule** | Hourly normally; `*/5 * * * *` while demoing | A 5-minute tick all month is not free (Cloud Build, the job's runs). |
 | **A budget alert** | Yes, set `BUDGET_USD` | It emails at 50% and 90%. It is an alert, **not a cap**: nothing stops spending. |

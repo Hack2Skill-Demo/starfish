@@ -153,8 +153,8 @@ export async function reconcilePullRequests(deps: ReconcileDeps): Promise<Reconc
         // read again (selectPrCycles), so that last copy is tried twice.
         if (key) {
           const link = { kind: "pr-state" as const, number: pr.number, state: pr.state, ...(url !== undefined && { url }) };
-          if (!(await linkIncident(db, cfg.incidentCollection, key, link)) && pr.state === "merged") {
-            await linkIncident(db, cfg.incidentCollection, key, link);
+          if (!(await linkIncident(db, cfg, key, link)) && pr.state === "merged") {
+            await linkIncident(db, cfg, key, link);
           }
         }
       }

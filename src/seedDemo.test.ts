@@ -106,7 +106,7 @@ describe("buildDemoPlan", () => {
   });
 
   it("describes one line per document for the dry run", () => {
-    const lines = describePlan(plan, { environment: DEMO_ENVIRONMENT, incidentCollection: "incidents", cycleCollection: "starfish_cycles" });
+    const lines = describePlan(plan, { incidentCollection: "incidents", cycleCollection: "starfish_cycles" });
     expect(lines).toHaveLength(plan.incidents.length + plan.cycles.length);
     expect(lines.some((l) => l.startsWith(`starfish_cycles/${SYNTHETIC_ID_PREFIX}pr_r0`))).toBe(true);
   });

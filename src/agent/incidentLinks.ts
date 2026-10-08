@@ -11,6 +11,9 @@
  * Best effort, and never throws: the links are a convenience for the UI, and the cycle has already recorded them.
  */
 import type { Firestore } from "firebase-admin/firestore";
+import type { StarfishConfig } from "../config.js";
+import type { PublicViewConfig } from "../publicView.js";
+import { refreshPublicIncident } from "../publicViewStore.js";
 import type { CycleKey, RunEvent } from "./cycle.js";
 
 export type IncidentLink =
@@ -31,11 +34,14 @@ export function linkFromEvent(event: RunEvent): IncidentLink | null {
   return null;
 }
 
-/** Copy one link onto the incident. Returns whether it was written; never throws. */
-export async function linkIncident(db: Firestore, incidentCollection: string, key: CycleKey, link: IncidentLink): Promise<boolean> {
+/**
+ * Copy one link onto the incident. Returns whether it was written; never throws. A link written reaches the incident's
+ * guest copy too, refreshed from what was stored (src/publicViewStore.ts, #18).
+ */
+export async function linkIncident(db: Firestore, cfg: Pick<StarfishConfig, "incidentCollection"> & PublicViewConfig, key: CycleKey, link: IncidentLink): Promise<boolean> {
   try {
-    const ref = db.collection(incidentCollection).doc(key.incidentId);
-    return await db.runTransaction(async (tx) => {
+    const ref = db.collection(cfg.incidentCollection).doc(key.incidentId);
+    const written = await db.runTransaction(async (tx) => {
       const snap = await tx.get(ref);
       const d = snap.data();
       if (!snap.exists || d === undefined) return false;
@@ -55,6 +61,8 @@ export async function linkIncident(db: Firestore, incidentCollection: string, ke
       }
       return true;
     });
+    if (written) await refreshPublicIncident(db, cfg, key.incidentId, key.environment);
+    return written;
   } catch {
     return false;
   }

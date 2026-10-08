@@ -19,7 +19,7 @@ import { createIndexProbe, type IndexProbeSpec, type ProbeVerdict } from "../ind
 import { observeIndexHeals } from "../indexheal/observe.js";
 import type { IssueRequest } from "../integrations/githubPr.js";
 import type { NotifyRequest } from "../integrations/slack.js";
-import { testConfig } from "../testConfig.js";
+import { PUBLIC_VIEW_OFF, testConfig } from "../testConfig.js";
 import type { Incident, IncidentStatus } from "../types.js";
 
 if (!process.env.FIRESTORE_EMULATOR_HOST) {
@@ -469,6 +469,7 @@ describe("observeIndexHeals", () => {
     watchedProjectId: "demo-app-1",
     environment: "demo",
     ingestLagMinutes: 5,
+    ...PUBLIC_VIEW_OFF,
   });
   const readyAt = t0.toISOString();
   const until = new Date(t0.getTime() + 60 * 60_000).toISOString();

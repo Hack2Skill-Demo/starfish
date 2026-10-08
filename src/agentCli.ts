@@ -50,6 +50,7 @@ import { createFirestoreProbeRunner } from "./indexheal/probeFirestore.js";
 import type { IndexHealWiring } from "./agent/indexPath.js";
 import { runEscalationTick } from "./oncall/escalation.js";
 import { createTwilioClient } from "./oncall/twilio.js";
+import { syncRecentPublicView } from "./publicViewStore.js";
 
 const base = loadConfig();
 const token = loadGithubToken();
@@ -273,6 +274,16 @@ try {
   } catch (err) {
     console.error(`agent: phone escalation failed: ${redactPii(err instanceof Error ? err.message : String(err)).slice(0, 300)}`);
     failed = true;
+  }
+
+  // The guests' trimmed copies (#18) of the newest public records, for writes the pass's own refreshes cannot see (an
+  // operator's triage in the UI) or that failed. Never throws, and never fails the pass: a copy only lags.
+  if (cfg.publicEnvironments.length > 0) {
+    const sweep = await syncRecentPublicView(db, cfg);
+    console.log(
+      `agent: public view: ${sweep.incidents.refreshed} incident and ${sweep.cycles.refreshed} cycle copies brought up to date, ${sweep.events.written} event copies added` +
+        (sweep.failures > 0 ? `; ${sweep.failures} could not be (they catch up next pass)` : "")
+    );
   }
 } finally {
   await loader.disposeAll();

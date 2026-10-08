@@ -80,6 +80,31 @@ describe("IncidentDetail page", () => {
     expect(mocks.getIncident).toHaveBeenCalledWith("inc-1", "build-label");
   });
 
+  it("on a guest's trimmed copy (#18), says it is one, and shows no detail the copy leaves out", async () => {
+    mocks.getIncident.mockResolvedValue({ ...row, trimmed: true });
+    mocks.readCycle.mockResolvedValue(
+      parseCycle("inc-1_r0", {
+        publicView: 1,
+        incidentId: "inc-1",
+        environment: "demo",
+        state: "declined",
+        createdAt: ts(0),
+        updatedAt: ts(1000),
+        summary: { triage: { decision: "decline", rule: "model-decline" } },
+      })
+    );
+    renderPage();
+    expect(await screen.findByTestId("trimmed-note")).toHaveTextContent(/trimmed copy/);
+    await vi.waitFor(() => expect(stage("triage").getAttribute("data-status")).toBe("recorded"));
+    expect(stage("triage")).not.toHaveTextContent("Reason");
+  });
+
+  it("says nothing about a trimmed copy for the stored record an operator reads", async () => {
+    renderPage();
+    await screen.findByRole("heading", { name: "orders-create" });
+    expect(screen.queryByTestId("trimmed-note")).toBeNull();
+  });
+
   it("shows no settings notice when the settings read succeeded", async () => {
     renderPage();
     await screen.findByRole("heading", { name: "orders-create" });

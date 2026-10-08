@@ -6,12 +6,17 @@
  * guest a list. The cycle list is newest-update first and needs the composite index in
  * firestore.indexes.json; a cycle's events are few, so they are read in full and put in order here.
  * The Overview's feed reads the newest events across cycles with a collection-group query.
+ *
+ * A guest reads the trimmed copies instead (`dataSource`, #18): the cycles' copies with the same queries, and the run
+ * events' copies from one flat collection, by `cycleId` for a run and newest first for the feed. The copies keep the
+ * stored field names, so the same parsers read them.
  */
 import { collection, collectionGroup, doc, getDoc, limit, onSnapshot, orderBy, query, where, type Unsubscribe } from "firebase/firestore";
 import { firestore } from "./firebase";
 import { webConfig } from "./config";
+import { dataSource } from "./dataSource";
 import { parseCycle, parseEvent, type CycleRow, type EventRow } from "./runsModel";
-import { latestActivity, parseActivity, type ActivityRow } from "./overviewModel";
+import { latestActivity, parseActivity, parsePublicActivity, type ActivityRow } from "./overviewModel";
 
 /** Cycles read for the list. The page says so when it hits this. */
 export const CYCLE_LIMIT = 50;
@@ -24,7 +29,7 @@ export function subscribeCycles(
   onError: (err: Error) => void
 ): Unsubscribe {
   const q = query(
-    collection(firestore(), webConfig().cycleCollection),
+    collection(firestore(), dataSource().cycles),
     where("environment", "==", environment),
     orderBy("updatedAt", "desc"),
     limit(CYCLE_LIMIT)
@@ -46,6 +51,22 @@ export function subscribeEvents(
   onData: (rows: EventRow[]) => void,
   onError: (err: Error) => void
 ): Unsubscribe {
+  const source = dataSource();
+  if (source.publicEvents) {
+    // A guest: the copies of this run's events, one flat collection keyed `{cycleId}_{seq}` (equality only: no index).
+    const prefix = `${cycleId}_`;
+    const q = query(collection(firestore(), source.publicEvents), where("cycleId", "==", cycleId), where("environment", "==", environment), limit(EVENT_LIMIT));
+    return onSnapshot(
+      q,
+      (snap) =>
+        onData(
+          snap.docs
+            .flatMap((d) => (d.id.startsWith(prefix) ? (parseEvent(d.id.slice(prefix.length), d.data()) ?? []) : []))
+            .sort((a, b) => a.seq - b.seq)
+        ),
+      onError
+    );
+  }
   const q = query(
     collection(firestore(), webConfig().cycleCollection, cycleId, "events"),
     where("environment", "==", environment),
@@ -72,6 +93,16 @@ export function subscribeLatestEvents(
   onData: (rows: ActivityRow[]) => void,
   onError: (err: Error) => void
 ): Unsubscribe {
+  const source = dataSource();
+  if (source.publicEvents) {
+    // A guest: the newest event copies (#18). Needs the starfish_public_events index in firestore.indexes.json.
+    const q = query(collection(firestore(), source.publicEvents), where("environment", "==", environment), orderBy("at", "desc"), limit(ACTIVITY_LIMIT));
+    return onSnapshot(
+      q,
+      (snap) => onData(latestActivity(snap.docs.flatMap((d) => parsePublicActivity(environment, d.id, d.data()) ?? []), ACTIVITY_LIMIT)),
+      onError
+    );
+  }
   const q = query(
     collectionGroup(firestore(), "events"),
     where("environment", "==", environment),
@@ -92,7 +123,7 @@ export function subscribeLatestEvents(
  * current recurrence's cycle by id (`{incidentId}_r{n}`), which needs no index.
  */
 export async function readCycle(id: string, environment: string): Promise<CycleRow | null> {
-  const snap = await getDoc(doc(firestore(), webConfig().cycleCollection, id));
+  const snap = await getDoc(doc(firestore(), dataSource().cycles, id));
   if (!snap.exists()) return null;
   const row = parseCycle(snap.id, snap.data());
   return row && row.environment === environment ? row : null;

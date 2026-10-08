@@ -8,6 +8,7 @@ import { deleteApp, initializeApp } from "firebase-admin/app";
 import { Timestamp, getFirestore } from "firebase-admin/firestore";
 import type { Firestore } from "firebase-admin/firestore";
 import { countCyclesStartedToday, findStrandedCycles, selectCandidates, type PassConfig } from "./pass.js";
+import { PUBLIC_VIEW_OFF } from "../testConfig.js";
 
 if (!process.env.FIRESTORE_EMULATOR_HOST) {
   throw new Error("pass.emulator.test.ts needs the Firestore emulator: run `pnpm test:emulator`");
@@ -28,6 +29,7 @@ beforeEach(() => {
     leaseSeconds: 300,
     cycleDeadlineMinutes: 60,
     maxCycleAttempts: 3,
+    ...PUBLIC_VIEW_OFF,
   };
 });
 

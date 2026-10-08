@@ -162,6 +162,26 @@ Then look at `starfish_runs/last_run` in the `starfish` database (it is what the
 shows as "engine status") and at the incidents collection. A failed run exits 1; a missing run shows
 in the UI as stopped, past `VITE_STARFISH_STALE_MINUTES`.
 
+### The guests' trimmed copies (#18)
+
+Guests (the public demo's anonymous visitors) no longer read the incidents, cycles and run events: the rules serve them
+only the trimmed copies the engine writes for `STARFISH_PUBLIC_ENVIRONMENTS` (default `demo`) into
+`starfish_public_incidents`, `starfish_public_cycles` and `starfish_public_events` (`src/publicView.ts`). Two steps are a
+person's, once, on a deployment that already holds demo records; **neither has been run on a real project**:
+
+1. **Deploy the rules and indexes together.** `scripts/deploy-gcp.sh` deploys `firestore.rules` and `firestore.indexes.json`
+   in one step, and the indexes include three new composite ones, `environment` + `lastOccurredAt` on
+   `starfish_public_incidents`, `environment` + `updatedAt` on `starfish_public_cycles` and `environment` + `at` on
+   `starfish_public_events`. Until they finish building, a guest's Incidents, Runs and Overview pages say they could not
+   read the data (Firestore refuses the query); operators are unaffected.
+2. **Copy what is already stored**: `pnpm public-view` counts what it would write and remove, and
+   `pnpm public-view -- --apply --project=<id>` writes the copies (and removes any whose record is gone, retired or
+   private). Until then a guest sees only what the engine has written or touched since the deploy: new incidents, and the
+   newest 50 incidents and cycles the jobs sweep after each run. `pnpm seed-demo -- --apply` writes its own copies.
+
+The ingest job (and the agent job, when deployed) keeps the copies up to date as it writes and sweeps the newest 50 after
+each run; an operator's triage reaches a guest at the next run.
+
 ## Deploy from GitHub Actions (#75)
 
 `.github/workflows/deploy.yml` runs the same `scripts/deploy-gcp.sh`, unchanged, so a teammate with no

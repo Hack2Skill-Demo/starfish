@@ -12,11 +12,12 @@ import {
 } from "./store.js";
 import { computeErrorFingerprint } from "./fingerprint.js";
 import { SEEDED_SECRETS } from "./testSecrets.js";
+import { PUBLIC_VIEW_OFF } from "../testConfig.js";
 
 type Where = [string, string, unknown];
 type Write = { op: "set" | "update"; collection: string; id: string; data: Record<string, unknown> };
 
-const STORE = { incidentCollection: "incidents", incidentKeyCollection: "incident_keys" };
+const STORE = { incidentCollection: "incidents", incidentKeyCollection: "incident_keys", ...PUBLIC_VIEW_OFF };
 
 /**
  * Just enough Firestore to observe what upsertIncident reads and writes inside

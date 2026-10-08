@@ -21,7 +21,9 @@ rules_version = '2';
 // starfish_cycles (STARFISH_CYCLE_COLLECTION); the audit trail of admin actions on the
 // engine uses starfish_audit (STARFISH_AUDIT_COLLECTION). The on-call rota uses starfish_oncall and
 // starfish_oncall_people (STARFISH_ONCALL_COLLECTION, STARFISH_ONCALL_PEOPLE_COLLECTION); the call sequences,
-// starfish_escalations (STARFISH_ESCALATION_COLLECTION), are engine-only.
+// starfish_escalations (STARFISH_ESCALATION_COLLECTION), are engine-only. The guests' trimmed copies (#18) use
+// starfish_public_incidents, starfish_public_cycles and starfish_public_events (STARFISH_PUBLIC_INCIDENT_COLLECTION,
+// STARFISH_PUBLIC_CYCLE_COLLECTION, STARFISH_PUBLIC_EVENT_COLLECTION).
 //
 // Model: roles live on an operator record and are read fresh on every request,
 // never cached in a token.
@@ -49,6 +51,14 @@ service cloud.firestore {
     // environment and nothing else: no operator records, no settings, no audit trail, no
     // writes. The provider check matters: a signed-in user with NO role (an email account) is
     // not a guest and still reads nothing.
+    //
+    // A guest never reads a stored incident, cycle or run event (#18): redaction is pattern
+    // matching, so free text in them can still hold personal data it does not recognise. A guest
+    // reads the TRIMMED COPIES instead (starfish_public_*, below): allowlist projections the
+    // engine writes for the demo environment (src/publicView.ts), holding ids, statuses, counts,
+    // times, names, a bounded one-line title, links and the run record's enumerated values. Besides
+    // those, a guest reads only last_run, starfish_runs/integrations and the operator copy of the
+    // settings, which hold no free text.
     //
     // The demo environment label below is the default for the public demo, like the collection
     // names above: change it here if the demo deploys under another label. A private
@@ -93,9 +103,8 @@ service cloud.firestore {
     }
 
     match /incidents/{incidentId} {
-      // A guest's query must itself filter on environment == 'demo', or it is denied whole.
-      allow get: if isOperator() || guestGet();
-      allow list: if isOperator() || guestList();
+      // Operators only: a guest reads the trimmed copy in starfish_public_incidents (#18).
+      allow get, list: if isOperator();
 
       // Triage only: status and its bookkeeping, nothing else, attributed to the
       // caller and stamped by the server. `resolvedAt` exists exactly when the
@@ -269,7 +278,7 @@ service cloud.firestore {
     //                         environment); `state` is the pre-#198 single one, moved on first write.
     //                         Engine-only: a client that could move it could make the engine skip or
     //                         re-read stretches of logs.
-    // Clients never write either. A guest reads last_run only for the demo environment, like incidents.
+    // Clients never write either. A guest reads last_run only for the demo environment, like the trimmed copies.
     match /starfish_runs/last_run {
       allow get: if isOperator() || guestGet();
       allow list: if isOperator() || guestList();
@@ -288,28 +297,53 @@ service cloud.firestore {
     //
     // starfish_cycles/{incident}_r{n}          one cycle: its state, stage and lease holder.
     // starfish_cycles/{id}/events/{seq}        the run events the Live runs screen renders.
-    // Both carry the incident's environment, so a guest reads only the demo's. Only the engine
-    // writes: the lease is what stops two workers acting on a cycle, and a client that could touch
-    // it could make the engine act twice or not at all. Events hold redacted, bounded text.
+    // Operators only: a guest reads the trimmed copies in starfish_public_cycles and
+    // starfish_public_events (#18). Only the engine writes: the lease is what stops two workers
+    // acting on a cycle, and a client that could touch it could make the engine act twice or not
+    // at all. Events hold redacted, bounded text.
     match /starfish_cycles/{cycleId} {
-      allow get: if isOperator() || guestGet();
-      allow list: if isOperator() || guestList();
+      allow get, list: if isOperator();
       allow write: if false;
 
       match /events/{seq} {
-        allow get: if isOperator() || guestGet();
-        allow list: if isOperator() || guestList();
+        allow get, list: if isOperator();
         allow write: if false;
       }
     }
 
-    // The Overview's activity feed: the newest events across every cycle, one collection-group query
-    // (web/src/lib/runs.ts). A collection-group rule matches an `events` collection at any depth, so it
-    // grants `list` only (a single read stays with the rule above) and only on the same terms: operators,
-    // and a guest whose query filters on the demo environment. The engine writes `events` only under
-    // starfish_cycles; the UI also drops any result whose path is not a cycle's.
+    // The Overview's activity feed for operators: the newest events across every cycle, one
+    // collection-group query (web/src/lib/runs.ts). A collection-group rule matches an `events`
+    // collection at any depth, so it grants `list` only (a single read stays with the rule above).
+    // The engine writes `events` only under starfish_cycles; the UI also drops any result whose path
+    // is not a cycle's. A guest's feed reads starfish_public_events instead.
     match /{path=**}/events/{seq} {
+      allow list: if isOperator();
+    }
+
+    // ---- The guests' trimmed copies (src/publicView.ts, src/publicViewStore.ts, #18) ----------------
+    //
+    // starfish_public_incidents/{incidentId}        the copy of an incident of a public environment
+    // starfish_public_cycles/{cycleId}              the copy of a cycle and its run record's enumerated values
+    // starfish_public_events/{cycleId}_{seq}        the copy of a run event, never its data
+    // Written by the engine only, from an allowlist (STARFISH_PUBLIC_ENVIRONMENTS, `demo` by default).
+    // A guest reads the demo's, as before: a list must filter on environment == 'demo'. Nobody in the
+    // browser writes them; an operator may read them too, and still reads the full documents above.
+    match /starfish_public_incidents/{incidentId} {
+      allow get: if isOperator() || guestGet();
       allow list: if isOperator() || guestList();
+      allow write: if false;
+    }
+
+    match /starfish_public_cycles/{cycleId} {
+      allow get: if isOperator() || guestGet();
+      allow list: if isOperator() || guestList();
+      allow write: if false;
+    }
+
+    match /starfish_public_events/{eventId} {
+      allow get: if isOperator() || guestGet();
+      allow list: if isOperator() || guestList();
+      allow write: if false;
     }
 
     // ---- Admin actions on the engine (src/ingest/retire.ts, trigger.ts, src/oncall/optIn.ts) ----

@@ -78,8 +78,11 @@ function numberedFields(record: Record<string, string | number | boolean | null>
   return out;
 }
 
-/** The recount triage judged on, from its record. Missing (`counterCount: null`) is said to be missing, never zero. */
-function counterCheckStage(triage: Record<string, string | number | boolean | null> | undefined, storeCount: number, noRun: boolean): EvidenceStage {
+/**
+ * The recount triage judged on, from its record. Missing (`counterCount: null`) is said to be missing, never zero. A
+ * guest's trimmed copy (#18) never carries the log filter, so its absence there says nothing about its length.
+ */
+function counterCheckStage(triage: Record<string, string | number | boolean | null> | undefined, storeCount: number, noRun: boolean, trimmed: boolean): EvidenceStage {
   const base = { id: "counter-check" as const, title: "Counter-check" };
   if (!triage) return { ...base, status: "not-reached", note: noRun ? "Not reached: no agent run is recorded for this incident." : NOT_REACHED, fields: [] };
   if (!("counterCount" in triage)) {
@@ -102,7 +105,7 @@ function counterCheckStage(triage: Record<string, string | number | boolean | nu
   return {
     ...base,
     status: "recorded",
-    ...(!("counterFilter" in triage) && { note: "The filter was too long to store whole, so it is left out rather than cut." }),
+    ...(!("counterFilter" in triage) && !trimmed && { note: "The filter was too long to store whole, so it is left out rather than cut." }),
     fields,
   };
 }
@@ -220,7 +223,7 @@ export function buildEvidence(row: IncidentRow, cycle: CycleRow | null, nowMs = 
 
   const stages: EvidenceStage[] = [
     detected,
-    monitoringOnlyCounterCheck(counterCheckStage(rec.triage, row.occurrenceCount, noRun), row),
+    monitoringOnlyCounterCheck(counterCheckStage(rec.triage, row.occurrenceCount, noRun, cycle?.trimmed === true), row),
     later("triage", "Triage", [
       ["decision", "Decision"],
       ["rule", "Rule", true],

@@ -12,6 +12,8 @@
  *     record names no model, because none was called;
  *   - no incident key is written and the fingerprints are not hashes, so a real occurrence can never be
  *     folded into a synthetic incident (store.ts finds open incidents through the key only);
+ *   - guests read it as they read everything: through the trimmed copies (src/publicView.ts, #18), written in the same
+ *     batch as each document, so the synthetic history leaves out for them what a real one would;
  *   - every incident has a settled cycle for its recurrence, so the agent's pass never selects one (pass.ts); and every
  *     engine scan skips `synthetic: true` itself (pass.ts, reconcile.ts, autoMerge.ts/fastRevert.ts `cyclesInState`,
  *     the phone escalation's `escalationEligible`), so nothing names a seeded record to GitHub or Twilio (#192).
@@ -25,6 +27,7 @@ import type { DocumentReference, Firestore, WriteBatch } from "firebase-admin/fi
 import type { StarfishConfig } from "./config.js";
 import { cycleId, sanitizeEvent, type CyclePath, type CycleState, type RunEvent } from "./agent/cycle.js";
 import { counterCheckRecord } from "./agent/loop.js";
+import { publicEventId, toPublicCycle, toPublicIncident, toPublicEvent, type PublicViewConfig } from "./publicView.js";
 
 /** The only environment this writes to: the public demo's label, which firestore.rules lets guests read. */
 export const DEMO_ENVIRONMENT = "demo";
@@ -32,7 +35,8 @@ export const DEMO_ENVIRONMENT = "demo";
 export const SYNTHETIC_ID_PREFIX = "synthetic-demo-";
 export const SYNTHETIC_MESSAGE_PREFIX = "[Synthetic demo data, not a real incident]";
 
-export type SeedConfig = Pick<StarfishConfig, "environment" | "incidentCollection" | "cycleCollection">;
+/** With the public-view settings: each document's guest copy is written in the same batch (src/publicView.ts, #18). */
+export type SeedConfig = Pick<StarfishConfig, "environment" | "incidentCollection" | "cycleCollection"> & PublicViewConfig;
 
 type Flat = Record<string, string | number | boolean | null>;
 
@@ -561,12 +565,28 @@ function refuseUnlessDemo(cfg: SeedConfig): SeedRefusal | null {
 /** Firestore caps a batch at 500 writes. */
 const WRITES_PER_BATCH = 400;
 
-async function commitInChunks(db: Firestore, ops: ((b: WriteBatch) => void)[]): Promise<void> {
-  for (let i = 0; i < ops.length; i += WRITES_PER_BATCH) {
-    const batch = db.batch();
-    for (const op of ops.slice(i, i + WRITES_PER_BATCH)) op(batch);
-    await batch.commit();
+/** The writes for one document: the document and its guest copy, which must land in the same batch. */
+type OpGroup = ((b: WriteBatch) => void)[];
+
+/** Commit the groups in batches of at most WRITES_PER_BATCH writes, never splitting a group across two. */
+async function commitInChunks(db: Firestore, groups: OpGroup[]): Promise<void> {
+  let batch = db.batch();
+  let size = 0;
+  for (const group of groups) {
+    if (size > 0 && size + group.length > WRITES_PER_BATCH) {
+      await batch.commit();
+      batch = db.batch();
+      size = 0;
+    }
+    for (const op of group) op(batch);
+    size += group.length;
   }
+  if (size > 0) await batch.commit();
+}
+
+/** Set `data` at `ref` and, beside it, its guest copy (or remove a copy that must not exist). */
+function withCopy(ref: DocumentReference, data: Record<string, unknown>, copyRef: DocumentReference, copy: Record<string, unknown> | null): OpGroup {
+  return [(b) => b.set(ref, data), copy ? (b) => b.set(copyRef, copy) : (b) => b.delete(copyRef)];
 }
 
 function refs(db: Firestore, cfg: SeedConfig, plan: SeedPlan): DocumentReference[] {
@@ -593,11 +613,11 @@ export async function applyDemoHistory(db: Firestore, cfg: SeedConfig, plan: See
   const taken = await takenIds(db, cfg, plan);
   if (taken.length > 0) return { ok: false, reason: "id-taken", detail: `not synthetic, left alone: ${taken.join(", ")}` };
 
-  const ops: ((b: WriteBatch) => void)[] = [];
+  const ops: OpGroup[] = [];
   let staleEventsRemoved = 0;
   for (const inc of plan.incidents) {
     const ref = db.collection(cfg.incidentCollection).doc(inc.id);
-    ops.push((b) => b.set(ref, inc.data));
+    ops.push(withCopy(ref, inc.data, db.collection(cfg.publicIncidentCollection).doc(inc.id), toPublicIncident(inc.data, cfg)));
   }
   for (const c of plan.cycles) {
     const ref = db.collection(cfg.cycleCollection).doc(c.id);
@@ -605,10 +625,13 @@ export async function applyDemoHistory(db: Firestore, cfg: SeedConfig, plan: See
     for (const old of await ref.collection("events").listDocuments()) {
       if (wanted.has(old.id)) continue;
       staleEventsRemoved += 1;
-      ops.push((b) => b.delete(old));
+      ops.push([(b) => b.delete(old), (b) => b.delete(db.collection(cfg.publicEventCollection).doc(publicEventId(c.id, old.id)))]);
     }
-    ops.push((b) => b.set(ref, c.data));
-    for (const e of c.events) ops.push((b) => b.set(ref.collection("events").doc(e.id), e.data));
+    ops.push(withCopy(ref, c.data, db.collection(cfg.publicCycleCollection).doc(c.id), toPublicCycle(c.data, cfg)));
+    for (const e of c.events) {
+      const copyRef = db.collection(cfg.publicEventCollection).doc(publicEventId(c.id, e.id));
+      ops.push(withCopy(ref.collection("events").doc(e.id), e.data, copyRef, toPublicEvent(c.id, e.data, cfg)));
+    }
   }
   await commitInChunks(db, ops);
   return {
@@ -628,7 +651,7 @@ export async function removeDemoHistory(db: Firestore, cfg: SeedConfig, plan: Se
   const refused = refuseUnlessDemo(cfg);
   if (refused) return refused;
   const snaps = await db.getAll(...refs(db, cfg, plan));
-  const ops: ((b: WriteBatch) => void)[] = [];
+  const ops: OpGroup[] = [];
   let incidents = 0;
   let cycles = 0;
   let events = 0;
@@ -640,19 +663,20 @@ export async function removeDemoHistory(db: Firestore, cfg: SeedConfig, plan: Se
       cycles += 1;
       for (const e of await snap.ref.collection("events").listDocuments()) {
         events += 1;
-        ops.push((b) => b.delete(e));
+        ops.push([(b) => b.delete(e), (b) => b.delete(db.collection(cfg.publicEventCollection).doc(publicEventId(snap.id, e.id)))]);
       }
-    } else {
-      incidents += 1;
     }
-    ops.push((b) => b.delete(snap.ref));
+    if (!isCycle) incidents += 1;
+    // The document and its guest copy go together.
+    const copyRef = db.collection(isCycle ? cfg.publicCycleCollection : cfg.publicIncidentCollection).doc(snap.id);
+    ops.push([(b) => b.delete(snap.ref), (b) => b.delete(copyRef)]);
   }
   await commitInChunks(db, ops);
   return { ok: true, incidents, cycles, events };
 }
 
 /** One line per document, for the dry run. */
-export function describePlan(plan: SeedPlan, cfg: SeedConfig): string[] {
+export function describePlan(plan: SeedPlan, cfg: Pick<SeedConfig, "incidentCollection" | "cycleCollection">): string[] {
   const lines: string[] = [];
   for (const inc of plan.incidents) lines.push(`${cfg.incidentCollection}/${inc.id}  ${String(inc.data.status)}  ${String(inc.data.functionName)}`);
   for (const c of plan.cycles) {

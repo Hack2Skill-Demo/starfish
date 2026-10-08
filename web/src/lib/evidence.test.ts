@@ -122,6 +122,25 @@ describe("buildEvidence", () => {
     expect(cc.note).toMatch(/too long/);
   });
 
+  it("on a guest's trimmed copy (#18), claims nothing about the filter the copy leaves out, and shows no model words", () => {
+    const trimmed = parseCycle("inc-1_r0", {
+      publicView: 1,
+      incidentId: "inc-1",
+      environment: "demo",
+      state: "declined",
+      createdAt: ts(0),
+      updatedAt: ts(1000),
+      // What src/publicView.ts keeps of a triage record: no reason, no suspected cause, no filter.
+      summary: { triage: { decision: "decline", rule: "model-decline", counterCount: 3, counterWindow: "24h", counterCapped: false } },
+    })!;
+    expect(trimmed.trimmed).toBe(true);
+    const e = buildEvidence({ ...row, trimmed: true }, trimmed);
+    const cc = stage(e, "counter-check");
+    expect(cc.fields[0]).toMatchObject({ label: "Raw-log recount", value: "3" });
+    expect(cc.note).toBeUndefined();
+    expect(stage(e, "triage").fields.map((f) => f.label)).toEqual(["Decision", "Rule"]);
+  });
+
   it("says a missing recount is missing, never zero", () => {
     const cc = stage(buildEvidence(row, cycle({ triage: { decision: "defer", counterCount: null } })), "counter-check");
     expect(cc).toMatchObject({ status: "recorded", fields: [] });
