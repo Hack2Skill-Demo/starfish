@@ -70,6 +70,11 @@ where an earlier version of the script had set them). With `STARFISH_GITHUB_TOKE
 the value as a new version (over stdin, never printed or passed as an argument), and the agent job mounts it as
 `STARFISH_GITHUB_TOKEN`; without a version, Cloud Run would refuse the deploy, so it is not mounted.
 
+**What the Settings page shows.** Storing a secret does not change the Settings page by itself: the secrets are mounted on the agent job only, and the
+browser can't read them. At the start of each `pnpm agent` pass the job writes which of them it holds (booleans, never a value) to
+`starfish_runs/integrations`, and GitHub and Slack then read "Token configured" / "Webhook configured" with the time it was reported. Until the
+agent has run once the cards say "Not connected yet". "Configured" means set, not working: nothing has called GitHub or Slack for real.
+
 **Slack (#17).** With `DEPLOY_AGENT=1` and `STARFISH_SLACK_WEBHOOK_ONCALL=https://hooks.slack.com/services/...` set, the script stores the
 webhook as a version of its own secret, `starfish-slack-oncall` (over stdin, never printed; any other URL is refused, unechoed),
 lets only the **agent's** account read it, and mounts it on the **agent** job only, in the same `--update-secrets` flag as the

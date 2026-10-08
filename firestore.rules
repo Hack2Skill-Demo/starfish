@@ -276,6 +276,14 @@ service cloud.firestore {
       allow write: if false;
     }
 
+    // starfish_runs/integrations  which credentials the agent job holds (src/agent/integrations.ts): booleans
+    //                         and a time, never a value. Read like last_run; only the engine writes.
+    match /starfish_runs/integrations {
+      allow get: if isOperator() || guestGet();
+      allow list: if isOperator() || guestList();
+      allow write: if false;
+    }
+
     // ---- Agent cycles (src/agent/cycle.ts) -----------------------------------
     //
     // starfish_cycles/{incident}_r{n}          one cycle: its state, stage and lease holder.

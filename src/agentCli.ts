@@ -34,6 +34,7 @@ import { createGitCheckout, createLoader } from "./agent/assemble.js";
 import { runCycle } from "./agent/loop.js";
 import { countCyclesStartedToday, runAgentPass, selectCandidates } from "./agent/pass.js";
 import { reconcilePullRequests } from "./agent/reconcile.js";
+import { recordIntegrations } from "./agent/integrations.js";
 import { agentPreflight } from "./agent/preflight.js";
 import { createCloudRunJobStarter, createGcsStore } from "./agent/cloudRunJob.js";
 import { createRemoteVerifier } from "./agent/verifyRemote.js";
@@ -73,6 +74,10 @@ if (!resolved.actionsAllowed) {
   process.exit(1);
 }
 const cfg = resolved.config;
+// Tell the Settings page which credentials this job holds (booleans only; best effort, the pass does not depend on it).
+if (!(await recordIntegrations(db, cfg, { github: token !== undefined, slackOnCall: slackOnCall !== undefined, slackAlerts: slackAlerts !== undefined, twilio: twilioCredentials !== undefined }))) {
+  console.warn("agent: could not record which integrations are configured; the Settings page will not show it.");
+}
 // Preflight again on what the pass will actually use: an admin can turn the dry run off from Settings (#137).
 const refusedAtRuntime = agentPreflight(cfg, token);
 if (refusedAtRuntime.length > 0) {
