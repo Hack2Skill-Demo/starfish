@@ -18,6 +18,11 @@
 #   FIRESTORE_LOCATION   where the database is created if it does not exist. Default REGION
 #   SCHEDULE             cron for the ingest tick. Default "0 * * * *" (hourly); "*/5 * * * *" for a demo
 #   SCHEDULE_TIME_ZONE   Default Etc/UTC
+#   INGEST_RUN_BUDGET_SECONDS  how long one ingest run may work (STARFISH_INGEST_RUN_BUDGET_SECONDS, #221). Default 480.
+#                        The job's task timeout is this plus 120 s, and the admin API's request timeout (its "Run ingest
+#                        now" is the same run) at least that, so a stalled read is recorded as a failed run before the
+#                        process is killed. Set here, never in EXTRA_ENV_VARS, so the budget and the timeouts can't
+#                        disagree. At most 3480: a Cloud Run request may last no longer than an hour
 #   EXTRA_ENV_VARS       more engine settings for the job, "@"-separated: "STARFISH_MODEL=x@STARFISH_LOOKBACK_HOURS=6"
 #                        (see .env.example for every name; "@" so a value can hold commas). Each name once: a name the
 #                        script already sets, or one set twice, is refused. Added to the agent's and the admin API's too.
@@ -117,6 +122,7 @@ STARFISH_DATABASE_ID="${STARFISH_DATABASE_ID:-starfish}"
 FIRESTORE_LOCATION="${FIRESTORE_LOCATION:-$REGION}"
 SCHEDULE="${SCHEDULE:-0 * * * *}"
 SCHEDULE_TIME_ZONE="${SCHEDULE_TIME_ZONE:-Etc/UTC}"
+INGEST_RUN_BUDGET_SECONDS="${INGEST_RUN_BUDGET_SECONDS:-480}"
 EXTRA_ENV_VARS="${EXTRA_ENV_VARS:-}"
 DEPLOY_AGENT="${DEPLOY_AGENT:-0}"
 AGENT_REPO="${AGENT_REPO:-}"
@@ -198,6 +204,21 @@ for var in EXTRA_ENV_VARS AGENT_EXTRA_ENV_VARS; do
     *@STARFISH_MONITORING_ENABLED=*) die "$var may not set STARFISH_MONITORING_ENABLED: set STARFISH_MONITORING_ENABLED=true for the script, which also grants the role it needs" ;;
   esac
 done
+# The run budget (#221): the timeouts of whatever runs the ingest are derived from it below, so it is set only here.
+case "$INGEST_RUN_BUDGET_SECONDS" in
+  ''|*[!0-9]*|0*) die "INGEST_RUN_BUDGET_SECONDS must be a whole number of seconds above zero: $INGEST_RUN_BUDGET_SECONDS" ;;
+esac
+[ "$INGEST_RUN_BUDGET_SECONDS" -le 3480 ] ||
+  die "INGEST_RUN_BUDGET_SECONDS may not exceed 3480: the admin API runs the same ingest within one request, and Cloud Run ends a request after an hour"
+for var in EXTRA_ENV_VARS AGENT_EXTRA_ENV_VARS; do
+  case "@${!var}" in
+    *@STARFISH_INGEST_RUN_BUDGET_SECONDS=*) die "$var may not set STARFISH_INGEST_RUN_BUDGET_SECONDS: set INGEST_RUN_BUDGET_SECONDS for the script, which derives the job's and the admin API's timeouts from it" ;;
+  esac
+done
+# The process needs time beyond the budget: to start, to read the settings and the state, and to write last_run after a
+# window was given up. Two minutes of it; the admin API keeps its 15 minutes unless the budget needs more.
+INGEST_TASK_TIMEOUT_SECONDS=$((INGEST_RUN_BUDGET_SECONDS + 120))
+ADMIN_TIMEOUT_SECONDS=$((INGEST_TASK_TIMEOUT_SECONDS > 900 ? INGEST_TASK_TIMEOUT_SECONDS : 900))
 [ "$STARFISH_DATABASE_ID" != "(default)" ] ||
   die "STARFISH_DATABASE_ID=(default) is refused: deploying firestore.rules to the default database would replace the watched app's own rules"
 # A Firestore database id: 4 to 63 lowercase letters, digits and hyphens, starting with a letter. It is written into the
@@ -310,6 +331,8 @@ ENV_VARS="GOOGLE_CLOUD_PROJECT=$PROJECT_ID@STARFISH_WATCHED_PROJECT_ID=$WATCHED_
 ENV_VARS="$ENV_VARS@GOOGLE_CLOUD_LOCATION=$REGION@STARFISH_ENV=$STARFISH_ENV@STARFISH_DATABASE_ID=$STARFISH_DATABASE_ID"
 # The job is told its own schedule only so the UI can say when the next run is expected (#38).
 ENV_VARS="$ENV_VARS@STARFISH_INGEST_SCHEDULE=$SCHEDULE"
+# The run budget, under the task timeout and the admin API's request timeout derived from it (#221).
+ENV_VARS="$ENV_VARS@STARFISH_INGEST_RUN_BUDGET_SECONDS=$INGEST_RUN_BUDGET_SECONDS"
 # Always set, false included, so a redeploy with it off turns off a job deployed with it on (--update-env-vars keeps
 # a name it is not given).
 ENV_VARS="$ENV_VARS@STARFISH_MONITORING_ENABLED=$STARFISH_MONITORING_ENABLED"
@@ -575,7 +598,7 @@ step "Cloud Run job '$JOB_NAME' (image built from the Dockerfile)"
 DEPLOY_ARGS=(
   gcloud run jobs deploy "$JOB_NAME" --source . --region="$REGION" --project="$PROJECT_ID" --quiet
   --service-account="$ENGINE_SA"
-  --max-retries=0 --task-timeout=600s --cpu=1 --memory=512Mi
+  --max-retries=0 --task-timeout="${INGEST_TASK_TIMEOUT_SECONDS}s" --cpu=1 --memory=512Mi
   --update-env-vars="^@^$ENV_VARS"
 )
 # No secret is mounted on the ingest job (#146). An existing job may carry the token an earlier version of this script
@@ -776,7 +799,7 @@ if [ "$DEPLOY_ADMIN_API" = "1" ]; then
     gcloud run deploy "$ADMIN_SERVICE_NAME" --image="$ADMIN_IMAGE" --region="$REGION" --project="$PROJECT_ID" --quiet
     --service-account="$ADMIN_SA"
     --args=node,--import,tsx,src/adminApiCli.ts
-    --allow-unauthenticated --max-instances=2 --concurrency=8 --timeout=900 --cpu=1 --memory=512Mi
+    --allow-unauthenticated --max-instances=2 --concurrency=8 --timeout="$ADMIN_TIMEOUT_SECONDS" --cpu=1 --memory=512Mi
     --update-env-vars="^@^$ADMIN_ENV"
   )
   # Twilio (#37): the admin API serves Twilio's webhooks (checked against the auth token) and texts the opt-in codes.

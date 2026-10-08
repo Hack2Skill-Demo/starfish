@@ -151,7 +151,8 @@ src/
     window         (start, end] windows: pure planning; ids come from the boundaries
     run            one scheduled run: resolve runtime settings (refuses on an unusable document with no
                    last-good), replay the pending window or plan the next, advance the checkpoint only
-                   after it all commits, write last_run. State per (watched project, environment)
+                   after it all commits, write last_run. State per (watched project, environment). Bounded by a
+                   run budget (`STARFISH_INGEST_RUN_BUDGET_SECONDS`) the deploy's timeouts are derived from (#221)
   agent/triage.ts  stage 1 of the agent loop (#8): act/notify/decline for one incident; deterministic
                    gates before the model, local validation after it; run by `pnpm agent` (deployable, never run)
   agent/fixer.ts   stage 2: minimal patch or honest decline from a stubbed-testable model call;

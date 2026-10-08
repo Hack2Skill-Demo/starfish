@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { judgeSmoke, SMOKE_FUNCTION, type SmokeIncident } from "./smokeCheck.js";
 
@@ -26,5 +27,22 @@ describe("judgeSmoke", () => {
   it("finds the fresh one among stale ones", () => {
     const v = judgeSmoke([inc({ id: "old", lastOccurredAt: new Date("2026-10-01T00:00:00Z") }), inc({ id: "new" })], T);
     expect(v).toEqual({ ok: true, incidentId: "new" });
+  });
+});
+
+describe("readSmokeIncidents' index (#224)", () => {
+  it("is declared in firestore.indexes.json: the ordered lookup needs (environment, functionName, lastOccurredAt desc)", () => {
+    const file = JSON.parse(readFileSync(new URL("../firestore.indexes.json", import.meta.url), "utf8")) as {
+      indexes: { collectionGroup: string; queryScope: string; fields: { fieldPath: string; order?: string }[] }[];
+    };
+    expect(file.indexes).toContainEqual({
+      collectionGroup: "incidents",
+      queryScope: "COLLECTION",
+      fields: [
+        { fieldPath: "environment", order: "ASCENDING" },
+        { fieldPath: "functionName", order: "ASCENDING" },
+        { fieldPath: "lastOccurredAt", order: "DESCENDING" },
+      ],
+    });
   });
 });

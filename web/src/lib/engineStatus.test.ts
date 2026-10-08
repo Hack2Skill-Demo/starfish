@@ -123,6 +123,14 @@ describe("judgeRun", () => {
     expect(judge(run({ environment: "prod" }), "demo")).toBe("never");
     expect(judgeRun(run({ environment: "prod" }), "demo", NOW, 90).run).toBeNull();
   });
+
+  it("a refusal on unusable settings is failed whatever environment it names: it records the env default's (#223)", () => {
+    const refusal = run({ environment: "dev", outcome: "failed", error: "settings-unusable", problems: ["settings read failed: 14"] });
+    expect(judgeRun(refusal, "demo", NOW, 90)).toEqual({ state: "failed", run: refusal });
+    expect(judge({ ...refusal, environment: "demo" })).toBe("failed");
+    // Only that refusal: another failure recorded for another environment is still not this one's run.
+    expect(judge({ ...refusal, error: "TimeoutError" })).toBe("never");
+  });
 });
 
 describe("nextRunAt", () => {
@@ -147,6 +155,8 @@ describe("agreement with pnpm status", () => {
     ["stale", stored({ finishedAt: ts(NOW - 91 * 60_000) }), "demo"],
     ["capped", stored({ capped: true }), "demo"],
     ["another environment", stored(), "prod"],
+    ["a settings refusal for another environment (#223)", stored({ outcome: "failed", error: "settings-unusable", environment: "dev" }), "demo"],
+    ["another failure for another environment", stored({ outcome: "failed", error: "TimeoutError", environment: "dev" }), "demo"],
     ["no environment recorded", stored({ environment: undefined }), "demo"],
     ["an unknown outcome", stored({ outcome: "exploded" }), "demo"],
     ["no finish time", stored({ finishedAt: undefined }), "demo"],

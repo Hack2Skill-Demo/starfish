@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { describeStatus, judgeRun, parseRunRecord, totalIncidents, unmetMinimums, type RunRecord } from "./status.js";
+import { SETTINGS_UNUSABLE } from "./settingsSchema.js";
 
 const NOW = new Date("2026-10-10T12:00:00Z");
 const minutesAgo = (m: number) => new Date(NOW.getTime() - m * 60_000);
@@ -39,6 +40,14 @@ describe("judgeRun", () => {
   it("is never for a run recorded for another environment, however healthy (#190)", () => {
     expect(judgeRun(run({ environment: "staging" }), "demo", NOW, 90)).toBe("never");
     expect(judgeRun(run({ environment: "staging", outcome: "failed" }), "demo", NOW, 90)).toBe("never");
+  });
+
+  it("is failed for a refusal on unusable settings, whatever environment it names: it records the env default's (#223)", () => {
+    const refusal = run({ environment: "dev", outcome: "failed", error: SETTINGS_UNUSABLE, windows: 0 });
+    expect(judgeRun(refusal, "demo", NOW, 90)).toBe("failed");
+    expect(judgeRun({ ...refusal, environment: "demo" }, "demo", NOW, 90)).toBe("failed");
+    // Only that refusal: another failure for another environment is still not this one's run.
+    expect(judgeRun({ ...refusal, error: "TimeoutError" }, "demo", NOW, 90)).toBe("never");
   });
 });
 
@@ -148,5 +157,16 @@ describe("describeStatus", () => {
     const r = describeStatus({ run: run({ environment: "staging" }), now: NOW, staleMinutes: 90, environment: "demo", counts: {} });
     expect(r.state).toBe("never");
     expect(r.lines[0]).toBe('engine: never recorded a run for "demo" (the last run recorded was for "staging")');
+  });
+
+  it("reports a refusal on unusable settings as this deployment's failure, whatever environment it names (#223)", () => {
+    const refusal = run({ environment: "dev", outcome: "failed", error: SETTINGS_UNUSABLE, problems: ["settings read failed: 14"] });
+    const r = describeStatus({ run: refusal, now: NOW, staleMinutes: 90, environment: "demo", counts: {} });
+    expect(r.state).toBe("failed");
+    const text = r.lines.join("\n");
+    expect(text).toContain("engine: failed.");
+    expect(text).toContain(`failed with: ${SETTINGS_UNUSABLE}`);
+    expect(text).toContain("the runtime settings could not be used");
+    expect(text).toContain("runtime settings not used: settings read failed: 14");
   });
 });

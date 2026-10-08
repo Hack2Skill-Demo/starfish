@@ -24,14 +24,24 @@
  * coming back re-read the lookback under new window ids, counting every occurrence in it twice. A
  * deployment from before this keeps its checkpoint: the single `{runCollection}/state` it wrote is
  * read while its target matches and no per-target document exists, and is moved to the per-target
- * one by the first write (`LEGACY_STATE_DOC`).
+ * one by the first write (`LEGACY_STATE_DOC`). A window pending in that document is taken as written (#222).
  *
  * No run on settings it cannot trust (#198): when the settings document could not be read or is
  * invalid and no earlier one is known good (`actionsAllowed` false), the env defaults may name
  * another project or environment than the admin chose, and reading it would write its incidents into
  * the store as if they were the chosen target's. The run reads nothing, records a failed last_run
- * (`settings-unusable`), and the CLI exits non-zero. No settings document at all is not that: the env
- * defaults are then the configuration, and the run goes ahead.
+ * (`settings-unusable`), and the CLI exits non-zero. That record names the env default's environment,
+ * which may not be the one the UI and `pnpm status` judge against; both read it as failed whatever its
+ * environment (#223). No settings document at all is not that: the env defaults are then the
+ * configuration, and the run goes ahead.
+ *
+ * A bounded run (#221): one run works for at most `ingestRunBudgetSeconds`. It starts no new window once
+ * most of that is spent (the next run carries on from the checkpoint), and gives up on a window's read at
+ * whatever is left of it, so a stalled read is recorded as a failed last_run while the process is still
+ * alive. Whatever runs the ingest must allow more than the budget: scripts/deploy-gcp.sh derives the
+ * Cloud Run job's task timeout and the admin API's request timeout from it. What the deadline bounds is
+ * the window's read and upserts; the settings read, the state transactions and the last_run write around
+ * it are not timed.
  *
  * `{runCollection}/last_run` is the outcome of the latest run, for the UI: when it ran, over
  * what, what it found, whether it was capped or failed. It holds counts and field names, never
@@ -46,12 +56,13 @@ import { aggregateErrors, type AggregateDeps, type AggregationResult } from "./a
 import { planWindow, windowOf, type IngestWindow, type WindowPlan } from "./window.js";
 import { cronIntervalMinutes } from "./cadence.js";
 import { abortIfClosed } from "./store.js";
+import { SETTINGS_UNUSABLE } from "../settingsSchema.js";
 
 /** The single state document of a deployment from before per-target state (#198): read for migration only. */
 export const LEGACY_STATE_DOC = "state";
 export const LAST_RUN_DOC = "last_run";
-/** The `error` a run records when it refused to run on settings it cannot trust. */
-export const SETTINGS_UNUSABLE = "settings-unusable";
+/** The `error` a run records when it refused to run on settings it cannot trust (defined with the settings schema). */
+export { SETTINGS_UNUSABLE };
 
 /**
  * The state document of one (watched project, environment) target. Hashed because both are free
@@ -100,14 +111,26 @@ export interface RunDeps {
   aggregate: (db: Firestore, config: StarfishConfig, window: IngestWindow, deps: AggregateDeps) => Promise<AggregationResult>;
   /** Longest one window may take before the run gives up on it. */
   windowTimeoutMs?: number;
+  /** How long the whole run may work (#221). Default: the config's `ingestRunBudgetSeconds`. */
+  runBudgetMs?: number;
+  /** Milliseconds since the epoch, for the run budget. Default `Date.now`. */
+  clock?: () => number;
 }
 
 /**
  * A read that never finishes would hold the scheduler's slot and record nothing. After this long
  * the run gives up on the window, records the failure, and leaves the window pending so the next
  * run replays it (the store recognises whatever the abandoned read still managed to commit).
+ * Never longer than what is left of the run budget (#221): a deadline past it would fire only after
+ * the task timeout had already killed the process, and no failed `last_run` would be written.
  */
 export const WINDOW_TIMEOUT_MS = 10 * 60_000;
+/**
+ * No new window is started once less than this share of the run budget is left (#221): a window started
+ * on the last scraps of it would only be given up, and recorded as a failure, though nothing stalled.
+ * The first window is always started; the next run carries on where this one stopped.
+ */
+export const MIN_BUDGET_SHARE_FOR_NEW_WINDOW = 0.25;
 
 const defaultDeps: RunDeps = { aggregate: aggregateErrors };
 
@@ -143,8 +166,11 @@ export async function runIngest(
   now: Date = new Date(),
   deps: RunDeps = defaultDeps
 ): Promise<RunSummary> {
+  const clock = deps.clock ?? Date.now;
+  const startedMs = clock();
   const resolved = await loader.resolve(db);
   const { config } = resolved;
+  const budgetMs = deps.runBudgetMs ?? config.ingestRunBudgetSeconds * 1000;
   const runs = db.collection(config.runCollection);
 
   const summary: RunSummary = {
@@ -172,6 +198,9 @@ export async function runIngest(
     };
 
     for (let i = 0; i < MAX_WINDOWS_PER_RUN; i++) {
+      // The run budget (#221): with most of it spent, stop here and leave the rest to the next run.
+      const leftMs = budgetMs - (clock() - startedMs);
+      if (i > 0 && leftMs < budgetMs * MIN_BUDGET_SHARE_FOR_NEW_WINDOW) break;
       // A state that can't be read stops the run: starting over from the lookback would re-read
       // time that was already counted, and nothing could tell the difference.
       const claimed = await claimWindow(db, refs, plan);
@@ -180,7 +209,9 @@ export async function runIngest(
 
       summary.window = { start: window.start, end: window.end };
       const writes = { mayNarrow: claimed.writesBegun !== true, beginWrites: () => beginWrites(db, refs, window) };
-      const result = await withDeadline(deps.aggregate(db, config, window, { writes }), deps.windowTimeoutMs ?? WINDOW_TIMEOUT_MS);
+      // Given up at whichever comes first: the window's own limit or the end of the run budget.
+      const deadlineMs = Math.max(0, Math.min(deps.windowTimeoutMs ?? WINDOW_TIMEOUT_MS, budgetMs - (clock() - startedMs)));
+      const result = await withDeadline(deps.aggregate(db, config, window, { writes }), deadlineMs);
       if (result.superseded) continue;
       if (result.narrowedTo) {
         // A capped read wrote nothing: replay the part it covered in full, and leave the rest of the
@@ -228,8 +259,17 @@ function stateRefs(runs: CollectionReference, target: RunState["target"]): State
 async function readState(tx: Transaction, refs: StateRefs): Promise<{ state: RunState; fromLegacy: boolean }> {
   const [own, legacy] = await Promise.all([tx.get(refs.ref), tx.get(refs.legacy)]);
   if (own.exists) return { state: parseState(own, refs.target), fromLegacy: false };
-  if (legacy.exists && belongsTo(legacy, refs.target)) return { state: parseState(legacy, refs.target), fromLegacy: true };
+  if (legacy.exists && belongsTo(legacy, refs.target)) return { state: fromLegacyState(parseState(legacy, refs.target)), fromLegacy: true };
   return { state: { target: refs.target }, fromLegacy: false };
+}
+
+/**
+ * A pending window in the legacy document counts as written (#222): the code that wrote it predates `writesBegun`
+ * (#199) and never recorded it, so an attempt may have committed occurrences under its id. Narrowing it would count
+ * them again under the narrowed window's new id; processing it as read, flagged capped, counts nothing twice.
+ */
+function fromLegacyState(state: RunState): RunState {
+  return state.pending ? { ...state, pending: { ...state.pending, writesBegun: true } } : state;
 }
 
 function writeState(tx: Transaction, refs: StateRefs, state: RunState, fromLegacy: boolean): void {

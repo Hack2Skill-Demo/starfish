@@ -2,10 +2,11 @@
  * What the engine says about its own last run (`{runCollection}/last_run`, written by
  * src/ingest/run.ts) and how the UI judges it.
  *
- * Only firebase/firestore is imported, so the reader can be exercised without the web config.
+ * Only firebase/firestore and the pure settings schema are imported, so the reader can be exercised without the web config.
  * The record holds counts and labels, never log text, because guests may read it.
  */
 import { doc, getDoc, type Firestore } from "firebase/firestore";
+import { SETTINGS_UNUSABLE } from "../../../src/settingsSchema";
 
 export const LAST_RUN_DOC = "last_run";
 
@@ -77,10 +78,14 @@ export interface EngineHealth {
 
 /**
  * Worst first: a failed last run, then a stopped engine, then a read that hit the cap, then healthy.
- * A run recorded for another environment is not this environment's run (the label was changed).
+ * A run recorded for another environment is not this environment's run (the label was changed). Except a run that
+ * refused to start because the runtime settings could not be used (#223): it records the env default's environment,
+ * since the one an admin chose could not be read, so it is failed whatever environment it names, as in `pnpm status`.
  */
 export function judgeRun(run: LastRun | null, environment: string, nowMs: number, staleAfterMinutes: number): EngineHealth {
-  if (!run || run.environment !== environment) return { state: "never", run: null };
+  if (!run) return { state: "never", run: null };
+  if (run.outcome === "failed" && run.error === SETTINGS_UNUSABLE) return { state: "failed", run };
+  if (run.environment !== environment) return { state: "never", run: null };
   if (run.outcome === "failed") return { state: "failed", run };
   if (nowMs - run.finishedAt.getTime() > staleAfterMinutes * 60_000) return { state: "stale", run };
   if (run.capped) return { state: "capped", run };

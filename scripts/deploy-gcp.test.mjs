@@ -409,6 +409,48 @@ describe("scripts/deploy-gcp.sh", () => {
       expect(deploy({ ...dry, EXTRA_ENV_VARS: "STARFISH_MONITORING_RESOURCE_TYPES=cloud_function" }).status).toBe(0);
     });
   });
+
+  describe("the ingest run budget and the timeouts above it (#221)", () => {
+    const admin = { ...dry, DEPLOY_ADMIN_API: "1", ADMIN_API_ORIGINS: "https://site.web.app" };
+    const lineOf = (out, text) => out.split("\n").find((l) => l.includes(text)) ?? "";
+    const seconds = (line, flag) => Number(line.match(new RegExp(`${flag}=(\\d+)s?(?:\\s|$)`))?.[1]);
+    const budgetOf = (line) => Number(line.match(/@STARFISH_INGEST_RUN_BUDGET_SECONDS=(\d+)/)?.[1]);
+
+    it.each([[undefined], ["480"], ["900"], ["3480"]])("budget %s: the job's task timeout and the admin API's timeout both exceed it", (budget) => {
+      const r = deploy({ ...admin, ...(budget !== undefined && { INGEST_RUN_BUDGET_SECONDS: budget }) });
+      expect(r.status).toBe(0);
+      const job = lineOf(r.out, "gcloud run jobs deploy starfish-ingest");
+      const service = lineOf(r.out, "gcloud run deploy starfish-admin");
+      const runBudget = budgetOf(job);
+      expect(runBudget).toBe(Number(budget ?? 480));
+      // The ingest job and the admin API run the same ingest with the same budget.
+      expect(budgetOf(service)).toBe(runBudget);
+      // Two minutes over it at least: to start, read the state and record a given-up window as a failed last_run.
+      expect(seconds(job, "--task-timeout")).toBe(runBudget + 120);
+      expect(seconds(service, "--timeout")).toBeGreaterThanOrEqual(runBudget + 120);
+      expect(seconds(service, "--timeout")).toBeLessThanOrEqual(3600);
+    });
+
+    it("keeps today's timeouts by default: 600 s for the job, 900 s for the admin API", () => {
+      const r = deploy(admin);
+      expect(lineOf(r.out, "gcloud run jobs deploy starfish-ingest")).toContain("--task-timeout=600s");
+      expect(lineOf(r.out, "gcloud run deploy starfish-admin")).toContain("--timeout=900");
+    });
+
+    it("refuses a budget that is not a whole number above zero, one no request could hold, and the setting through the extra lists", () => {
+      for (const bad of ["0", "-5", "8m", "007", "3481"]) {
+        const r = deploy({ ...dry, INGEST_RUN_BUDGET_SECONDS: bad });
+        expect(r.status, bad).not.toBe(0);
+        expect(r.out).toContain("INGEST_RUN_BUDGET_SECONDS");
+        expect(r.out).not.toContain("gcloud run jobs deploy");
+      }
+      for (const list of ["EXTRA_ENV_VARS", "AGENT_EXTRA_ENV_VARS"]) {
+        const r = deploy({ ...dry, [list]: "STARFISH_LOOKBACK_HOURS=6@STARFISH_INGEST_RUN_BUDGET_SECONDS=5000" });
+        expect(r.status).not.toBe(0);
+        expect(r.out).toContain(`${list} may not set STARFISH_INGEST_RUN_BUDGET_SECONDS`);
+      }
+    });
+  });
 });
 
 describe("scripts/deploy-gcp.sh: the agent and its isolated verify job (#74), VERIFY_ISOLATION=cloud-run-job", () => {
