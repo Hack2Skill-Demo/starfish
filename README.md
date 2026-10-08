@@ -411,7 +411,8 @@ entry kept) and the text is a fixed template, no model. Merging it is left to a 
 earlier heals (`src/indexheal/observe.ts`): **healed** only when no occurrence was recorded since READY through
 `STARFISH_INDEX_OBSERVE_MINUTES` (plus the ingest lag), ingest's checkpoint shows it read the logs through that window
 (a stalled ingest records no occurrences either, so until it has, the heal keeps observing, and a day later it is
-unverified), and the query still passes at the end; otherwise recurred, query-failing or unverified. Starfish does not measure the traffic in that window (the replayed query stands in for
+unverified), and the query still passes at the end; otherwise recurred, query-failing or unverified. A replay that could
+not run at all (UNAVAILABLE, a permission) decides nothing: the heal keeps observing, and a day later it is unverified. Starfish does not measure the traffic in that window (the replayed query stands in for
 it), and it never resolves the incident itself. Runs and the incident page show the index stage and its runtime state.
 Refusals, the daily cap, a failed build, a query still failing after READY, and an index file it cannot extend go to a
 person (Slack when configured). **Never run:** none of the Admin REST calls, the probe's Firestore query or a real
@@ -425,8 +426,8 @@ close it, since whether the heal held is a person's call. Not built: Gemini writ
 The pieces that act are written and tested, not run: assembling an incident's inputs (`src/agent/assemble.ts`), the
 incident's GitHub issue, and the isolated verify step (`github-actions` or `cloud-run-job`, above) have never run against
 a real project. (Reconsidering a declined incident is written and tested against the emulator:
-the same cycle is triaged again on an operator's retriage request, a burst or a new structural cause, after a cooldown
-and under a cap; the rules accept the request, but no UI button sends one, and it has never run on a real project.) What is left is running them, gated on one question the
+the same cycle is triaged again on an operator's retriage request, a burst or a new structural cause, or when an
+incident closed while it was worked on is reopened, after a cooldown and under a cap; the rules accept the request, but no UI button sends one, and it has never run on a real project.) What is left is running them, gated on one question the
 [spike](docs/spike.md) exists to answer — does Gemini actually produce the patch a human
 wrote?
 

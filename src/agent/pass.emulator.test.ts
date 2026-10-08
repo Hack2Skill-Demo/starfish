@@ -7,7 +7,7 @@ import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { deleteApp, initializeApp } from "firebase-admin/app";
 import { Timestamp, getFirestore } from "firebase-admin/firestore";
 import type { Firestore } from "firebase-admin/firestore";
-import { countCyclesStartedToday, selectCandidates, type PassConfig } from "./pass.js";
+import { countCyclesStartedToday, findStrandedCycles, selectCandidates, type PassConfig } from "./pass.js";
 
 if (!process.env.FIRESTORE_EMULATOR_HOST) {
   throw new Error("pass.emulator.test.ts needs the Firestore emulator: run `pnpm test:emulator`");
@@ -85,6 +85,28 @@ describe("selectCandidates", () => {
     expect(ids(await selectCandidates(db, cfg, 2))).toEqual(["open0:0", "open1:0"]);
   });
 
+  it("pages past newer settled incidents to an older open one (#226)", async () => {
+    // Fifteen newer incidents whose cycles are settled fill the first page of a limit of 3 (3 x 5).
+    for (let i = 0; i < 15; i++) {
+      await incident(`settled${i}`, { lastOccurredAt: ts(i) });
+      await cycle(`settled${i}_r0`, "waiting-human");
+    }
+    await incident("older", { lastOccurredAt: ts(120) });
+    expect(ids(await selectCandidates(db, cfg, 3))).toEqual(["older:0"]);
+  });
+
+  it("stops at its read budget and says so (#226)", async () => {
+    for (let i = 0; i < 6; i++) await incident(`closed${i}`, { status: "resolved", lastOccurredAt: ts(i) });
+    await incident("beyond", { lastOccurredAt: ts(120) });
+    const capped: number[] = [];
+    expect(await selectCandidates(db, cfg, 1, { maxScanned: 6, onScanCapped: (n) => capped.push(n) })).toEqual([]);
+    expect(capped).toEqual([6]);
+    // Under the budget, the end of the store is not a cap.
+    const notCapped: number[] = [];
+    expect(ids(await selectCandidates(db, cfg, 1, { onScanCapped: (n) => notCapped.push(n) }))).toEqual(["beyond:0"]);
+    expect(notCapped).toEqual([]);
+  });
+
   it("treats a bad recurrence count as zero, and asks for nothing when the limit is not a positive whole number", async () => {
     await incident("odd", { recurrenceCount: -2 });
     expect(ids(await selectCandidates(db, cfg, 5))).toEqual(["odd:0"]);
@@ -109,6 +131,37 @@ describe("selectCandidates", () => {
     expect(picked.map((c) => `${c.incidentId}:${c.reconsider}`).sort()).toEqual(["asked:operator", "burst:burst"]);
     // Without the policy a decline stays settled.
     expect(await selectCandidates(db, cfg, 10)).toEqual([]);
+  });
+});
+
+describe("findStrandedCycles (#226)", () => {
+  it("finds the running cycles nobody holds whose deadline passed or whose attempts ran out, and nothing else", async () => {
+    const now = new Date();
+    const at = (minutes: number) => Timestamp.fromMillis(now.getTime() + minutes * 60_000);
+    const put = (id: string, over: Record<string, unknown>) =>
+      db.collection(cfg.cycleCollection).doc(id).set({
+        incidentId: id.replace(/_r\d+$/, ""),
+        environment: "demo",
+        recurrence: 0,
+        state: "running",
+        attempts: 1,
+        owner: null,
+        leaseExpiresAt: null,
+        deadlineAt: at(60),
+        updatedAt: at(-5),
+        ...over,
+      });
+    await put("late_r0", { deadlineAt: at(-1) });
+    await put("spent_r0", { attempts: 3 });
+    await put("paused_r0", { attempts: 3, resumeUncounted: true }); // released by the kill switch: no attempt used
+    await put("held_r0", { deadlineAt: at(-1), owner: "w", leaseExpiresAt: at(2) }); // its holder's to finish
+    await put("retry_r0", { attempts: 2 }); // a later pass resumes it
+    await put("done_r0", { state: "done", deadlineAt: at(-1) });
+    await put("prod_r0", { environment: "prod", deadlineAt: at(-1) });
+    await put("misnamed_r0", { incidentId: "other", deadlineAt: at(-1) });
+    const found = await findStrandedCycles(db, cfg, now);
+    expect(found.map((k) => k.incidentId).sort()).toEqual(["late", "spent"]);
+    expect(found[0]).toMatchObject({ environment: "demo", recurrence: 0 });
   });
 });
 

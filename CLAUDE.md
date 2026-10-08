@@ -181,8 +181,10 @@ src/
                    MERGE (deploy completion is not observable; counted by the hour, so an error that keeps firing past
                    the window is still seen) -> revert PR of Starfish's own merge commit, merged on
                    green checks; a later change to the same files escalates; a revert is never reverted
-  agent/pass.ts    one pass over the store: candidate selection, stack trace → repo files, bounded driver; the daily
-                   cycle cap (`STARFISH_MAX_CYCLES_PER_DAY`, a count of cycles started that UTC day)
+  agent/pass.ts    one pass over the store: candidate selection (paged past closed/settled incidents, bounded, a cap
+                   reported, #226), stack trace → repo files, bounded driver; the daily cycle cap
+                   (`STARFISH_MAX_CYCLES_PER_DAY`, a count of cycles started that UTC day); a sweep that gives up and
+                   announces `running` cycles nobody holds whose deadline passed or attempts ran out
   agent/reconcile.ts  after the pass (#17): polls a bounded number of opened PRs (state + named checks on the head), records
                    `summary.prState` via cycle.ts `recordPrState` (no lease; never changes the cycle's state; newest read wins;
                    merged is final; never marks an incident healed; copies the state to the incident's `githubPrState`).
@@ -190,7 +192,8 @@ src/
   agent/incidentLinks.ts  copies the issue and PR (number, URL, state) from the cycle onto the incident for the UI's links (#194):
                    only those fields, only while the incident is in the cycle's recurrence; never its status
   agent/reconsider.ts  when a DECLINED cycle is triaged again (#8): an operator's `retriageRequestedAt`, a burst, or a new
-                   structural cause since the recorded decision; cooldown + cap per 24 h; never over ignored/resolved.
+                   structural cause since the recorded decision, or an incident closed mid-cycle and reopened (#227);
+                   cooldown + cap per 24 h; never over ignored/resolved.
                    cycle.ts reopens the same cycle in the lease transaction, so still one issue and one PR per recurrence
   agent/assemble.ts  one incident's inputs: shallow clone at a pinned revision, counter-check, samples, files the trace names
   scoreboard/      the results format (strict parser), the metrics (ratios keep numerator and denominator; an error or timeout counts

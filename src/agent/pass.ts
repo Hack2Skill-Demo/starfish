@@ -7,10 +7,10 @@
  * deploys it with a separate verify job, because the verify gate runs the target repository's own tests (candidate
  * code) and `verifyGate.ts` is not a sandbox: with `cloud-run-job` isolation the agent never runs them itself.
  */
-import type { DocumentSnapshot, Firestore } from "firebase-admin/firestore";
+import type { DocumentSnapshot, Firestore, QueryDocumentSnapshot } from "firebase-admin/firestore";
 import type { StarfishConfig } from "../config.js";
 import { OPEN_INCIDENT_STATUSES } from "../types.js";
-import { cycleId, type CycleConfig, type CycleState } from "./cycle.js";
+import { cycleId, strandedReason, type CycleConfig, type CycleKey, type CycleState } from "./cycle.js";
 import { reconsiderTrigger, utcDay, type ReconsiderPolicy, type ReconsiderTrigger } from "./reconsider.js";
 import { isExcludedPath } from "./verifyGate.js";
 import type { LoopResult } from "./loop.js";
@@ -30,36 +30,70 @@ const SETTLED: readonly CycleState[] = ["done", "declined", "waiting-human", "fa
 
 const OPEN: readonly string[] = OPEN_INCIDENT_STATUSES;
 
-/** Incidents scanned per candidate wanted: most of a page is closed or already has a settled cycle. */
+/** Incidents read per page, per candidate wanted: most of a page is closed or already has a settled cycle. */
 const SCAN_FACTOR = 5;
-const MAX_SCAN = 500;
+const MAX_PAGE = 500;
+/**
+ * The most incidents one selection reads, over all its pages (#226). Closed and settled incidents sort among the open
+ * ones, so the scan pages on past them; this bounds it, and with it what a pass over a store with nothing to do reads.
+ * Reached: `onScanCapped` says so, and the open incidents beyond it wait for a pass in which fewer newer ones are in the way.
+ */
+export const MAX_SCANNED = 500;
 
 /**
- * Open incidents of this environment that have no settled cycle for their current recurrence, newest
- * activity first, at most `limit`. A cycle that is absent or still `running` is a candidate (the loop's
- * lease decides whether another worker holds it). A `declined` one is too, with `opts.reconsider`, when new
- * evidence arrived since its decision (reconsider.ts; the lease acquire checks again in its transaction).
- * An operator-retired incident is never one, nor a seeded synthetic one. Uses the same (environment, lastOccurredAt) index as the
- * incidents list, so it needs no new index.
+ * Open incidents of this environment that have no settled cycle for their current recurrence, newest activity first,
+ * at most `limit`. A cycle that is absent or still `running` is a candidate (the loop's lease decides whether another
+ * worker holds it). A `declined` one is too, with `opts.reconsider`, when new evidence arrived since its decision
+ * (reconsider.ts; the lease acquire checks again in its transaction). An operator-retired incident is never one, nor a
+ * seeded synthetic one.
+ *
+ * The incidents are read newest activity first, a page at a time, until `limit` candidates are found, the store has no
+ * more, or `MAX_SCANNED` (or a lower `opts.maxScanned`) incidents were read (#226): an open incident older than many closed or settled ones is still
+ * found. Hitting that bound is reported through `opts.onScanCapped`, never silent. Uses the same (environment,
+ * lastOccurredAt) index as the incidents list, so it needs no new index.
  */
 export async function selectCandidates(
   db: Firestore,
   cfg: PassConfig,
   limit: number,
-  opts: { reconsider?: ReconsiderPolicy; now?: Date } = {}
+  opts: { reconsider?: ReconsiderPolicy; now?: Date; onScanCapped?: (scanned: number) => void; maxScanned?: number } = {}
 ): Promise<Candidate[]> {
   if (!Number.isInteger(limit) || limit < 1) return [];
-  const scan = Math.min(limit * SCAN_FACTOR, MAX_SCAN);
-  const snap = await db
-    .collection(cfg.incidentCollection)
-    .where("environment", "==", cfg.environment)
-    .orderBy("lastOccurredAt", "desc")
-    .limit(scan)
-    .get();
+  const maxScanned = Math.max(1, Math.min(opts.maxScanned ?? MAX_SCANNED, MAX_SCANNED));
+  const pageSize = Math.min(limit * SCAN_FACTOR, MAX_PAGE);
+  const now = opts.now ?? new Date();
+  const out: Candidate[] = [];
+  let scanned = 0;
+  let after: QueryDocumentSnapshot | undefined;
+  for (;;) {
+    const size = Math.min(pageSize, maxScanned - scanned);
+    let query = db.collection(cfg.incidentCollection).where("environment", "==", cfg.environment).orderBy("lastOccurredAt", "desc").limit(size);
+    if (after) query = query.startAfter(after);
+    const snap = await query.get();
+    scanned += snap.size;
+    await collectCandidates(db, cfg, snap.docs, limit, now, opts.reconsider, out);
+    if (out.length >= limit || snap.size < size) return out;
+    if (scanned >= maxScanned) {
+      opts.onScanCapped?.(scanned);
+      return out;
+    }
+    after = snap.docs[snap.docs.length - 1];
+  }
+}
 
+/** One page of incidents: the open ones whose cycle is not settled (or may be reconsidered) go into `out`, up to `limit`. */
+async function collectCandidates(
+  db: Firestore,
+  cfg: PassConfig,
+  docs: readonly QueryDocumentSnapshot[],
+  limit: number,
+  now: Date,
+  reconsider: ReconsiderPolicy | undefined,
+  out: Candidate[]
+): Promise<void> {
   const open: Candidate[] = [];
   const incidents = new Map<string, Record<string, unknown>>();
-  for (const doc of snap.docs) {
+  for (const doc of docs) {
     const d = doc.data();
     // A seeded synthetic incident (seedDemo.ts) is never worked on, whatever its cycle says (#192).
     if (d.retired === true || d.synthetic === true || !OPEN.includes(String(d.status))) continue;
@@ -69,23 +103,50 @@ export async function selectCandidates(
     open.push({ incidentId: doc.id, recurrence });
     incidents.set(doc.id, d);
   }
-  if (open.length === 0) return [];
+  if (open.length === 0) return;
 
   const refs = open.map((c) => db.collection(cfg.cycleCollection).doc(cycleId({ incidentId: c.incidentId, environment: cfg.environment, recurrence: c.recurrence })!));
   const cycles: DocumentSnapshot[] = await db.getAll(...refs);
-  const out: Candidate[] = [];
-  const now = opts.now ?? new Date();
   open.forEach((c, i) => {
     const data = cycles[i]?.data();
     const state = data?.state as CycleState | undefined;
-    if (state === "declined" && data && opts.reconsider) {
-      const trigger = reconsiderTrigger(data, incidents.get(c.incidentId), opts.reconsider, now);
+    if (state === "declined" && data && reconsider) {
+      const trigger = reconsiderTrigger(data, incidents.get(c.incidentId), reconsider, now);
       if (trigger !== null && out.length < limit) out.push({ ...c, reconsider: trigger });
       return;
     }
     if (state !== undefined && SETTLED.includes(state)) return;
     if (out.length < limit) out.push(c);
   });
+}
+
+/** The most `running` cycles one sweep reads. */
+export const MAX_STRANDED_SCAN = 100;
+
+/**
+ * `running` cycles of this environment that nobody holds and that can only be given up (#226): their deadline passed, or
+ * their attempts ran out (cycle.ts `strandedReason`). A released cycle is otherwise given up only when the candidate scan
+ * selects it again, and one whose incident went quiet may never be; the sweep finds it so a person is told
+ * (loop.ts `giveUpStranded`). Read through the (environment, state, updatedAt desc) index the escalation's scan uses,
+ * at most `MAX_STRANDED_SCAN`: what it gives up leaves the running set, so a later sweep reaches the rest.
+ */
+export async function findStrandedCycles(db: Firestore, cfg: Pick<PassConfig, "environment" | "cycleCollection" | "maxCycleAttempts">, now: Date): Promise<CycleKey[]> {
+  const snap = await db
+    .collection(cfg.cycleCollection)
+    .where("environment", "==", cfg.environment)
+    .where("state", "==", "running")
+    .orderBy("updatedAt", "desc")
+    .limit(MAX_STRANDED_SCAN)
+    .get();
+  const out: CycleKey[] = [];
+  for (const doc of snap.docs) {
+    const d = doc.data();
+    if (strandedReason(d, now, cfg.maxCycleAttempts) === null) continue;
+    const key = { incidentId: String(d.incidentId), environment: cfg.environment, recurrence: Number(d.recurrence) };
+    // Only a cycle whose own fields name it: anything else is not this file's to give up.
+    if (cycleId(key) !== doc.id) continue;
+    out.push(key);
+  }
   return out;
 }
 
@@ -207,6 +268,10 @@ export interface PassSummary {
   skipped?: "automation-disabled" | "daily-cap";
   /** The daily cycle cap, and how many cycles had been started today before this pass. Absent when no cap is given. */
   daily?: { cap: number; startedBefore: number };
+  /** Stranded `running` cycles the sweep gave up (#226), each announced. Absent when no sweep is given. */
+  gaveUp?: { incidentId: string; reason: string }[];
+  /** The sweep itself failed (the store): redacted. The pass went on without it. */
+  sweepError?: string;
 }
 
 /** Stop after this many cycles in a row threw: the thing they depend on is probably down. */
@@ -231,6 +296,12 @@ export interface PassDeps {
    * starts, so together they could pass it by up to one pass's `maxCycles`. Absent: no daily cap.
    */
   daily?: { cap: number; startedToday: () => Promise<number> };
+  /**
+   * Gives up the `running` cycles nobody holds whose deadline passed or whose attempts ran out, and tells a person about
+   * each (#226; pass.ts `findStrandedCycles`, loop.ts `giveUpStrandedCycles`). Run once per pass, after the kill switch
+   * and before the daily cap: it starts no cycle. Absent: such a cycle is given up only when it is selected again.
+   */
+  sweep?: () => Promise<{ incidentId: string; reason: string }[]>;
 }
 
 /**
@@ -244,17 +315,25 @@ export async function runAgentPass(deps: PassDeps): Promise<PassSummary> {
   if (deps.automationEnabled && !(await deps.automationEnabled())) {
     return { considered: 0, ran: 0, results: [], errors: [], aborted: false, skipped: "automation-disabled" };
   }
+  const swept: Pick<PassSummary, "gaveUp" | "sweepError"> = {};
+  if (deps.sweep) {
+    try {
+      swept.gaveUp = await deps.sweep();
+    } catch (err) {
+      swept.sweepError = deps.describeError(err);
+    }
+  }
   let limit = deps.maxCycles;
   let daily: PassSummary["daily"];
   if (deps.daily) {
     const startedBefore = await deps.daily.startedToday();
     daily = { cap: deps.daily.cap, startedBefore };
     const left = Math.floor(deps.daily.cap - startedBefore);
-    if (left < 1) return { considered: 0, ran: 0, results: [], errors: [], aborted: false, skipped: "daily-cap", daily };
+    if (left < 1) return { considered: 0, ran: 0, results: [], errors: [], aborted: false, skipped: "daily-cap", daily, ...swept };
     limit = Math.min(limit, left);
   }
   const candidates = await deps.select(limit);
-  const summary: PassSummary = { considered: candidates.length, ran: 0, results: [], errors: [], aborted: false, ...(daily && { daily }) };
+  const summary: PassSummary = { considered: candidates.length, ran: 0, results: [], errors: [], aborted: false, ...(daily && { daily }), ...swept };
   let streak = 0;
   for (const candidate of candidates.slice(0, limit)) {
     summary.ran += 1;

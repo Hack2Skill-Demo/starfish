@@ -78,6 +78,21 @@ describe("reconsiderTrigger", () => {
     expect(trigger({ state: "declined" }, { ...baseIncident, retriageRequestedAt: at(1) })).toBeNull(); // no time at all
   });
 
+  it("a cycle stopped because the incident was closed is triaged again once a person reopens it, after the cooldown, under the cap (#227)", () => {
+    const stopped = (outcome: string, over: Record<string, unknown> = {}) => ({ state: "declined", recurrence: 0, outcome, updatedAt: at(60), ...over });
+    // Still closed: the operator's close wins.
+    expect(trigger(stopped("incident-ignored"), { ...baseIncident, status: "ignored" })).toBeNull();
+    // Reopened (ignored -> new, or a resolve undone).
+    expect(trigger(stopped("incident-ignored"), baseIncident)).toBe("reopened");
+    expect(trigger(stopped("incident-resolved"), { ...baseIncident, status: "acknowledged" })).toBe("reopened");
+    // Within the cooldown of the stop, or past the daily cap: not yet.
+    expect(trigger(stopped("incident-ignored", { updatedAt: at(10) }), baseIncident)).toBeNull();
+    expect(trigger(stopped("incident-ignored", { reconsideredAt: [at(600), at(300), at(90)] }), baseIncident)).toBeNull();
+    // An incident that could not be read was closed by nobody; a model decline without a decision has no baseline.
+    expect(trigger(stopped("incident-gone"), baseIncident)).toBeNull();
+    expect(trigger(stopped("model-decline"), baseIncident)).toBeNull();
+  });
+
   it("ignores malformed counts and request times instead of throwing", () => {
     expect(trigger(declined({}, { occurrenceCount: "5" }), { ...baseIncident, occurrenceCount: 500 })).toBeNull();
     expect(trigger(declined(), { ...baseIncident, retriageRequestedAt: "yesterday" })).toBeNull();

@@ -144,6 +144,8 @@ describe("agentPreflight", () => {
     verifyTimeoutSeconds: 600,
     leaseSeconds: 300,
     cycleDeadlineMinutes: 360,
+    autoMerge: false,
+    autoMergeTargets: [] as string[],
   };
   it("lets a fully configured dry run start", () => expect(agentPreflight(ok, undefined)).toEqual([]));
   it("refuses with no isolation chosen, no command, no repo", () => {
@@ -177,6 +179,17 @@ describe("agentPreflight", () => {
     const ci = { ...ok, verifyIsolation: "github-actions" as const, verifyChecks: ["verify"] };
     expect(agentPreflight({ ...ci, cycleDeadlineMinutes: 49 }, "t")[0]).toMatch(/50 minutes/);
     expect(agentPreflight({ ...ci, cycleDeadlineMinutes: 60 }, "t")).toEqual([]);
+  });
+  it("counts auto-merge's extra fails-before verify run in the deadline where auto-merge can apply (#235)", () => {
+    // github-actions waits 1200 s per verify; with auto-merge two per try: 2 * (2 * 1200 + 300) s = 90 min.
+    const ci = { ...ok, verifyIsolation: "github-actions" as const, verifyChecks: ["verify"], dryRun: false, cycleDeadlineMinutes: 60 };
+    const merging = { ...ci, autoMerge: true, autoMergeTargets: ["A/B"] };
+    expect(agentPreflight(ci, "t")).toEqual([]);
+    expect(agentPreflight(merging, "t")[0]).toMatch(/STARFISH_CYCLE_DEADLINE_MINUTES is 60: shorter than twice two verify waits.*90 minutes/);
+    expect(agentPreflight({ ...merging, cycleDeadlineMinutes: 90 }, "t")).toEqual([]);
+    // Not this target, or a dry run: no "fails before" run, so the plain bound applies.
+    expect(agentPreflight({ ...merging, autoMergeTargets: ["a/other"] }, "t")).toEqual([]);
+    expect(agentPreflight({ ...merging, dryRun: true }, "t")).toEqual([]);
   });
   it("refuses a lease too short to outlast a model call", () => {
     expect(agentPreflight({ ...ok, leaseSeconds: 59 }, undefined)[0]).toMatch(/STARFISH_LEASE_SECONDS is 59/);
