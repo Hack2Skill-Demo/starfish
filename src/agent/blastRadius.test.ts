@@ -4,7 +4,7 @@
  */
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { assessBlastRadius, excludedPathCategories, isTestPath, judgedTheVerifiedFiles, parsePatch, testOnlyPatch, type BlastRadiusConfig } from "./blastRadius.js";
+import { assessBlastRadius, excludedLineCategories, excludedPathCategories, isTestPath, judgedTheVerifiedFiles, parsePatch, testOnlyPatch, type BlastRadiusConfig } from "./blastRadius.js";
 
 /**
  * The base revision of every file a patch changes, as the patch's own old side: each hunk's context and removed lines
@@ -184,7 +184,8 @@ describe("assessBlastRadius: a `\\ No newline at end of file` marker only at the
 
   it("refuses a marker on the old side when the base file does end with a line end, and a hunk after a marked one", () => {
     const end = ["--- a/src/documents.ts", "+++ b/src/documents.ts", "@@ -5,5 +5,6 @@", "   await assertCanRead(req.user, doc);", '   log("ok");', '   log("returning");', "+  if (doc == null) return;", "   return doc;", " }", MARK].join("\n") + "\n";
-    expect(atBase(end, documents.slice(0, -1))).toMatchObject({ problems: [] }); // the base really has no line end: fine
+    // The base really has no line end: the marker is fine (the access check in the function refuses it anyway).
+    expect(atBase(end, documents.slice(0, -1)).problems).not.toContain("no-newline-marker");
     expect(atBase(end, documents).problems).toContain("no-newline-marker");
     const twoHunks = ["--- a/x.ts", "+++ b/x.ts", "@@ -1 +1 @@", "-a", "+b", MARK, "@@ -5 +5 @@", "-c", "+d"].join("\n") + "\n";
     expect(parsePatch(twoHunks)![0]!.unusual).toContain("no-newline-marker");
@@ -572,6 +573,99 @@ describe("assessBlastRadius: the whole function in the base file, not only the c
     ];
     const fix = diff(path, hunk, false).replace("@@ -1,", `@@ -${at - 2},`).replace(" +1,", ` +${at - 2},`);
     expect(gate(fix, { baseFiles: new Map([[path, excerpt + "\n"]]) })).toMatchObject({ allowed: true, fixClass: "firestore-undefined-field", problems: [] });
+  });
+});
+
+describe("assessBlastRadius: an added guard is a statement of its own (review of #238)", () => {
+  const at = (before: string[], after: string[]) => gate(diff(SRC, [...before, "+  if (data.items == null) return null;", ...after]));
+  it.each([
+    // The review's proof: the guard becomes the `if`'s body, and `push` runs for everyone.
+    ["a braceless if", ['   if (user.plan === "pro")'], ['     features.push("export");']],
+    ["an else", ["   if (user.plan) x();", "   else"], ['     features.push("export");']],
+    ["a braceless for", ["   for (const f of list)"], ["     f.run();"]],
+    ["a braceless while", ["   while (queue.length > 0)"], ["     queue.pop();"]],
+    ["a do", ["   do"], ["     queue.pop();", "   while (queue.length > 0);"]],
+    ["a label", ["   outer:"], ["   for (const f of list) f.run();"]],
+    ["a case", ["   switch (kind) {", '   case "a":'], ["     run();"]],
+    ["a line that does not end a statement", ["   const total = items.length +"], ["     extra;"]],
+    ["a braceless if behind a blank line and a comment", ['   if (user.plan === "pro")', " ", "   // the export"], ['     features.push("export");']],
+  ])("refuses a guard after %s", (_name, before, after) => {
+    const r = at(before, after);
+    expect(r.allowed).toBe(false);
+    expect(r.problems).toContain("not-an-allowed-class");
+  });
+
+  it("refuses a guard an `else` would attach to", () => {
+    const r = gate(diff(SRC, ["  if (user.plan) x();", "+  if (data.items == null) return null;", "   else y();"]));
+    expect(r.allowed).toBe(false);
+  });
+
+  it("refuses a guard when the hunk shows no line before it and does not start the file", () => {
+    const blankLead = ["--- a/src/x.ts", "+++ b/src/x.ts", "@@ -4,6 +4,7 @@", " ", " // a", " ", "+  if (data == null) return;", "   run(data);", "   run(data);", "   run(data);"].join("\n") + "\n";
+    const base = ["export function f(data) {", "  run(data);", "  run(data);", "", "// a", "", "  run(data);", "  run(data);", "  run(data);", "}"].join("\n") + "\n";
+    expect(gate(blankLead, { baseFiles: new Map([["src/x.ts", base]]) }).problems).toContain("not-an-allowed-class");
+  });
+
+  it("still allows a guard after a statement, a block's start or end, and after a comment that follows one", () => {
+    expect(at(["   const x = 1;"], ["   return x;"]).allowed).toBe(true);
+    expect(at(["   if (x) {", "     y();", "   }"], ["   return x;"]).allowed).toBe(true);
+    expect(at(["   const x = 1;", "   // the items"], ["   return x;"]).allowed).toBe(true);
+  });
+});
+
+describe("assessBlastRadius: a check written as a call (review of #202)", () => {
+  it("refuses a guard above an access check that decides by throwing, not by comparing", () => {
+    // The review's proof: no if, return, throw or comparison on these lines, and still they are the check.
+    const r = gate(diff(SRC, ["  const doc = await load(id);", "+  if (doc.meta == null) return;", "   await requireAdmin(context);", "   await assertIsOwner(context.uid, doc);"]));
+    expect(r.allowed).toBe(false);
+    expect(r.problems).toContain("excluded:access-control");
+  });
+
+  it.each(["await assertCanRead(req.user, doc);", "checkAccess(user, doc);", "ensureMember(team, user);", "verifyRequest(req);", "const ok = canEdit(user, doc);", "requireUid(req);"])(
+    "refuses a guard in a function that calls `%s` anywhere",
+    (call) => {
+      const FILE = "functions/src/docs/read.ts";
+      const base = ["export async function read(id, user, doc, req, team) {", `  ${call}`, "  const a = 1;", "  const b = 2;", "  const c = 3;", "  const meta = doc.meta;", "  log(meta);", "  const d = 4;", "  const e = 5;", "  const f = 6;", "  return meta;", "}"].join("\n") + "\n";
+      const hunk = ["--- a/" + FILE, "+++ b/" + FILE, "@@ -4,6 +4,7 @@", "   const b = 2;", "   const c = 3;", "   const meta = doc.meta;", "+  if (meta == null) return null;", "   log(meta);", "   const d = 4;", "   const e = 5;"].join("\n") + "\n";
+      const r = gate(hunk, { baseFiles: new Map([[FILE, base]]) });
+      expect(r.allowed).toBe(false);
+      expect(r.problems).toContain("excluded:access-control");
+    }
+  );
+
+  it("does not take `cancel` or `scanner` for a check", () => {
+    expect(excludedLineCategories("cancelOrder(id);")).toEqual([]);
+    expect(excludedLineCategories("const scanner = makeScanner();")).toEqual([]);
+  });
+});
+
+describe("assessBlastRadius: a class judges code, never the inside of a string, regex or comment (review of #239)", () => {
+  it.each([
+    ["`?.` inside a string", '-  log("orders.hold");', '+  log("orders?.hold");'],
+    ["`?.` inside a regular expression", "-  const re = /a.b/;", "+  const re = /a?.b/;"],
+    ["`?.` inside a comment", "-  x(); // a.b", "+  x(); // a?.b"],
+    ["`await` inside a string", '-  run("(save())");', '+  run("(await save())");'],
+    ["`?? null` inside a template", "-  log(`a.b`);", "+  log(`a?.b ?? null`);"],
+  ])("refuses %s", (_name, minus, plus) => {
+    const r = gate(diff(SRC, ["  const o = get(id);", minus, plus, "   return o;"]));
+    expect(r.allowed).toBe(false);
+    expect(r.problems).toContain("not-an-allowed-class");
+  });
+
+  it("refuses a `?.` that would skip a call: the chain short-circuits it, and the function goes on", () => {
+    for (const [minus, plus] of [
+      ['-  flags.isOn("orders.hold");', '+  flags?.isOn("orders.hold");'],
+      ["-  order.items.push(item);", "+  order?.items.push(item);"],
+      ["-  ref.update(data);", "+  ref?.update(data);"],
+      ["-  hooks.onSave(order);", "+  hooks.onSave?.(order);"],
+    ]) {
+      expect(gate(diff(SRC, ["  const o = get(id);", minus!, plus!, "   return o;"])).allowed, plus).toBe(false);
+    }
+  });
+
+  it("still allows `?.` on a read, a string left as it is beside it, and `await` before a call", () => {
+    expect(gate(diff(SRC, ["  const o = get(id);", '-  const n = f(o.items.length, "a.b");', '+  const n = f(o.items?.length ?? null, "a.b");', "   return n;"])).allowed).toBe(true);
+    expect(gate(diff(SRC, ["  const ref = doc(id);", '-  ref.set({ s: "x" });', '+  await ref.set({ s: "x" });', "   return ref.id;"])).allowed).toBe(true);
   });
 });
 

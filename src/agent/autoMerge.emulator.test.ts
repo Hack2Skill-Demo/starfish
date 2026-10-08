@@ -389,6 +389,22 @@ describe("runAutoMergeStep: merges only what every switch and gate allows", () =
     }
   });
 
+  it("does not merge a second fix while another is being merged, or was merged with no watch recorded", async () => {
+    for (const [name, earlier] of [
+      ["merging", { merge: { state: "merging", claimedAt: t0.toISOString(), claimedBy: "other" } }],
+      ["merged, no watch", { merge: { state: "merged", mergeSha: MERGED } }],
+    ] as const) {
+      const summary = proven(earlier as Record<string, Record<string, unknown>>);
+      delete summary.revert;
+      await seed("inc1_r0", summary);
+      await seed("inc1_r1", proven(), { recurrence: 1 });
+      const gh = fakeGithub();
+      await runAutoMergeStep(mergeDeps(gh.client));
+      expect(gh.merges, name).toEqual([]);
+      expect((await cycle("inc1_r1")).summary.merge, name).toMatchObject({ state: "skipped", reason: "incident-merge-watched" });
+    }
+  });
+
   it("merges a later fix once the earlier merge's watch closed clear", async () => {
     await seed("inc1_r0", proven({ merge: { state: "merged", mergeSha: MERGED }, revert: { state: "clear", mergeSha: MERGED } }));
     await seed("inc1_r1", proven(), { recurrence: 1 });

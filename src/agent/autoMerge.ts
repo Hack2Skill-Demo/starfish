@@ -353,6 +353,8 @@ const SKIP_WORDS: Record<string, string> = {
   "incident-merge-watched": "Starfish merged a fix for this incident earlier, and that merge is still being watched for the incident coming back (or being reverted); a second fix must not take the revert's place.",
 };
 
+/** The most merged cycles of one incident read to confirm each one's watch closed clear. */
+const MERGED_READ_CAP = 20;
 /** Where an earlier merge's watch has not ended: it may still revert. */
 const REVERT_OPEN_STATES = ["watching", "opening", "pending", "merging"];
 /** Where an earlier merge was reverted, or its revert went to a person. */
@@ -362,12 +364,19 @@ const REVERT_DONE_STATES = ["reverted", "escalated"];
  * Why an earlier Starfish merge for this incident holds a new one back, or null. `incident-merge-watched`: an earlier
  * merge's fast-revert watch has not ended, so the incident coming back now is that merge failing, and its revert, not a
  * second fix, is what follows (#240). `incident-reverted-before`: Starfish already reverted one (or a person was handed
- * its revert). A watch that closed `clear` holds nothing back. Equality queries only.
+ * its revert). A watch that closed `clear` holds nothing back. `self`, the cycle asking, never holds itself back (two
+ * passes racing on one candidate). Equality queries only.
  */
-export async function earlierMergeHolds(db: Firestore, cfg: Pick<CycleConfig, "cycleCollection">, incidentId: string): Promise<string | null> {
+export async function earlierMergeHolds(db: Firestore, cfg: Pick<CycleConfig, "cycleCollection">, incidentId: string, self?: string): Promise<string | null> {
   const cycles = db.collection(cfg.cycleCollection).where("incidentId", "==", incidentId);
-  if (!(await cycles.where("summary.revert.state", "in", REVERT_OPEN_STATES).limit(1).get()).empty) return "incident-merge-watched";
-  if (!(await cycles.where("summary.revert.state", "in", REVERT_DONE_STATES).limit(1).get()).empty) return "incident-reverted-before";
+  const others = async (q: typeof cycles, limit: number) => (await q.limit(limit + 1).get()).docs.filter((d) => d.id !== self).slice(0, limit);
+  if ((await others(cycles.where("summary.revert.state", "in", REVERT_OPEN_STATES), 1)).length > 0) return "incident-merge-watched";
+  if ((await others(cycles.where("summary.revert.state", "in", REVERT_DONE_STATES), 1)).length > 0) return "incident-reverted-before";
+  // A merge under way has no watch yet; a merge recorded with no watch at all is not known to have been watched to the
+  // end. Either holds the next one back. More merged cycles than are read here: not certain, so held as well.
+  if ((await others(cycles.where("summary.merge.state", "==", "merging"), 1)).length > 0) return "incident-merge-watched";
+  const merged = await others(cycles.where("summary.merge.state", "==", "merged"), MERGED_READ_CAP);
+  if (merged.length >= MERGED_READ_CAP || merged.some((d) => rec(rec(d.data().summary).revert).state !== "clear")) return "incident-merge-watched";
   return null;
 }
 
@@ -458,7 +467,7 @@ export async function runAutoMergeStep(deps: AutoMergeDeps): Promise<AutoMergeSu
     if (!gate2.pass) return skip(`gate2:${gate2.failedChecks.join(",")}`);
 
     // An earlier merge for this incident still watched, or already reverted: a second try goes to a person (#240).
-    const held = await earlierMergeHolds(db, cfg, incidentId);
+    const held = await earlierMergeHolds(db, cfg, incidentId, cycle.id);
     if (held !== null) return skip(held);
 
     const pr = await readPr(number);

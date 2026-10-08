@@ -77,20 +77,29 @@ changed block one class: *null guard* (an early `return;`, `return null`, `retur
 `x === undefined`, `x == undefined`, `typeof x === "undefined"`, or `||` of those; never `!x`, which
 is also true for 0, `""`, `false` and `NaN`, and never `return true` or another value, which is a
 change to what the function decides; the guard ended by its own `;` or a block, so JavaScript cannot
-join the next line onto its `return`; or `?.`/`?? null`/`?? undefined` added to an otherwise unchanged
-line, the default ending its expression (not `a ?? null + b`) and never on a line that compares or does
-arithmetic, where null and undefined differ; any other default, `?? 0` or `?? true`, is a value the code
-then decides on wherever it lands),
+join the next line onto its `return`, and a statement of its own: the line before it (blank lines and
+comments skipped) ends in `;`, `{` or `}`, never a braceless `if (…)`, `else`, `for`, `while`, `do`, a
+label or a `case`, whose body the guard would become, and no `else` after it; or `?.`/`?? null`/
+`?? undefined` added to an otherwise unchanged line, the default ending its expression (not
+`a ?? null + b`) and never on a line that compares or does arithmetic, where null and undefined differ;
+any other default, `?? 0` or `?? true`, is a value the code then decides on wherever it lands; and no
+`?.` with a call after it on the line, since a missing value skips the call and the function goes on),
 *missing `await`* (`await ` added to an otherwise unchanged call), *Firestore `undefined` field*
-(`key: v` becomes `...(v !== undefined && { key: v })` or `key: v ?? null`, `v` a plain reference, never a call). The hard-exclude list
+(`key: v` becomes `...(v !== undefined && { key: v })` or `key: v ?? null`, `v` a plain reference, never a call). A changed
+line is judged on its code: its strings, templates, regular expressions and comments must be byte for byte
+the same, and a `?.`, `??` or `await` inside one is a changed literal, not the class. The hard-exclude list
 matches path words (access control includes owner, guard, policy, App Check, verify and can) and
 changed lines: auth and access control, security rules, money paths, secrets and crypto, schema,
 dependencies and lockfiles (and any import or require), CI and deploy config, shared packages, plus
-`STARFISH_PATCH_EXCLUDED_PATHS` and `STARFISH_AUTO_MERGE_EXCLUDED_PATHS`. Access control, money and
-secrets are also matched on every statement that decides something (a comparison, a condition, a
-`return` or a `throw`) in the **whole enclosing function as the base revision has it**, not only in
-the context lines the patch's author chose to show: a guard anywhere above an ownership check
-changes that check. The loop reads the changed file from its checkout of the base revision (no
+`STARFISH_PATCH_EXCLUDED_PATHS` and `STARFISH_AUTO_MERGE_EXCLUDED_PATHS`; access words on a line include
+checks written as calls (`assert…`, `ensure…`, `verify…`, `…access…`, `can…`, `require…`). Access
+control, money and secrets are also matched in the **whole enclosing function as the base revision has
+it**, not only in the context lines the patch's author chose to show: a guard anywhere above an ownership
+check changes that check. For a null guard (it leaves early, or a `?.` goes on where the code threw) that
+is every statement naming one, since a check can decide by being called and throwing
+(`await requireAdmin(context);`); for a missing `await` or a Firestore field, which never skip a
+statement, only the statements that decide something (a comparison, a condition, a `return` or a
+`throw`), so the order's owner written in a field (`uid,`) does not refuse the demo's fix. The loop reads the changed file from its checkout of the base revision (no
 symbolic link, within a size cap); gate 1 refuses when that content is missing or does not hold the
 hunk's lines. The function is found with a scanner, not a parser (strings, templates, comments and
 regular expressions skipped; the top-level statement around the change, so a class method is judged

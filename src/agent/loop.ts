@@ -389,7 +389,7 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
     const autoMergeOn = async (): Promise<boolean> => !cfg.dryRun && deps.autoMergeAllowed !== undefined && (await deps.autoMergeAllowed());
     // An earlier Starfish merge for this incident still watched, or reverted: its revert, not a second fix, is what
     // follows, so nothing is prepared for merging this one (#240). The merge step asks again before any merge.
-    const mergeHeldBy = async (): Promise<string | null> => earlierMergeHolds(db, cfg, key.incidentId);
+    const mergeHeldBy = async (): Promise<string | null> => earlierMergeHolds(db, cfg, key.incidentId, id);
 
     // The incident's GitHub issue: one per cycle Starfish acts on or escalates, none for a declined one. Recorded on the
     // cycle (`summary.issue`) so a resumed attempt reuses it, and so a failure is visible and not silent.

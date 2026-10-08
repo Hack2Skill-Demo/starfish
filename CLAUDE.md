@@ -165,12 +165,14 @@ src/
                    the candidate (`summary.merge` pending); it never merges itself. Gate 1 holds only if its files are
                    exactly the files the verify gate saw change
   agent/blastRadius.ts  auto-merge gate 1 (#9), pure: a conservative diff classifier (null guard on an explicit null/undefined
-                   check, never `!x`, that leaves with nothing or throws, ended by `;` or a block; `?.` and only `?? null`/
-                   `?? undefined`, never on a line that compares or does arithmetic; missing await; Firestore undefined
-                   field; one file, one hunk with 3 lines of context, one function; paths in git's a/ b/ form, no rename;
+                   check, never `!x`, that leaves with nothing or throws, ended by `;` or a block, after a line that ends
+                   a statement; `?.` (never before a call) and only `?? null`/`?? undefined`, never on a line that
+                   compares or does arithmetic; missing await; Firestore undefined field; literals and comments
+                   unchanged; one file, one hunk with 3 lines of context, one function; paths in git's a/ b/ form, no rename;
                    no control characters; a `\ No newline` marker only at a file's end; tests only as new files) and the hard-exclude list (auth, rules, money, secrets, schema,
                    dependencies/imports, CI/config, shared code; access control, money and secrets also on every deciding
-                   statement of the whole enclosing function in the base file, which the loop passes in). Unsure is never
+                   statement of the whole enclosing function in the base file, which the loop passes in, and for a null
+                   guard on every statement naming one, a check written as a call included). Unsure is never
                    allowed
   agent/autoMerge.ts  the switches (`mergeBlockedBy`), gate 2 (`certaintyGate`, pure over the run record; the stack
                    frame matched against the checkout's whole file list) and the merge step after the pass: fresh

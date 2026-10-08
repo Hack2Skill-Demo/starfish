@@ -25,18 +25,23 @@
  *     (`autoMergeExcludedPaths`). Access control, money and secrets are also checked on every statement that DECIDES
  *     something (a comparison, a condition, a return or a throw) in the whole enclosing function as the base revision
  *     has it, not only in the context the patch's author chose to show: a guard added above an ownership check is a
- *     change to that check (#202). Without that base content, or when it does not hold the hunk's lines, nothing passes;
+ *     change to that check (#202). For a null guard, which can skip a statement, EVERY statement naming one counts: a
+ *     check can decide by being called and throwing (`await requireAdmin(context);`). Without that base content, or when
+ *     it does not hold the hunk's lines, nothing passes;
  *   - every changed block of the source file is ONE allowed class, the same one throughout:
  *       null-guard                 an early exit added when a value is null or undefined, said so explicitly
  *                                  (`if (order == null) return null;`, `=== undefined`, `typeof x === "undefined"`, and
  *                                  `||` of those; never `!x`, which is also true for 0, "", false and NaN): `return;`,
  *                                  `return null`, `return undefined` or a `throw`, never a value that changes what the
- *                                  function decides (`return true`, #202), ended by its own `;` or a block (#238); or
- *                                  `?.` / `?? null` / `?? undefined` added to a line that is otherwise unchanged, a
- *                                  `??` never on a line that compares or does arithmetic (#239);
+ *                                  function decides (`return true`, #202), ended by its own `;` or a block (#238), and
+ *                                  after a line that ends a statement (never the body of a braceless `if`/`else`/loop);
+ *                                  or `?.` / `?? null` / `?? undefined` added to a line that is otherwise unchanged, a
+ *                                  `??` never on a line that compares or does arithmetic (#239), a `?.` never before a
+ *                                  call it would skip;
  *       missing-await              `await ` added to a line that is otherwise unchanged;
  *       firestore-undefined-field  a field written as `key: value` becomes `...(value !== undefined && { key: value })`
  *                                  or `key: value ?? null`.
+ *     A changed line is judged on its code: its strings, templates, regular expressions and comments must not change.
  *
  * Each classifier is deliberately narrow and literal: what it cannot recognise with certainty it refuses. UNSURE IS
  * NOT ALLOWED. A refusal here never blocks the pull request; it only means a person merges it.
@@ -297,7 +302,10 @@ export function excludedPathCategories(path: string): string[] {
 /** What a changed line of production code must never mention. Matched on the line's text, case-insensitively. */
 const LINE_RULES: readonly [string, RegExp][] = [
   ["dependencies", /^\s*(import|export)\b|\brequire\s*\(|\bimport\s*\(/],
-  ["access-control", /auth|token|\brole|permission|admin|claim|password|session|login|credential|\buid\b|\bacl\b|rbac|jwt|allow|deny|isOwner|owner|appcheck|\bpolic(?:y|ies)\b/i],
+  ["access-control", /auth|token|\brole|permission|admin|claim|password|session|login|credential|\buid\b|\bacl\b|rbac|jwt|allow|deny|isOwner|owner|appcheck|\bpolic(?:y|ies)\b|access|assert|ensure|verify/i],
+  // A check written as a call (`canRead(…)`, `requireAdmin(…)`, `userCanEdit`): case matters here, or `cancel` would
+  // be one (review of #202). Wider is the safe direction.
+  ["access-control", /(?:^|[^A-Za-z])can[A-Z]|Can[A-Z]|(?:^|[^A-Za-z])require[A-Z]|Require[A-Z]/],
   ["money", /payment|billing|invoice|\bcharge|checkoutSession|stripe|paypal|refund|payout|wallet|subscription|price|amount|currency|balance|ledger|\btax/i],
   ["secrets", /secret|api_?key|apikey|private_?key|crypto|encrypt|decrypt|signature|hmac|cipher|process\.env|\bkey\b/i],
   ["schema", /schema|migration|createIndex|setRules|\bindex(es)?\b/i],
@@ -308,11 +316,17 @@ const LINE_RULES: readonly [string, RegExp][] = [
  * money or secrets word in it (`return doc.ownerId === user.uid;`, `if (!context.auth)`, `if (order.amount > 0)`) it is
  * such a check, and a guard added in the same function changes what that check is reached with (#202). Text that only
  * carries such a word (`uid,` in a write, `const total = priceItems(items);`) decides nothing.
+ *
+ * That holds for a change that never leaves early. A null guard does (an added exit, or a `?.` that turns a throw into
+ * going on): it can skip a check that DECIDES by being called and throwing (`await requireAdmin(context);`,
+ * `assertIsOwner(uid, doc)`), with no condition in sight. So for the null-guard class, and for a change of no certain
+ * class, ANY statement naming access control, money or a secret counts (`wide`).
  */
 const DECIDING = /[!=]==?|[<>]=?|&&|\|\||\?|\b(if|return|throw|while|case)\b/;
 const DECISION_CATEGORIES = ["access-control", "money", "secrets"];
 const DECISION_RULES = LINE_RULES.filter(([category]) => DECISION_CATEGORIES.includes(category));
-const decisionCategories = (text: string): string[] => (DECIDING.test(text) ? DECISION_RULES.filter(([, re]) => re.test(text)).map(([c]) => c) : []);
+const decisionCategories = (text: string, wide: boolean): string[] =>
+  wide || DECIDING.test(text) ? DECISION_RULES.filter(([, re]) => re.test(text)).map(([c]) => c) : [];
 
 export function excludedLineCategories(text: string): string[] {
   return LINE_RULES.filter(([, re]) => re.test(text)).map(([category]) => category);
@@ -536,9 +550,9 @@ function enclosingText(base: string, lo: number, hi: number): string {
  * The decision categories (access control, money, secrets) of the statements in `text`: split at `;`, `{` and `}`, so a
  * condition written over several lines (`if (\n  !context.auth\n)`) is read whole.
  */
-function decisionsIn(text: string): string[] {
+function decisionsIn(text: string, wide: boolean): string[] {
   const out = new Set<string>();
-  for (const part of text.split(/[;{}]/)) for (const c of decisionCategories(part)) out.add(c);
+  for (const part of text.split(/[;{}]/)) for (const c of decisionCategories(part, wide)) out.add(c);
   return [...out];
 }
 
@@ -570,13 +584,113 @@ const ACTION = String.raw`(?:return(?:\s+(?:null|undefined))?|throw\s+new\s+[A-Z
 const GUARD_RE = new RegExp(
   String.raw`^if\s*\(\s*${MISSING_ATOM}(?:\s*\|\|\s*${MISSING_ATOM})*\s*\)\s*(?:\{\s*${ACTION}\s*;?\s*\}|${ACTION}\s*;)$`
 );
-/** A line that would continue the statement before it if that one had no `;`. A comment does not. */
-const CONTINUES_RE = /^\s*(?:[([`+-]|\/(?![/*]))/;
+/**
+ * A line that would continue the statement before it if that one had no `;` (a comment does not), or that would take the
+ * guard's `if` for its own: an `else` after it attaches to the added `if` (`if (a) x(); +guard else y();`).
+ */
+const CONTINUES_RE = /^\s*(?:[([`+\-.]|else\b|\/(?![/*]))/;
+/**
+ * What the line before an added guard must end with, so the guard is a statement of its own: `;`, `{` or `}`. After a
+ * braceless `if (…)`, `else`, `for (…)`, `while (…)`, `do`, a label or `case x:`, the guard would BECOME that statement's
+ * body and push the statement that was its body out of it, to run every time (the review's `if (user.plan === "pro")`
+ * then `features.push("export")`). After a line that ends in anything else, the guard is not certainly its own statement.
+ */
+const ENDS_STATEMENT_RE = /[;{}]$/;
 
-/** An early exit when a value is missing, added as its own lines, and not followed by a line that could join it. */
-function isAddedGuard(added: readonly string[], next: string | undefined): boolean {
+/**
+ * An early exit when a value is missing, added as its own lines: preceded by a line that ends a statement (`prev`: the
+ * nearest line before it in the new file that is neither blank nor a comment; null at the file's start, undefined when
+ * the hunk does not show one), and not followed by a line that could join it or take its `if`.
+ */
+function isAddedGuard(added: readonly string[], prev: string | null | undefined, next: string | undefined): boolean {
+  if (prev === undefined || (prev !== null && !ENDS_STATEMENT_RE.test(prev.trim()))) return false;
   if (next !== undefined && CONTINUES_RE.test(next)) return false;
   return GUARD_RE.test(norm(added.join(" ")));
+}
+
+/** A line that holds nothing but a comment, or a blank one: not where a statement ends. */
+const isBlankOrComment = (text: string) => /^\s*(?:$|\/\/|\/\*|\*)/.test(text);
+
+/**
+ * One line's code with every string, template, regular-expression literal and comment replaced by a fixed placeholder,
+ * and the literals themselves, in order: a `?.`, `??` or `await` inside a literal is text, not code, and the classes below
+ * judge the code (`isOn("orders.hold")` to `isOn("orders?.hold")` is a changed string, not optional chaining). Null when
+ * the line is not read for certain: an unterminated literal or comment, or a template with `${…}` in it.
+ */
+function lexLine(text: string): { code: string; literals: string[] } | null {
+  const n = text.length;
+  let code = "";
+  const literals: string[] = [];
+  let regexOk = true;
+  let i = 0;
+  while (i < n) {
+    const ch = text[i]!;
+    if (ch === "/" && text[i + 1] === "/") {
+      literals.push(text.slice(i));
+      code += "//";
+      break;
+    }
+    if (ch === "/" && text[i + 1] === "*") {
+      const e = text.indexOf("*/", i + 2);
+      if (e < 0) return null;
+      literals.push(text.slice(i, e + 2));
+      code += "/**/";
+      i = e + 2;
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === "`") {
+      let j = i + 1;
+      for (; j < n && text[j] !== ch; j++) if (text[j] === "\\") j++;
+      if (j >= n) return null;
+      const literal = text.slice(i, j + 1);
+      if (ch === "`" && literal.includes("${")) return null;
+      literals.push(literal);
+      code += ch + ch;
+      i = j + 1;
+      regexOk = false;
+      continue;
+    }
+    if (ch === "/" && regexOk) {
+      let j = i + 1;
+      let inClass = false;
+      for (; j < n; j++) {
+        const c = text[j];
+        if (c === "\\") j++;
+        else if (inClass) inClass = c !== "]";
+        else if (c === "[") inClass = true;
+        else if (c === "/") break;
+      }
+      if (j >= n) return null;
+      j++;
+      while (j < n && /[a-z]/i.test(text[j]!)) j++;
+      literals.push(text.slice(i, j));
+      code += "/_/";
+      i = j;
+      regexOk = false;
+      continue;
+    }
+    if (/[A-Za-z_$]/.test(ch)) {
+      let j = i + 1;
+      while (j < n && /[\w$]/.test(text[j]!)) j++;
+      regexOk = BEFORE_EXPRESSION.has(text.slice(i, j));
+      code += text.slice(i, j);
+      i = j;
+      continue;
+    }
+    if (/[0-9]/.test(ch)) {
+      let j = i;
+      while (j < n && /[\w.]/.test(text[j]!)) j++;
+      code += text.slice(i, j);
+      regexOk = false;
+      i = j;
+      continue;
+    }
+    if (ch === ")" || ch === "]") regexOk = false;
+    else if (!/\s/.test(ch)) regexOk = true;
+    code += ch;
+    i++;
+  }
+  return { code, literals };
 }
 
 const OPTIONAL_RE = /\?\.(?=[[(])|\?\./g;
@@ -590,10 +704,17 @@ const NULLISH_RE = /\s*\?\?\s*(?:null|undefined)\b(?=\s*(?:[)\],;}]|$))/g;
 const NULL_DIFFERS_RE = /[<>]|[!=]==|[-+*/%]/;
 const stripOptional = (s: string) => s.replace(/\?\.(?=[[(])/g, "").replace(/\?\./g, ".").replace(NULLISH_RE, "");
 const markers = (s: string) => count(s, OPTIONAL_RE) + count(s, /\?\?/g);
+/**
+ * The `?.` with a call after it on the line. A missing value short-circuits the whole chain, call included: `order?.items
+ * .push(x)` or `ref?.update({ paid: true })` skips the call and goes on where it used to throw, which is not a null
+ * guard's early exit (a check written as a call would be skipped the same way). Counted wide: any `(` after the `?.`.
+ */
+const callsAfterOptional = (code: string) => [...code.matchAll(/\?\./g)].filter((m) => code.slice(m.index + 2).includes("(")).length;
 
 /** The same line, with `?.` or `?? null` / `?? undefined` added and nothing else. */
 function isOptionalChaining(removed: string, added: string): boolean {
   if (markers(added) <= markers(removed)) return false;
+  if (callsAfterOptional(added) > callsAfterOptional(removed)) return false;
   // Every `??` in the added line must be followed by null or undefined: anything else is a value, or could call anything.
   if (count(added, /\?\?/g) !== count(added, NULLISH_RE)) return false;
   if (count(added, /\?\?/g) > 0 && NULL_DIFFERS_RE.test(stripOptional(added))) return false;
@@ -638,15 +759,23 @@ function isUndefinedField(removed: string, added: string): boolean {
 }
 
 /**
- * The class of one block of consecutive changed lines, or null when it is none of them, or not certainly one. `next` is
- * the line after the block, when the hunk shows one.
+ * The class of one block of consecutive changed lines, or null when it is none of them, or not certainly one. `prev` and
+ * `next` are the lines around the block (see `isAddedGuard`).
  */
-function classifyBlock(removed: readonly string[], added: readonly string[], next: string | undefined): FixClass | null {
-  if (removed.length === 0) return added.length > 0 && isAddedGuard(added, next) ? "null-guard" : null;
+function classifyBlock(removed: readonly string[], added: readonly string[], prev: string | null | undefined, next: string | undefined): FixClass | null {
+  if (removed.length === 0) return added.length > 0 && isAddedGuard(added, prev, next) ? "null-guard" : null;
   if (removed.length !== added.length) return null;
   const classes = new Set<FixClass | null>();
-  removed.forEach((r, i) => {
-    const a = added[i]!;
+  removed.forEach((rawRemoved, i) => {
+    // Judged on the code alone, its literals and comments unchanged byte for byte.
+    const lr = lexLine(rawRemoved);
+    const la = lexLine(added[i]!);
+    if (lr === null || la === null || lr.literals.length !== la.literals.length || lr.literals.some((l, k) => l !== la.literals[k])) {
+      classes.add(null);
+      return;
+    }
+    const r = lr.code;
+    const a = la.code;
     if (isAddedAwait(r, a)) classes.add("missing-await");
     else if (isUndefinedField(r, a)) classes.add("firestore-undefined-field");
     else if (isOptionalChaining(r, a)) classes.add("null-guard");
@@ -717,30 +846,36 @@ export function assessBlastRadius(patch: string, cfg: BlastRadiusConfig): BlastR
   const removed = lines.filter((l) => l.kind === "-");
   if (added.length > MAX_ADDED || removed.length > MAX_REMOVED) problems.add("change-too-large");
   for (const l of [...added, ...removed]) for (const c of excludedLineCategories(l.text)) problems.add(`excluded:${c}`);
-  // The lines around the change are what it changes the meaning of: an early exit right above an ownership check is a
-  // change to that check, whatever the guard's own line says (#202).
-  for (const l of lines) if (l.kind === " ") for (const c of decisionCategories(l.text)) problems.add(`excluded:${c}`);
-  for (const p of baseProblems(src, hunk, first, last, cfg.baseFiles)) problems.add(p);
 
   // Blocks of consecutive changed lines: each must be one class, and all the same one.
   const classes = new Set<FixClass | null>();
-  let block: { removed: string[]; added: string[] } | undefined;
+  let block: { removed: string[]; added: string[]; prev: string | null | undefined } | undefined;
+  // The nearest line before the current one in the NEW file that is neither blank nor a comment; null at the file's start,
+  // undefined when the hunk starts later and shows none.
+  let prev: string | null | undefined = hunk.oldStart <= 1 && hunk.newStart <= 1 ? null : undefined;
   const flush = (next: string | undefined) => {
-    if (block) classes.add(classifyBlock(block.removed, block.added, next));
+    if (block) classes.add(classifyBlock(block.removed, block.added, block.prev, next));
     block = undefined;
   };
   for (const l of lines) {
-    if (l.kind === " ") {
-      flush(l.text);
-      continue;
+    if (l.kind === " ") flush(l.text);
+    else {
+      block ??= { removed: [], added: [], prev };
+      // A removal after an addition in the same run is still one block: git orders a run's removals first anyway.
+      (l.kind === "-" ? block.removed : block.added).push(l.text);
     }
-    block ??= { removed: [], added: [] };
-    // A removal after an addition in the same run is still one block: git orders a run's removals first anyway.
-    (l.kind === "-" ? block.removed : block.added).push(l.text);
+    if (l.kind !== "-" && !isBlankOrComment(l.text)) prev = l.text;
   }
   flush(undefined);
   const fixClass = classes.size === 1 && !classes.has(null) ? [...classes][0]! : undefined;
   if (fixClass === undefined) problems.add(classes.size > 1 && !classes.has(null) ? "mixed-classes" : "not-an-allowed-class");
+
+  // The lines around the change are what it changes the meaning of: an early exit right above an ownership check is a
+  // change to that check, whatever the guard's own line says (#202). A change that can leave early, or skip a call, is
+  // judged on every statement that names access control, money or a secret, not only those that compare (`wide`).
+  const wide = fixClass !== "missing-await" && fixClass !== "firestore-undefined-field";
+  for (const l of lines) if (l.kind === " ") for (const c of decisionCategories(l.text, wide)) problems.add(`excluded:${c}`);
+  for (const p of baseProblems(src, hunk, first, last, cfg.baseFiles, wide)) problems.add(p);
 
   return done({ sourceFile, testFiles, ...(fixClass && { fixClass }) });
 }
@@ -754,7 +889,7 @@ const MIN_CONTEXT = 3;
  * whole function around the change must decide nothing about access control, money or secrets. Fail closed: no base, or
  * one that does not match, is a problem.
  */
-function baseProblems(src: FileDiff, hunk: Hunk, first: number, last: number, baseFiles: ReadonlyMap<string, string> | undefined): string[] {
+function baseProblems(src: FileDiff, hunk: Hunk, first: number, last: number, baseFiles: ReadonlyMap<string, string> | undefined, wide: boolean): string[] {
   const raw = src.oldPath === null ? undefined : baseFiles?.get(src.oldPath);
   if (raw === undefined) return ["base-not-available"];
   if (hasControlCharacter(raw)) return ["control-characters"];
@@ -780,7 +915,7 @@ function baseProblems(src: FileDiff, hunk: Hunk, first: number, last: number, ba
   const oldIndex = (i: number) => start + hunk.lines.slice(0, i).filter((l) => l.kind !== "+").length;
   const lo = Math.max(0, oldIndex(first) - 1);
   const hi = Math.min(base.length - 1, oldIndex(last + 1));
-  for (const c of decisionsIn(enclosingText(base.join("\n"), lo, hi))) out.push(`excluded:${c}`);
+  for (const c of decisionsIn(enclosingText(base.join("\n"), lo, hi), wide)) out.push(`excluded:${c}`);
   return out;
 }
 
