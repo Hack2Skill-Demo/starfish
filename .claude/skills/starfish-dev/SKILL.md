@@ -58,16 +58,25 @@ in the same turn unless asked.
 
 ```
 Cloud Logging ─▶ ingest ─▶ incident store ─▶ triage ─▶ fix draft ─▶ verify ─▶ review ─▶ PR
-                 (built)    (Firestore,      (Gemini,   (Gemini)    (deterministic) (Gemini,  (stop)
-                            built)           spike)                                 adversarial)
+                 (built,    (Firestore,      (Gemini)   (Gemini)    (deterministic) (Gemini,  (stop; auto-merge
+                 deployed)  built)                                                  adversarial)  only behind #9's gates)
 ```
 
-- **Built:** ingest (`src/ingest/`), the counter-check, the spike harness.
-- **Not built yet:** the triage worker, fix drafting against a real repo, the verify gate
-  as a service, adversarial review, PR opening.
-- **Planned substrate:** Google's Agent Development Kit (ADK, TypeScript) —
-  orchestrator → fixer → reviewer as a `SequentialAgent`. Decide against it only with a
-  recorded reason.
+Use the words precisely (CLAUDE.md's honesty rule); CLAUDE.md's architecture block is the
+per-file record of what is built, deployed and run.
+
+- **Built and deployed:** ingest (`src/ingest/`) as a Cloud Run job on a schedule, run on the
+  demo project; the admin API (`src/adminApi.ts`), deployed once.
+- **Built, deployable, never run against real services:** the agent loop (`src/agent/`:
+  triage, fixer, the verify gate, the adversarial reviewer, the PR and issue opener, `pnpm agent`),
+  the index heal (`src/indexheal/`), auto-merge and fast revert (#9, default off), Slack delivery
+  and phone escalation. They are tested against fakes and the emulator only.
+- **The verify step never runs target code in the agent.** Isolation is chosen by
+  `STARFISH_VERIFY_ISOLATION`: the target's own CI (`github-actions`, the demo's choice), a
+  separate no-roles Cloud Run job (`cloud-run-job`), or `in-process` (not a sandbox).
+- **Not on ADK.** The loop is plain code. Google's Agent Development Kit's `SequentialAgent` is
+  deprecated in favour of an experimental `Workflow`, so wrapping the loop in ADK is still an
+  open decision (README).
 
 Guardrails for the acting half: agent-judged urgency, a bounded number of agents, one PR per
 incident, one shared revision cycle, and "no confident one-step fix → hand to a human".
@@ -96,11 +105,14 @@ incident, one shared revision cycle, and "no confident one-step fix → hand to 
 ## The verification gate
 
 ```bash
-pnpm run verify    # lint → typecheck → test
+pnpm run verify    # lint → typecheck → test → build
+pnpm test:emulator # firestore.rules + store concurrency against the emulator (Java required)
 ```
 
-Run it after every change; never mark work complete without it. Hook changes also run
-their `.claude/hooks/*.test.sh`. CI runs the same steps plus `pnpm audit --audit-level=high`.
+Run `verify` after every change; never mark work complete without it. Run the emulator suite when
+a change touches Firestore rules, a transaction or a store write. Hook changes also run their
+`.claude/hooks/*.test.sh`. CI runs the same steps, the emulator suite, the hook suites,
+`pnpm audit --audit-level=high` and an engine image build.
 
 ## Knowledge domains
 
