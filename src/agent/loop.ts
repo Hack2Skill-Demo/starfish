@@ -760,6 +760,9 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
       }
       // Gate 1 read the patch's headers; the verify gate saw what `git apply` actually wrote. Unless they are the same
       // files, gate 1 judged a different change from the one that was verified, and it does not hold (#200).
+      // Only the files, not their lines: the written tree is gone by now (a scratch copy, or a branch the target's CI
+      // built), so the lines git wrote cannot be compared here. That half rests on gate 1 reading lines exactly as git
+      // does: a `\ No newline` marker anywhere but a file's end, where git would join two lines, is refused (#237).
       if (gate1?.allowed && !judgedTheVerifiedFiles(gate1, verified.changedFiles)) {
         gate1 = { ...gate1, allowed: false, problems: [...gate1.problems, "files-differ-from-verified"] };
       }

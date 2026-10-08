@@ -7,7 +7,8 @@
  *   - it parses as a plain unified diff (no binary, no mode change, no rename, copy or delete), every `---`/`+++` path
  *     in git's `a/`/`b/` form, naming the same file on both sides and in its `diff --git` line: the file read here is
  *     the file `git apply` writes (#200). The loop also requires gate 1's files to be exactly the files the verify gate
- *     saw change (loop.ts);
+ *     saw change (loop.ts). A `\ No newline at end of file` marker only after a side's last line at the file's end:
+ *     anywhere else git joins the line onto the next, and writes a line read here as two (#237);
  *   - nothing in it is a control character other than a tab and a line's own end: no lone carriage return, no Unicode
  *     line or paragraph separator, no zero-width or bidirectional mark. JavaScript ends a line where a reader of the diff
  *     does not, so `// note<CR>return;` is a comment to a diff and a `return` to the test runner (#204);
@@ -30,8 +31,9 @@
  *                                  (`if (order == null) return null;`, `=== undefined`, `typeof x === "undefined"`, and
  *                                  `||` of those; never `!x`, which is also true for 0, "", false and NaN): `return;`,
  *                                  `return null`, `return undefined` or a `throw`, never a value that changes what the
- *                                  function decides (`return true`, #202); or `?.` / `?? <literal>` added to a line that
- *                                  is otherwise unchanged;
+ *                                  function decides (`return true`, #202), ended by its own `;` or a block (#238); or
+ *                                  `?.` / `?? null` / `?? undefined` added to a line that is otherwise unchanged, a
+ *                                  `??` never on a line that compares or does arithmetic (#239);
  *       missing-await              `await ` added to a line that is otherwise unchanged;
  *       firestore-undefined-field  a field written as `key: value` becomes `...(value !== undefined && { key: value })`
  *                                  or `key: value ?? null`.
@@ -59,6 +61,11 @@ export interface Hunk {
   oldCount: number;
   newStart: number;
   lines: DiffLine[];
+  /**
+   * Which side's last line has no line end (`\ No newline at end of file` after it): only ever the hunk's last line on
+   * that side, in the file's last hunk (#237). Whether that is really the file's end is the base content's to say.
+   */
+  noNewlineAtEnd?: { old: boolean; new: boolean };
 }
 
 export interface FileDiff {
@@ -134,6 +141,8 @@ export function parsePatch(patch: string): FileDiff[] | null {
   let cur: (FileDiff & { start: number; gitLine?: string }) | undefined;
   let oldLeft = 0;
   let newLeft = 0;
+  /** The hunk line read last: where it was, its kind, and whether its hunk had no more lines on each side after it. */
+  let last: { at: number; kind: DiffLine["kind"]; oldDone: boolean; newDone: boolean } | undefined;
   const close = (end: number) => {
     if (cur) files.push({ oldPath: cur.oldPath, newPath: cur.newPath, hunks: cur.hunks, unusual: cur.unusual, raw: lines.slice(cur.start, end).join("\n") + "\n" });
     cur = undefined;
@@ -145,10 +154,25 @@ export function parsePatch(patch: string): FileDiff[] | null {
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]!;
+    if (line.startsWith("\\")) {
+      // "\ No newline at end of file": the line before it has no line end. Anywhere but after the last line of a side
+      // of the file's last hunk, git joins that line onto the next one, and writes code this parse never saw:
+      // `+  if (doc.meta == null) return` then `   await assertCanRead(…)` becomes one line, the check skipped (#237).
+      const hunk = cur?.hunks.at(-1);
+      if (!hunk || last?.at !== i - 1) return null;
+      const old = last.kind !== "+";
+      const neu = last.kind !== "-";
+      if ((old && !last.oldDone) || (neu && !last.newDone)) {
+        cur!.unusual.push("no-newline-marker");
+      } else {
+        hunk.noNewlineAtEnd = { old: old || (hunk.noNewlineAtEnd?.old ?? false), new: neu || (hunk.noNewlineAtEnd?.new ?? false) };
+      }
+      last = undefined; // a second marker in a row follows no line
+      continue;
+    }
     if (oldLeft > 0 || newLeft > 0) {
       const hunk = cur!.hunks.at(-1)!;
       const kind = line[0];
-      if (kind === "\\") continue; // "\ No newline at end of file"
       if (kind === " " || line === "") {
         hunk.lines.push({ kind: " ", text: line.slice(1) });
         oldLeft--;
@@ -161,9 +185,9 @@ export function parsePatch(patch: string): FileDiff[] | null {
         newLeft--;
       } else return null;
       if (oldLeft < 0 || newLeft < 0) return null;
+      last = { at: i, kind: hunk.lines.at(-1)!.kind, oldDone: oldLeft === 0, newDone: newLeft === 0 };
       continue;
     }
-    if (line.startsWith("\\")) continue;
     if (line.startsWith("diff --git ")) {
       open(i);
       cur!.gitLine = line;
@@ -190,6 +214,8 @@ export function parsePatch(patch: string): FileDiff[] | null {
     const h = HUNK_RE.exec(line);
     if (h) {
       if (!cur || (cur.oldPath === null && cur.newPath === null)) return null;
+      // A line with no line end is the file's last: a hunk after it is not the end of the file it claimed (#237).
+      if (cur.hunks.at(-1)?.noNewlineAtEnd !== undefined) cur.unusual.push("no-newline-marker");
       oldLeft = h[2] === undefined ? 1 : Number(h[2]);
       cur.hunks.push({ oldStart: Number(h[1]), oldCount: oldLeft, newStart: Number(h[3]), lines: [] });
       newLeft = h[4] === undefined ? 1 : Number(h[4]);
@@ -532,7 +558,6 @@ const isDefinitionLine = (text: string) => DEFINITION_RE.some((re) => re.test(te
 const norm = (s: string) => s.replace(/\s+/g, " ").trim();
 const count = (s: string, re: RegExp) => (s.match(re) ?? []).length;
 
-const LITERAL = String.raw`(?:null|undefined|true|false|-?\d+(?:\.\d+)?|""|''|"[^"\\\n]*"|'[^'\\\n]*'|\[\]|\{\})`;
 const REF = String.raw`[A-Za-z_$][\w$]*(?:\??\.[A-Za-z_$][\w$]*|\?\.\[\d+\]|\[\d+\])*`;
 // Null or undefined, said so: `x == null`, `x === undefined`, `typeof x === "undefined"`. Never `!x`, which is also
 // true for 0, "", false and NaN: an exit on those is a change to what the function decides, not a null guard (#202).
@@ -540,32 +565,38 @@ const MISSING_ATOM = String.raw`(?:${REF}\s*===?\s*(?:null|undefined)|(?:null|un
 // What the guard does: leave with nothing, or throw. Never `return true`, a number or a string: that is a change to what
 // the function decides, not a null guard (#202). Nor `continue`/`break`, which skip work the same way.
 const ACTION = String.raw`(?:return(?:\s+(?:null|undefined))?|throw\s+new\s+[A-Z][\w$]*\(\s*(?:"[^"\\\n]*"|'[^'\\\n]*')?\s*\))`;
+// Ended by its own `;` or a block's `}`: without either, JavaScript reads a next line that starts with `(`, `[`, a
+// backtick, `+`, `-` or `/` as part of the `return` (`return null` then `[stock] = …` is `return null[stock] = …`, #238).
 const GUARD_RE = new RegExp(
-  String.raw`^if\s*\(\s*${MISSING_ATOM}(?:\s*\|\|\s*${MISSING_ATOM})*\s*\)\s*(?:\{\s*${ACTION}\s*;?\s*\}|${ACTION}\s*;?)$`
+  String.raw`^if\s*\(\s*${MISSING_ATOM}(?:\s*\|\|\s*${MISSING_ATOM})*\s*\)\s*(?:\{\s*${ACTION}\s*;?\s*\}|${ACTION}\s*;)$`
 );
+/** A line that would continue the statement before it if that one had no `;`. A comment does not. */
+const CONTINUES_RE = /^\s*(?:[([`+-]|\/(?![/*]))/;
 
-/** An early exit when a value is missing, added as its own lines. */
-function isAddedGuard(added: readonly string[]): boolean {
+/** An early exit when a value is missing, added as its own lines, and not followed by a line that could join it. */
+function isAddedGuard(added: readonly string[], next: string | undefined): boolean {
+  if (next !== undefined && CONTINUES_RE.test(next)) return false;
   return GUARD_RE.test(norm(added.join(" ")));
 }
 
 const OPTIONAL_RE = /\?\.(?=[[(])|\?\./g;
-// The literal must end its expression: `??` binds looser than arithmetic and comparison, so `a ?? 0 + b` is `a ?? (0 + b)`
-// and would drop `b` while reading like a default.
-const NULLISH_RE = new RegExp(String.raw`\s*\?\?\s*${LITERAL}(?=\s*(?:[)\],;}]|$))`, "g");
-// A default inside a decision (`if`/`while`, a ternary's test, `&&`/`||`, a negation) changes which way it goes unless
-// it is null or undefined: `if (x.hidden ?? true)` takes the branch for a missing value (#202).
-const DECIDES_RE = /\b(?:if|while)\s*\(|&&|\|\||!|\?(?![?.])/;
-const NON_NULL_DEFAULT_RE = new RegExp(String.raw`\?\?\s*(?!(?:null|undefined)\b)${LITERAL}`);
+// Only `?? null` or `?? undefined`. Any other default is a value the code then acts on wherever it lands: `if (x.hidden
+// ?? true)` takes the branch (#202), and so does `const hide = x.hidden ?? true; … if (hide)`, `return x.visible ??
+// true` or `(x.reports ?? 99) > 2` (#239). The default must also end its expression: `??` binds looser than arithmetic
+// and comparison, so `a ?? null + b` is `a ?? (null + b)`.
+const NULLISH_RE = /\s*\?\?\s*(?:null|undefined)\b(?=\s*(?:[)\],;}]|$))/g;
+// Where null and undefined differ: compared (`>= 0` is true for null, false for undefined), strictly compared, or in
+// arithmetic (null is 0, undefined NaN). A null default there is a change to what the line computes.
+const NULL_DIFFERS_RE = /[<>]|[!=]==|[-+*/%]/;
 const stripOptional = (s: string) => s.replace(/\?\.(?=[[(])/g, "").replace(/\?\./g, ".").replace(NULLISH_RE, "");
 const markers = (s: string) => count(s, OPTIONAL_RE) + count(s, /\?\?/g);
 
-/** The same line, with `?.` or `?? <literal>` added and nothing else. */
+/** The same line, with `?.` or `?? null` / `?? undefined` added and nothing else. */
 function isOptionalChaining(removed: string, added: string): boolean {
   if (markers(added) <= markers(removed)) return false;
-  // Every `??` in the added line must be followed by a literal: one followed by an expression could call anything.
+  // Every `??` in the added line must be followed by null or undefined: anything else is a value, or could call anything.
   if (count(added, /\?\?/g) !== count(added, NULLISH_RE)) return false;
-  if (DECIDES_RE.test(added.replace(/\?\?|\?\./g, "")) && NON_NULL_DEFAULT_RE.test(added)) return false;
+  if (count(added, /\?\?/g) > 0 && NULL_DIFFERS_RE.test(stripOptional(added))) return false;
   return norm(stripOptional(added)) === norm(stripOptional(removed)) && norm(added) !== norm(removed);
 }
 
@@ -606,9 +637,12 @@ function isUndefinedField(removed: string, added: string): boolean {
   return c !== null && c[1] === key && norm(c[2]!) === value;
 }
 
-/** The class of one block of consecutive changed lines, or null when it is none of them, or not certainly one. */
-function classifyBlock(removed: readonly string[], added: readonly string[]): FixClass | null {
-  if (removed.length === 0) return added.length > 0 && isAddedGuard(added) ? "null-guard" : null;
+/**
+ * The class of one block of consecutive changed lines, or null when it is none of them, or not certainly one. `next` is
+ * the line after the block, when the hunk shows one.
+ */
+function classifyBlock(removed: readonly string[], added: readonly string[], next: string | undefined): FixClass | null {
+  if (removed.length === 0) return added.length > 0 && isAddedGuard(added, next) ? "null-guard" : null;
   if (removed.length !== added.length) return null;
   const classes = new Set<FixClass | null>();
   removed.forEach((r, i) => {
@@ -691,20 +725,20 @@ export function assessBlastRadius(patch: string, cfg: BlastRadiusConfig): BlastR
   // Blocks of consecutive changed lines: each must be one class, and all the same one.
   const classes = new Set<FixClass | null>();
   let block: { removed: string[]; added: string[] } | undefined;
-  const flush = () => {
-    if (block) classes.add(classifyBlock(block.removed, block.added));
+  const flush = (next: string | undefined) => {
+    if (block) classes.add(classifyBlock(block.removed, block.added, next));
     block = undefined;
   };
   for (const l of lines) {
     if (l.kind === " ") {
-      flush();
+      flush(l.text);
       continue;
     }
     block ??= { removed: [], added: [] };
     // A removal after an addition in the same run is still one block: git orders a run's removals first anyway.
     (l.kind === "-" ? block.removed : block.added).push(l.text);
   }
-  flush();
+  flush(undefined);
   const fixClass = classes.size === 1 && !classes.has(null) ? [...classes][0]! : undefined;
   if (fixClass === undefined) problems.add(classes.size > 1 && !classes.has(null) ? "mixed-classes" : "not-an-allowed-class");
 
@@ -738,6 +772,9 @@ function baseProblems(src: FileDiff, hunk: Hunk, first: number, last: number, ba
   const atStart = start === 0;
   const atEnd = start + hunk.oldCount === base.length;
   if ((lead < MIN_CONTEXT && !atStart) || (trail < MIN_CONTEXT && !atEnd)) out.push("too-little-context");
+  // A line with no line end must be the file's last, on its side: anywhere else git joins it onto the next line (#237).
+  const noEol = hunk.noNewlineAtEnd;
+  if (noEol && (!atEnd || (noEol.old && raw.endsWith("\n")))) out.push("no-newline-marker");
 
   // The base lines on each side of the change (0-based): the last one before it, the first one after it.
   const oldIndex = (i: number) => start + hunk.lines.slice(0, i).filter((l) => l.kind !== "+").length;

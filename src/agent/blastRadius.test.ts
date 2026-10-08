@@ -51,7 +51,7 @@ const addedTest = [
 
 const guard = diff(SRC, ["  const order = await load(id);", "+  if (order == null) return null;", "   return order.total;"]);
 const guardBlock = diff(SRC, ["  const order = await load(id);", "+  if (order === null || order === undefined || order.items === undefined) {", "+    return undefined;", "+  }", "   return order.items;"]);
-const chaining = diff(SRC, ["  const order = await load(id);", "-  const n = order.items.length;", "+  const n = order?.items?.length ?? 0;", "   return n;"]);
+const chaining = diff(SRC, ["  const order = await load(id);", "-  const n = order.items.length;", "+  const n = order?.items?.length ?? null;", "   return n;"]);
 const missingAwait = diff(SRC, ["  const ref = db.collection(\"orders\").doc(id);", "-  ref.set(data);", "+  await ref.set(data);", "   return ref.id;"]);
 const undefinedField = diff(SRC, ["  await ref.set({", "    total: data.total,", "-    couponCode: data.couponCode,", "+    ...(data.couponCode !== undefined && { couponCode: data.couponCode }),", "  });"]);
 const coalesceNull = diff(SRC, ["  await ref.set({", "-    note: data.note,", "+    note: data.note ?? null,", "  });"]);
@@ -85,9 +85,149 @@ describe("assessBlastRadius: a default or a field write that changes what the co
     expect(gate(diff(SRC, body as string[]))).toMatchObject({ allowed: false });
   });
 
-  it("still allows a default that ends its expression, and a null default in a condition", () => {
-    expect(gate(diff(SRC, ["  const o = get(id);", "-  const n = f(o.items.length, 1);", "+  const n = f(o.items?.length ?? 0, 1);", "   return n;"])).allowed).toBe(true);
+  it("still allows a null default that ends its expression, also in a condition", () => {
+    expect(gate(diff(SRC, ["  const o = get(id);", "-  const n = f(o.items.length, 1);", "+  const n = f(o.items?.length ?? null, 1);", "   return n;"])).allowed).toBe(true);
     expect(gate(diff(SRC, ["  const o = get(id);", "-  if (o.items.length) return o;", "+  if (o.items?.length ?? null) return o;", "   return null;"])).allowed).toBe(true);
+    expect(gate(diff(SRC, ["  const o = get(id);", "-  return o.items.length;", "+  return o.items?.length ?? undefined;", " }"])).allowed).toBe(true);
+  });
+
+  // The review's proofs (#239): outside an `if`, a ternary or a boolean operator, a non-null default still decides.
+  it.each([
+    ["an assignment a later `if` decides on", ["  log(\"c\");", "-  const hide = item.hidden;", "+  const hide = item.hidden ?? true;", "   log(\"d\");", "   if (hide) return \"\";"]],
+    ["a return", ["  log(\"f\");", "-  return item.visible;", "+  return item.visible ?? true;", " }"]],
+    ["a comparison", ["  log(\"c\");", "-  const flagged = (item.reports) > 2;", "+  const flagged = (item.reports ?? 99) > 2;", "   log(\"d\");"]],
+    ["a zero for a count", ["  const o = get(id);", "-  const n = f(o.items.length, 1);", "+  const n = f(o.items?.length ?? 0, 1);", "   return n;"]],
+    ["an empty string", ["  const o = get(id);", "-  const name = o.name;", "+  const name = o.name ?? \"\";", "   return name;"]],
+    ["a null default compared: `null >= 0` is true, `undefined >= 0` false", ["  const o = get(id);", "-  const ok = (o.n) >= 0;", "+  const ok = (o.n ?? null) >= 0;", "   return ok;"]],
+    ["a null default in arithmetic: null is 0, undefined NaN", ["  const o = get(id);", "-  const t = (o.n) + 1;", "+  const t = (o.n ?? null) + 1;", "   return t;"]],
+    ["a null default strictly compared", ["  const o = get(id);", "-  const none = (o.n) === undefined;", "+  const none = (o.n ?? null) === undefined;", "   return none;"]],
+  ])("refuses a non-null or deciding default in %s (#239)", (_name, body) => {
+    const r = gate(diff(SRC, body as string[]));
+    expect(r.allowed).toBe(false);
+    expect(r.problems).toContain("not-an-allowed-class");
+  });
+});
+
+describe("assessBlastRadius: a `\\ No newline at end of file` marker only at the end of the file (#237)", () => {
+  const MARK = "\\ No newline at end of file";
+  /** The review's proof: git joins the guard onto the next line, and `await assertCanRead(…)` is never run. */
+  const documents = [
+    "export async function getDocument(req: { user: string; id: string }) {",
+    "  const doc = await load(req.id);",
+    '  log("loaded");',
+    '  log("checking");',
+    "  await assertCanRead(req.user, doc);",
+    '  log("ok");',
+    '  log("returning");',
+    "  return doc;",
+    "}",
+  ].join("\n") + "\n";
+  const midHunk = [
+    "diff --git a/src/documents.ts b/src/documents.ts",
+    "--- a/src/documents.ts",
+    "+++ b/src/documents.ts",
+    "@@ -2,7 +2,8 @@",
+    "   const doc = await load(req.id);",
+    '   log("loaded");',
+    '   log("checking");',
+    "+  if (doc.meta == null) return",
+    MARK,
+    "   await assertCanRead(req.user, doc);",
+    '   log("ok");',
+    '   log("returning");',
+    "   return doc;",
+  ].join("\n") + "\n";
+  const atBase = (patch: string, base: string) => gate(patch, { baseFiles: new Map([["src/documents.ts", base]]) });
+
+  it("refuses a marker inside a hunk: git writes one line where the gate read two", () => {
+    const r = atBase(midHunk, documents);
+    expect(r.allowed).toBe(false);
+    expect(r.problems).toContain("no-newline-marker");
+    // With a `;` the guard is a whole statement here, and still the marker joins it onto the access check.
+    expect(atBase(midHunk.replace("return\n", "return;\n"), documents).problems).toContain("no-newline-marker");
+  });
+
+  it("refuses the same with a new test file beside it (the review's p1)", () => {
+    const orders = ["export async function fulfil(order: { note?: string | null; id: string }) {", "  const id = order.id;", "  log(id);", '  log("start");', '  log("next");', "  await notifyWarehouse(order);", '  log("done");', '  log("end");', "  return id;", "}"].join("\n") + "\n";
+    const p1 = [
+      "diff --git a/src/orders.ts b/src/orders.ts",
+      "--- a/src/orders.ts",
+      "+++ b/src/orders.ts",
+      "@@ -2,7 +2,8 @@",
+      "   const id = order.id;",
+      "   log(id);",
+      '   log("start");',
+      '   log("next");',
+      "+  if (order.note == null) return;",
+      MARK,
+      "   await notifyWarehouse(order);",
+      '   log("done");',
+      '   log("end");',
+      "diff --git a/src/orders.null.test.ts b/src/orders.null.test.ts",
+      "new file mode 100644",
+      "--- /dev/null",
+      "+++ b/src/orders.null.test.ts",
+      "@@ -0,0 +1,3 @@",
+      '+import { it } from "vitest";',
+      '+import { fulfil } from "./orders.js";',
+      '+it("handles a null note", async () => { await fulfil({ id: "1", note: null }); });',
+    ].join("\n") + "\n";
+    const r = gate(p1, { baseFiles: new Map([["src/orders.ts", orders]]) });
+    expect(r.allowed).toBe(false);
+    expect(r.problems).toContain("no-newline-marker");
+  });
+
+  it("refuses a marker after a hunk's last line when the hunk does not reach the file's end", () => {
+    const short = ["--- a/src/documents.ts", "+++ b/src/documents.ts", "@@ -2,4 +2,5 @@", "   const doc = await load(req.id);", '   log("loaded");', '   log("checking");', "+  if (doc.meta == null) return;", "   await assertCanRead(req.user, doc);", MARK].join("\n") + "\n";
+    expect(atBase(short, documents).problems).toContain("no-newline-marker");
+  });
+
+  it("refuses a marker on the old side when the base file does end with a line end, and a hunk after a marked one", () => {
+    const end = ["--- a/src/documents.ts", "+++ b/src/documents.ts", "@@ -5,5 +5,6 @@", "   await assertCanRead(req.user, doc);", '   log("ok");', '   log("returning");', "+  if (doc == null) return;", "   return doc;", " }", MARK].join("\n") + "\n";
+    expect(atBase(end, documents.slice(0, -1))).toMatchObject({ problems: [] }); // the base really has no line end: fine
+    expect(atBase(end, documents).problems).toContain("no-newline-marker");
+    const twoHunks = ["--- a/x.ts", "+++ b/x.ts", "@@ -1 +1 @@", "-a", "+b", MARK, "@@ -5 +5 @@", "-c", "+d"].join("\n") + "\n";
+    expect(parsePatch(twoHunks)![0]!.unusual).toContain("no-newline-marker");
+  });
+
+  it("is not understood where it follows no hunk line, or twice in a row", () => {
+    expect(parsePatch(["--- a/x.ts", MARK, "+++ b/x.ts", "@@ -1 +1 @@", "-a", "+b"].join("\n") + "\n")).toBeNull();
+    expect(parsePatch(["--- a/x.ts", "+++ b/x.ts", "@@ -1 +1 @@", "-a", "+b", MARK, MARK].join("\n") + "\n")).toBeNull();
+  });
+
+  it("still allows a marker at the true end: a file's last line changed, and a new test file without a final line end", () => {
+    // git's own shape for a last line that had no line end and gains one: the old side's marker sits mid-hunk.
+    const parsed = parsePatch(["--- a/x.ts", "+++ b/x.ts", "@@ -1 +1,2 @@", "-a", MARK, "+a", "+b"].join("\n") + "\n")!;
+    expect(parsed[0]!.unusual).toEqual([]);
+    expect(parsed[0]!.hunks[0]!.noNewlineAtEnd).toEqual({ old: true, new: false });
+    expect(gate(guard + addedTest + MARK + "\n")).toMatchObject({ allowed: true, testFiles: [TEST] });
+    const bothEnds = guard.trimEnd() + "\n" + MARK + "\n";
+    expect(gate(bothEnds, { baseFiles: new Map([[SRC, basesOf(guard).get(SRC)!.slice(0, -1)]]) })).toMatchObject({ allowed: true, problems: [] });
+  });
+});
+
+describe("assessBlastRadius: a guard is a whole statement, never joined onto the next line (#238)", () => {
+  it.each([
+    ["a destructuring assignment (the review's proof)", "  [stock] = await Promise.all([reserveStock(items)]);"],
+    ["a call in parentheses", "  (async () => {})();"],
+    ["a template literal", "  `${x}`;"],
+    ["a unary plus", "  +count;"],
+    ["a unary minus", "  -count;"],
+    ["a regular expression", "  /x/.test(s);"],
+  ])("refuses a guard without `;` before %s", (_name, next) => {
+    const r = gate(diff(SRC, ["  const o = get(id);", "+  if (o == null) return null", ` ${next}`]));
+    expect(r.allowed).toBe(false);
+    expect(r.problems).toContain("not-an-allowed-class");
+  });
+
+  it("refuses a guard without `;` before any line, and one with `;` before a line that could continue a statement", () => {
+    expect(gate(diff(SRC, ["  const o = get(id);", "+  if (o == null) return", "   return o.total;"])).allowed).toBe(false);
+    expect(gate(diff(SRC, ["  const o = get(id);", "+  if (o == null) return null;", "   [a] = o.items;"])).allowed).toBe(false);
+  });
+
+  it("still allows a guard ended by `;` or a block, before a line or a comment", () => {
+    expect(gate(diff(SRC, ["  const o = get(id);", "+  if (o == null) { return null }", "   return o.total;"])).allowed).toBe(true);
+    expect(gate(diff(SRC, ["  const o = get(id);", "+  if (o == null) return null;", "   // the total", "   return o.total;"])).allowed).toBe(true);
   });
 });
 

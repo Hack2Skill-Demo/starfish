@@ -51,7 +51,9 @@ loop then requires gate 1's files to be exactly the files the verify gate saw th
 control character anywhere in the patch or the changed file's base content other than a tab and
 the line ends: no lone carriage return, no Unicode line or paragraph separator, no zero-width or
 bidirectional mark, because JavaScript ends a line where a reader of the diff does not
-(`// note<CR>return;` is a comment in the diff and a `return` to the test runner). One production
+(`// note<CR>return;` is a comment in the diff and a `return` to the test runner). A
+`\ No newline at end of file` marker only after a side's last line at the file's end: anywhere else
+git joins that line onto the next and writes one line where the diff shows two. One production
 file, an existing JavaScript/TypeScript file, one hunk with at least three lines of context on each
 side (fewer only at the file's start or end), no function or class boundary between the first and
 last changed line, at most 8 lines added and 4 removed. Every other file must be a **new** test file
@@ -67,8 +69,11 @@ changed block one class: *null guard* (an early `return;`, `return null`, `retur
 `throw` when a value is null or undefined, said explicitly: `x == null`, `x === null`,
 `x === undefined`, `x == undefined`, `typeof x === "undefined"`, or `||` of those; never `!x`, which
 is also true for 0, `""`, `false` and `NaN`, and never `return true` or another value, which is a
-change to what the function decides; or `?.`/`?? <literal>` added to an otherwise unchanged line, the
-literal ending its expression (not `a ?? 0 + b`) and, inside a condition, only `null`/`undefined`),
+change to what the function decides; the guard ended by its own `;` or a block, so JavaScript cannot
+join the next line onto its `return`; or `?.`/`?? null`/`?? undefined` added to an otherwise unchanged
+line, the default ending its expression (not `a ?? null + b`) and never on a line that compares or does
+arithmetic, where null and undefined differ; any other default, `?? 0` or `?? true`, is a value the code
+then decides on wherever it lands),
 *missing `await`* (`await ` added to an otherwise unchanged call), *Firestore `undefined` field*
 (`key: v` becomes `...(v !== undefined && { key: v })` or `key: v ?? null`, `v` a plain reference, never a call). The hard-exclude list
 matches path words (access control includes owner, guard, policy, App Check, verify and can) and
