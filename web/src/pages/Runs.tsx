@@ -18,6 +18,7 @@ import { SyntheticBadge } from "../components/SyntheticBadge";
 import { EmptyState } from "../components/ui/EmptyState";
 import { formatDateTime, formatRelativeTime } from "../lib/formatters";
 import { useEnvironment } from "../lib/useSettings";
+import { useNow } from "../lib/useNow";
 import { CYCLE_LIMIT, readCycle, subscribeCycles, subscribeEvents } from "../lib/runs";
 import {
   PATH_LABELS,
@@ -35,17 +36,6 @@ import {
   type Step,
 } from "../lib/runsModel";
 
-/** Re-evaluate "live" and the running axis without waiting for the next write. */
-const TICK_MS = 15_000;
-
-function useNow(): number {
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    const t = setInterval(() => setNow(Date.now()), TICK_MS);
-    return () => clearInterval(t);
-  }, []);
-  return now;
-}
 
 export default function Runs() {
   const { environment, ready, settingsUnavailable } = useEnvironment();

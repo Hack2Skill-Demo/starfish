@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react";
+import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router";
@@ -152,6 +152,22 @@ describe("Incidents page", () => {
       await vi.waitFor(() => expect(mocks.readCycle).toHaveBeenCalled());
       expect(within(row).queryByText("No agent run yet")).toBeNull();
       expect(within(row).queryByRole("link", { name: "Run for mailDrainer" })).toBeNull();
+    });
+
+    it("stops saying 'In progress' once the run's lease runs out, with no new snapshot", async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      try {
+        mocks.cycles = [cycle("1_r0", { state: "running", path: undefined, leaseExpiresAt: ts(Date.now() + 5000) })];
+        renderPage();
+        const row = (await screen.findByText("mailDrainer")).closest("tr")!;
+        expect(within(row).getByText("In progress")).toBeInTheDocument();
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(16_000);
+        });
+        expect(within(row).getByText("Waiting for a worker")).toBeInTheDocument();
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it("shows the full decision, its rule and the run in the expanded row", async () => {

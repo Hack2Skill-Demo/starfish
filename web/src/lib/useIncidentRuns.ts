@@ -7,9 +7,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { readCycle, subscribeCycles } from "./runs";
 import { incidentRunView, runIdFor, type IncidentRunView } from "./incidentRun";
+import { useNow } from "./useNow";
 import type { CycleRow } from "./runsModel";
 
-/** Runs read one by one per page render at most: the incident list itself is bounded, this bounds the extra reads. */
+/** Runs read by id in one batch at most; batches follow until every listed incident is covered. */
 const MAX_SINGLE_READS = 50;
 
 export function useIncidentRuns(
@@ -22,7 +23,8 @@ export function useIncidentRuns(
   const [failed, setFailed] = useState(false);
   // Read by id: the run, or null when it does not exist. Absent: not read (yet), or the read failed.
   const [single, setSingle] = useState<Map<string, CycleRow | null>>(new Map());
-  const [now, setNow] = useState(() => Date.now());
+  // Ticks on its own: a run whose worker died writes nothing, and must still stop reading "In progress".
+  const now = useNow();
   // Ids already read (or being read) by id for this subscription: each is read once, a failure is not retried in a loop.
   const attempted = useRef(new Set<string>());
   // Which subscription a read belongs to: a read that answers after the environment changed is dropped.
@@ -41,7 +43,6 @@ export function useIncidentRuns(
         setCycles(new Map(rows.map((r) => [r.id, r])));
         setCapped(isCapped);
         setFailed(false);
-        setNow(Date.now());
       },
       () => setFailed(true)
     );
