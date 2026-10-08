@@ -113,6 +113,14 @@ export interface WebConfig {
    */
   cycleCollection: string;
   /**
+   * The trimmed copies a guest reads instead of the three above (#18): incidents, cycles, and run events in one flat
+   * collection. Written by the engine only (src/publicView.ts). Must match the engine's
+   * STARFISH_PUBLIC_INCIDENT_COLLECTION / _CYCLE_ / _EVENT_ and firestore.rules.
+   */
+  publicIncidentCollection: string;
+  publicCycleCollection: string;
+  publicEventCollection: string;
+  /**
    * The on-call policy ({onCallCollection}/policy) and people ({onCallPeopleCollection}/{id}), admins only (#37). Must
    * match the engine's STARFISH_ONCALL_COLLECTION / STARFISH_ONCALL_PEOPLE_COLLECTION and firestore.rules.
    */
@@ -212,6 +220,9 @@ export function bootstrapWebConfig(
         settingsCollection: env.VITE_STARFISH_SETTINGS_COLLECTION || "starfish_settings",
         runCollection: env.VITE_STARFISH_RUN_COLLECTION || "starfish_runs",
         cycleCollection: env.VITE_STARFISH_CYCLE_COLLECTION || "starfish_cycles",
+        publicIncidentCollection: env.VITE_STARFISH_PUBLIC_INCIDENT_COLLECTION || "starfish_public_incidents",
+        publicCycleCollection: env.VITE_STARFISH_PUBLIC_CYCLE_COLLECTION || "starfish_public_cycles",
+        publicEventCollection: env.VITE_STARFISH_PUBLIC_EVENT_COLLECTION || "starfish_public_events",
         onCallCollection: env.VITE_STARFISH_ONCALL_COLLECTION || "starfish_oncall",
         onCallPeopleCollection: env.VITE_STARFISH_ONCALL_PEOPLE_COLLECTION || "starfish_oncall_people",
         engineStaleMinutes: positiveMinutes(env.VITE_STARFISH_STALE_MINUTES, 90),

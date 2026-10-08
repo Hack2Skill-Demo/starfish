@@ -180,6 +180,18 @@ export function parseActivity(
   return event && { ...event, cycleId: parts[1] };
 }
 
+/**
+ * A feed entry from a guest's event copy (#18, `starfish_public_events/{cycleId}_{seq}`), or null (never throws): its
+ * `cycleId` field names the run, and the document id must be that run's, so a copy is never shown under another run.
+ */
+export function parsePublicActivity(environment: string, docId: string, d: Record<string, unknown>): ActivityRow | null {
+  const cycleId = d.cycleId;
+  if (typeof cycleId !== "string" || cycleId === "" || !docId.startsWith(`${cycleId}_`) || docId.length === cycleId.length + 1) return null;
+  if (d.environment !== environment) return null;
+  const event = parseEvent(docId.slice(cycleId.length + 1), d);
+  return event && { ...event, cycleId };
+}
+
 /** Newest first, ties broken by the later sequence number; at most `max` rows. */
 export function latestActivity(rows: readonly ActivityRow[], max: number): ActivityRow[] {
   return [...rows].sort((a, b) => b.at.getTime() - a.at.getTime() || b.seq - a.seq).slice(0, max);

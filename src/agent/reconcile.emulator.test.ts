@@ -9,6 +9,7 @@ import { getFirestore, Timestamp } from "firebase-admin/firestore";
 import type { Firestore } from "firebase-admin/firestore";
 import { GithubError, type CheckRun, type PullRequestState } from "../integrations/githubPr.js";
 import { MAX_SCAN, reconcilePullRequests, selectPrCycles, type PrReader, type ReconcileConfig } from "./reconcile.js";
+import { PUBLIC_VIEW_OFF } from "../testConfig.js";
 
 if (!process.env.FIRESTORE_EMULATOR_HOST) {
   throw new Error("reconcile.emulator.test.ts needs the Firestore emulator: run `pnpm test:emulator`");
@@ -32,6 +33,7 @@ beforeEach(() => {
     verifyCheckApp: "github-actions",
     verifyChecks: ["verify"],
     maxPrChecksPerPass: 10,
+    ...PUBLIC_VIEW_OFF,
   };
 });
 

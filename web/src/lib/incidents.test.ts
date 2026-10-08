@@ -2,9 +2,13 @@ import { describe, expect, it, vi } from "vitest";
 
 const getDoc = vi.hoisted(() => vi.fn());
 const getDocs = vi.hoisted(() => vi.fn());
-vi.mock("firebase/firestore", async (orig) => ({ ...(await orig<typeof import("firebase/firestore")>()), getDoc, getDocs, doc: vi.fn(() => ({})), collection: vi.fn(() => ({})), query: vi.fn(() => ({})), where: vi.fn(), orderBy: vi.fn(), limit: vi.fn() }));
-vi.mock("./firebase", () => ({ firestore: vi.fn() }));
-vi.mock("./config", () => ({ webConfig: () => ({ incidentCollection: "incidents" }) }));
+const fsDoc = vi.hoisted(() => vi.fn((...path: unknown[]) => ({ path })));
+const fsCollection = vi.hoisted(() => vi.fn((...path: unknown[]) => ({ path })));
+/** The signed-in user the data layer asks (dataSource.ts): null, an operator, or an anonymous guest. */
+const auth = vi.hoisted(() => ({ currentUser: null as null | { isAnonymous: boolean } }));
+vi.mock("firebase/firestore", async (orig) => ({ ...(await orig<typeof import("firebase/firestore")>()), getDoc, getDocs, doc: fsDoc, collection: fsCollection, query: vi.fn(() => ({})), where: vi.fn(), orderBy: vi.fn(), limit: vi.fn() }));
+vi.mock("./firebase", () => ({ firestore: vi.fn(), firebaseAuth: () => auth }));
+vi.mock("./config", () => ({ webConfig: () => ({ incidentCollection: "incidents", publicIncidentCollection: "starfish_public_incidents" }) }));
 
 import { Timestamp } from "firebase/firestore";
 import { countInWindow, getIncident, listIncidents, nextStatus, toRow, type IncidentRow } from "./incidents";
@@ -211,6 +215,46 @@ describe("getIncident", () => {
     expect(await getIncident("abc", "demo")).toBeNull();
     getDoc.mockResolvedValue(snap({ ...stored, retired: true }));
     expect(await getIncident("abc", "demo")).toBeNull();
+  });
+});
+
+describe("the guest data path (#18)", () => {
+  const snap = (data: Record<string, unknown> | null) => ({ exists: () => data !== null, id: "abc", data: () => data });
+  const copy = { publicView: 1, functionName: "fn", environment: "demo", status: "new", occurrenceCount: 1, errorMessage: "send failed" };
+
+  it("an operator reads the stored incidents; a guest reads the trimmed copies, from one switch", async () => {
+    getDoc.mockResolvedValue(snap(copy));
+    getDocs.mockResolvedValue({ docs: [], size: 0 });
+
+    auth.currentUser = { isAnonymous: false };
+    fsDoc.mockClear();
+    fsCollection.mockClear();
+    await getIncident("abc", "demo");
+    await listIncidents(24, "demo");
+    expect(fsDoc.mock.calls[0]?.[1]).toBe("incidents");
+    expect(fsCollection.mock.calls[0]?.[1]).toBe("incidents");
+
+    auth.currentUser = { isAnonymous: true };
+    fsDoc.mockClear();
+    fsCollection.mockClear();
+    await getIncident("abc", "demo");
+    await listIncidents(24, "demo");
+    expect(fsDoc.mock.calls[0]?.[1]).toBe("starfish_public_incidents");
+    expect(fsCollection.mock.calls[0]?.[1]).toBe("starfish_public_incidents");
+    auth.currentUser = null;
+  });
+
+  it("a copy reads as a row marked trimmed, with nothing in the fields it leaves out", async () => {
+    auth.currentUser = { isAnonymous: true };
+    getDoc.mockResolvedValue(snap(copy));
+    const row = await getIncident("abc", "demo");
+    expect(row).toMatchObject({ id: "abc", functionName: "fn", errorMessage: "send failed", trimmed: true });
+    expect(row?.errorDetail).toBeUndefined();
+    expect(row?.stackTrace).toBeUndefined();
+    expect(row?.tenantId).toBeUndefined();
+    auth.currentUser = null;
+    // A stored document is never marked trimmed.
+    expect(toRow("abc", { functionName: "fn", status: "new" }, 24)).not.toHaveProperty("trimmed");
   });
 });
 

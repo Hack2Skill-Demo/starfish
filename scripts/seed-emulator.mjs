@@ -128,4 +128,21 @@ for (const c of cycles) {
     });
   }
 }
+// The trimmed copies a guest reads instead (#18, src/publicView.ts), made the way `pnpm public-view` makes them: without
+// them a guest session (the public demo's) would see an empty UI here. Run through tsx (`pnpm dev:emulated`), which loads
+// the engine's TypeScript.
+const { backfillPublicView } = await import("../src/publicViewStore.js");
+const copies = await backfillPublicView(
+  db,
+  {
+    incidentCollection: "incidents",
+    cycleCollection: "starfish_cycles",
+    publicEnvironments: ["demo"],
+    publicIncidentCollection: "starfish_public_incidents",
+    publicCycleCollection: "starfish_public_cycles",
+    publicEventCollection: "starfish_public_events",
+  },
+  { apply: true }
+);
 console.log(`seed-emulator: ${users.length} users (password "starfish"), ${incidents.length} incidents, ${cycles.length} cycles`);
+console.log(`seed-emulator: guest copies: ${copies.incidents.write} incidents, ${copies.cycles.write} cycles, ${copies.events.write} events`);

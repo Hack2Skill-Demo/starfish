@@ -8,6 +8,7 @@ import {
   hourlySeries,
   latestActivity,
   parseActivity,
+  parsePublicActivity,
   runKpis,
   stageTitle,
   type ActivityRow,
@@ -170,6 +171,15 @@ describe("errorRate", () => {
 
 describe("latest activity", () => {
   const event = (over: Record<string, unknown> = {}) => ({ seq: 1, environment: "demo", stage: "triage", type: "decision", summary: "act", at: ts(NOW), ...over });
+
+  it("a guest's event copy (#18) takes its run from its cycleId, and only when its own id is that run's", () => {
+    const copy = { ...event(), cycleId: "inc1_r0" };
+    expect(parsePublicActivity("demo", "inc1_r0_000001", copy)).toMatchObject({ cycleId: "inc1_r0", id: "000001", seq: 1, stage: "triage" });
+    expect(parsePublicActivity("demo", "other_r0_000001", copy)).toBeNull();
+    expect(parsePublicActivity("demo", "inc1_r0_", copy)).toBeNull();
+    expect(parsePublicActivity("demo", "inc1_r0_000001", { ...copy, cycleId: undefined })).toBeNull();
+    expect(parsePublicActivity("prod", "inc1_r0_000001", copy)).toBeNull();
+  });
 
   it("takes the cycle id from a cycle's events path", () => {
     expect(parseActivity("starfish_cycles", "demo", "starfish_cycles/inc1_r0/events/000001", event())).toMatchObject({

@@ -253,6 +253,11 @@ function RunDetail({ cycle, environment, now }: { cycle: CycleRow; environment: 
           <Badge tone={status.tone}>{status.label}</Badge>
           {cycle.synthetic && <SyntheticBadge />}
         </div>
+        {cycle.trimmed && (
+          <p className="text-xs text-gray-600 dark:text-gray-400" data-testid="trimmed-note">
+            Public view: a trimmed copy of the run. The model&apos;s own words and each step&apos;s details are left out of it.
+          </p>
+        )}
         <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-sm text-gray-700 dark:text-gray-300">
           {cycle.path && (
             <>

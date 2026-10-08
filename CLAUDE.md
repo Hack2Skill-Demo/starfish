@@ -54,6 +54,7 @@ pnpm replay           # replay the agent's stages over a corpus into a results f
 pnpm escalate         # one tick of the phone escalation (#37); the agent pass runs it too; off unless STARFISH_PHONE_ESCALATION; never run against real Twilio
 pnpm scrub            # dry-run: how many stored incidents still hold a credential/email (--apply to rewrite)
 pnpm seed-demo        # dry-run: the synthetic, badged demo history (#12); --apply/--remove need --project, refuses unless STARFISH_ENV=demo
+pnpm public-view      # dry-run: the guests' trimmed copies (#18) to write or remove (--apply needs --project); never run on a real project
 bash .claude/hooks/git-branch-guard.test.sh        # hook suites
 bash .claude/hooks/pre-push-review-guard.test.sh
 bash .claude/hooks/lib/segments.test.sh
@@ -276,6 +277,16 @@ src/
   integrations/links.ts  links from Slack and issues back to the UI, built from the configured origin and a plain id
   runtimeSettings.ts  the settings document an admin edits: validated, applied over the
                    env defaults, last-good fallback, a frozen snapshot per run
+  publicView.ts    the guests' TRIMMED COPIES (#18), pure: one allowlist per kind (`toPublicIncident`, `toPublicCycle`,
+                   `toPublicEvent`), every field named and its value's shape checked; only for `STARFISH_PUBLIC_ENVIRONMENTS`
+                   (default `demo`). Never detail, traces, tenant ids, the log filter, model words, patches or event data;
+                   an event's one-line summary only for the engine-worded stages. `publicView: 1` marks a copy
+  publicViewStore.ts  writes them (Admin SDK only): an event's copy in the event's own transaction (cycle.ts); an
+                   incident's or cycle's refreshed after each engine write from what was committed (store.ts, cycle.ts,
+                   incidentLinks.ts, observe.ts, escalation.ts, webhooks.ts; never throws), a retired incident's deleted
+                   in the retire's transaction; `syncRecentPublicView` (the newest 50 of each, after every ingest and
+                   agent run) for writes the engine does not make; `backfillPublicView` = `pnpm public-view`
+                   (`publicViewCli.ts`). Unit- and emulator-tested; never run on a real project
 ```
 
 Conventions that carry real weight (the `starfish-dev` skill has the reasoning):
@@ -292,7 +303,7 @@ Conventions that carry real weight (the `starfish-dev` skill has the reasoning):
 The operator UI: sign-in, an auth provider with race guards, a two-level layout, an **Overview**
 page (the landing page; counts of stored records only, `lib/overviewModel.ts`; "healed on its own" is only an index run
 the engine recorded healed, `isHealedRun`; its activity feed is a
-collection-group query over `events`, with its own rule and index), the
+collection-group query over `events`, with its own rule and index; a guest's reads `starfish_public_events`), the
 **Incidents** page (under each error, the incident's current run: its state, triage's reason and a link to it, `lib/useIncidentRuns.ts`), a **Runs** page (live subscription to `{cycleCollection}` and its events,
 `web/src/lib/runs.ts`; the waterfall logic is pure in `runsModel.ts`: a step with no event is "not
 reached", a cycle whose lease ran out is not "in progress"), an **incident evidence** page (`/incidents/:id`, `lib/evidence.ts`: only stored records, never a placeholder result), and a **Settings** page: the Gemini, GitHub and Slack connections (GitHub and Slack read `{runCollection}/integrations`, the agent's own report of what it holds: "configured", never "connected", and "not connected yet" until the agent has run and reported), an
@@ -306,10 +317,14 @@ React 19, Vite, Tailwind 4, react-router, TanStack Query; Starfish's own theme i
   record `starfish_users/{uid}.roles` and are read fresh on every token event, never cached
   in a claim, so a revoked role takes effect on the next request. Grant access by writing that record from the Admin
   SDK or the console.
-- **Guests (rules and UI built):** an anonymous Firebase Auth session may *read* incidents, cycles,
-  their events, `last_run` and `starfish_runs/integrations` (which credentials the agent job holds: booleans and a
-  time, never a value) whose `environment` is `demo` (a get of a missing one reads as missing),
-  and the operator copy of the settings, and nothing else; it never writes.
+- **Guests (rules and UI built):** an anonymous Firebase Auth session never reads a stored incident, cycle or event
+  (#18). It may *read* their trimmed copies (`starfish_public_incidents`, `starfish_public_cycles`,
+  `starfish_public_events`, written by the engine only, `src/publicView.ts`), `last_run` and
+  `starfish_runs/integrations` (which credentials the agent job holds: booleans and a time, never a value), each only
+  whose `environment` is `demo` (a get of a missing one reads as missing), and the operator copy of the settings, and
+  nothing else; it never writes. The UI switches in ONE place, `web/src/lib/dataSource.ts` (an anonymous session reads
+  the copies, everyone else the stored documents); a copy keeps the stored field names, so the same parsers read it, and
+  a field it leaves out shows as nothing (the evidence and Runs pages say the view is a trimmed copy).
   A signed-in email account with no role is not a guest. A visitor with no session is signed in
   anonymously on arrival (`RequireRole`/`enterAsGuest`) and sees Overview, Incidents, incident evidence,
   Runs and a view-only Settings with no triage or admin buttons; signing out does not re-enter guest, and if Anonymous sign-in is refused

@@ -21,6 +21,7 @@ import { Timestamp } from "firebase-admin/firestore";
 import type { Firestore } from "firebase-admin/firestore";
 import { appendEventsInTransaction, type RunEvent } from "../agent/cycle.js";
 import { incidentUrl } from "../integrations/links.js";
+import { refreshPublicCycle, refreshPublicIncident } from "../publicViewStore.js";
 import { ROLE_LABELS, maskPhone, parsePerson, type OnCallRole } from "../oncallSchema.js";
 import { advance, callNumberHash, closeUpdate, inTransaction, readCurrentCall, stopReason, STEPS, type CallOutcome, type EscalationConfig } from "./escalation.js";
 import { SPOKEN, twiml, verifyTwilioSignature, type TwilioClient } from "./twilio.js";
@@ -74,14 +75,27 @@ export function createTwilioWebhooks(deps: TwilioWebhookDeps): (req: TwilioWebho
     if (!ID_RE.test(id) || !Number.isInteger(step) || step < 0 || step >= STEPS.length) return plainReply(400, "bad request");
     const selfUrl = (path: string) => `${cfg.twilioWebhookUrl}${path}?e=${encodeURIComponent(id)}&s=${step}`;
 
-    /** Run `fn` against the current call in a transaction; null when the call is no longer the one in flight. */
-    const withCall = <T>(fn: (c: Extract<Awaited<ReturnType<typeof readCurrentCall>>, { current: true }>, tx: FirebaseFirestore.Transaction, note: (events: RunEvent[]) => void, now: Date) => T) =>
-      inTransaction(db, async (tx) => {
+    /**
+     * Run `fn` against the current call in a transaction; null when the call is no longer the one in flight. After the
+     * commit, the guest copies of the call's cycle and incident are brought up to date with what was stored (#18).
+     */
+    const withCall = <T>(fn: (c: Extract<Awaited<ReturnType<typeof readCurrentCall>>, { current: true }>, tx: FirebaseFirestore.Transaction, note: (events: RunEvent[]) => void, now: Date) => T) => {
+      let touched: { cycleId: string; incidentId: string } | undefined;
+      return inTransaction(db, async (tx) => {
+        touched = undefined;
         const now = deps.now();
         const c = await readCurrentCall(tx, db, cfg, id, step);
         if (!c.current) return null;
-        return fn(c, tx, (events) => appendEventsInTransaction(tx, c.cycleRef, c.cycle, now, events), now);
+        touched = { cycleId: c.cycleRef.id, incidentId: c.incident.id };
+        return fn(c, tx, (events) => appendEventsInTransaction(tx, c.cycleRef, c.cycle, now, events, cfg), now);
+      }).then(async (result) => {
+        if (touched) {
+          await refreshPublicCycle(db, cfg, touched.cycleId);
+          await refreshPublicIncident(db, cfg, touched.incidentId);
+        }
+        return result;
       });
+    };
 
     /** End the current call with `outcome` and move the sequence on; then kick the next step. */
     const finishCall = async (outcome: CallOutcome): Promise<void> => {

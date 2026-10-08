@@ -49,6 +49,7 @@ Where it currently holds, and where it doesn't:
 | Where a missing index may be created, and whether | ⚠️ environment only (`STARFISH_INDEX_ALLOWED_TARGETS`, empty by default: nothing allowed and the index path not wired; `STARFISH_INDEX_AUTO_APPLY`, off by default; `STARFISH_INDEX_DAILY_CAP`, 3 per target per UTC day; `STARFISH_INDEX_PROBES`, the failing queries, empty by default so nothing can be created; `STARFISH_INDEX_FILE`, `STARFISH_INDEX_WAIT_MINUTES`, `STARFISH_INDEX_OBSERVE_MINUTES`; a malformed value stops startup). Run by `pnpm agent` when a target is allowed; tested against fakes and the emulator, **never run against Google** |
 | Verify isolation, cycles per agent pass | ⚠️ environment only (`STARFISH_VERIFY_ISOLATION`, default `none`: the agent will not start; `in-process` is not a sandbox; `github-actions` (the demo's choice) pushes the patch to a `starfish/<cycle>` branch and lets the target's own CI judge it, with `STARFISH_VERIFY_CHECKS` naming the checks (counted only from `STARFISH_VERIFY_CHECK_APP`, default `github-actions`); `cloud-run-job` runs the command in a separate job whose service account holds no roles, with `STARFISH_VERIFY_JOB`, `_BUCKET`, `_JOB_REGION` (both written, never run, #74); `STARFISH_MAX_CYCLES_PER_PASS`, default 3; `STARFISH_MAX_CYCLES_PER_DAY`, default 30 per UTC day; reconsidering a declined incident: `STARFISH_RECONSIDER_COOLDOWN_MINUTES` 30, `_MAX_PER_DAY` 3, `_BURST_OCCURRENCES` 20) |
 | Agent cycle collection, lease length, cycle deadline, attempts | ⚠️ environment only (`STARFISH_CYCLE_COLLECTION`, `STARFISH_LEASE_SECONDS`, `STARFISH_CYCLE_DEADLINE_MINUTES`, `STARFISH_MAX_CYCLE_ATTEMPTS`); the rules name `starfish_cycles` too |
+| What guests may see, and where its trimmed copies live (#18) | ⚠️ environment only (`STARFISH_PUBLIC_ENVIRONMENTS`, default `demo`, empty turns the copies off; `STARFISH_PUBLIC_INCIDENT_COLLECTION`, `_CYCLE_COLLECTION`, `_EVENT_COLLECTION`, and the UI's `VITE_STARFISH_PUBLIC_*`). The rules name the `starfish_public_*` collections and serve guests the `demo` label only, so another label needs a rules edit too. What a copy holds is an allowlist in code (`src/publicView.ts`), not a setting |
 | Ingest lag, longest window, run-record collection | ⚠️ environment only (`STARFISH_INGEST_LAG_MINUTES`, `STARFISH_INGEST_MAX_WINDOW_HOURS`, `STARFISH_RUN_COLLECTION`); the rules name `starfish_runs` too |
 | Services Starfish never ingests (its own) | ✅ config (`STARFISH_EXCLUDED_SERVICES`, default `starfish`), applied at query time and at parse time; environment-only on purpose, because it guards against a feedback loop and is not an operational preference. `scripts/deploy-gcp.sh` sets it on every job it deploys, unless `EXTRA_ENV_VARS` gives its own: `starfish`, the ingest job's name and the admin API's service name, whether or not that run deploys the admin API, and on the agent job also its own name and, with `cloud-run-job`, the verify job's (#32, #177) |
 | Log source resource types | ⚠️ config, but attribution reads only `function_name` / `service_name`, so only Cloud Functions and Cloud Run work |
@@ -185,7 +186,7 @@ demo runs.
 
 The Incidents page opens with a line saying whether the engine is running (from the engine's last-run record: failed, stopped past a configurable threshold, read capped, or never recorded), so a quiet list can't pass for good news; the scheduled ingest job writes that record (`scripts/deploy-gcp.sh` deploys and schedules it; deployed once, on the demo project, 2026-10-05, #6). Under each incident's error is the agent's run for its current recurrence: the run's state (in the Runs page's words), triage's reason as recorded, and a link that opens that run on the Runs page; the expanded row has the decision, its rule and the reason in full. It says "No agent run yet" only when every run of the environment was read, and nothing when it could not tell.
 
-The public demo needs no sign-in: a visitor is signed in anonymously and sees the Overview, the incidents and their evidence, the Runs page and a view-only Settings page, all for the `demo` environment only, with no triage buttons (#12). That needs Anonymous sign-in enabled in the Firebase project and only `demo`-labelled data. App Check is built as an option, off unless the UI is built with a reCAPTCHA site key (`VITE_STARFISH_APPCHECK_SITE_KEY`), and enforcing it on Firestore is a console step left to a person; an optional uptime check and alert on the site come with `UPTIME_CHECK=1 scripts/deploy-web.sh`. Both are tested only with stubs and dry runs, never on a real project ([deploy.md](docs/deploy.md#app-check-and-the-uptime-check-12)). Because the agent has never run, the demo can carry a **synthetic** evidence history instead: `pnpm seed-demo` (see [Synthetic demo history](#synthetic-demo-history)), every record of which the UI badges "Synthetic". A private deployment leaves Anonymous sign-in disabled and still requires an operator account.
+The public demo needs no sign-in: a visitor is signed in anonymously and sees the Overview, the incidents and their evidence, the Runs page and a view-only Settings page, all for the `demo` environment only, with no triage buttons (#12). A guest never reads the stored incident, cycle or event documents: `firestore.rules` serve a guest only **trimmed copies** the engine writes for the `demo` environment (#18, see [Redaction limits](#redaction-limits) below), so the guest pages show no error detail, stack trace or model reasoning. That needs Anonymous sign-in enabled in the Firebase project and only `demo`-labelled data. App Check is built as an option, off unless the UI is built with a reCAPTCHA site key (`VITE_STARFISH_APPCHECK_SITE_KEY`), and enforcing it on Firestore is a console step left to a person; an optional uptime check and alert on the site come with `UPTIME_CHECK=1 scripts/deploy-web.sh`. Both are tested only with stubs and dry runs, never on a real project ([deploy.md](docs/deploy.md#app-check-and-the-uptime-check-12)). Because the agent has never run, the demo can carry a **synthetic** evidence history instead: `pnpm seed-demo` (see [Synthetic demo history](#synthetic-demo-history)), every record of which the UI badges "Synthetic". A private deployment leaves Anonymous sign-in disabled and still requires an operator account.
 
 ![Live runs: a missing-index fault, from first error to an evidence PR waiting for a human](docs/design/screens/live-runs-index.png)
 
@@ -286,7 +287,7 @@ apparent over-engineering is scar tissue from real incidents, and the tests in
   request in that repository, and the fixer refuses a patch that *adds* a credential shape
   (a secret already sitting in a context or removed line is not caught)
 
-**Redaction limits.** It is pattern matching: a credential in a format nobody listed will
+<a id="redaction-limits"></a>**Redaction limits.** It is pattern matching: a credential in a format nobody listed will
 get through, and free-form PII (names, addresses, record ids) is not detectable at all —
 `truncate` bounds how much raw text leaves, it does not clean it. The store redacts new
 writes; incidents stored **before** the policy are scrubbed in place by `pnpm scrub` (a dry
@@ -298,9 +299,28 @@ key, and is safe to re-run (`scrub.test.ts`, `scrub.emulator.test.ts`). Run it b
 data is exposed to anyone. It does not touch Firestore exports or backups, logs, or anything
 outside the incident collection, and it finds only what the pattern list finds. The one
 Slack message (`needs a human`) is built from redacted, bounded, plain-text fields and tested for seeded credentials; there is no
-issue/PR-text allowlist beyond the PR opener's own bounded fields, so that surface is still to be built (issue #18). What a demo guest can read of the agent's work is already an allowlist:
-events and the run record are flat, key-filtered, redacted and bounded (`sanitizeEvent`); the
-incident documents guests read are the redacted ones, so keep the public demo's data synthetic.
+issue/PR-text allowlist beyond the PR opener's own bounded fields, so that surface is still to be built (issue #18).
+
+**What a guest reads is an allowlist (#18).** A guest (an anonymous session on the public demo) never reads a stored
+incident, cycle or run event. For each one in a public environment (`STARFISH_PUBLIC_ENVIRONMENTS`, `demo` by default)
+the engine writes a **trimmed copy** (`src/publicView.ts`: one function per kind, each naming every field it copies and
+checking each value's shape) to `starfish_public_incidents`, `starfish_public_cycles` and `starfish_public_events`, and
+`firestore.rules` let a guest read only those; nobody writes them from a client. A copy holds ids, statuses, counts,
+times, the function and service names, the error type and code, a bounded one-line title, the issue and pull-request
+number, link and state, and from the run record only its enumerated, numeric and hash values. It never holds error
+detail, stack traces, tenant or request ids, the counter-check's log filter, the model's words (triage's reason, the
+fix's root cause and risk, the review's attacks), patches, or event payloads; an event keeps its one-line summary only
+for the stages whose summaries the engine writes in its own words. An event's copy is written in the same transaction
+as the event; an incident's or a cycle's is refreshed right after each engine write from what was committed (its
+updates are increments and field deletes, so the result is only known then), a retired incident's is deleted in the
+retire's transaction, and the ingest and agent jobs sweep the newest 50 of each after every run for changes the engine
+did not make (an operator's triage). Records stored before the copies existed get theirs from `pnpm public-view` (a dry
+run; `-- --apply --project=<id>` writes, and also removes copies whose record is gone, retired or private);
+`pnpm seed-demo --apply` writes its synthetic history's copies in the same batches. Built and tested (unit tests that
+plant seeded credentials and personal-looking text in every source field, the emulator for the writes and the rules);
+**never run on a real project**. The title, the function and service names and the engine's own event lines are the
+free text a copy keeps: redacted again and bounded, but free-form personal data in them still gets through, so keep the
+public demo's data synthetic.
 
 Alongside it, the **counter-check** (`src/ingest/counterCheck.ts`): an independent raw-log
 recount of a function's errors over 24h, plus a few redacted recent samples. Nothing calls it
@@ -354,7 +374,7 @@ pr, human or failed, so a reader can tell a declined cycle from a notified one, 
 opened PR, and a timeout, from that document alone; a stage that did not run has no entry) that only the current
 lease holder can write (fenced inside the same transaction, so a worker that lost its lease can
 record and finish nothing). Events are redacted and bounded, and `firestore.rules` let operators
-and guests (for the demo environment) read them and nobody write them.
+read them and nobody write them; guests read only their trimmed copies (#18).
 
 The **loop** that drives them (`src/agent/loop.ts`, tested on the emulator with the real cycle,
 lease and verify gate and a scripted model) orders the stages for one cycle and wraps them in
@@ -460,6 +480,7 @@ pnpm test:emulator      # firestore.rules + store concurrency on the emulator (n
 pnpm -C web dev         # operator UI on :5177 (copy web/.env.example to web/.env)
 pnpm dev:emulated       # the UI against seeded local emulators, no GCP project needed
 pnpm seed-demo          # dry run: the synthetic demo history it would write (--apply / --remove; demo environment only)
+pnpm public-view        # dry run: the guests' trimmed copies (#18) to write or remove (-- --apply --project=<id>)
 pnpm spike              # fix-quality spike (needs Vertex AI access)
 pnpm scoreboard         # scoreboard/RESULTS.md from scoreboard/results/*.json; says so and writes nothing with no runs
 pnpm replay --check-corpus  # is the replay corpus fit to run (no model); `pnpm replay` scores one run (needs Vertex AI access)
@@ -481,6 +502,8 @@ the issue and pull-request numbers it shows exist nowhere** (they carry no link)
   --project=<id>` writes it; ids are fixed, so a re-run replaces (with fresh timestamps) and never duplicates.
   `--remove --project=<id>` deletes exactly those documents. Neither touches a document at one of its ids that is not
   marked synthetic.
+- Guests read it, like everything, through the trimmed copies (#18), which it writes in the same batches; `--remove`
+  removes them with it. A guest therefore sees its decisions, rules and counts, not its made-up reasoning.
 - It writes no incident key and its fingerprints are not hashes, so a real occurrence never lands on a synthetic
   incident, and each incident's cycle is already finished, so the agent never picks one up. The agent's scans also skip
   every record marked synthetic (the pass, reading pull requests back, auto-merge, fast-revert, phone escalation), so

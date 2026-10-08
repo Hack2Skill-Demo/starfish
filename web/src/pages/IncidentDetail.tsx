@@ -95,6 +95,11 @@ function Evidence({ row, cycle, runPending, runFailed }: { row: IncidentRow; cyc
           {row.monitoringOnly && <MonitoringOnlyBadge />}
         </div>
         <p className="mt-1 text-sm text-gray-700 dark:text-gray-300">{row.errorMessage}</p>
+        {(row.trimmed || cycle?.trimmed) && (
+          <p className="mt-1 text-xs text-gray-600 dark:text-gray-400" data-testid="trimmed-note">
+            Public view: a trimmed copy of the record. Error detail, stack traces and the model&apos;s own words are left out of it.
+          </p>
+        )}
         <div className="mt-2">
           <RetireControl incidentId={row.id} />
         </div>

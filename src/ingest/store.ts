@@ -65,6 +65,8 @@ import {
   type StoredIncident,
   type StoredMonitoringObservation,
 } from "../types.js";
+import type { PublicViewConfig } from "../publicView.js";
+import { refreshPublicIncident } from "../publicViewStore.js";
 
 export interface IncidentInput {
   functionName: string;
@@ -305,9 +307,13 @@ export function redactShortField(value: string): string {
   return sliceWellFormed(redactPii(value), MAX_SHORT_FIELD_LEN);
 }
 
+/**
+ * With the public-view settings (src/publicView.ts, #18): after the upsert commits, the guest copy of the incident it
+ * wrote is brought up to date from what was stored, when its environment is public. That refresh never throws.
+ */
 export async function upsertIncident(
   db: Firestore,
-  store: IncidentStoreConfig,
+  store: IncidentStoreConfig & PublicViewConfig,
   rawInput: IncidentInput,
   now: Timestamp
 ): Promise<UpsertOutcome> {
@@ -315,10 +321,18 @@ export async function upsertIncident(
   const fingerprint = fingerprintOf(input.functionName, input.errorMessage, input.signalSource);
   const keyRef = db.collection(store.incidentKeyCollection).doc(incidentKeyId(input.environment, fingerprint));
 
-  return db.runTransaction(
-    (tx) => abortIfClosed(() => upsertInTransaction(db, tx, store, input, fingerprint, keyRef, now)),
+  // The document the committed attempt wrote (an attempt that is retried may have chosen another).
+  let written: string | undefined;
+  const outcome = await db.runTransaction(
+    (tx) =>
+      abortIfClosed(() => {
+        written = undefined;
+        return upsertInTransaction(db, tx, store, input, fingerprint, keyRef, now, (id) => (written = id));
+      }),
     { maxAttempts: UPSERT_MAX_ATTEMPTS }
   );
+  if (written !== undefined) await refreshPublicIncident(db, store, written, input.environment);
+  return outcome;
 }
 
 /** gRPC status codes this file tells apart (google.rpc.Code). */
@@ -364,7 +378,8 @@ async function upsertInTransaction(
   input: IncidentInput,
   fingerprint: string,
   keyRef: DocumentReference,
-  now: Timestamp
+  now: Timestamp,
+  wrote: (incidentId: string) => void
 ): Promise<UpsertOutcome> {
   // Every read comes before any write: Firestore transactions require it.
   const keySnap = await tx.get(keyRef);
@@ -407,6 +422,7 @@ async function upsertInTransaction(
     // (status, triage and recurrence untouched), as the resolved path below does for a resolution.
     if (retiredAtMs != null && input.lastOccurredAt.getTime() <= retiredAtMs) {
       tx.update(tombstone.ref, buildAccrualUpdate(retired, input, now));
+      wrote(tombstone.id);
       pointKeyAt(tombstone.id);
       return "updated";
     }
@@ -420,11 +436,13 @@ async function upsertInTransaction(
       // taken ("declined", "acting") must not be silently undone by a recurrence.
       ...(data.triageState == null && { triageState: "pending" as const }),
     });
+    wrote(target.id);
     pointKeyAt(target.id);
     return "updated";
   }
 
   if (target && data?.status === "resolved") {
+    wrote(target.id);
     pointKeyAt(target.id);
     const resolvedAtMs = tsMillis(data.resolvedAt);
     // Logs are aggregated with a lag, so a batch can hold occurrences from
@@ -443,6 +461,7 @@ async function upsertInTransaction(
   // a fresh one, and the key moves to it.
   const ref = db.collection(store.incidentCollection).doc();
   tx.set(ref, buildNewIncident(input, fingerprint, now));
+  wrote(ref.id);
   pointKeyAt(ref.id);
   return "new";
 }

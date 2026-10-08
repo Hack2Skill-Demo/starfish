@@ -645,6 +645,10 @@ describe("guests (anonymous sessions)", () => {
       const db = ctx.firestore();
       await setDoc(doc(db, "incidents/demo-1"), { environment: "demo", status: "new", functionName: "f", updatedAt: Timestamp.now() });
       await setDoc(doc(db, "incidents/prod-1"), { environment: "prod", status: "new", functionName: "f", updatedAt: Timestamp.now() });
+      // The trimmed copy guests read (src/publicView.ts, #18). A copy of a prod incident is never written; one is
+      // planted here to prove the rules would not serve it anyway.
+      await setDoc(doc(db, "starfish_public_incidents/demo-1"), { publicView: 1, environment: "demo", status: "new", functionName: "f", lastOccurredAt: Timestamp.now() });
+      await setDoc(doc(db, "starfish_public_incidents/prod-1"), { publicView: 1, environment: "prod", status: "new", functionName: "f", lastOccurredAt: Timestamp.now() });
       await setDoc(doc(db, "starfish_settings_public/current"), { version: 1, revision: 1, environment: "demo", updatedAt: Timestamp.now() });
       await setDoc(doc(db, "starfish_settings/current"), { version: 1, revision: 1, environment: "demo" });
       await setDoc(doc(db, "starfish_settings/last_good"), { version: 1, environment: "demo" });
@@ -653,24 +657,34 @@ describe("guests (anonymous sessions)", () => {
     });
   });
 
-  it("reads demo incidents, one by one and by a query that filters on the demo environment", async () => {
-    await assertSucceeds(getDoc(doc(guest(), "incidents/demo-1")));
-    await assertSucceeds(getDocs(query(collection(guest(), "incidents"), where("environment", "==", "demo"))));
-  });
-
-  it("reads nothing outside the demo environment: not a prod incident, not an unfiltered query, not a record with no environment", async () => {
+  it("never reads a stored incident, not even a demo one: only its trimmed copy (#18)", async () => {
+    await assertFails(getDoc(doc(guest(), "incidents/demo-1")));
+    await assertFails(getDocs(query(collection(guest(), "incidents"), where("environment", "==", "demo"))));
+    await assertFails(getDoc(doc(guest(), "incidents/no-such-incident")));
     await assertFails(getDoc(doc(guest(), "incidents/prod-1")));
-    await assertFails(getDocs(query(collection(guest(), "incidents"), where("environment", "==", "prod"))));
-    await assertFails(getDocs(collection(guest(), "incidents"))); // would include prod-1
-    await assertFails(getDoc(doc(guest(), "incidents/i1"))); // i1 has no environment at all
+    await assertFails(getDocs(collection(guest(), "incidents")));
   });
 
-  it("gets an incident that doesn't exist as missing, not as a refusal (#142)", async () => {
-    const snap = await assertSucceeds(getDoc(doc(guest(), "incidents/no-such-incident")));
+  it("reads the demo's incident copies, one by one and by the Incidents page's own query", async () => {
+    await assertSucceeds(getDoc(doc(guest(), "starfish_public_incidents/demo-1")));
+    const listed = await assertSucceeds(
+      getDocs(query(collection(guest(), "starfish_public_incidents"), where("environment", "==", "demo"), where("lastOccurredAt", ">=", Timestamp.fromMillis(0)), orderBy("lastOccurredAt", "desc"), limit(200)))
+    );
+    expect(listed.docs.map((d) => d.id)).toEqual(["demo-1"]);
+  });
+
+  it("reads no copy outside the demo environment: not a prod one, not an unfiltered query", async () => {
+    await assertFails(getDoc(doc(guest(), "starfish_public_incidents/prod-1")));
+    await assertFails(getDocs(query(collection(guest(), "starfish_public_incidents"), where("environment", "==", "prod"))));
+    await assertFails(getDocs(collection(guest(), "starfish_public_incidents"))); // would include prod-1
+  });
+
+  it("gets an incident copy that doesn't exist as missing, not as a refusal (#142)", async () => {
+    const snap = await assertSucceeds(getDoc(doc(guest(), "starfish_public_incidents/no-such-incident")));
     expect(snap.exists()).toBe(false);
     // Still nothing for a visitor with no session or an account with no role.
-    await assertFails(getDoc(doc(anon(), "incidents/no-such-incident")));
-    await assertFails(getDoc(doc(emailNoRole(), "incidents/no-such-incident")));
+    await assertFails(getDoc(doc(anon(), "starfish_public_incidents/no-such-incident")));
+    await assertFails(getDoc(doc(emailNoRole(), "starfish_public_incidents/no-such-incident")));
   });
 
   it("reads the operator copy of the settings, so the UI knows which environment to ask for", async () => {
@@ -707,20 +721,35 @@ describe("guests (anonymous sessions)", () => {
     await assertFails(setDoc(doc(db, "starfish_users/guest1"), { roles: ["admin"] }));
   });
 
+  it("nobody writes a trimmed copy from a client, an admin included: only the engine does", async () => {
+    for (const db of [guest(), as("op1"), as("admin1"), anon()]) {
+      await assertFails(setDoc(doc(db, "starfish_public_incidents/demo-2"), { environment: "demo", status: "new" }));
+      await assertFails(updateDoc(doc(db, "starfish_public_incidents/demo-1"), { errorMessage: "rewritten" }));
+      await assertFails(deleteDoc(doc(db, "starfish_public_incidents/demo-1")));
+    }
+  });
+
   it("is a guest only by being anonymous: a signed-in email account with no role reads nothing", async () => {
     await assertFails(getDoc(doc(emailNoRole(), "incidents/demo-1")));
+    await assertFails(getDoc(doc(emailNoRole(), "starfish_public_incidents/demo-1")));
     await assertFails(getDoc(doc(emailNoRole(), "starfish_settings_public/current")));
   });
 
-  it("leaves operators and admins exactly as they were", async () => {
-    await assertSucceeds(getDoc(doc(as("op1"), "incidents/prod-1")));
-    await assertSucceeds(getDoc(doc(as("op1"), "incidents/demo-1")));
+  it("leaves operators and admins exactly as they were: they read the stored incidents of every environment", async () => {
+    for (const uid of ["op1", "admin1"]) {
+      await assertSucceeds(getDoc(doc(as(uid), "incidents/prod-1")));
+      await assertSucceeds(getDoc(doc(as(uid), "incidents/demo-1")));
+      await assertSucceeds(getDocs(query(collection(as(uid), "incidents"), where("environment", "==", "demo"))));
+      // The copies too: no harm, and an operator may compare.
+      await assertSucceeds(getDoc(doc(as(uid), "starfish_public_incidents/demo-1")));
+    }
     await assertFails(getDoc(doc(as("op1"), "starfish_settings/current")));
     await assertSucceeds(getDoc(doc(as("admin1"), "starfish_settings/current")));
   });
 
   it("an unauthenticated visitor still reads nothing", async () => {
     await assertFails(getDoc(doc(anon(), "incidents/demo-1")));
+    await assertFails(getDoc(doc(anon(), "starfish_public_incidents/demo-1")));
     await assertFails(getDoc(doc(anon(), "starfish_settings_public/current")));
   });
 });
@@ -802,6 +831,8 @@ describe("agent cycles and their run events", () => {
     env.authenticatedContext("guest1", { firebase: { sign_in_provider: "anonymous" } }).firestore();
   const CYCLE = "starfish_cycles/inc1_r0";
   const EVENT = `${CYCLE}/events/000001`;
+  const PUB_CYCLE = "starfish_public_cycles/inc1_r0";
+  const PUB_EVENT = "starfish_public_events/inc1_r0_000001";
 
   beforeEach(async () => {
     await env.withSecurityRulesDisabled(async (ctx) => {
@@ -810,46 +841,68 @@ describe("agent cycles and their run events", () => {
       await setDoc(doc(db, EVENT), { seq: 1, environment: "demo", stage: "triage", type: "decision", summary: "declined" });
       await setDoc(doc(db, "starfish_cycles/inc2_r0"), { incidentId: "inc2", environment: "prod", state: "running", updatedAt: Timestamp.now() });
       await setDoc(doc(db, "starfish_cycles/inc2_r0/events/000001"), { seq: 1, environment: "prod", summary: "x" });
+      // The trimmed copies guests read (#18); prod ones are planted only to prove the rules would not serve them.
+      await setDoc(doc(db, PUB_CYCLE), { publicView: 1, incidentId: "inc1", environment: "demo", state: "running", updatedAt: Timestamp.now() });
+      await setDoc(doc(db, PUB_EVENT), { publicView: 1, cycleId: "inc1_r0", seq: 1, environment: "demo", stage: "triage", type: "decision", at: Timestamp.now() });
+      await setDoc(doc(db, "starfish_public_cycles/inc2_r0"), { publicView: 1, incidentId: "inc2", environment: "prod", state: "running", updatedAt: Timestamp.now() });
+      await setDoc(doc(db, "starfish_public_events/inc2_r0_000001"), { publicView: 1, cycleId: "inc2_r0", seq: 1, environment: "prod", at: Timestamp.now() });
     });
   });
 
-  it("operators and admins read cycles and their events", async () => {
+  it("operators and admins read cycles and their events, of every environment, as before", async () => {
     for (const uid of ["op1", "admin1"]) {
       await assertSucceeds(getDoc(doc(as(uid), CYCLE)));
       await assertSucceeds(getDoc(doc(as(uid), EVENT)));
       await assertSucceeds(getDoc(doc(as(uid), "starfish_cycles/inc2_r0")));
+      await assertSucceeds(getDocs(query(collection(as(uid), "starfish_cycles"), where("environment", "==", "demo"), orderBy("updatedAt", "desc"), limit(50))));
+      await assertSucceeds(getDocs(query(collection(as(uid), `${CYCLE}/events`), where("environment", "==", "demo"))));
+      await assertSucceeds(getDoc(doc(as(uid), PUB_CYCLE)));
+      await assertSucceeds(getDoc(doc(as(uid), PUB_EVENT)));
     }
   });
 
-  it("a guest reads the demo environment's cycles and events, and no other", async () => {
-    await assertSucceeds(getDoc(doc(guest(), CYCLE)));
-    await assertSucceeds(getDoc(doc(guest(), EVENT)));
-    await assertSucceeds(getDocs(query(collection(guest(), `${CYCLE}/events`), where("environment", "==", "demo"))));
+  it("a guest never reads a stored cycle or event, not even a demo one: only their trimmed copies (#18)", async () => {
+    await assertFails(getDoc(doc(guest(), CYCLE)));
+    await assertFails(getDoc(doc(guest(), EVENT)));
+    await assertFails(getDocs(query(collection(guest(), `${CYCLE}/events`), where("environment", "==", "demo"))));
+    await assertFails(getDocs(query(collection(guest(), "starfish_cycles"), where("environment", "==", "demo"), orderBy("updatedAt", "desc"), limit(50))));
+    await assertFails(getDoc(doc(guest(), "starfish_cycles/never-run_r0")));
     await assertFails(getDoc(doc(guest(), "starfish_cycles/inc2_r0")));
-    await assertFails(getDoc(doc(guest(), "starfish_cycles/inc2_r0/events/000001")));
-    await assertFails(getDocs(collection(guest(), "starfish_cycles")));
-    // The Runs page's own list query (web/src/lib/runs.ts): the environment filter is what lets the rules serve it.
+  });
+
+  it("a guest reads the demo environment's cycle and event copies, and no other", async () => {
+    await assertSucceeds(getDoc(doc(guest(), PUB_CYCLE)));
+    await assertSucceeds(getDoc(doc(guest(), PUB_EVENT)));
+    // The Runs page's own queries (web/src/lib/runs.ts): the environment filter is what lets the rules serve them.
     const listed = await assertSucceeds(
-      getDocs(query(collection(guest(), "starfish_cycles"), where("environment", "==", "demo"), orderBy("updatedAt", "desc"), limit(50)))
+      getDocs(query(collection(guest(), "starfish_public_cycles"), where("environment", "==", "demo"), orderBy("updatedAt", "desc"), limit(50)))
     );
     expect(listed.docs.map((d) => d.id)).toEqual(["inc1_r0"]);
+    const events = await assertSucceeds(
+      getDocs(query(collection(guest(), "starfish_public_events"), where("cycleId", "==", "inc1_r0"), where("environment", "==", "demo"), limit(200)))
+    );
+    expect(events.docs.map((d) => d.id)).toEqual(["inc1_r0_000001"]);
+    await assertFails(getDoc(doc(guest(), "starfish_public_cycles/inc2_r0")));
+    await assertFails(getDoc(doc(guest(), "starfish_public_events/inc2_r0_000001")));
+    await assertFails(getDocs(collection(guest(), "starfish_public_cycles")));
+    await assertFails(getDocs(collection(guest(), "starfish_public_events")));
     await assertFails(
-      getDocs(query(collection(guest(), "starfish_cycles"), where("environment", "==", "prod"), orderBy("updatedAt", "desc"), limit(50)))
+      getDocs(query(collection(guest(), "starfish_public_cycles"), where("environment", "==", "prod"), orderBy("updatedAt", "desc"), limit(50)))
     );
   });
 
-  it("a guest gets a cycle or event that doesn't exist as missing, not as a refusal (#142)", async () => {
+  it("a guest gets a cycle or event copy that doesn't exist as missing, not as a refusal (#142)", async () => {
     // Every demo incident the agent never reached: the evidence page must say "Not reached".
-    const cycle = await assertSucceeds(getDoc(doc(guest(), "starfish_cycles/never-run_r0")));
+    const cycle = await assertSucceeds(getDoc(doc(guest(), "starfish_public_cycles/never-run_r0")));
     expect(cycle.exists()).toBe(false);
-    const event = await assertSucceeds(getDoc(doc(guest(), `${CYCLE}/events/999999`)));
+    const event = await assertSucceeds(getDoc(doc(guest(), "starfish_public_events/inc1_r0_999999")));
     expect(event.exists()).toBe(false);
     // Lists stay constrained: a missing-document allowance is not a way around the environment filter.
-    await assertFails(getDocs(collection(guest(), "starfish_cycles")));
-    await assertFails(getDocs(collection(guest(), "starfish_cycles/inc2_r0/events")));
-    await assertFails(getDocs(query(collection(guest(), "starfish_cycles/inc2_r0/events"), where("environment", "==", "prod"))));
+    await assertFails(getDocs(collection(guest(), "starfish_public_cycles")));
+    await assertFails(getDocs(query(collection(guest(), "starfish_public_events"), where("cycleId", "==", "inc2_r0"))));
+    await assertFails(getDocs(query(collection(guest(), "starfish_public_events"), where("environment", "==", "prod"))));
     for (const db of [anon(), as("nobody")]) {
-      await assertFails(getDoc(doc(db, "starfish_cycles/never-run_r0")));
+      await assertFails(getDoc(doc(db, "starfish_public_cycles/never-run_r0")));
     }
   });
 
@@ -857,6 +910,8 @@ describe("agent cycles and their run events", () => {
     for (const db of [anon(), as("nobody")]) {
       await assertFails(getDoc(doc(db, CYCLE)));
       await assertFails(getDoc(doc(db, EVENT)));
+      await assertFails(getDoc(doc(db, PUB_CYCLE)));
+      await assertFails(getDoc(doc(db, PUB_EVENT)));
     }
   });
 
@@ -882,10 +937,16 @@ describe("agent cycles and their run events", () => {
     }
   });
 
-  it("a guest lists the feed only filtered to the demo environment", async () => {
-    await assertSucceeds(feed(guest(), "demo"));
+  it("a guest never lists the stored events across cycles; the guest feed reads the event copies, demo only (#18)", async () => {
+    await assertFails(feed(guest(), "demo"));
     await assertFails(feed(guest()));
     await assertFails(feed(guest(), "prod"));
+    // The guest feed's own query (subscribeLatestEvents for a guest).
+    const listed = await assertSucceeds(
+      getDocs(query(collection(guest(), "starfish_public_events"), where("environment", "==", "demo"), orderBy("at", "desc"), limit(10)))
+    );
+    expect(listed.docs.map((d) => d.id)).toEqual(["inc1_r0_000001"]);
+    await assertFails(getDocs(query(collection(guest(), "starfish_public_events"), orderBy("at", "desc"), limit(10))));
   });
 
   it("nobody else lists the feed: not an unauthenticated visitor, not an account with no role", async () => {
@@ -910,6 +971,13 @@ describe("agent cycles and their run events", () => {
       await assertFails(setDoc(doc(db, `${CYCLE}/events/000002`), { seq: 2, environment: "demo" }));
       await assertFails(updateDoc(doc(db, EVENT), { summary: "rewritten" }));
       await assertFails(deleteDoc(doc(db, EVENT)));
+      // Nor their trimmed copies: only the engine writes those (#18).
+      await assertFails(setDoc(doc(db, PUB_CYCLE), { environment: "demo", state: "done" }));
+      await assertFails(updateDoc(doc(db, PUB_CYCLE), { state: "done" }));
+      await assertFails(deleteDoc(doc(db, PUB_CYCLE)));
+      await assertFails(setDoc(doc(db, "starfish_public_events/inc1_r0_000002"), { environment: "demo", seq: 2 }));
+      await assertFails(updateDoc(doc(db, PUB_EVENT), { summary: "rewritten" }));
+      await assertFails(deleteDoc(doc(db, PUB_EVENT)));
     }
   });
 });

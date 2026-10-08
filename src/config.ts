@@ -117,6 +117,18 @@ export interface StarfishConfig {
    */
   cycleCollection: string;
   /**
+   * Environments whose records guests (anonymous sessions on the public demo) may see, as a TRIMMED COPY
+   * (src/publicView.ts, #18): for an incident, cycle or run event of one of these environments the engine also writes
+   * an allowlist projection to the three collections below, and firestore.rules lets guests read only those, never the
+   * stored documents. Default `demo`; empty turns the copies off. The rules serve guests the `demo` label only, so
+   * another label here also needs a matching change in firestore.rules.
+   */
+  publicEnvironments: string[];
+  /** The trimmed copies guests read (src/publicView.ts): incidents, cycles, and run events (one flat collection). */
+  publicIncidentCollection: string;
+  publicCycleCollection: string;
+  publicEventCollection: string;
+  /**
    * How long a worker's lease on a cycle lasts before another may take it over. The loop renews it about every
    * third of this while it works (a verify run can wait far longer than one lease, #132), so this bounds how soon a
    * CRASHED worker's cycle is resumed, not how long a stage may take.
@@ -553,6 +565,10 @@ export function loadConfig(): StarfishConfig {
     auditCollection: process.env.STARFISH_AUDIT_COLLECTION || "starfish_audit",
     excludedServices: parseList(process.env.STARFISH_EXCLUDED_SERVICES, ",") ?? DEFAULT_EXCLUDED_SERVICES,
     cycleCollection: process.env.STARFISH_CYCLE_COLLECTION || "starfish_cycles",
+    publicEnvironments: validEnvironmentLabels(parseList(process.env.STARFISH_PUBLIC_ENVIRONMENTS, ",") ?? ["demo"]),
+    publicIncidentCollection: textOr(process.env.STARFISH_PUBLIC_INCIDENT_COLLECTION, "starfish_public_incidents"),
+    publicCycleCollection: textOr(process.env.STARFISH_PUBLIC_CYCLE_COLLECTION, "starfish_public_cycles"),
+    publicEventCollection: textOr(process.env.STARFISH_PUBLIC_EVENT_COLLECTION, "starfish_public_events"),
     leaseSeconds: positiveNumber(process.env.STARFISH_LEASE_SECONDS, 300, "STARFISH_LEASE_SECONDS"),
     cycleDeadlineMinutes: positiveNumber(process.env.STARFISH_CYCLE_DEADLINE_MINUTES, 360, "STARFISH_CYCLE_DEADLINE_MINUTES"),
     maxCycleAttempts: positiveNumber(process.env.STARFISH_MAX_CYCLE_ATTEMPTS, 3, "STARFISH_MAX_CYCLE_ATTEMPTS"),
@@ -733,6 +749,16 @@ function validRepos(entries: string[]): string[] {
   for (const entry of entries) {
     if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,99}\/[A-Za-z0-9._-]{1,100}$/.test(entry)) {
       throw new Error(`STARFISH_AUTO_MERGE_TARGETS entry "${entry}" must be a repository as owner/name`);
+    }
+  }
+  return entries;
+}
+
+/** Environment labels as the settings schema allows them (ENVIRONMENT in src/settingsSchema.ts); a typo is refused at startup. */
+function validEnvironmentLabels(entries: string[]): string[] {
+  for (const entry of entries) {
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(entry)) {
+      throw new Error(`STARFISH_PUBLIC_ENVIRONMENTS entry "${entry}" is not an environment label (letters, digits, . _ -; at most 64)`);
     }
   }
   return entries;

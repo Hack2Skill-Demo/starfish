@@ -7,6 +7,9 @@
  * served by the composite index in firestore.indexes.json (the environment filter
  * is also what lets the rules serve a guest's query). Status, service and function
  * filters apply client-side over that window.
+ *
+ * A guest reads the trimmed copies instead (`dataSource`, #18): the same query over the engine's projection, which keeps
+ * the stored field names, so `toRow` reads both. A field the copy leaves out is absent from the row, and shown as nothing.
  */
 import {
   collection,
@@ -24,6 +27,7 @@ import {
 } from "firebase/firestore";
 import { firestore } from "./firebase";
 import { webConfig } from "./config";
+import { dataSource } from "./dataSource";
 
 export const INCIDENT_STATUSES = ["new", "acknowledged", "logged", "resolved", "recurred", "ignored"] as const;
 export type IncidentStatus = (typeof INCIDENT_STATUSES)[number];
@@ -70,6 +74,11 @@ export interface IncidentRow {
   previousIssueUrl?: string;
   /** Written by `pnpm seed-demo` (src/seedDemo.ts), not by any real run: the UI must say so wherever it shows it. */
   synthetic?: true;
+  /**
+   * Read from the guests' trimmed copy (#18, `publicView: 1`), not the stored document: free text the engine stored is
+   * left out of it, so a missing field says nothing about what was recorded.
+   */
+  trimmed?: true;
   /**
    * Opened from Cloud Monitoring alone (#19): failed invocations counted with no ERROR log entry behind them, so
    * there is no log message, stack trace or log recount. `signalSource: "monitoring"`, or a `mon-` fingerprint.
@@ -187,6 +196,7 @@ export function toRow(id: string, d: Record<string, unknown>, windowHours: numbe
     previousIssueNumber: typeof last.githubIssueNumber === "number" ? last.githubIssueNumber : undefined,
     previousIssueUrl: str(last.githubIssueUrl),
     ...(d.synthetic === true && { synthetic: true as const }),
+    ...(d.publicView === 1 && { trimmed: true as const }),
     // The engine writes both on a Monitoring-only incident (fingerprintOf in src/ingest/fingerprint.ts).
     ...((d.signalSource === "monitoring" || (typeof d.fingerprint === "string" && d.fingerprint.startsWith("mon-"))) && {
       monitoringOnly: true as const,
@@ -204,11 +214,11 @@ export async function listIncidents(
   windowHours: number,
   environment: string
 ): Promise<{ rows: IncidentRow[]; capped: boolean }> {
-  const { incidentCollection } = webConfig();
   const since = Timestamp.fromMillis(Date.now() - windowHours * MS_PER_HOUR);
   const snap = await getDocs(
     query(
-      collection(firestore(), incidentCollection),
+      // The stored incidents, or a guest's trimmed copies (#18); the copies have the same index.
+      collection(firestore(), dataSource().incidents),
       // Environments share a store but never mix on screen (the engine labels
       // every incident). Needs the composite index in firestore.indexes.json.
       where("environment", "==", environment),
@@ -231,7 +241,7 @@ export async function listIncidents(
  * incident (src/ingest/retire.ts) is gone to the UI the same way it is to the store.
  */
 export async function getIncident(id: string, environment: string): Promise<IncidentRow | null> {
-  const snap = await getDoc(doc(firestore(), webConfig().incidentCollection, id));
+  const snap = await getDoc(doc(firestore(), dataSource().incidents, id));
   if (!snap.exists()) return null;
   const data = snap.data();
   if (data.environment !== environment || data.retired === true) return null;

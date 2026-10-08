@@ -5,6 +5,7 @@
  */
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { PUBLIC_VIEW_OFF } from "./testConfig.js";
 import { deleteApp, initializeApp } from "firebase-admin/app";
 import { getFirestore, Timestamp } from "firebase-admin/firestore";
 import type { Firestore } from "firebase-admin/firestore";
@@ -22,10 +23,10 @@ const app = initializeApp({ projectId: "demo-starfish-rules" }, "scrub-emulator-
 const db: Firestore = getFirestore(app, "scrub-tests");
 afterAll(() => deleteApp(app));
 
-let store: { incidentCollection: string; incidentKeyCollection: string };
+let store: { incidentCollection: string; incidentKeyCollection: string } & typeof PUBLIC_VIEW_OFF;
 beforeEach(() => {
   const run = randomUUID().slice(0, 8);
-  store = { incidentCollection: `incidents_${run}`, incidentKeyCollection: `keys_${run}` };
+  store = { incidentCollection: `incidents_${run}`, incidentKeyCollection: `keys_${run}`, ...PUBLIC_VIEW_OFF };
 });
 
 const MESSAGE = `auth failed for bob@y.org ${SEEDED_SECRETS.google}`;

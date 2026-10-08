@@ -10,6 +10,7 @@ import type { Firestore } from "firebase-admin/firestore";
 import { retireIncident, type RetireConfig } from "./retire.js";
 import { upsertIncident, type IncidentInput, type IncidentStoreConfig } from "./store.js";
 import { SEEDED_SECRETS } from "./testSecrets.js";
+import { PUBLIC_VIEW_OFF } from "../testConfig.js";
 
 if (!process.env.FIRESTORE_EMULATOR_HOST) {
   throw new Error("retire.emulator.test.ts needs the Firestore emulator: run `pnpm test:emulator`");
@@ -22,7 +23,7 @@ afterAll(() => deleteApp(app));
 let cfg: RetireConfig & IncidentStoreConfig;
 beforeEach(async () => {
   const run = randomUUID().slice(0, 8);
-  cfg = { incidentCollection: `incidents_${run}`, incidentKeyCollection: `keys_${run}`, usersCollection: `users_${run}`, auditCollection: `audit_${run}` };
+  cfg = { incidentCollection: `incidents_${run}`, incidentKeyCollection: `keys_${run}`, usersCollection: `users_${run}`, auditCollection: `audit_${run}`, ...PUBLIC_VIEW_OFF };
   await db.collection(cfg.usersCollection).doc("admin1").set({ roles: ["admin"] });
   await db.collection(cfg.usersCollection).doc("op1").set({ roles: ["operator"] });
   await db.collection(cfg.usersCollection).doc("nobody").set({ roles: [] });

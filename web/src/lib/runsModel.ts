@@ -40,6 +40,11 @@ export interface CycleRow {
   summary: Record<string, Flat>;
   /** Written by `pnpm seed-demo` (src/seedDemo.ts), not by any real run: the UI must say so wherever it shows it. */
   synthetic?: true;
+  /**
+   * Read from the guests' trimmed copy (#18, `publicView: 1`): the run record keeps only its enumerated, numeric and hash
+   * values, so a missing key says nothing about what the engine recorded.
+   */
+  trimmed?: true;
 }
 
 export interface EventRow {
@@ -95,6 +100,7 @@ export function parseCycle(id: string, d: Record<string, unknown>): CycleRow | n
     deadlineAt: date(d.deadlineAt),
     summary,
     ...(d.synthetic === true && { synthetic: true as const }),
+    ...(d.publicView === 1 && { trimmed: true as const }),
   };
 }
 

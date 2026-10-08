@@ -24,6 +24,7 @@ import { getFirestore } from "firebase-admin/firestore";
 import { loadConfig } from "./config.js";
 import { RuntimeConfigLoader } from "./runtimeSettings.js";
 import { runIngest } from "./ingest/run.js";
+import { syncRecentPublicView } from "./publicViewStore.js";
 
 const config = loadConfig();
 initializeApp({ projectId: config.projectId });
@@ -39,4 +40,14 @@ console.log(
     (summary.error !== undefined ? ` - ${summary.error}` : "")
 );
 console.log(`config from ${summary.configSource}${summary.problems.length ? `; settings not used: ${summary.problems.join("; ")}` : ""}`);
+
+// The guests' trimmed copies (#18) of the newest public records, for changes the engine's own refreshes cannot see (an
+// operator's triage in the UI). Never throws, and never fails the run: the copies only lag until the next one.
+if (config.publicEnvironments.length > 0) {
+  const sweep = await syncRecentPublicView(db, config);
+  console.log(
+    `public view: ${sweep.incidents.refreshed} of ${sweep.incidents.checked} incident copies and ${sweep.cycles.refreshed} of ${sweep.cycles.checked} cycle copies brought up to date` +
+      (sweep.failures > 0 ? `; ${sweep.failures} could not be (they catch up next run)` : "")
+  );
+}
 process.exit(summary.outcome === "failed" ? 1 : 0);

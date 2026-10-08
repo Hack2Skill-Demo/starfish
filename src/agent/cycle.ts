@@ -35,9 +35,12 @@ import { FieldValue, Timestamp } from "firebase-admin/firestore";
 import type { DocumentReference, Firestore, Transaction } from "firebase-admin/firestore";
 import type { StarfishConfig } from "../config.js";
 import { clipWellFormed, isSensitiveKey } from "../ingest/redact.js";
+import type { PublicViewConfig } from "../publicView.js";
+import { refreshPublicCycle, writePublicEventInTx } from "../publicViewStore.js";
 import { MAX_DECISION_HISTORY, reconsiderTrigger, recentReconsiderations, utcDay, type ReconsiderPolicy, type ReconsiderTrigger } from "./reconsider.js";
 
-export type CycleConfig = Pick<StarfishConfig, "cycleCollection" | "leaseSeconds" | "cycleDeadlineMinutes" | "maxCycleAttempts">;
+/** With the public-view settings: a cycle of a public environment keeps its guest copy up to date (src/publicView.ts, #18). */
+export type CycleConfig = Pick<StarfishConfig, "cycleCollection" | "leaseSeconds" | "cycleDeadlineMinutes" | "maxCycleAttempts"> & PublicViewConfig;
 
 export type CycleState = "running" | "waiting-human" | "done" | "declined" | "failed";
 
@@ -95,6 +98,32 @@ function cycleRef(db: Firestore, cfg: CycleConfig, id: string): DocumentReferenc
   return db.collection(cfg.cycleCollection).doc(id);
 }
 
+/**
+ * One transaction on cycle `id`. When the attempt that committed wrote the cycle (it called `wrote` with the cycle's
+ * environment), the cycle's guest copy is refreshed after the commit (src/publicViewStore.ts, #18): the copy is read
+ * from what was stored, never guessed from the update. The refresh never throws.
+ */
+async function cycleTransaction<T>(
+  db: Firestore,
+  cfg: CycleConfig,
+  id: string,
+  fn: (tx: Transaction, wrote: (environment: unknown) => void) => Promise<T>
+): Promise<T> {
+  let wrote = false;
+  let environment: unknown;
+  const result = await db.runTransaction(async (tx) => {
+    // Per attempt: only the attempt that commits counts.
+    wrote = false;
+    environment = undefined;
+    return fn(tx, (env) => {
+      wrote = true;
+      environment = env;
+    });
+  });
+  if (wrote) await refreshPublicCycle(db, cfg, id, environment);
+  return result;
+}
+
 /** The expiry of a lease taken at `now`: a lease, never past the cycle's deadline. */
 function leaseEnd(cfg: CycleConfig, now: Date, deadlineMs: number): number {
   return Math.min(now.getTime() + cfg.leaseSeconds * 1000, deadlineMs);
@@ -113,10 +142,11 @@ export async function acquireLease(db: Firestore, cfg: CycleConfig, key: CycleKe
   const reconsider = opts.reconsider;
   const incidentRef = reconsider && db.collection(reconsider.incidentCollection).doc(key.incidentId);
 
-  return db.runTransaction(async (tx): Promise<AcquireResult> => {
+  return cycleTransaction(db, cfg, id, async (tx, wrote): Promise<AcquireResult> => {
     const snap = await tx.get(ref);
 
     if (!snap.exists) {
+      wrote(key.environment);
       const deadlineMs = now.getTime() + cfg.cycleDeadlineMinutes * MS_PER_MINUTE;
       const expires = leaseEnd(cfg, now, deadlineMs);
       tx.create(ref, {
@@ -146,6 +176,7 @@ export async function acquireLease(db: Firestore, cfg: CycleConfig, key: CycleKe
       const incidentSnap = await tx.get(incidentRef);
       const trigger = reconsiderTrigger(d, incidentSnap.data(), reconsider, now);
       if (trigger !== null) {
+        wrote(d.environment);
         const deadlineMs = now.getTime() + cfg.cycleDeadlineMinutes * MS_PER_MINUTE;
         const expires = leaseEnd(cfg, now, deadlineMs);
         const history = Array.isArray(d.history) ? (d.history as unknown[]) : [];
@@ -187,6 +218,7 @@ export async function acquireLease(db: Firestore, cfg: CycleConfig, key: CycleKe
 
     const deadlineMs = ms(d.deadlineAt) ?? 0;
     if (now.getTime() >= deadlineMs) {
+      wrote(d.environment);
       tx.update(ref, { state: "failed", outcome: "deadline-passed", path: "failed", owner: null, leaseExpiresAt: null, updatedAt: Timestamp.fromDate(now) });
       return { acquired: false, reason: "deadline-passed" };
     }
@@ -200,12 +232,14 @@ export async function acquireLease(db: Firestore, cfg: CycleConfig, key: CycleKe
     const renewing = heldUntil > now.getTime() && d.owner === owner;
     const free = d.resumeUncounted === true;
     if (!renewing && !free && attempts >= cfg.maxCycleAttempts) {
+      wrote(d.environment);
       tx.update(ref, { state: "failed", outcome: "retries-exhausted", path: "failed", owner: null, leaseExpiresAt: null, updatedAt: Timestamp.fromDate(now) });
       return { acquired: false, reason: "retries-exhausted" };
     }
 
     const expires = leaseEnd(cfg, now, deadlineMs);
     const attempt = renewing || free ? attempts : attempts + 1;
+    wrote(d.environment);
     tx.update(ref, { owner, leaseExpiresAt: Timestamp.fromMillis(expires), attempts: attempt, resumeUncounted: false, updatedAt: Timestamp.fromDate(now) });
     return { acquired: true, cycleId: id, attempt, resumed: !renewing, leaseExpiresAt: new Date(expires), modelCalls: count(d.modelCalls), revisions: count(d.revisions) };
   });
@@ -234,10 +268,11 @@ export async function giveUpStranded(db: Firestore, cfg: CycleConfig, key: Cycle
   const id = cycleId(key);
   if (id === null) return null;
   const ref = cycleRef(db, cfg, id);
-  return db.runTransaction(async (tx) => {
+  return cycleTransaction(db, cfg, id, async (tx, wrote) => {
     const snap = await tx.get(ref);
     const reason = strandedReason(snap.data(), now, cfg.maxCycleAttempts);
     if (reason === null) return null;
+    wrote(snap.get("environment"));
     tx.update(ref, { state: "failed", outcome: reason, path: "failed", owner: null, leaseExpiresAt: null, updatedAt: Timestamp.fromDate(now) });
     return reason;
   });
@@ -256,11 +291,12 @@ function fence(d: Record<string, unknown> | undefined, owner: string, now: Date)
 /** Extend the lease, never past the cycle's deadline. */
 export async function renewLease(db: Firestore, cfg: CycleConfig, id: string, owner: string, now: Date): Promise<FenceResult & { leaseExpiresAt?: Date }> {
   const ref = cycleRef(db, cfg, id);
-  return db.runTransaction(async (tx) => {
+  return cycleTransaction(db, cfg, id, async (tx, wrote) => {
     const snap = await tx.get(ref);
     const d = snap.data() as Record<string, unknown> | undefined;
     if (!snap.exists) return { ok: false, reason: "no-such-cycle" } as const;
     if (!fence(d, owner, now)) return { ok: false, reason: "lease-lost" } as const;
+    wrote(d.environment);
     const deadlineMs = ms(d.deadlineAt) ?? 0;
     if (now.getTime() >= deadlineMs) {
       tx.update(ref, { state: "failed", outcome: "deadline-passed", path: "failed", owner: null, leaseExpiresAt: null, updatedAt: Timestamp.fromDate(now) });
@@ -286,11 +322,12 @@ export async function countSpend(
   what: "modelCalls" | "revisions"
 ): Promise<FenceResult & { count?: number }> {
   const ref = cycleRef(db, cfg, id);
-  return db.runTransaction(async (tx) => {
+  return cycleTransaction(db, cfg, id, async (tx, wrote) => {
     const snap = await tx.get(ref);
     const d = snap.data() as Record<string, unknown> | undefined;
     if (!snap.exists) return { ok: false, reason: "no-such-cycle" } as const;
     if (!fence(d, owner, now)) return { ok: false, reason: "lease-lost" } as const;
+    wrote(d.environment);
     const next = count(d[what]) + 1;
     tx.update(ref, { [what]: next, updatedAt: Timestamp.fromDate(now) });
     return { ok: true, count: next } as const;
@@ -353,19 +390,19 @@ export async function recordEvent(
 ): Promise<FenceResult & { seq?: number }> {
   const ref = cycleRef(db, cfg, id);
   const clean = sanitizeEvent(event);
-  return db.runTransaction(async (tx) => {
+  return cycleTransaction(db, cfg, id, async (tx, wrote) => {
     const snap = await tx.get(ref);
     const d = snap.data() as Record<string, unknown> | undefined;
     if (!snap.exists) return { ok: false, reason: "no-such-cycle" } as const;
     if (!fence(d, owner, now)) return { ok: false, reason: "lease-lost" } as const;
+    wrote(d.environment);
     const seq = Number(d.eventCount ?? 0) + 1;
     const { record, ...eventFields } = clean;
-    tx.create(ref.collection("events").doc(String(seq).padStart(6, "0")), {
-      seq,
-      environment: d.environment,
-      at: Timestamp.fromDate(now),
-      ...eventFields,
-    });
+    const eventId = String(seq).padStart(6, "0");
+    const eventDoc = { seq, environment: d.environment, at: Timestamp.fromDate(now), ...eventFields };
+    tx.create(ref.collection("events").doc(eventId), eventDoc);
+    // Its guest copy in the same transaction: an event of a public environment never exists without one (#18).
+    writePublicEventInTx(tx, db, cfg, id, eventId, eventDoc);
     tx.update(ref, {
       eventCount: seq,
       stage: clean.stage,
@@ -389,7 +426,8 @@ export function appendEventsInTransaction(
   ref: DocumentReference,
   d: Record<string, unknown> | undefined,
   now: Date,
-  events: readonly RunEvent[]
+  events: readonly RunEvent[],
+  pub: PublicViewConfig
 ): boolean {
   if (d === undefined || d.state === "running" || events.length === 0) return false;
   let seq = Number(d.eventCount ?? 0);
@@ -398,7 +436,11 @@ export function appendEventsInTransaction(
   for (const event of events) {
     const { record, ...eventFields } = sanitizeEvent(event);
     seq += 1;
-    tx.create(ref.collection("events").doc(String(seq).padStart(6, "0")), { seq, environment: d.environment, at: Timestamp.fromDate(now), ...eventFields });
+    const eventId = String(seq).padStart(6, "0");
+    const eventDoc = { seq, environment: d.environment, at: Timestamp.fromDate(now), ...eventFields };
+    tx.create(ref.collection("events").doc(eventId), eventDoc);
+    // Its guest copy in the same transaction (#18). The cycle's own copy is the caller's to refresh after the commit.
+    writePublicEventInTx(tx, ref.firestore, pub, ref.id, eventId, eventDoc);
     lastStage = eventFields.stage;
     lastRecord = record;
   }
@@ -427,11 +469,12 @@ export async function releaseLease(
   opts: { uncounted?: boolean } = {}
 ): Promise<FenceResult> {
   const ref = cycleRef(db, cfg, id);
-  return db.runTransaction(async (tx) => {
+  return cycleTransaction(db, cfg, id, async (tx, wrote) => {
     const snap = await tx.get(ref);
     const d = snap.data() as Record<string, unknown> | undefined;
     if (!snap.exists) return { ok: false, reason: "no-such-cycle" } as const;
     if (!fence(d, owner, now)) return { ok: false, reason: "lease-lost" } as const;
+    wrote(d.environment);
     tx.update(ref, {
       owner: null,
       leaseExpiresAt: null,
@@ -473,11 +516,12 @@ export async function finishCycle(
   decision?: DeclineDecision
 ): Promise<FenceResult> {
   const ref = cycleRef(db, cfg, id);
-  return db.runTransaction(async (tx) => {
+  return cycleTransaction(db, cfg, id, async (tx, wrote) => {
     const snap = await tx.get(ref);
     const d = snap.data() as Record<string, unknown> | undefined;
     if (!snap.exists) return { ok: false, reason: "no-such-cycle" } as const;
     if (!fence(d, owner, now)) return { ok: false, reason: "lease-lost" } as const;
+    wrote(d.environment);
     tx.update(ref, {
       state,
       outcome: clip(outcome, MAX_OUTCOME),
@@ -545,7 +589,7 @@ export async function recordPrState(db: Firestore, cfg: CycleConfig, id: string,
   }
   const record = sanitizeFlat({ ...observed });
   const ref = cycleRef(db, cfg, id);
-  return db.runTransaction(async (tx): Promise<PrStateWrite> => {
+  return cycleTransaction(db, cfg, id, async (tx, wrote): Promise<PrStateWrite> => {
     const snap = await tx.get(ref);
     if (!snap.exists) return { ok: false, reason: "no-such-cycle" };
     const d = snap.data() as Record<string, unknown>;
@@ -555,6 +599,7 @@ export async function recordPrState(db: Firestore, cfg: CycleConfig, id: string,
     const priorAt = isoMs(prior?.checkedAt);
     if (priorAt !== null && isoMs(observed.checkedAt)! <= priorAt) return { ok: true, applied: false, reason: "stale" };
     if (prior?.state === "merged" && observed.state !== "merged") return { ok: true, applied: false, reason: "merged-is-final" };
+    wrote(d.environment);
     tx.update(ref, { "summary.prState": record });
     return { ok: true, applied: true };
   });

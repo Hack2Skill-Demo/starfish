@@ -11,6 +11,7 @@ import type { Firestore } from "firebase-admin/firestore";
 import { acquireLease, countSpend, cycleId, finishCycle, recordEvent, recordPrState, releaseLease, renewLease, sanitizeEvent, type CycleConfig, type CycleKey, type PrStateRecord } from "./cycle.js";
 import { SEEDED_SECRETS } from "../ingest/testSecrets.js";
 import { causeClass } from "./reconsider.js";
+import { PUBLIC_VIEW_OFF } from "../testConfig.js";
 
 /** The structural cause class of the test incident below, which carries no error class, code or trace. */
 const CAUSE = causeClass({});
@@ -29,7 +30,7 @@ const key: CycleKey = { incidentId: "inc1", environment: "demo", recurrence: 0 }
 
 let cfg: CycleConfig;
 beforeEach(() => {
-  cfg = { cycleCollection: `cycles_${randomUUID().slice(0, 8)}`, leaseSeconds: 300, cycleDeadlineMinutes: 60, maxCycleAttempts: 3 };
+  cfg = { cycleCollection: `cycles_${randomUUID().slice(0, 8)}`, leaseSeconds: 300, cycleDeadlineMinutes: 60, maxCycleAttempts: 3, ...PUBLIC_VIEW_OFF };
 });
 
 const cycle = async (k: CycleKey = key) => (await db.collection(cfg.cycleCollection).doc(cycleId(k)!).get()).data()!;
