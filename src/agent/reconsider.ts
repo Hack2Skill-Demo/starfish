@@ -15,8 +15,8 @@
  *              again, so a person reopened it (#227).
  *
  * and only within bounds: the automatic triggers and `reopened` wait `reconsiderCooldownMinutes` after the decision (or
- * the stop; an operator's retriage request does not wait: a person asked), and a cycle is reconsidered at most `reconsiderMaxPerDay` times in any 24
- * hours, whoever asks. An incident that is not open, or is retired, is never reconsidered: an operator's resolve or
+ * the stop; an operator's retriage request does not wait: a person asked), and a cycle is reconsidered at most
+ * `reconsiderMaxPerDay` times in any 24 hours, whoever asks. An incident that is not open, or is retired, is never reconsidered: an operator's resolve or
  * ignore always wins. The daily cycle cap (pass.ts) bounds the spend on top of this.
  *
  * Pure functions: cycle.ts applies them inside the transaction that reopens the cycle, pass.ts to pick candidates.

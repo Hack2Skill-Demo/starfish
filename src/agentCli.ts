@@ -203,7 +203,7 @@ try {
   if (summary.skipped === "automation-disabled") console.log(`agent: automation is off (or the settings could not be read); no cycle started.`);
   if (summary.skipped === "daily-cap") console.log(`agent: the daily cap of ${cfg.maxCyclesPerDay} cycle(s) is reached; no cycle started.`);
   if (summary.daily) console.log(`agent: ${summary.daily.startedBefore} of ${summary.daily.cap} daily cycle(s) started before this pass.`);
-  for (const g of summary.gaveUp ?? []) console.log(`  ${g.incidentId}: given up (${g.reason}); a person is told when Slack is set`);
+  for (const g of summary.gaveUp ?? []) console.log(`  ${g.incidentId}: given up (${g.reason})`);
   if (summary.sweepError) console.error(`agent: the sweep for stranded cycles failed: ${summary.sweepError}`);
   if (scanCapped !== undefined) console.warn(`agent: the candidate scan read its cap of ${scanCapped} incident(s); older open incidents wait for a later pass.`);
   console.log(`agent: ${summary.considered} candidate(s), ${summary.ran} run${cfg.dryRun ? " (dry run)" : ""}`);

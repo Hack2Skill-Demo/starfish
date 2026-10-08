@@ -48,8 +48,8 @@ export const MAX_SCANNED = 500;
  * seeded synthetic one.
  *
  * The incidents are read newest activity first, a page at a time, until `limit` candidates are found, the store has no
- * more, or `MAX_SCANNED` (or a lower `opts.maxScanned`) incidents were read (#226): an open incident older than many closed or settled ones is still
- * found. Hitting that bound is reported through `opts.onScanCapped`, never silent. Uses the same (environment,
+ * more, or `MAX_SCANNED` (or a lower `opts.maxScanned`) incidents were read (#226): an open incident older than many
+ * closed or settled ones is still found. Hitting that bound is reported through `opts.onScanCapped`, never silent. Uses the same (environment,
  * lastOccurredAt) index as the incidents list, so it needs no new index.
  */
 export async function selectCandidates(
@@ -127,7 +127,7 @@ export const MAX_STRANDED_SCAN = 100;
  * `running` cycles of this environment that nobody holds and that can only be given up (#226): their deadline passed, or
  * their attempts ran out (cycle.ts `strandedReason`). A released cycle is otherwise given up only when the candidate scan
  * selects it again, and one whose incident went quiet may never be; the sweep finds it so a person is told
- * (loop.ts `giveUpStranded`). Read through the (environment, state, updatedAt desc) index the escalation's scan uses,
+ * (loop.ts `giveUpStrandedCycles`). Read through the (environment, state, updatedAt desc) index the escalation's scan uses,
  * at most `MAX_STRANDED_SCAN`: what it gives up leaves the running set, so a later sweep reaches the rest.
  */
 export async function findStrandedCycles(db: Firestore, cfg: Pick<PassConfig, "environment" | "cycleCollection" | "maxCycleAttempts">, now: Date): Promise<CycleKey[]> {
