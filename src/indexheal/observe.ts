@@ -4,9 +4,10 @@
  * (`observeUntil`) has passed, by the agent job after its pass:
  *
  *   recurred        the incident occurred again after the index was READY (its `lastOccurredAt` is later);
- *   query-failing   it stayed quiet, but the configured query does not pass any more;
+ *   query-failing   it stayed quiet, but the configured query fails again asking for this index;
  *   unverified      no probe can be run for it now (the probe was removed from the configuration), the incident is gone,
- *                   or ingest still had not read the logs through the window a day after it ended;
+ *                   ingest still had not read the logs through the window a day after it ended, or the probe still could
+ *                   not run (inconclusive) a day after it ended;
  *   healed          no occurrence since READY, for the whole window, and the configured query passes at its end.
  *
  * "Quiet" is the incident's own record: no occurrence since READY, and only once ingest's checkpoint for this target
@@ -17,7 +18,9 @@
  *
  * Only `summary.index.runtime` (and when it was decided) is written, on a cycle still `observing`, in a transaction: the
  * cycle's state and path are not changed, and the incident is never touched. Resolving it stays a person's decision.
- * A probe or read that fails leaves the cycle observing, to be tried at the next pass.
+ * A probe or read that fails leaves the cycle observing, to be tried at the next pass: that includes a probe that could
+ * not run or say anything about this index (`inconclusive`: UNAVAILABLE, a permission, another index named), until the
+ * same day-after bound as an uncovered window.
  */
 import type { Firestore, Timestamp } from "firebase-admin/firestore";
 import { readIngestCheckpoint } from "../ingest/run.js";
@@ -31,6 +34,7 @@ export const UNCOVERED_GIVE_UP_MS = 24 * 3600_000;
 
 const QUIET_BASIS = "no occurrence since READY with ingest read through the window, and the configured query replayed at the end; traffic is not measured";
 const UNCOVERED_BASIS = "ingest had not read the logs through the window a day after it ended; nothing was concluded from the incident's record";
+const INCONCLUSIVE_BASIS = "the configured query could not be replayed until a day after the window ended; nothing was concluded from it";
 
 export interface ObserveDeps {
   db: Firestore;
@@ -136,7 +140,16 @@ export async function observeIndexHeals(deps: ObserveDeps): Promise<ObserveSumma
           basis = UNCOVERED_BASIS;
         } else {
           const probe = await deps.probe(spec);
-          runtime = probe.state === "passed" ? "healed" : probe.state === "not-configured" ? "unverified" : "query-failing";
+          if (probe.state === "inconclusive") {
+            // The replay could not run (UNAVAILABLE, a permission, the network): a failed read, never "the query fails"
+            // (#232). Still observing, tried at the next pass; a day after the window it is given up as unverified.
+            if (now.getTime() < until + UNCOVERED_GIVE_UP_MS) {
+              out.errors.push({ cycleId: doc.id, message: `probe inconclusive: ${probe.reason}` });
+              continue;
+            }
+            runtime = "unverified";
+            basis = INCONCLUSIVE_BASIS;
+          } else runtime = probe.state === "passed" ? "healed" : probe.state === "not-configured" ? "unverified" : "query-failing";
         }
       }
     } catch (err) {

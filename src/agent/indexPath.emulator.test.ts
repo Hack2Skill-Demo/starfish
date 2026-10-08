@@ -15,7 +15,7 @@ import { runCycle, type LoopDeps, type LoopSubject, type PullRequestRequest } fr
 import { capSlot, countIndexCreations, readIndexFileText, type IndexHealWiring } from "./indexPath.js";
 import type { AskJson } from "./triage.js";
 import type { IndexAdmin, LiveIndex } from "../indexheal/firestoreAdmin.js";
-import type { ProbeVerdict } from "../indexheal/probe.js";
+import { createIndexProbe, type IndexProbeSpec, type ProbeVerdict } from "../indexheal/probe.js";
 import { observeIndexHeals } from "../indexheal/observe.js";
 import type { IssueRequest } from "../integrations/githubPr.js";
 import type { NotifyRequest } from "../integrations/slack.js";
@@ -182,6 +182,17 @@ function deps(indexHeal: IndexHealWiring | undefined, extra: Partial<LoopDeps> =
 
 const cycleRef = () => db.collection(`cycles_${run}`).doc("idx1_r0");
 const cycleDoc = async () => (await cycleRef().get()).data()!;
+/** The production probe for `orders`, with a runner that cannot reach Firestore (UNAVAILABLE): it never throws (#232). */
+const ORDERS_PROBE: IndexProbeSpec = {
+  project: "demo-app-1",
+  database: "(default)",
+  collection: "orders",
+  scope: "COLLECTION",
+  where: [{ field: "status", op: "==", value: "open" }],
+  orderBy: [{ field: "createdAt", direction: "desc" }],
+};
+const unavailableProbe = () => createIndexProbe([ORDERS_PROBE], () => Promise.reject(Object.assign(new Error("14 UNAVAILABLE"), { code: 14 })));
+
 const kinds = async () => (await cycleRef().collection("events").orderBy("seq").get()).docs.map((d) => `${d.data().stage}:${d.data().type}`);
 
 describe("runCycle: a missing index takes the index path", () => {
@@ -362,6 +373,31 @@ describe("runCycle: a missing index takes the index path", () => {
     expect((await cycleDoc()).summary.index.runtime).toBeUndefined();
   });
 
+  it("a probe that could not run after READY is not \"the query does not pass\": released, and a later pass checks again (#232)", async () => {
+    const a = fakeAdmin();
+    let reachable = false;
+    const probe = vi.fn(async (spec: Parameters<IndexHealWiring["probe"]>[0]): Promise<ProbeVerdict> => {
+      // Confirms the failing query before the create, then cannot reach Firestore once READY.
+      if (!a.calls.includes("create")) return { state: "needs-index", probes: 1 };
+      return reachable ? { state: "passed", probes: 1 } : unavailableProbe()(spec);
+    });
+    const r = await runCycle(deps(wiring(a.admin, probe)), key);
+    expect(r).toEqual({ kind: "released", reason: "index-probe-inconclusive" });
+    const doc = await cycleDoc();
+    expect(doc.state).toBe("running");
+    expect(doc.summary.index).toMatchObject({ state: "ready-unconfirmed", probe: "inconclusive", operation: OP });
+    expect(await kinds()).not.toContain("index:query-still-failing");
+
+    // The next pass: READY in the inventory, the query reachable again: observed, and the evidence PR opened.
+    reachable = true;
+    clock = new Date(t0.getTime() + 10 * 60_000);
+    const b = fakeAdmin({ live: [READY] });
+    const r2 = await runCycle({ ...deps(wiring(b.admin, probe)), owner: "worker-b" }, key);
+    expect(r2).toEqual({ kind: "finished", state: "done", outcome: "index-pr-opened" });
+    expect(b.admin.create).not.toHaveBeenCalled();
+    expect((await cycleDoc()).summary.index).toMatchObject({ runtime: "observing", created: true });
+  });
+
   it("reports a failed build to a person and never retries the create", async () => {
     const a = fakeAdmin({ opDone: [{ done: true, error: { code: 9, message: "index limit" } }] });
     const r = await runCycle(deps(wiring(a.admin, fakeProbe(a))), key);
@@ -508,6 +544,20 @@ describe("observeIndexHeals", () => {
     });
     expect(r.errors).toHaveLength(1);
     expect((await db.collection(`cycles_${run}`).doc("e1_r0").get()).data()!.summary.index.runtime).toBe("observing");
+  });
+
+  it("a probe that could not run (UNAVAILABLE) is a failed read, not query-failing: still observing, unverified a day later (#232)", async () => {
+    await seed("p1", new Date(t0.getTime() - 60_000));
+    const probe = unavailableProbe();
+    const r = await observeIndexHeals({ db, config: cfg(), probe, now: () => new Date(t0.getTime() + 70 * 60_000) });
+    expect(r.decided).toEqual([]);
+    expect(r.errors).toEqual([{ cycleId: "p1_r0", message: "probe inconclusive: a probe failed with code 14" }]);
+    expect((await db.collection(`cycles_${run}`).doc("p1_r0").get()).data()!.summary.index.runtime).toBe("observing");
+
+    const later = await observeIndexHeals({ db, config: cfg(), probe, now: () => new Date(t0.getTime() + 60 * 60_000 + 24 * 3600_000) });
+    expect(later.decided).toEqual([{ cycleId: "p1_r0", runtime: "unverified" }]);
+    const rec = (await db.collection(`cycles_${run}`).doc("p1_r0").get()).data()!.summary.index;
+    expect(rec.runtimeBasis).toContain("could not be replayed");
   });
 
   it("a stalled ingest is not a quiet window (#188): no checkpoint, one short of the window, or another target's keeps it observing", async () => {
