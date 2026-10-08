@@ -14,9 +14,11 @@ const mocks = vi.hoisted(() => ({
   cycles: [] as unknown[],
   cyclesCapped: false,
   readCycle: vi.fn(),
+  emitCycles: undefined as undefined | ((rows: unknown[], capped: boolean) => void),
 }));
 vi.mock("../lib/runs", () => ({
   subscribeCycles: (_env: string, ok: (rows: unknown[], capped: boolean) => void) => {
+    mocks.emitCycles = ok;
     ok(mocks.cycles, mocks.cyclesCapped);
     return () => {};
   },
@@ -142,6 +144,44 @@ describe("Incidents page", () => {
       expect(mocks.readCycle).toHaveBeenCalledWith("1_r0", "prod");
       const other = screen.getByText("orders-updateOrder").closest("tr")!;
       expect(await within(other).findByText("No agent run yet")).toBeInTheDocument();
+    });
+
+    it("reads a run again once it has been listed and dropped out, never showing the stale by-id answer (#218)", async () => {
+      // Capped list without 1_r0: read by id, not there yet.
+      mocks.cyclesCapped = true;
+      mocks.cycles = [cycle("x_r0")];
+      renderPage();
+      const row = (await screen.findByText("mailDrainer")).closest("tr")!;
+      expect(await within(row).findByText("No agent run yet")).toBeInTheDocument();
+      expect(mocks.readCycle).toHaveBeenCalledWith("1_r0", "prod");
+      // The run starts: a snapshot lists it.
+      act(() => mocks.emitCycles!([cycle("1_r0", { state: "waiting-human", path: "notify", summary: {} })], true));
+      expect(within(row).getByText("Waiting for a human")).toBeInTheDocument();
+      // Fifty newer runs push it out of the list: it is read again, not shown as the old "no run".
+      mocks.readCycle.mockClear();
+      mocks.readCycle.mockImplementation(async (id: string) => (id === "1_r0" ? cycle("1_r0") : null));
+      act(() => mocks.emitCycles!(Array.from({ length: 50 }, (_, i) => cycle(`other${i}_r0`)), true));
+      expect(within(row).queryByText("No agent run yet")).toBeNull();
+      expect(await within(row).findByText("Declined")).toBeInTheDocument();
+      expect(mocks.readCycle).toHaveBeenCalledWith("1_r0", "prod");
+    });
+
+    it("drops a by-id answer that started before a snapshot listed the run (#218)", async () => {
+      mocks.cyclesCapped = true;
+      mocks.cycles = [cycle("x_r0")];
+      let answer!: (row: CycleRow | null) => void;
+      mocks.readCycle.mockImplementation((id: string) => (id === "1_r0" ? new Promise((r) => (answer = r)) : Promise.resolve(null)));
+      renderPage();
+      const row = (await screen.findByText("mailDrainer")).closest("tr")!;
+      await vi.waitFor(() => expect(mocks.readCycle).toHaveBeenCalledWith("1_r0", "prod"));
+      act(() => mocks.emitCycles!([cycle("1_r0", { state: "waiting-human", path: "notify", summary: {} })], true));
+      // The read answers late, with what was true before the run was listed.
+      await act(async () => answer(null));
+      mocks.readCycle.mockClear();
+      mocks.readCycle.mockImplementation(() => new Promise(() => {}));
+      act(() => mocks.emitCycles!(Array.from({ length: 50 }, (_, i) => cycle(`other${i}_r0`)), true));
+      expect(within(row).queryByText("No agent run yet")).toBeNull();
+      expect(mocks.readCycle).toHaveBeenCalledWith("1_r0", "prod");
     });
 
     it("says nothing about an incident whose run could not be read", async () => {

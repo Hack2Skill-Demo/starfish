@@ -2,7 +2,8 @@
  * The agent's run for each listed incident, live. One subscription to the environment's newest runs (the Runs page's
  * own query, `subscribeCycles`); a run that is not among them while that list is capped is read once by its id
  * (`readCycle`), so an incident whose run is older than the newest `CYCLE_LIMIT` still shows it. A failed read says
- * nothing about that incident rather than "no run".
+ * nothing about that incident rather than "no run". A by-id answer holds only until a snapshot lists that run: the list
+ * is newer, and a run that later drops out of it again is read anew rather than shown as it was before (#218).
  */
 import { useEffect, useMemo, useRef, useState } from "react";
 import { readCycle, subscribeCycles } from "./runs";
@@ -29,6 +30,10 @@ export function useIncidentRuns(
   const attempted = useRef(new Set<string>());
   // Which subscription a read belongs to: a read that answers after the environment changed is dropped.
   const generation = useRef(0);
+  // Snapshots seen by this subscription, and the last one that listed each run: a by-id read that started before a
+  // snapshot listed its run answers with something older than the list, so that answer is dropped.
+  const snapshot = useRef(0);
+  const listedAt = useRef(new Map<string, number>());
 
   useEffect(() => {
     if (!ready) return;
@@ -37,9 +42,23 @@ export function useIncidentRuns(
     setSingle(new Map());
     attempted.current = new Set();
     generation.current += 1;
+    snapshot.current = 0;
+    listedAt.current = new Map();
     return subscribeCycles(
       environment,
       (rows, isCapped) => {
+        snapshot.current += 1;
+        for (const r of rows) {
+          listedAt.current.set(r.id, snapshot.current);
+          // Listed now: forget any by-id answer, so a later miss reads it again.
+          attempted.current.delete(r.id);
+        }
+        setSingle((prev) => {
+          if (!rows.some((r) => prev.has(r.id))) return prev;
+          const next = new Map(prev);
+          for (const r of rows) next.delete(r.id);
+          return next;
+        });
         setCycles(new Map(rows.map((r) => [r.id, r])));
         setCapped(isCapped);
         setFailed(false);
@@ -56,6 +75,7 @@ export function useIncidentRuns(
     if (wanted.length === 0) return;
     for (const id of wanted) attempted.current.add(id);
     const gen = generation.current;
+    const at = snapshot.current;
     void Promise.all(
       wanted.map((id) =>
         readCycle(id, environment).then(
@@ -67,7 +87,7 @@ export function useIncidentRuns(
       if (gen !== generation.current) return;
       setSingle((prev) => {
         const next = new Map(prev);
-        for (const f of found) if (f) next.set(f[0], f[1]);
+        for (const f of found) if (f && (listedAt.current.get(f[0]) ?? 0) <= at) next.set(f[0], f[1]);
         return next;
       });
     });

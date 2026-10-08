@@ -297,7 +297,8 @@ React 19, Vite, Tailwind 4, react-router, TanStack Query; Starfish's own theme i
   in a claim, so a revoked role takes effect on the next request. Grant access by writing that record from the Admin
   SDK or the console.
 - **Guests (rules and UI built):** an anonymous Firebase Auth session may *read* incidents, cycles,
-  their events and `last_run` whose `environment` is `demo` (a get of a missing one reads as missing),
+  their events, `last_run` and `starfish_runs/integrations` (which credentials the agent job holds: booleans and a
+  time, never a value) whose `environment` is `demo` (a get of a missing one reads as missing),
   and the operator copy of the settings, and nothing else; it never writes.
   A signed-in email account with no role is not a guest. A visitor with no session is signed in
   anonymously on arrival (`RequireRole`/`enterAsGuest`) and sees Overview, Incidents, incident evidence,

@@ -68,20 +68,28 @@ export default function Runs() {
   // CYCLE_LIMIT, it is read by id, so the link opens that run and not whichever is first.
   const loaded = cycles !== null;
   const listed = selectedId !== null && loaded && cycles.some((c) => c.id === selectedId);
-  const [linked, setLinked] = useState<CycleRow | null>(null);
+  // The by-id answer for one (environment, run): the run, null when it does not exist, "failed" when the read failed.
+  const [linked, setLinked] = useState<{ key: string; row: CycleRow | null | "failed" } | null>(null);
+  const linkKey = `${environment}/${selectedId ?? ""}`;
+  // Listed now: the list is newer than any by-id answer, so a run that drops out of it again is read anew (as on Incidents, #218).
+  if (listed && linked?.key === linkKey) setLinked(null);
   useEffect(() => {
     if (!ready || selectedId === null || !loaded || listed) return;
     let live = true;
     readCycle(selectedId, environment).then(
-      (row) => live && setLinked(row),
-      () => live && setLinked(null)
+      (row) => live && setLinked({ key: linkKey, row: row !== null && row.id === selectedId ? row : null }),
+      () => live && setLinked({ key: linkKey, row: "failed" })
     );
     return () => {
       live = false;
     };
-  }, [ready, selectedId, loaded, listed, environment]);
+  }, [ready, selectedId, loaded, listed, environment, linkKey]);
+  // Absent: not answered yet. A run named in the URL is only ever that run: never another one in its place.
+  const linkedAnswer = linked?.key === linkKey ? linked.row : undefined;
   const selected =
-    visible?.find((c) => c.id === selectedId) ?? (linked !== null && linked.id === selectedId ? linked : null) ?? visible?.[0] ?? null;
+    selectedId === null
+      ? (visible?.[0] ?? null)
+      : (cycles?.find((c) => c.id === selectedId) ?? (linkedAnswer && linkedAnswer !== "failed" ? linkedAnswer : null));
   const select = (id: string) => {
     const next = new URLSearchParams(params);
     next.set("run", id);
@@ -131,12 +139,35 @@ export default function Runs() {
           ) : (
             <div className="grid gap-4 lg:grid-cols-[20rem_1fr]">
               <RunList cycles={visible ?? []} capped={capped} selectedId={selected?.id ?? null} now={now} onSelect={select} />
-              {selected && <RunDetail cycle={selected} environment={environment} now={now} />}
+              {selected ? (
+                <RunDetail cycle={selected} environment={environment} now={now} />
+              ) : (
+                selectedId !== null && <LinkedRunMissing answer={linkedAnswer} />
+              )}
             </div>
           )}
         </>
       )}
     </div>
+  );
+}
+
+/** What stands in the detail pane while a run named in the URL is not listed and its by-id read has not found it. */
+function LinkedRunMissing({ answer }: { answer: CycleRow | null | "failed" | undefined }) {
+  return (
+    <section aria-label="Run detail" className="rounded-lg border border-gray-200 bg-white p-4 dark:border-gray-700 dark:bg-gray-800">
+      {answer === undefined ? (
+        <p className="text-sm text-gray-600 dark:text-gray-400">Loading this run…</p>
+      ) : answer === "failed" ? (
+        <p role="alert" className="text-sm text-error-700 dark:text-error-400">
+          Couldn&apos;t read this run. Pick one from the list to see it.
+        </p>
+      ) : (
+        <p className="text-sm text-gray-700 dark:text-gray-300">
+          No such run: nothing is recorded under this link for this environment. Pick one from the list to see it.
+        </p>
+      )}
+    </section>
   );
 }
 
