@@ -15,6 +15,7 @@ const mocks = vi.hoisted(() => ({
   unsubCycles: vi.fn(),
   unsubEvents: vi.fn(),
   subscribedEvents: [] as string[],
+  readCycle: vi.fn(),
 }));
 
 vi.mock("../lib/useSettings", () => ({ useEnvironment: () => mocks.env }));
@@ -26,6 +27,7 @@ vi.mock("../lib/runs", async (orig) => ({
     mocks.cyclesErr = err;
     return mocks.unsubCycles;
   },
+  readCycle: mocks.readCycle,
   subscribeEvents: (id: string, _env: string, ok: EventsCb) => {
     mocks.subscribedEvents.push(id);
     mocks.eventsCb = ok as never;
@@ -226,6 +228,20 @@ describe("Runs page", () => {
     renderRuns();
     act(() => mocks.cyclesCb!([cycle("inc-a_r0", { summary: { pr: { url: "javascript:alert(1)", number: 9 } } })], false));
     expect(screen.queryByRole("link", { name: /Pull request/ })).toBeNull();
+  });
+
+  it("opens a linked run that is not among the newest, read by its id, rather than the first in the list", async () => {
+    mocks.readCycle.mockResolvedValue(cycle("old_r1", { incidentId: "old", recurrence: 1, state: "declined", leaseExpiresAt: null }));
+    renderRuns("/runs?run=old_r1");
+    act(() => mocks.cyclesCb!([cycle("inc-a_r0")], true));
+    expect(await screen.findByRole("heading", { name: "old" })).toBeInTheDocument();
+    expect(mocks.readCycle).toHaveBeenCalledWith("old_r1", "demo");
+  });
+
+  it("reads nothing by id when the linked run is in the list", () => {
+    renderRuns("/runs?run=inc-a_r0");
+    act(() => mocks.cyclesCb!([cycle("inc-a_r0")], false));
+    expect(mocks.readCycle).not.toHaveBeenCalled();
   });
 
   it("says when the list is capped", () => {
