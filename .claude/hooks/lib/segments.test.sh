@@ -96,6 +96,26 @@ git_is 'git push -f'                'do git push -f'
 git_is 'git push -f'                '{ git push -f'
 git_is 'git push -f'                '! git push -f'
 git_is 'git'                        'git'
+
+# The command word as the shell reads it (issue #150): quotes, backslashes and a path all
+# still mean git, and the printed part starts with a plain `git`.
+git_is 'git push -f origin main'    '"git" push -f origin main'
+git_is 'git push -f origin main'    "'git' push -f origin main"
+git_is 'git push -f origin main'    '\git push -f origin main'
+git_is 'git push -f origin main'    'g\it push -f origin main'
+git_is 'git push -f origin main'    '/usr/bin/git push -f origin main'
+git_is 'git push -f origin main'    '"/usr/bin/git" push -f origin main'
+git_is 'git push -f origin main'    './git push -f origin main'
+git_is 'git push -f origin main'    'command -p git push -f origin main'
+git_is 'git push -f origin main'    'FOO=/a/b /usr/bin/git push -f origin main'   # a / in an assignment's value
+git_is 'git push -f origin main'    '/usr/bin/env git push -f origin main'
+git_is 'git push -f origin main'    '"command" -p "git" push -f origin main'
+git_is 'git p\ush'                  'git p\ush'                                  # the hooks de-quote the rest
+git_is NONE                         'command -v git'                             # names git, does not run it
+git_is NONE                         'command -V git push'
+git_is NONE                         '/usr/bin/gitk push'
+git_is NONE                         '"github" push -f'
+git_is NONE                         'echo "git" push'
 git_is NONE                         'echo git push -f'
 git_is NONE                         'gitk push'
 git_is NONE                         'github push -f'
@@ -105,6 +125,34 @@ git_is NONE                         ''
 git_is NONE                         'FOO=1'
 git_is NONE                         '-u deploy git push'                          # an option with no wrapper before it
 git_is NONE                         'grep -r git push'
+
+# ── bare_word ────────────────────────────────────────────────────────────────
+bare_is() {
+  bare_word "$2"
+  if [ "$BARE_WORD" = "$1" ]; then pass=$((pass + 1)); else
+    fail=$((fail + 1)); echo "FAIL bare_word: want [$1] got [$BARE_WORD] for: $2"
+  fi
+}
+bare_is 'push'        'p\ush'
+bare_is 'push'        '"push"'
+bare_is 'push'        "'push'"
+bare_is ':main'       '\:main'
+bare_is 'origin'      'origin'
+
+# ── may_run_git: the hooks' early exit ───────────────────────────────────────
+may_is() {
+  local got=no
+  may_run_git "$2" && got=yes
+  if [ "$got" = "$1" ]; then pass=$((pass + 1)); else
+    fail=$((fail + 1)); echo "FAIL may_run_git: want [$1] got [$got] for: $2"
+  fi
+}
+may_is yes 'git push'
+may_is yes 'cd x && /usr/bin/git push'
+may_is yes 'g"i"t push'
+may_is yes $'g\\\nit push -f origin main'                                 # a line continuation inside the word
+may_is no  'ls -la && pnpm test'
+may_is no  ''
 
 echo ""
 echo "segments tests: $pass passed, $fail failed"

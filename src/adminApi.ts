@@ -140,7 +140,8 @@ export function createAdminApi(deps: AdminApiDeps): (req: ApiRequest) => Promise
     });
 
     if (req.method === "OPTIONS") return { status: 204, headers: cors };
-    if (req.method === "GET" && req.path === "/healthz") return reply(200, { ok: true });
+    // `/api/health` is the probe on Cloud Run: its front end answers `/healthz` on a run.app URL itself (#212).
+    if (req.method === "GET" && (req.path === "/api/health" || req.path === "/healthz")) return reply(200, { ok: true });
 
     // Twilio's webhooks carry no ID token: webhooks.ts checks Twilio's signature instead, before anything else.
     if (req.path.startsWith("/twilio/")) {

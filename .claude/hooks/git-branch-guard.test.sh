@@ -193,6 +193,50 @@ run_case deny  feature/x $'git commit -q -F - <<\'EOF\'\nmessage\nEOF\ngit push 
 run_case deny  feature/x $'git status\ngit push -f origin main'                  # on its own line
 run_case deny  feature/x $'git commit -m x \\\n && git push -f origin main'      # after a line continuation
 
+# ── The command word spelled differently (issue #150): still git ─────────────
+run_case deny  feature/x 'git push -f origin main'
+run_case deny  feature/x '"git" push -f origin main'
+run_case deny  feature/x "'git' push -f origin main"
+run_case deny  feature/x '\git push -f origin main'
+run_case deny  feature/x 'g\it push -f origin main'
+run_case deny  feature/x $'g\\\nit push -f origin main'                         # a line continuation inside the word
+run_case deny  feature/x '/usr/bin/git push -f origin main'
+run_case deny  feature/x 'command -p git push -f origin main'
+run_case deny  feature/x 'cd x && /usr/bin/git push -f origin main'
+run_case deny  feature/x 'git p\ush -f origin main'                              # the subcommand de-quoted too
+run_case deny  feature/x 'git "push" -f origin main'
+run_case deny  feature/x '"git" commit --no-verify -m x'                        # every rule, not just Rule 4
+run_case allow feature/x '"git" push origin feature/x'
+run_case allow feature/x 'command -v git'
+
+# ── Rule 5: --mirror, and deleting a protected branch (issue #150) ───────────
+run_case deny  feature/x 'git push --mirror'                                    # force implied, no -f needed
+run_case deny  feature/x 'git push --mirror origin'
+run_case deny  feature/x 'git push origin :main'                                # empty source = delete
+run_case deny  feature/x 'git push origin :develop'
+run_case deny  feature/x 'git push origin :refs/heads/main'
+run_case deny  feature/x 'git push origin +:main'
+run_case deny  feature/x "git push origin ':main'"
+run_case deny  feature/x 'git push origin \:main'
+run_case deny  feature/x 'git push --delete origin main'
+run_case deny  feature/x 'git push origin --delete main'
+run_case deny  feature/x 'git push -d origin develop'
+run_case deny  feature/x 'git push origin -d refs/heads/main'
+run_case deny  feature/x 'git push -ud origin main'                             # -d combined with another flag
+run_case deny  feature/x 'git push --delete origin feature/old main'           # one protected name among several
+run_case deny  main      'git push --delete origin HEAD'                       # HEAD is main here
+run_case deny  feature/x '"git" push origin :main'
+run_case allow feature/x 'git push origin :feature/old'                         # deleting your own branch is fine
+run_case allow feature/x 'git push --delete origin claude/x'
+run_case allow feature/x 'git push -d origin feature/old'
+run_case allow feature/x 'git push --delete main feature/old'                  # `main` here is the remote's name
+run_case allow feature/x 'git push --all origin'                                # no force: fast-forwards only
+run_case allow feature/x 'git push origin HEAD:main'                            # a plain push to main is a push
+run_case allow feature/x 'git branch -d main'                                   # a local delete, not the remote's
+run_case allow feature/x 'git push origin feature'
+run_case allow feature/x 'git push -u origin claude/x'
+run_case allow feature/x 'echo "git push -f origin main; git push --mirror; git push origin :main"'
+
 # Text that merely CONTAINS a git command is not a git command.
 run_case allow feature/x "echo 'git push -f origin main'"
 run_case allow feature/x 'echo "a; git push -f origin main"'

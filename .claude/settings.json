@@ -7,7 +7,6 @@
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/git-branch-guard.sh\"",
-            "if": "Bash(git *)",
             "statusMessage": "Checking git branch rules…"
           },
           {
@@ -18,7 +17,6 @@
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/pre-push-review-guard.sh\"",
-            "if": "Bash(git *)",
             "statusMessage": "Checking pre-push code review…"
           }
         ]

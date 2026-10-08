@@ -8,8 +8,10 @@
 #      `-c core.hooksPath=...` override or `git config core.hooksPath <elsewhere>`
 #      (they switch the same safeguards off).
 #   4. No force-push to the shared protected branches (develop / main).
+#   5. No `git push --mirror`, and no deleting develop/main on the remote (`--delete main`,
+#      `-d main`, or the refspec `:main`).
 #
-# Emits a PreToolUse deny (permissionDecision) when it catches either. Otherwise allows.
+# Emits a PreToolUse deny (permissionDecision) when it catches one. Otherwise allows.
 # Reads the tool-call JSON on stdin; only inspects git commands.
 #
 # Parsing: argv-style tokenization, NOT regex on the raw command line.
@@ -55,6 +57,10 @@ allow() { exit 0; }
 # shellcheck source=lib/segments.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/segments.sh"
 
+# settings.json runs this on EVERY Bash call (no `if` filter, which would miss `"git"`,
+# `\git` and `/usr/bin/git`), so leave at once when no spelling of git can be on the line.
+may_run_git "$cmd" || allow
+
 # Tokenize and classify. Positionals are tokens not starting with "-";
 # create_flag records checkout/switch branch-creation flags (-b/-B/-c/-C);
 # has_other_flags tracks any flag so `git branch -d x` isn't read as creation.
@@ -73,9 +79,11 @@ inspect_git() {
   # matching below, letting a force-push to develop/main slip past. The shell strips these quotes before git ever runs, so the guard
   # must too. Branch names, flags, and refspecs never legitimately contain quote
   # characters, so removing them from every token is safe and closes the bypass
-  # for both the force detection and the destination check.
+  # for both the force detection and the destination check. Backslashes go too
+  # (`git p\ush`, `git push origin \:main`): the shell drops them the same way (bare_word).
   for i in "${!toks[@]}"; do
-    toks[$i]="${toks[$i]//[\"\'\`]/}"
+    bare_word "${toks[$i]}"
+    toks[$i]="$BARE_WORD"
   done
 
   # Global options (before the subcommand). -C and -c are remembered: -C changes which
@@ -119,6 +127,8 @@ inspect_git() {
   dash_n=0      # -n seen (means --no-verify for commit, --dry-run for push)
   force=0       # --force / -f / --force-with-lease seen
   all_or_mirror=0  # --all / --mirror seen (push targets many refs at once)
+  mirror=0      # --mirror seen (push: overwrites AND deletes remote refs, force implied)
+  delete=0      # --delete / -d seen (push: every named ref is deleted on the remote)
   past_dashdash=0
   for t in ${args[@]+"${args[@]}"}; do
     if [ "$past_dashdash" = 1 ]; then positionals+=("$t"); continue; fi
@@ -126,7 +136,9 @@ inspect_git() {
       --) past_dashdash=1 ;;
       --no-verify) no_verify=1; has_other_flags=1 ;;
       --force|--force-with-lease|--force-with-lease=*) force=1; has_other_flags=1 ;;
-      --all|--mirror) all_or_mirror=1; has_other_flags=1 ;;
+      --all) all_or_mirror=1; has_other_flags=1 ;;
+      --mirror) all_or_mirror=1; mirror=1; has_other_flags=1 ;;
+      --delete) delete=1; has_other_flags=1 ;;
       --*) has_other_flags=1 ;;
       -?*)
         # Short flags, possibly combined (-uf, -nm, -qb). Classify each letter. A letter
@@ -137,6 +149,7 @@ inspect_git() {
         for ((k = 0; k < ${#letters}; k++)); do
           case "${letters:k:1}" in
             b|B|c|C) create_flag=1 ;;
+            d) delete=1 ;;   # only read for push (`git branch -d` is a local delete, not a rule)
             n) dash_n=1 ;;
             f) force=1 ;;
             m|F|S|o) break ;;
@@ -240,6 +253,32 @@ inspect_git() {
     if [ "$protected" = 1 ]; then
       deny "BLOCKED: force-push to a shared protected branch (develop/main) rewrites history others depend on. Push a normal (non-force) update or open a PR. Force-push is only for your own feature/* or claude/* branch. (safeguard)"
     fi
+  fi
+
+  # --- Rule 5: no mirror push, and no deleting a protected branch on the remote ---
+  # `--mirror` makes the remote's refs match the local ones, force-updating AND deleting,
+  # whether or not -f is given, so it is blocked outright. A branch is deleted by
+  # `--delete <name>` / `-d <name>` or by a refspec with an empty source (`:main`).
+  if [ "$subcmd" = "push" ]; then
+    if [ "$mirror" = 1 ]; then
+      deny "BLOCKED: 'git push --mirror' force-updates and deletes remote refs to match this clone, which can rewrite or remove develop/main. Push the branch you mean by name. (safeguard)"
+    fi
+    cur="$(current_branch)"
+    idx=0
+    for p in ${positionals[@]+"${positionals[@]}"}; do
+      idx=$((idx + 1))
+      ref="${p#+}"
+      if [[ "$ref" == :* ]]; then
+        ref="${ref#:}"                    # `:main`: push nothing to main, i.e. delete it
+      elif [ "$delete" = 0 ] || [ "$idx" = 1 ]; then
+        continue                          # not a deletion, or the remote (the first positional)
+      fi
+      ref="${ref#refs/heads/}"
+      [ "$ref" = HEAD ] && ref="$cur"
+      case "$ref" in
+        develop|main) deny "BLOCKED: deleting the shared protected branch '$ref' on the remote. Delete your own feature/* or claude/* branches only. (safeguard)" ;;
+      esac
+    done
   fi
 }
 

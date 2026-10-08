@@ -143,6 +143,11 @@ describe("admin API: routes", () => {
   it("serves health without a token, and refuses other paths and methods", async () => {
     const { api } = fakes();
     expect((await api({ method: "GET", path: "/healthz" })).status).toBe(200);
+    // The probe on Cloud Run, where Google's front end answers /healthz itself (#212).
+    const health = await api({ method: "GET", path: "/api/health" });
+    expect(health.status).toBe(200);
+    expect(health.body).toEqual({ ok: true });
+    expect((await api(post("/api/health"))).status).toBe(404);
     expect((await api(post("/nope"))).status).toBe(404);
     expect((await api({ method: "GET", path: "/api/ingest/run", authorization: `Bearer ${TOKEN}` })).status).toBe(405);
     expect((await api(post("/api/incidents/a%2Fb/retire"))).status).toBe(404);
@@ -226,6 +231,7 @@ describe("admin API server", () => {
     expect(await r.json()).toEqual({ ok: true, alreadyRetired: false });
     expect(calls).toEqual(["inc-9:admin-1:demo reset"]);
     expect((await fetch(`${base}/healthz`)).status).toBe(200);
+    expect((await fetch(`${base}/api/health`)).status).toBe(200);
   });
 
   it("passes the X-Firebase-AppCheck header through to the handler", async () => {
