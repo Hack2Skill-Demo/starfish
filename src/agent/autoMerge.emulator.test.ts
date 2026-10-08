@@ -10,6 +10,7 @@ import { deleteApp, initializeApp } from "firebase-admin/app";
 import { getFirestore, Timestamp } from "firebase-admin/firestore";
 import type { Firestore } from "firebase-admin/firestore";
 import { GithubError, type CheckRun, type PullRequestState, type RevertRequest } from "../integrations/githubPr.js";
+import { stateDocId } from "../ingest/run.js";
 import type { NotifyRequest } from "../integrations/slack.js";
 import { testConfig } from "../testConfig.js";
 import type { IncidentStatus } from "../types.js";
@@ -373,6 +374,27 @@ describe("runAutoMergeStep: merges only what every switch and gate allows", () =
     expect(gh.merges).toEqual([]);
     expect((await cycle("inc1_r1")).summary.merge).toMatchObject({ state: "skipped", reason: "incident-reverted-before", escalation: "sent" });
   });
+
+  it("does not merge a second fix while the first merge's fast-revert watch is open: a person is told (#240)", async () => {
+    // The review's scenario: M1 merged and watched; the incident came back, and a new cycle's PR is green in the same pass.
+    for (const state of ["watching", "opening", "pending", "merging"]) {
+      await seed("inc1_r0", proven({ merge: { state: "merged", mergeSha: MERGED }, revert: { state, mergeSha: MERGED, mergedAt: t0.toISOString() } }));
+      await seed("inc1_r1", proven(), { recurrence: 1 });
+      told = [];
+      const gh = fakeGithub();
+      await runAutoMergeStep(mergeDeps(gh.client));
+      expect(gh.merges, state).toEqual([]);
+      expect((await cycle("inc1_r1")).summary.merge, state).toMatchObject({ state: "skipped", reason: "incident-merge-watched", escalation: "sent" });
+      expect(told[0], state).toMatchObject({ path: "human", rule: "auto-merge-incident-merge-watched" });
+    }
+  });
+
+  it("merges a later fix once the earlier merge's watch closed clear", async () => {
+    await seed("inc1_r0", proven({ merge: { state: "merged", mergeSha: MERGED }, revert: { state: "clear", mergeSha: MERGED } }));
+    await seed("inc1_r1", proven(), { recurrence: 1 });
+    const gh = fakeGithub();
+    expect(await runAutoMergeStep(mergeDeps(gh.client))).toMatchObject({ merged: 1 });
+  });
 });
 
 describe("runFastRevertStep: reverts Starfish's own merge when the incident comes back", () => {
@@ -383,17 +405,54 @@ describe("runFastRevertStep: reverts Starfish's own merge when the incident come
     });
   const occurred = (minutesAfterMerge: number) =>
     db.collection(cfg.incidentCollection).doc("inc1").update({ lastOccurredAt: Timestamp.fromMillis(t0.getTime() + minutesAfterMerge * 60_000) });
+  /** Ingest has read this target's logs through `at` (its checkpoint, as src/ingest/run.ts keeps it). */
+  const ingested = (at: number) =>
+    db.collection(cfg.runCollection).doc(stateDocId(cfg)).set({ target: { watchedProjectId: cfg.watchedProjectId, environment: cfg.environment }, checkpoint: Timestamp.fromMillis(at) });
 
   it("does nothing while the incident stays quiet, then closes the watch", async () => {
     await seed("inc1_r0", watching());
+    const { reach, closesAt } = watchSpan(t0.getTime(), cfg);
+    await ingested(reach + 3_600_000);
     const gh = fakeGithub();
     clock = new Date(t0.getTime() + 30 * 60_000);
     expect(await runFastRevertStep(revertDeps(gh.client))).toMatchObject({ considered: 1, cleared: 0, opened: 0 });
-    clock = new Date(watchSpan(t0.getTime(), cfg).closesAt - 1);
+    clock = new Date(closesAt - 1);
     expect(await runFastRevertStep(revertDeps(gh.client))).toMatchObject({ cleared: 0 });
-    clock = new Date(watchSpan(t0.getTime(), cfg).closesAt + 1);
+    clock = new Date(closesAt + 1);
     expect(await runFastRevertStep(revertDeps(gh.client))).toMatchObject({ cleared: 1 });
     expect((await cycle("inc1_r0")).summary.revert.state).toBe("clear");
+    expect(gh.calls).toEqual([]);
+  });
+
+  it("never closes a watch clear on logs ingest has not read: it keeps watching, then tells a person (#241)", async () => {
+    await seed("inc1_r0", watching());
+    const { reach, closesAt } = watchSpan(t0.getTime(), cfg);
+    const gh = fakeGithub();
+    clock = new Date(closesAt + 1);
+    // No checkpoint at all: not covered.
+    expect(await runFastRevertStep(revertDeps(gh.client))).toMatchObject({ cleared: 0, uncovered: 1, escalated: 0 });
+    // Ingest stalled short of the last hour that counts: still not covered, however quiet the incident's record looks.
+    await ingested(reach + 3_600_000 - 1);
+    expect(await runFastRevertStep(revertDeps(gh.client))).toMatchObject({ cleared: 0, uncovered: 1 });
+    expect((await cycle("inc1_r0")).summary.revert.state).toBe("watching");
+    // Ingest catches up and reads the recurrence it had missed: the watch still sees it.
+    await ingested(reach + 3_600_000);
+    await occurred(25);
+    expect(await runFastRevertStep(revertDeps(gh.client))).toMatchObject({ opened: 1 });
+    expect(told.map((t) => t.rule)).toEqual(["fast-revert-opened"]);
+  });
+
+  it("tells a person, and reverts nothing, when ingest has still not read the window a day after the watch closed (#241)", async () => {
+    await seed("inc1_r0", watching());
+    const { reach, closesAt } = watchSpan(t0.getTime(), cfg);
+    await ingested(reach);
+    const gh = fakeGithub();
+    clock = new Date(closesAt + 24 * 3_600_000);
+    expect(await runFastRevertStep(revertDeps(gh.client))).toMatchObject({ uncovered: 1, escalated: 0 });
+    clock = new Date(closesAt + 24 * 3_600_000 + 1);
+    expect(await runFastRevertStep(revertDeps(gh.client))).toMatchObject({ cleared: 0, uncovered: 0, escalated: 1 });
+    expect((await cycle("inc1_r0")).summary.revert).toMatchObject({ state: "escalated", reason: "ingest-not-covered", escalation: "sent" });
+    expect(told[0]).toMatchObject({ path: "human", rule: "fast-revert-not-covered" });
     expect(gh.calls).toEqual([]);
   });
 

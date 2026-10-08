@@ -19,10 +19,15 @@
    `summary.before`. When the pull request opens, the cycle records an auto-merge candidate
    (`summary.merge`: gate 1's result, the patch hash, the head commit the opener built, whether
    the incident's stack trace names the changed file). A candidate that fails gate 1 is handed to
-   a person at once.
-2. *After each agent pass* (`src/agent/autoMerge.ts`), each candidate is taken to merged or to a
-   person: the switches and the incident's status read fresh; gate 1 as recorded; gate 2 over the
-   run record (`certaintyGate`, a pure function); the PR still open, from `starfish/<cycle>` into
+   a person at once. Nothing is prepared while an earlier Starfish merge for the same incident is
+   still watched, or was reverted: the PR is recorded as not auto-merged and a person is told.
+2. *After each agent pass*, after the fast-revert step (`src/agent/autoMerge.ts`), each candidate
+   is taken to merged or to a person: the switches and the incident's status read fresh; gate 1 as
+   recorded; gate 2 over the run record (`certaintyGate`, a pure function); no earlier Starfish merge
+   for the same incident still watched or reverted (the incident coming back after a merge calls for
+   that merge's revert, not a second fix); the base branch has not changed the fixed file since the
+   verified revision, and that revision is still on the base branch's history (after a force-push
+   it goes to a person); the PR still open, from `starfish/<cycle>` into
    the configured base branch (a PR retargeted elsewhere goes to a person), with the head Starfish
    built; every run of every named required check (`STARFISH_VERIFY_CHECKS`) posted by
    `STARFISH_VERIFY_CHECK_APP` (default `github-actions`; a same-named run from any other GitHub
@@ -40,7 +45,9 @@
 **The switches.** `autoMerge` (per target: the deployment's one `githubRepo`; runtime setting,
 default off), `mergeFreeze` (the global off switch for merging and reverting; runtime setting,
 default off), the automation kill switch, `dryRun` (on ⇒ nothing merges), and the environment-only
-allowlist `STARFISH_AUTO_MERGE_TARGETS`. Turning a switch on is a Settings save, which is audited
+allowlist `STARFISH_AUTO_MERGE_TARGETS`. A fast-revert window no longer than its grace
+(`STARFISH_FAST_REVERT_MINUTES` <= `STARFISH_FAST_REVERT_GRACE_MINUTES`) watches nothing, so it
+blocks merging too. Turning a switch on is a Settings save, which is audited
 like every other. Nothing merges while any switch says no; a test pins that a non-demo target, or
 the switch off, never prepares or merges anything.
 
@@ -119,7 +126,10 @@ a recurrence can be counted from up to an hour past the window's end (two, for a
 hour boundary); and an ingest window longer than an hour (a catch-up after an ingest outage) counts
 all its occurrences in its last hour, which can lie past the hours that count, so that recurrence is
 missed. A watch that saw nothing is cleared a settle hour (for late ingestion) after the last hour
-that counts has ended. On a recurrence Starfish tells a person, opens a revert of its own merge
+that counts has ended, and only once ingest's checkpoint for the target has read the logs through
+that hour: a stalled ingest records nothing either, and missing is not zero. Until then the watch
+stays open (and so holds back any other auto-merge for the incident); a day later, with the window
+still unread, a person is told the merge could not be confirmed, and nothing is reverted. On a recurrence Starfish tells a person, opens a revert of its own merge
 commit on `starfish/revert-<cycle>`, and merges it once its required checks pass. It escalates
 instead when a later commit on the base branch touched a file the merge touched, when the merge
 does not revert cleanly, when the revert PR was retargeted to another base branch, or when a switch

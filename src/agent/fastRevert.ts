@@ -13,6 +13,11 @@
  * an error seen during it is the old code still running, not the fix failing. A deploy slower than the grace would
  * look like a recurrence; set the grace above the target's deploy time.
  *
+ * A watch that saw nothing closes `clear` only once ingest's checkpoint for this target (src/ingest/run.ts) has read the
+ * logs through the last hour that counts (#241): a stalled ingest records no occurrences either, and missing is not
+ * zero. Until then it keeps watching; a day past its close with the window still not read, a person is told that the
+ * merge could not be confirmed (`escalated`, `ingest-not-covered`), and nothing is reverted.
+ *
  * What it will not do:
  *   - Revert a revert. Only a merge recorded in `summary.merge` is ever watched; the revert's own merge is recorded in
  *     `summary.revert` and nothing watches that.
@@ -31,13 +36,23 @@ import type { StarfishConfig } from "../config.js";
 import { redactPii } from "../ingest/redact.js";
 import type { GithubClient } from "../integrations/githubPr.js";
 import type { DeliveryResult, NotifyRequest } from "../integrations/slack.js";
+import { readIngestCheckpoint } from "../ingest/run.js";
 import { CLAIM_STALE_MS, cyclesInState, escalate, millis, moveRecord } from "./autoMerge.js";
 import type { CycleConfig } from "./cycle.js";
 import { summarizeChecks } from "./reconcile.js";
 
 export type FastRevertConfig = Pick<
   StarfishConfig,
-  "environment" | "incidentCollection" | "verifyChecks" | "verifyCheckApp" | "maxPrChecksPerPass" | "fastRevertMinutes" | "fastRevertGraceMinutes" | "mergeCheckWaitMinutes"
+  | "environment"
+  | "incidentCollection"
+  | "runCollection"
+  | "watchedProjectId"
+  | "verifyChecks"
+  | "verifyCheckApp"
+  | "maxPrChecksPerPass"
+  | "fastRevertMinutes"
+  | "fastRevertGraceMinutes"
+  | "mergeCheckWaitMinutes"
 > &
   CycleConfig;
 
@@ -58,6 +73,8 @@ export interface FastRevertSummary {
   considered: number;
   /** Watches closed with no recurrence. */
   cleared: number;
+  /** Watches past their close whose window ingest has not read through yet (or whose checkpoint is unknown): still open. */
+  uncovered: number;
   /** Revert pull requests opened. */
   opened: number;
   reverted: number;
@@ -72,6 +89,8 @@ export interface FastRevertSummary {
  */
 export const WATCH_SETTLE_MS = 60 * 60_000;
 const HOUR_MS = 60 * 60_000;
+/** How long past `closesAt` a watch waits for ingest to read through its window before a person is told instead. */
+export const WATCH_UNCOVERED_GIVE_UP_MS = 24 * HOUR_MS;
 
 type Rec = Record<string, unknown>;
 const rec = (v: unknown): Rec => (typeof v === "object" && v !== null ? (v as Rec) : {});
@@ -79,8 +98,9 @@ const rec = (v: unknown): Rec => (typeof v === "object" && v !== null ? (v as Re
 /**
  * The times a watch works with, from the merge. `start`/`end`: the window, (merge + grace, merge + `fastRevertMinutes`].
  * `reach`: the latest clock hour whose bucket still counts (see `recurredAfterMerge`): the window's end, or the first
- * hour after `start` when no hour starts inside the window. `closesAt`: when a watch that saw nothing is cleared: an
- * occurrence in the hour starting at `reach` can be as late as `reach` + 1 h, and ingest needs the settle hour after it.
+ * hour after `start` when no hour starts inside the window. `closesAt`: the earliest a watch that saw nothing is cleared:
+ * an occurrence in the hour starting at `reach` can be as late as `reach` + 1 h, and ingest needs the settle hour after
+ * it. It is cleared then only once ingest's checkpoint is at or past `reach` + 1 h (#241).
  */
 export function watchSpan(mergedAtMs: number, cfg: Pick<FastRevertConfig, "fastRevertMinutes" | "fastRevertGraceMinutes">): { start: number; end: number; reach: number; closesAt: number } {
   const start = mergedAtMs + cfg.fastRevertGraceMinutes * 60_000;
@@ -156,10 +176,17 @@ const sentence = (reason: string) =>
 /** One bounded round of the fast-revert watch. Never throws for one cycle. */
 export async function runFastRevertStep(deps: FastRevertDeps): Promise<FastRevertSummary> {
   const { db, config: cfg, client } = deps;
-  const out: FastRevertSummary = { considered: 0, cleared: 0, opened: 0, reverted: 0, escalated: 0, errors: [] };
+  const out: FastRevertSummary = { considered: 0, cleared: 0, uncovered: 0, opened: 0, reverted: 0, escalated: 0, errors: [] };
   if ((await deps.blockedBy()) === "automation-disabled") return { ...out, paused: true };
   const cycles = await cyclesInState(db, cfg, "revert", ["watching", "opening", "pending", "merging"], cfg.maxPrChecksPerPass);
   out.considered = cycles.length;
+  // How far ingest has read this target's logs: read once, when a watch first needs it (#241). A failed read is that
+  // watch's error, and is tried again for the next.
+  let checkpoint: { at: Date | null } | undefined;
+  const ingestedThrough = async (): Promise<Date | null> => {
+    checkpoint ??= { at: await readIngestCheckpoint(db, cfg.runCollection, { watchedProjectId: cfg.watchedProjectId, environment: cfg.environment }) };
+    return checkpoint.at;
+  };
   for (const cycle of cycles) {
     try {
       const r = await step(cycle);
@@ -171,7 +198,7 @@ export async function runFastRevertStep(deps: FastRevertDeps): Promise<FastRever
   }
   return out;
 
-  async function step(cycle: { id: string; data: Rec }): Promise<"cleared" | "opened" | "reverted" | "escalated" | "waiting" | "unchanged" | "paused"> {
+  async function step(cycle: { id: string; data: Rec }): Promise<"cleared" | "uncovered" | "opened" | "reverted" | "escalated" | "waiting" | "unchanged" | "paused"> {
     const summary = rec(cycle.data.summary);
     const merge = rec(summary.merge);
     const revert = rec(summary.revert);
@@ -201,10 +228,22 @@ export async function runFastRevertStep(deps: FastRevertDeps): Promise<FastRever
       const incident = incidentId ? ((await db.collection(cfg.incidentCollection).doc(incidentId).get()).data() ?? {}) : {};
       const recurrence = typeof cycle.data.recurrence === "number" ? cycle.data.recurrence : 0;
       if (!recurredAfterMerge(incident, { mergedAtMs, recurrence }, cfg)) {
-        if (now.getTime() > watchSpan(mergedAtMs, cfg).closesAt) {
-          return (await moveRecord(db, cfg, cycle.id, "revert", same("watching"), { ...revert, state: "clear", decidedAt: nowIso })) ? "cleared" : "unchanged";
+        const { reach, closesAt } = watchSpan(mergedAtMs, cfg);
+        if (now.getTime() <= closesAt) return "waiting";
+        // Nothing recorded is "no recurrence" only once ingest has read the logs through the last hour that counts: a
+        // stalled ingest records nothing either, and missing is not zero (#241). No checkpoint at all is not covered.
+        const through = await ingestedThrough();
+        if (through === null || through.getTime() < reach + HOUR_MS) {
+          if (now.getTime() <= closesAt + WATCH_UNCOVERED_GIVE_UP_MS) return "uncovered";
+          const escalation = await escalate(
+            deps,
+            cycle,
+            "fast-revert-not-covered",
+            `Starfish merged a fix for this incident, but ingest has not read the logs through the ${cfg.fastRevertMinutes}-minute fast-revert window, so Starfish cannot tell whether the incident came back. Nothing was reverted. A person needs to check.`
+          );
+          return (await moveRecord(db, cfg, cycle.id, "revert", same("watching"), { ...revert, state: "escalated", reason: "ingest-not-covered", escalation, decidedAt: nowIso })) ? "escalated" : "unchanged";
         }
-        return "waiting";
+        return (await moveRecord(db, cfg, cycle.id, "revert", same("watching"), { ...revert, state: "clear", decidedAt: nowIso })) ? "cleared" : "unchanged";
       }
       const blocked = await deps.blockedBy();
       if (blocked === "automation-disabled") return "paused";

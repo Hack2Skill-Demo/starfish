@@ -42,6 +42,9 @@ describe("mergeBlockedBy: the switches", () => {
     ["a target not on the allowlist", { githubRepo: "acme/prod-shop" }, "target-not-allowed"],
     ["an empty allowlist (the default)", { autoMergeTargets: [] }, "target-not-allowed"],
     ["no target at all", { githubRepo: "", autoMergeTargets: [""] }, "target-not-allowed"],
+    // A fast-revert window that ends before its grace watches nothing: no merge without the safety net (#242).
+    ["a fast-revert window shorter than its grace", { fastRevertMinutes: 10, fastRevertGraceMinutes: 15 }, "fast-revert-window-empty"],
+    ["a fast-revert window as long as its grace", { fastRevertMinutes: 10, fastRevertGraceMinutes: 10 }, "fast-revert-window-empty"],
   ])("blocks on %s", (_name, over, reason) => {
     expect(mergeBlockedBy({ ...on, ...over })).toBe(reason);
   });

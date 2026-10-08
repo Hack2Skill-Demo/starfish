@@ -76,7 +76,8 @@ export type GithubRule =
   | "not-mergeable"
   | "intervening-changes"
   | "revert-not-possible"
-  | "too-many-check-runs";
+  | "too-many-check-runs"
+  | "base-diverged";
 
 /** Thrown for anything that stopped the pull request. Never carries the token. */
 export class GithubError extends Error {
@@ -561,7 +562,8 @@ export interface GithubClient {
   commentOnPullRequest: (cycleId: string, number: number, body: string) => Promise<void>;
   /**
    * The files changed on the base branch since `revision` (GitHub's compare), so a fix verified on an older base is not
-   * merged over a later change to the same file. Throws when GitHub cannot list them all (more than it returns at once).
+   * merged over a later change to the same file. Throws when GitHub cannot list them all (more than it returns at once),
+   * and when `revision` is not on the base branch's history (`base-diverged`): the list would not be from `revision`.
    */
   filesChangedSince: (revision: string) => Promise<string[]>;
   /**
@@ -919,8 +921,14 @@ export function createGithubClient(cfg: GithubPrConfig, deps: GithubPrDeps): Git
     if (!/^[0-9a-f]{40}$/.test(revision)) throw new GithubError("invalid-request", "A comparison starts at a full commit id.");
     const r = await call("GET", `/repos/${cfg.githubRepo}/compare/${revision}...${encodeURIComponent(cfg.githubBaseBranch)}?per_page=${MAX_COMPARE_FILES}`);
     if (r.status !== 200) throw failure(r.status, r.headers, r.json);
-    const j = r.json as { ahead_by?: unknown; total_commits?: unknown; files?: unknown } | null;
-    if (j?.ahead_by === 0) return [];
+    const j = r.json as { status?: unknown; ahead_by?: unknown; behind_by?: unknown; total_commits?: unknown; files?: unknown } | null;
+    // The files are listed from the two sides' merge base. Only when `revision` is on the base branch's history (nothing
+    // of it missing from the branch: `identical` or `ahead`) is that `revision` itself; after a force-push or a reset,
+    // the list would leave out what changed between them (#243).
+    if (j?.behind_by !== 0 || (j.status !== "identical" && j.status !== "ahead")) {
+      throw new GithubError("base-diverged", "The verified revision is not on the base branch's history any more.");
+    }
+    if (j.ahead_by === 0) return [];
     if (!Array.isArray(j?.files)) throw new GithubError("unexpected-response", "GitHub's comparison listed no files.");
     if (j.files.length >= MAX_COMPARE_FILES) throw new GithubError("unexpected-response", "Too many files changed on the base branch to check them all.");
     const out: string[] = [];

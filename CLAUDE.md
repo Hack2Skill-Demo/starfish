@@ -174,14 +174,17 @@ src/
                    allowed
   agent/autoMerge.ts  the switches (`mergeBlockedBy`), gate 2 (`certaintyGate`, pure over the run record; the stack
                    frame matched against the checkout's whole file list) and the merge step after the pass: fresh
-                   switches + incident status, gates, PR into the configured base with the head Starfish built, every
+                   switches + incident status, gates, no earlier merge of the incident still watched or reverted (#240),
+                   PR into the configured base with the head Starfish built, every
                    run of the named checks from `STARFISH_VERIFY_CHECK_APP` green on it, daily cap (transactional),
                    evidence comment, squash merge with `sha`. Any failure: PR stays open + notify. Fakes + emulator
                    tested, never run against real GitHub
   agent/fastRevert.ts  the watch every merge starts: the incident seen again after a grace and within N minutes of the
                    MERGE (deploy completion is not observable; counted by the hour, so an error that keeps firing past
                    the window is still seen) -> revert PR of Starfish's own merge commit, merged on
-                   green checks; a later change to the same files escalates; a revert is never reverted
+                   green checks; a later change to the same files escalates; a revert is never reverted. Cleared only
+                   once the ingest checkpoint has read through the window, else a person is told after a day (#241).
+                   Runs before the merge step in the pass
   agent/pass.ts    one pass over the store: candidate selection (paged past closed/settled incidents, bounded, a cap
                    reported, #226), stack trace → repo files, bounded driver; the daily cycle cap
                    (`STARFISH_MAX_CYCLES_PER_DAY`, a count of cycles started that UTC day); a sweep that gives up and
