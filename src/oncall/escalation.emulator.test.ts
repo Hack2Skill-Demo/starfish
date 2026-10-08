@@ -62,6 +62,7 @@ beforeEach(async () => {
   texts = [];
   refuseCalls = false;
   refuseTexts = false;
+  kickConfig = {};
   let n = 0;
   twilio = {
     placeCall: (to, urls) => {
@@ -114,6 +115,8 @@ const deps = (over: Partial<EscalationDeps> = {}): EscalationDeps => ({ db, conf
 const tick = (over: Partial<EscalationDeps> = {}) => runEscalationTick(deps(over));
 
 const kicks: string[] = [];
+/** The admin API's own config for its kick, as adminApiCli.ts wires it; the deploy may not give it the agent's switches (#225). */
+let kickConfig: Partial<StarfishConfig> = {};
 const hooks = () =>
   createTwilioWebhooks({
     db,
@@ -123,8 +126,9 @@ const hooks = () =>
     now: () => clock,
     kick: async (id) => {
       kicks.push(id);
-      const policy = await readPolicy(db, cfg);
-      if (policy) await stepEscalation(deps(), id, policy);
+      const config = { ...cfg, ...kickConfig };
+      const policy = await readPolicy(db, config);
+      if (policy) await stepEscalation(deps({ config, owner: "admin-api" }), id, policy, { kick: true });
     },
   });
 
@@ -448,6 +452,37 @@ describe("the call sequence", () => {
     expect(await types()).toContain("link-failed");
   });
 
+  it("2 with nothing texted never records the call as having taken the link (#234)", async () => {
+    // The number changed mid-call: no confirmed number to text.
+    await db.collection(cfg.onCallPeopleCollection).doc("p1").update({ phone: "+15550000777", state: "pending" });
+    await hook("/twilio/gather", { Digits: "2" }, 0);
+    const again = await hook("/twilio/gather", { Digits: "2" }, 0);
+    expect(again.body).not.toContain("The link is on its way.");
+    await hook("/twilio/status", { CallStatus: "completed" }, 0);
+    expect(texts).toEqual([]);
+    expect(await esc()).toMatchObject({ step: 1, lastOutcome: "no-input" });
+    expect(await types()).not.toContain("link-sent");
+  });
+
+  it("2 that Twilio refused to text, then silence: the outcome is no input, not the link taken (#234)", async () => {
+    refuseTexts = true;
+    await hook("/twilio/gather", { Digits: "2" }, 0);
+    expect(texts).toHaveLength(1);
+    await hook("/twilio/gather", { Digits: "" }, 0);
+    expect(await esc()).toMatchObject({ step: 1, lastOutcome: "no-input" });
+    expect(await types()).toEqual(expect.arrayContaining(["link-failed", "no-input"]));
+    expect(await types()).not.toContain("link-sent");
+  });
+
+  it("2 with no UI URL configured texts nothing and records no link taken (#234)", async () => {
+    cfg = { ...cfg, uiBaseUrl: "" };
+    await hook("/twilio/gather", { Digits: "2" }, 0);
+    await hook("/twilio/status", { CallStatus: "completed" }, 0);
+    expect(texts).toEqual([]);
+    expect((await events()).find((e) => e.type === "link-failed")?.data.reason).toBe("no-ui-url");
+    expect(await esc()).toMatchObject({ lastOutcome: "no-input" });
+  });
+
   it("3: passes it to the next PERSON at once (the primary's retry is skipped)", async () => {
     kicks.length = 0;
     const r = await hook("/twilio/gather", { Digits: "3" }, 0);
@@ -458,6 +493,31 @@ describe("the call sequence", () => {
     // Twilio's own report of the passed call's end changes nothing: that call is no longer the one in flight.
     await hook("/twilio/status", { CallStatus: "completed" }, 0);
     expect((await esc())?.state).toBe("calling");
+  });
+
+  it("the admin API's kick never closes a live sequence on its own dry run; the agent's next tick calls the secondary (#225)", async () => {
+    kickConfig = { dryRun: true };
+    await hook("/twilio/gather", { Digits: "3" }, 0);
+    expect(placed.map((p) => p.to)).toEqual([PHONES.p1]);
+    expect(await esc()).toMatchObject({ open: true, state: "waiting", step: 2 });
+    expect(await types()).not.toContain("dry-run");
+    await tick();
+    expect(placed.map((p) => p.to)).toEqual([PHONES.p1, PHONES.p2]);
+    expect(await esc()).toMatchObject({ open: true, state: "calling", step: 2 });
+  });
+
+  it("the admin API's kick never closes a live sequence on its own phone switch being off (#225)", async () => {
+    kickConfig = { phoneEscalation: false };
+    await hook("/twilio/status", { CallStatus: "no-answer" }, 0);
+    expect(await esc()).toMatchObject({ open: true, state: "waiting", step: 1 });
+    expect(await types()).not.toContain("stopped");
+    clock = at(12);
+    await tick();
+    expect(placed.map((p) => p.to)).toEqual([PHONES.p1, PHONES.p1]);
+    await hook("/twilio/status", { CallStatus: "no-answer" }, 1);
+    expect(await esc()).toMatchObject({ open: true, state: "waiting", step: 2 });
+    await tick();
+    expect(placed.map((p) => p.to)).toEqual([PHONES.p1, PHONES.p1, PHONES.p2]);
   });
 
   it("an invalid key: says so and asks again once; a second one moves on like silence", async () => {

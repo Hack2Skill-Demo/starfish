@@ -37,8 +37,16 @@ import { FieldValue, Timestamp } from "firebase-admin/firestore";
 import type { DocumentReference, DocumentSnapshot, Firestore, Transaction } from "firebase-admin/firestore";
 import type { StarfishConfig } from "../config.js";
 import { appendEventsInTransaction, type RunEvent } from "../agent/cycle.js";
+import { abortIfClosed } from "../ingest/store.js";
 import { inQuietHours, maskPhone, parsePerson, parsePolicy, POLICY_DOC, ROLE_LABELS, type OnCallPerson, type OnCallPolicy, type OnCallRole } from "../oncallSchema.js";
 import type { TwilioClient } from "./twilio.js";
+
+/**
+ * Every transaction of the escalation and its webhooks. A read that finds its transaction closed under it (the emulator's
+ * #151 class, seen here with concurrent passes, #245) is redone like an aborted attempt, within the runner's own bounded
+ * attempts, as the store's upsert does (src/ingest/store.ts `abortIfClosed`): nothing was committed by that attempt.
+ */
+export const inTransaction = <T>(db: Firestore, fn: (tx: Transaction) => Promise<T>): Promise<T> => db.runTransaction((tx) => abortIfClosed(() => fn(tx)));
 
 export type EscalationConfig = Pick<
   StarfishConfig,
@@ -231,7 +239,7 @@ export async function armEscalations(deps: EscalationDeps, policy: OnCallPolicy)
   for (const doc of waiting.docs) {
     if (!ID_RE.test(doc.id) || escalationEligible(doc.data(), deps.now()) === null) continue;
     const ref = escRef(deps, doc.id);
-    const created = await db.runTransaction(async (tx) => {
+    const created = await inTransaction(db, async (tx) => {
       const now = deps.now();
       const [esc, cycle] = await Promise.all([tx.get(ref), tx.get(doc.ref)]);
       const d = cycle.data();
@@ -319,11 +327,22 @@ function stopReason(incident: DocumentSnapshot): { state: EscalationState; summa
 /**
  * Take one sequence one step further: stop it if it was acknowledged, wait if its time has not come or a call is in
  * flight, else claim the next call (transactionally) and place it. Returns what happened.
+ *
+ * `kick` (#225): the admin API's step after a call ended. It runs with the ADMIN API's own config, which the deploy does
+ * not give the agent's dry run or phone switch, so a kick may place a due call or wait, but never closes a sequence
+ * because of its own process's settings (the deployment switch off, a dry run, Twilio, the audio file or the webhook URL
+ * missing): it leaves the sequence open, and the agent's next tick decides with the agent's. What the store says (an
+ * acknowledgement, the admin's switch in the policy, a day-old message, nobody left to call) closes it either way.
  */
-export async function stepEscalation(deps: EscalationDeps, id: string, policy: OnCallPolicy): Promise<"placed" | "closed" | "idle"> {
+export async function stepEscalation(
+  deps: EscalationDeps,
+  id: string,
+  policy: OnCallPolicy,
+  opts: { kick?: boolean } = {}
+): Promise<"placed" | "closed" | "idle"> {
   const { db, config: cfg } = deps;
   const ref = escRef(deps, id);
-  const claimed = await db.runTransaction(async (tx): Promise<Claimed> => {
+  const claimed = await inTransaction(db, async (tx): Promise<Claimed> => {
     const now = deps.now();
     const esc = await tx.get(ref);
     const e = esc.data();
@@ -348,6 +367,9 @@ export async function stepEscalation(deps: EscalationDeps, id: string, policy: O
       tx.update(ref, closeUpdate("stopped", now));
       note([{ stage: "escalation", type: "stopped", summary: "Stopped: the Slack message is more than a day old", record: { state: "stopped" } }]);
       return { kind: "closed" };
+    }
+    if (opts.kick && (!cfg.phoneEscalation || cfg.dryRun || !deps.twilio || cfg.onCallAudioUrl === "" || cfg.twilioWebhookUrl === "")) {
+      return { kind: "idle" };
     }
     if (!cfg.phoneEscalation || !policy.enabled) {
       tx.update(ref, closeUpdate("stopped", now));
@@ -461,7 +483,7 @@ export async function stepEscalation(deps: EscalationDeps, id: string, policy: O
   } catch {
     placed = { ok: false, reason: "client-error" };
   }
-  await db.runTransaction(async (tx) => {
+  await inTransaction(db, async (tx) => {
     const now = deps.now();
     const esc = await tx.get(ref);
     const e = esc.data();

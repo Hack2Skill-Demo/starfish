@@ -211,6 +211,38 @@ export async function acquireLease(db: Firestore, cfg: CycleConfig, key: CycleKe
   });
 }
 
+/**
+ * Why a `running` cycle nobody holds can only be given up, or null (#226). Pure. The same two rules `acquireLease`
+ * applies when it takes a cycle over: its deadline passed, or its attempts ran out (a cycle released by the kill switch,
+ * `resumeUncounted`, has not used one). A cycle whose lease is live is its holder's to finish, and is never one.
+ */
+export function strandedReason(d: Record<string, unknown> | undefined, now: Date, maxAttempts: number): "deadline-passed" | "retries-exhausted" | null {
+  if (d?.state !== "running") return null;
+  if ((ms(d.leaseExpiresAt) ?? 0) > now.getTime()) return null;
+  if (now.getTime() >= (ms(d.deadlineAt) ?? 0)) return "deadline-passed";
+  if (d.resumeUncounted !== true && Number(d.attempts ?? 1) >= maxAttempts) return "retries-exhausted";
+  return null;
+}
+
+/**
+ * Give up a stranded cycle (`strandedReason`, read again in the transaction) as `acquireLease` would have: `failed`, with
+ * the reason as its outcome. Takes no lease and runs nothing. Returns the reason, or null when the cycle is not (or no
+ * longer) stranded: only the call that made the transition gets a reason, so a person is told once. Throws when the
+ * store does.
+ */
+export async function giveUpStranded(db: Firestore, cfg: CycleConfig, key: CycleKey, now: Date): Promise<"deadline-passed" | "retries-exhausted" | null> {
+  const id = cycleId(key);
+  if (id === null) return null;
+  const ref = cycleRef(db, cfg, id);
+  return db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    const reason = strandedReason(snap.data(), now, cfg.maxCycleAttempts);
+    if (reason === null) return null;
+    tx.update(ref, { state: "failed", outcome: reason, path: "failed", owner: null, leaseExpiresAt: null, updatedAt: Timestamp.fromDate(now) });
+    return reason;
+  });
+}
+
 export type FenceResult = { ok: true } | { ok: false; reason: "lease-lost" | "no-such-cycle" };
 
 /**

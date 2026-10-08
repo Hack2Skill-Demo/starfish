@@ -21,6 +21,8 @@ export type PreflightConfig = Pick<
   | "verifyTimeoutSeconds"
   | "leaseSeconds"
   | "cycleDeadlineMinutes"
+  | "autoMerge"
+  | "autoMergeTargets"
 >;
 
 /** A lease shorter than this could run out inside one model call, which nothing renews from the inside. */
@@ -31,6 +33,16 @@ export function verifyWaitSeconds(cfg: Pick<StarfishConfig, "verifyIsolation" | 
   if (cfg.verifyIsolation === "github-actions") return cfg.verifyTimeoutSeconds + CI_SLACK_SECONDS;
   if (cfg.verifyIsolation === "cloud-run-job") return cfg.verifyTimeoutSeconds + RUNNER_SLACK_SECONDS;
   return cfg.verifyTimeoutSeconds;
+}
+
+/**
+ * Whether auto-merge's evidence (the "fails before" verify run) can be prepared for this target: the admin's switch on,
+ * the target on the allowlist, and not a dry run. The automation switch and the merge freeze are left out: they are
+ * pauses that change without a new pass, so the deadline is sized as if they allowed it.
+ */
+export function autoMergeMayApply(cfg: Pick<StarfishConfig, "autoMerge" | "autoMergeTargets" | "githubRepo" | "dryRun">): boolean {
+  const repo = cfg.githubRepo.trim().toLowerCase();
+  return cfg.autoMerge && !cfg.dryRun && repo !== "" && cfg.autoMergeTargets.some((t) => t.toLowerCase() === repo);
 }
 
 export function agentPreflight(cfg: PreflightConfig, token: string | undefined): string[] {
@@ -65,11 +77,16 @@ export function agentPreflight(cfg: PreflightConfig, token: string | undefined):
     );
   }
   // One attempt can verify twice (one revision), and a resumed one first waits out the crashed worker's lease (#137).
-  const minDeadlineSeconds = 2 * (verifyWaitSeconds(cfg) + cfg.leaseSeconds);
+  // Where auto-merge can apply, each of those also runs the patch's tests alone on the base revision first (the
+  // "fails before" run, loop.ts), through the same verifier: two verify waits per try, four per attempt (#235).
+  const mergeMayApply = autoMergeMayApply(cfg);
+  const waitsPerTry = mergeMayApply ? 2 : 1;
+  const minDeadlineSeconds = 2 * (waitsPerTry * verifyWaitSeconds(cfg) + cfg.leaseSeconds);
   if (cfg.cycleDeadlineMinutes * 60 < minDeadlineSeconds) {
     problems.push(
-      `STARFISH_CYCLE_DEADLINE_MINUTES is ${cfg.cycleDeadlineMinutes}: shorter than twice one verify wait plus the lease ` +
-        `(${Math.ceil(minDeadlineSeconds / 60)} minutes here), so a cycle could die at its deadline in the middle of a verify. ` +
+      `STARFISH_CYCLE_DEADLINE_MINUTES is ${cfg.cycleDeadlineMinutes}: shorter than twice ` +
+        (mergeMayApply ? "two verify waits (auto-merge also runs the patch's tests alone first)" : "one verify wait") +
+        ` plus the lease (${Math.ceil(minDeadlineSeconds / 60)} minutes here), so a cycle could die at its deadline in the middle of a verify. ` +
         "Keep it at several agent schedule intervals: a released cycle is retried by the next pass."
     );
   }

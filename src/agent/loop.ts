@@ -53,6 +53,7 @@ import {
   countSpend,
   cycleId,
   finishCycle,
+  giveUpStranded,
   recordEvent,
   releaseLease,
   renewLease,
@@ -241,6 +242,7 @@ const RECONSIDER_SUMMARY = {
   operator: "an operator asked for a retriage",
   burst: "the occurrences grew past the burst threshold since the decline",
   cause: "the incident's structural cause changed since the decline",
+  reopened: "the incident was closed while it was worked on, and has been reopened",
 } as const;
 
 /** Fixer errors that are the model's patch, not a failed call: retrying would most likely repeat them (#137). */
@@ -367,7 +369,8 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
       if (!(await deps.automationEnabled())) return "automation-disabled";
       return null;
     };
-    // An operator who resolved or ignored the incident settles the cycle. The kill switch only pauses it (#133): the
+    // An operator who resolved or ignored the incident settles the cycle (with no decision: reopening the incident later
+    // triages it again, reconsider.ts `reopened`, #227). The kill switch only pauses it (#133): the
     // lease is released, uncounted, so the cycle is taken up again once automation is back on. The switch also reads
     // "off" when the settings cannot be read, and one failed read must not decline an incident for good.
     const haltFor = async (why: string): Promise<LoopResult> => {
@@ -974,10 +977,29 @@ async function openedPullRequest(deps: LoopDeps, id: string): Promise<OpenedPull
 }
 
 /**
+ * Give up the stranded cycles a sweep found (pass.ts `findStrandedCycles`, #226) and tell a person about each, as
+ * `runCycle` does when its own acquire gives one up, unless the incident is no longer open (a person closed it). Takes no
+ * lease and runs no stage. Returns the cycles given up by this call; one another worker gave up first is left out (it
+ * told them). Throws when the store does.
+ */
+export async function giveUpStrandedCycles(deps: LoopDeps, keys: readonly CycleKey[]): Promise<{ incidentId: string; reason: "deadline-passed" | "retries-exhausted" }[]> {
+  const out: { incidentId: string; reason: "deadline-passed" | "retries-exhausted" }[] = [];
+  for (const key of keys) {
+    const reason = await giveUpStranded(deps.db, deps.config, key, deps.now());
+    if (reason === null) continue;
+    // An incident a person has since closed (or that is gone) is not theirs to be told about again.
+    const status = await deps.incidentStatus(key.incidentId);
+    if (status !== null && (OPEN_INCIDENT_STATUSES as readonly string[]).includes(status)) await announceGivenUp(deps, key, reason);
+    out.push({ incidentId: key.incidentId, reason });
+  }
+  return out;
+}
+
+/**
  * A cycle just given up on (its deadline passed, or its attempts ran out) is not left to fail silently (#137): a person
- * is told, once, and the delivery is recorded on the cycle (`summary.notify`). Only the worker whose acquire made that
- * transition gets here: every later one finds the cycle closed. No lease is held any more, so the record is written
- * straight to the (now failed) cycle. Never throws: the cycle is already settled, and a failure here must not read as
+ * is told, once, and the delivery is recorded on the cycle (`summary.notify`). Only the worker whose acquire (or sweep,
+ * `giveUpStrandedCycles`) made that transition gets here: every later one finds the cycle closed. No lease is held any
+ * more, so the record is written straight to the (now failed) cycle. Never throws: the cycle is already settled, and a failure here must not read as
  * an infrastructure error of the pass.
  */
 async function announceGivenUp(deps: LoopDeps, key: CycleKey, rule: "deadline-passed" | "retries-exhausted"): Promise<void> {

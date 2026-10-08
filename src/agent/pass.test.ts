@@ -136,6 +136,20 @@ describe("runAgentPass", () => {
     expect(s.results.map((r) => r.incidentId)).toEqual(["inc0", "inc1", "inc2", "inc3"]);
   });
 
+  it("sweeps stranded cycles once per pass, after the kill switch and even at the daily cap; a failed sweep is reported, not fatal (#226)", async () => {
+    const sweep = vi.fn(async () => [{ incidentId: "old", reason: "retries-exhausted" }]);
+    expect(await runAgentPass(deps({ sweep, automationEnabled: async () => false }))).toMatchObject({ skipped: "automation-disabled" });
+    expect(sweep).not.toHaveBeenCalled();
+    const capped = await runAgentPass(deps({ sweep, daily: { cap: 3, startedToday: async () => 3 } }));
+    expect(capped).toMatchObject({ skipped: "daily-cap", gaveUp: [{ incidentId: "old", reason: "retries-exhausted" }] });
+    const ran = await runAgentPass(deps({ sweep }));
+    expect(ran).toMatchObject({ ran: 3, gaveUp: [{ incidentId: "old", reason: "retries-exhausted" }] });
+    expect(sweep).toHaveBeenCalledTimes(2);
+    const failing = await runAgentPass(deps({ sweep: () => Promise.reject(new Error("store down")) }));
+    expect(failing).toMatchObject({ ran: 3, sweepError: "store down" });
+    expect(failing.gaveUp).toBeUndefined();
+  });
+
   it("starts no cycle, and selects nothing, while automation is off (#133)", async () => {
     const select = vi.fn(async (limit: number) => cands(limit));
     const run = vi.fn(async () => finished);

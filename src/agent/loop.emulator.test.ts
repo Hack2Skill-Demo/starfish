@@ -11,11 +11,11 @@ import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import { deleteApp, initializeApp } from "firebase-admin/app";
 import { getFirestore } from "firebase-admin/firestore";
 import type { Firestore } from "firebase-admin/firestore";
-import { runCycle, type LoopDeps, type LoopSubject, type PullRequestRequest } from "./loop.js";
+import { giveUpStrandedCycles, runCycle, type LoopDeps, type LoopSubject, type PullRequestRequest } from "./loop.js";
 import type { AlertRequest, NotifyRequest } from "../integrations/slack.js";
 import type { IssueRequest } from "../integrations/githubPr.js";
 import { acquireLease } from "./cycle.js";
-import { selectCandidates } from "./pass.js";
+import { findStrandedCycles, selectCandidates } from "./pass.js";
 import { FIX_SYSTEM } from "./fixer.js";
 import { verifyPatch } from "./verifyGate.js";
 import { REVIEW_SYSTEM } from "./reviewer.js";
@@ -1201,6 +1201,52 @@ describe("runCycle: a cycle given up on is not given up silently (#137)", () => 
     expect((await cycleDoc()).summary.notify).toEqual({ state: "failed", attempts: 3, reason: "http-500" });
   });
 
+  it("a released cycle nobody selects again is given up by the pass's sweep, and a person is told once (#226)", async () => {
+    const calls: NotifyRequest[] = [];
+    const notify = async (req: NotifyRequest) => (calls.push(req), { state: "sent" as const, attempts: 1 });
+    const d = deps(scripted({ triage: [new Error("boom")] }), { notify });
+    // Three attempts, each released: the cycle is still `running`, its attempts used up. Its incident then goes quiet,
+    // so the candidate scan never selects it again, and only the sweep finds it.
+    for (let i = 0; i < 3; i++) expect(await runCycle(d, key)).toMatchObject({ kind: "released" });
+    const stranded = await findStrandedCycles(db, { ...d.config, environment: "demo" }, clock);
+    expect(stranded).toEqual([key]);
+    expect(await giveUpStrandedCycles(d, stranded)).toEqual([{ incidentId: "inc1", reason: "retries-exhausted" }]);
+    expect(await cycleDoc()).toMatchObject({ state: "failed", outcome: "retries-exhausted", summary: { notify: { state: "sent", attempts: 1 } } });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({ cycleId: "inc1_r0", rule: "retries-exhausted", path: "human" });
+    // Given up once: a second sweep (or a later acquire) finds nothing to give up, and tells nobody again.
+    expect(await giveUpStrandedCycles(d, [key])).toEqual([]);
+    expect(await runCycle(d, key)).toEqual({ kind: "not-acquired", reason: "closed" });
+    expect(calls).toHaveLength(1);
+  });
+
+  it("the sweep gives up a released cycle past its deadline, and never one whose lease is held (#226)", async () => {
+    cfgOver = { cycleDeadlineMinutes: 10 };
+    const calls: NotifyRequest[] = [];
+    const notify = async (req: NotifyRequest) => (calls.push(req), { state: "sent" as const, attempts: 1 });
+    const d = deps(scripted({}), { notify });
+    await acquireLease(db, d.config, key, "worker-b", clock);
+    // Held by worker-b: not stranded, whatever the clock says about its lease being live.
+    expect(await findStrandedCycles(db, { ...d.config, environment: "demo" }, new Date(t0.getTime() + 60_000))).toEqual([]);
+    expect(await giveUpStrandedCycles(d, [key])).toEqual([]);
+    clock = new Date(t0.getTime() + 601_000);
+    expect(await giveUpStrandedCycles(d, await findStrandedCycles(db, { ...d.config, environment: "demo" }, clock))).toEqual([{ incidentId: "inc1", reason: "deadline-passed" }]);
+    expect(calls.map((c) => c.rule)).toEqual(["deadline-passed"]);
+  });
+
+  it("the sweep gives up a stranded cycle whose incident a person closed, and tells nobody (#226)", async () => {
+    cfgOver = { cycleDeadlineMinutes: 10 };
+    const calls: NotifyRequest[] = [];
+    const notify = async (req: NotifyRequest) => (calls.push(req), { state: "sent" as const, attempts: 1 });
+    const d = deps(scripted({}), { notify });
+    await acquireLease(db, d.config, key, "worker-b", clock);
+    status = "ignored";
+    clock = new Date(t0.getTime() + 601_000);
+    expect(await giveUpStrandedCycles(d, [key])).toEqual([{ incidentId: "inc1", reason: "deadline-passed" }]);
+    expect(await cycleDoc()).toMatchObject({ state: "failed", outcome: "deadline-passed" });
+    expect(calls).toEqual([]);
+  });
+
   it("sends nothing in a dry run, and the record says so", async () => {
     cfgOver = { dryRun: true };
     const calls: NotifyRequest[] = [];
@@ -1285,6 +1331,30 @@ describe("runCycle: a declined incident is reconsidered on new evidence (#8)", (
     status = "ignored";
     expect(await runCycle(d, key)).toEqual({ kind: "finished", state: "declined", outcome: "incident-ignored" });
     expect(model.count("triage")).toBe(1);
+  });
+
+  it("an incident ignored while worked on, then reopened, is worked on again: the same cycle, one pull request (#227)", async () => {
+    cfgOver = { incidentCollection: incidents() };
+    const select = () => selectCandidates(db, testConfig({ environment: "demo", cycleCollection: `cycles_${cfg}`, incidentCollection: incidents() }), 5, { reconsider: policy, now: clock });
+    await stored({ status: "ignored" });
+    status = "ignored";
+    const opened: PullRequestRequest[] = [];
+    const model = scripted({ triage: [act], fix: [fixOf(GOOD_PATCH)], review: [held] });
+    const d = deps(model, { reconsider: policy }, opened);
+    expect(await runCycle(d, key)).toEqual({ kind: "finished", state: "declined", outcome: "incident-ignored" });
+    expect((await cycleDoc()).decision).toBeUndefined();
+
+    // The operator reopens it (ignored -> new): after the cooldown it is selected, and the same cycle is triaged again.
+    await stored();
+    status = "new";
+    clock = later(10);
+    expect(await select()).toEqual([]);
+    clock = later(31);
+    expect(await select()).toEqual([{ incidentId: "inc1", recurrence: 0, reconsider: "reopened" }]);
+    expect(await runCycle(d, key)).toEqual({ kind: "finished", state: "done", outcome: "pr-opened" });
+    expect(model.count("triage")).toBe(1);
+    expect(opened).toHaveLength(1);
+    expect(await cycleDoc()).toMatchObject({ reconsideredBecause: "reopened", reconsiderCount: 1 });
   });
 });
 

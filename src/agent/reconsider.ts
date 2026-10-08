@@ -9,11 +9,14 @@
  *   burst      the incident's occurrences grew by at least `reconsiderBurstOccurrences` since the decision;
  *   cause      the incident's structural cause changed: an error code, name or HTTP status appeared or changed, or a
  *              detail or stack trace became available (ingest backfills these when an error recurs: an incident often
- *              becomes diagnosable only the second time).
+ *              becomes diagnosable only the second time);
+ *   reopened   the cycle was not declined on its evidence at all: the loop stopped it because an operator closed the
+ *              incident (`incident-ignored`, `incident-resolved`, with no decision recorded), and the incident is open
+ *              again, so a person reopened it (#227).
  *
- * and only within bounds: the automatic triggers wait `reconsiderCooldownMinutes` after the decision (an operator's
- * request does not wait: a person asked), and a cycle is reconsidered at most `reconsiderMaxPerDay` times in any 24
- * hours, whoever asks. An incident that is not open, or is retired, is never reconsidered: an operator's resolve or
+ * and only within bounds: the automatic triggers and `reopened` wait `reconsiderCooldownMinutes` after the decision (or
+ * the stop; an operator's retriage request does not wait: a person asked), and a cycle is reconsidered at most
+ * `reconsiderMaxPerDay` times in any 24 hours, whoever asks. An incident that is not open, or is retired, is never reconsidered: an operator's resolve or
  * ignore always wins. The daily cycle cap (pass.ts) bounds the spend on top of this.
  *
  * Pure functions: cycle.ts applies them inside the transaction that reopens the cycle, pass.ts to pick candidates.
@@ -25,7 +28,7 @@ import { OPEN_INCIDENT_STATUSES } from "../types.js";
 
 export type ReconsiderPolicy = Pick<StarfishConfig, "reconsiderCooldownMinutes" | "reconsiderMaxPerDay" | "reconsiderBurstOccurrences">;
 
-export type ReconsiderTrigger = "operator" | "burst" | "cause";
+export type ReconsiderTrigger = "operator" | "burst" | "cause" | "reopened";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 /** How many earlier decisions a cycle keeps (`history`); the run events keep everything. */
@@ -67,9 +70,18 @@ export function recentReconsiderations(cycle: Record<string, unknown>, now: Date
 }
 
 /**
+ * A cycle the loop settled because the incident was closed under it (loop.ts `haltFor`: `incident-<status>`), not on a
+ * triage decision. `incident-gone` is not one: an incident that could not be read was not closed by anyone.
+ */
+export function stoppedByClose(cycle: Record<string, unknown>): boolean {
+  return cycle.decision == null && typeof cycle.outcome === "string" && cycle.outcome.startsWith("incident-") && cycle.outcome !== "incident-gone";
+}
+
+/**
  * Why the declined cycle `cycle` should be triaged again now, given the incident document `incident` as stored, or null.
- * Only a `declined` cycle qualifies. A decline recorded before decisions were kept (no `decision`) can only be
- * reconsidered on an operator's request: there is no evidence baseline to compare the automatic triggers against.
+ * Only a `declined` cycle qualifies. A decline with no `decision` has no evidence baseline to compare the burst and cause
+ * triggers against: it is reconsidered on an operator's request, or, when the loop stopped it because the incident was
+ * closed, once the incident is open again (`reopened`, after the cooldown, #227).
  */
 export function reconsiderTrigger(cycle: Record<string, unknown>, incident: Record<string, unknown> | undefined, policy: ReconsiderPolicy, now: Date): ReconsiderTrigger | null {
   if (cycle.state !== "declined" || incident === undefined) return null;
@@ -86,8 +98,9 @@ export function reconsiderTrigger(cycle: Record<string, unknown>, incident: Reco
   const requested = ms(incident.retriageRequestedAt);
   if (requested !== undefined && requested > decidedAt && requested <= now.getTime()) return "operator";
 
-  if (decision === undefined) return null;
   if (now.getTime() - decidedAt < policy.reconsiderCooldownMinutes * 60_000) return null;
+  // The incident is open (checked above), so the close that stopped the cycle was undone by a person.
+  if (decision === undefined) return stoppedByClose(cycle) ? "reopened" : null;
 
   const before = decision.occurrenceCount;
   const count = incident.occurrenceCount;

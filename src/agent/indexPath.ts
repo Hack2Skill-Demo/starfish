@@ -234,6 +234,18 @@ export async function runIndexPath(ctx: IndexPathContext): Promise<LoopResult> {
       break;
   }
 
+  if (outcome.probe === "inconclusive") {
+    // The replay could not say (the query could not run: UNAVAILABLE, a permission, the network): not "the query does not
+    // pass" (#232). Released, counted, like a build still running: a later pass finds it READY and replays it again, and
+    // the cycle's attempt cap and deadline bound that, telling a person when either gives it up.
+    await ctx.note({
+      stage: "index",
+      type: "waiting",
+      summary: "Index READY, but the replayed query could not be run; a later pass checks again",
+      record: record({ state: "ready-unconfirmed", created: outcome.created, probe: "inconclusive" }),
+    });
+    return ctx.release("index-probe-inconclusive");
+  }
   if (outcome.probe !== "passed") {
     return human("query-still-failing", "READY, but the configured query does not pass", "The index is READY but the replayed query did not pass, so it is not healed.", {
       state: "ready",

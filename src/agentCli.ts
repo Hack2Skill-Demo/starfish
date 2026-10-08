@@ -31,8 +31,8 @@ import { makeAutomationSwitch, makeMergeSwitch } from "./agent/automationSwitch.
 import { runAutoMergeStep } from "./agent/autoMerge.js";
 import { runFastRevertStep } from "./agent/fastRevert.js";
 import { createGitCheckout, createLoader } from "./agent/assemble.js";
-import { runCycle } from "./agent/loop.js";
-import { countCyclesStartedToday, runAgentPass, selectCandidates } from "./agent/pass.js";
+import { giveUpStrandedCycles, runCycle } from "./agent/loop.js";
+import { countCyclesStartedToday, findStrandedCycles, runAgentPass, selectCandidates } from "./agent/pass.js";
 import { reconcilePullRequests } from "./agent/reconcile.js";
 import { recordIntegrations } from "./agent/integrations.js";
 import { agentPreflight } from "./agent/preflight.js";
@@ -174,8 +174,12 @@ const deps = {
   ...(remoteVerify && { verify: remoteVerify }),
   // Absent in a dry run: the loop then ends a verified, reviewed patch as "waiting for a person" and opens nothing.
   ...(!cfg.dryRun && github && { openPullRequest: github.openPullRequest, findPullRequest: github.findPullRequest }),
-  // Given in a dry run too, so the cycle records that an issue would have been filed; the loop files nothing then.
-  ...(github && { openIssue: github.openIssue }),
+  // Given in a dry run too whenever a token is set, so the cycle records that an issue would have been filed whatever the
+  // isolation (#236); the loop files nothing then. A dry run with another isolation builds no client, so it gets a
+  // stand-in the loop never calls (its dry-run record comes first).
+  ...(github
+    ? { openIssue: github.openIssue }
+    : cfg.dryRun && token !== undefined && token !== "" && { openIssue: () => Promise.reject(new Error("dry run: no issue is filed")) }),
   // Given in a dry run too, so the cycle records that a person would have been told; the loop sends nothing then.
   ...(notify && { notify }),
   // The optional #ops-alerts channel: one "new incident" message per cycle Starfish acts on or escalates. Dry run: none sent.
@@ -184,8 +188,11 @@ const deps = {
 
 let failed: boolean;
 try {
+  let scanCapped: number | undefined;
   const summary = await runAgentPass({
-    select: (limit) => selectCandidates(db, cfg, limit, { reconsider: cfg }),
+    select: (limit) => selectCandidates(db, cfg, limit, { reconsider: cfg, onScanCapped: (n) => (scanCapped = n) }),
+    // Released cycles nobody will select again (their incident went quiet) are given up and announced, not stranded (#226).
+    sweep: async () => giveUpStrandedCycles(deps, await findStrandedCycles(db, cfg, new Date())),
     run: (c) => runCycle(deps, { incidentId: c.incidentId, environment: cfg.environment, recurrence: c.recurrence }),
     maxCycles: cfg.maxCyclesPerPass,
     daily: { cap: cfg.maxCyclesPerDay, startedToday: () => countCyclesStartedToday(db, cfg, new Date()) },
@@ -196,11 +203,14 @@ try {
   if (summary.skipped === "automation-disabled") console.log(`agent: automation is off (or the settings could not be read); no cycle started.`);
   if (summary.skipped === "daily-cap") console.log(`agent: the daily cap of ${cfg.maxCyclesPerDay} cycle(s) is reached; no cycle started.`);
   if (summary.daily) console.log(`agent: ${summary.daily.startedBefore} of ${summary.daily.cap} daily cycle(s) started before this pass.`);
+  for (const g of summary.gaveUp ?? []) console.log(`  ${g.incidentId}: given up (${g.reason})`);
+  if (summary.sweepError) console.error(`agent: the sweep for stranded cycles failed: ${summary.sweepError}`);
+  if (scanCapped !== undefined) console.warn(`agent: the candidate scan read its cap of ${scanCapped} incident(s); older open incidents wait for a later pass.`);
   console.log(`agent: ${summary.considered} candidate(s), ${summary.ran} run${cfg.dryRun ? " (dry run)" : ""}`);
   for (const r of summary.results) console.log(`  ${r.incidentId}: ${JSON.stringify(r.result)}`);
   for (const e of summary.errors) console.error(`  ${e.incidentId}: threw: ${e.message}`);
   if (summary.aborted) console.error("agent: stopped early: cycles kept throwing.");
-  failed = summary.errors.length > 0 || summary.aborted;
+  failed = summary.errors.length > 0 || summary.aborted || summary.sweepError !== undefined;
 
   // Whether earlier index heals held (#11): READY + the query passing + a quiet window. Writes only the cycle's
   // `summary.index.runtime`; never the incident, never an index.

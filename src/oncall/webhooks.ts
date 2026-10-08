@@ -22,7 +22,7 @@ import type { Firestore } from "firebase-admin/firestore";
 import { appendEventsInTransaction, type RunEvent } from "../agent/cycle.js";
 import { incidentUrl } from "../integrations/links.js";
 import { ROLE_LABELS, maskPhone, parsePerson, type OnCallRole } from "../oncallSchema.js";
-import { advance, callNumberHash, closeUpdate, readCurrentCall, stopReason, STEPS, type CallOutcome, type EscalationConfig } from "./escalation.js";
+import { advance, callNumberHash, closeUpdate, inTransaction, readCurrentCall, stopReason, STEPS, type CallOutcome, type EscalationConfig } from "./escalation.js";
 import { SPOKEN, twiml, verifyTwilioSignature, type TwilioClient } from "./twilio.js";
 
 export interface TwilioWebhookRequest {
@@ -76,7 +76,7 @@ export function createTwilioWebhooks(deps: TwilioWebhookDeps): (req: TwilioWebho
 
     /** Run `fn` against the current call in a transaction; null when the call is no longer the one in flight. */
     const withCall = <T>(fn: (c: Extract<Awaited<ReturnType<typeof readCurrentCall>>, { current: true }>, tx: FirebaseFirestore.Transaction, note: (events: RunEvent[]) => void, now: Date) => T) =>
-      db.runTransaction(async (tx) => {
+      inTransaction(db, async (tx) => {
         const now = deps.now();
         const c = await readCurrentCall(tx, db, cfg, id, step);
         if (!c.current) return null;
@@ -151,19 +151,22 @@ export function createTwilioWebhooks(deps: TwilioWebhookDeps): (req: TwilioWebho
       return xmlReply(twiml.sayAndHangUp(taken ? SPOKEN.taken : SPOKEN.over));
     }
     if (digits === "2") {
-      // Claimed in a transaction so a repeated 2 (or a retried webhook) texts once per call.
+      // Claimed in a transaction so a repeated 2 (or a retried webhook) texts once per call. The claim (`linkClaimed`) is
+      // not the text: `linkSent` is set only once Twilio took it, and only that makes the call's outcome `link-sent` (#234).
       const target = await withCall(async (c, tx, _note, now) => {
-        if (c.call.linkSent === true || typeof c.call.personId !== "string") return { already: true as const };
+        if (c.call.linkClaimed === true || c.call.linkSent === true || typeof c.call.personId !== "string") {
+          return { already: true as const, sent: c.call.linkSent === true };
+        }
         const person = await tx.get(db.collection(cfg.onCallPeopleCollection).doc(c.call.personId));
         const p = parsePerson(person.id, person.data(), 0);
         // Only to the number this call was placed to, and only while it is still confirmed (#187): an admin who changed the
         // number mid-call made it `pending`, and the new number never consented to anything.
         const same = p !== null && p.state === "confirmed" && c.call.numberHash === callNumberHash(p.id, p.phone);
-        tx.update(c.ref, { "call.linkSent": true, updatedAt: Timestamp.fromDate(now) });
+        tx.update(c.ref, { "call.linkClaimed": true, updatedAt: Timestamp.fromDate(now) });
         return { already: false as const, phone: same ? p.phone : undefined, incidentId: String(c.esc.incidentId), role: c.call.role };
       });
       if (target === null) return xmlReply(twiml.sayAndHangUp(SPOKEN.over));
-      if (target.already) return xmlReply(twiml.again(SPOKEN.linkSent, selfUrl("/twilio/gather")));
+      if (target.already) return xmlReply(twiml.again(target.sent ? SPOKEN.linkSent : SPOKEN.linkFailed, selfUrl("/twilio/gather")));
       const link = incidentUrl(cfg.uiBaseUrl, target.incidentId);
       let sent: { ok: boolean; reason?: string } = { ok: false, reason: link === null ? "no-ui-url" : "no-confirmed-number" };
       if (link !== null && target.phone) {
@@ -174,7 +177,8 @@ export function createTwilioWebhooks(deps: TwilioWebhookDeps): (req: TwilioWebho
           sent = { ok: false, reason: "client-error" };
         }
       }
-      await withCall((c, _tx, note) => {
+      await withCall((c, tx, note, now) => {
+        if (sent.ok) tx.update(c.ref, { "call.linkSent": true, updatedAt: Timestamp.fromDate(now) });
         note([
           sent.ok
             ? { stage: "escalation", type: "link-sent", summary: `The ${roleName(c.call.role)} pressed 2: the link was texted to ${target.phone ? maskPhone(target.phone) : "them"}`, data: { step } }
