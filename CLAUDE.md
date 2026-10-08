@@ -165,22 +165,28 @@ src/
                    the candidate (`summary.merge` pending); it never merges itself. Gate 1 holds only if its files are
                    exactly the files the verify gate saw change
   agent/blastRadius.ts  auto-merge gate 1 (#9), pure: a conservative diff classifier (null guard on an explicit null/undefined
-                   check, never `!x`, that leaves with nothing or throws; missing await; Firestore undefined field; one
-                   file, one hunk with 3 lines of context, one function; paths in git's a/ b/ form, no rename; no control
-                   characters; tests only as new files) and the hard-exclude list (auth, rules, money, secrets, schema,
+                   check, never `!x`, that leaves with nothing or throws, ended by `;` or a block, after a line that ends
+                   a statement; `?.` (never before a call) and only `?? null`/`?? undefined`, never on a line that
+                   compares or does arithmetic; missing await; Firestore undefined field; literals and comments
+                   unchanged; one file, one hunk with 3 lines of context, one function; paths in git's a/ b/ form, no rename;
+                   no control characters; a `\ No newline` marker only at a file's end; tests only as new files) and the hard-exclude list (auth, rules, money, secrets, schema,
                    dependencies/imports, CI/config, shared code; access control, money and secrets also on every deciding
-                   statement of the whole enclosing function in the base file, which the loop passes in). Unsure is never
+                   statement of the whole enclosing function in the base file, which the loop passes in, and for a null
+                   guard on every statement naming one, a check written as a call included). Unsure is never
                    allowed
   agent/autoMerge.ts  the switches (`mergeBlockedBy`), gate 2 (`certaintyGate`, pure over the run record; the stack
                    frame matched against the checkout's whole file list) and the merge step after the pass: fresh
-                   switches + incident status, gates, PR into the configured base with the head Starfish built, every
+                   switches + incident status, gates, no earlier merge of the incident still watched or reverted (#240),
+                   PR into the configured base with the head Starfish built, every
                    run of the named checks from `STARFISH_VERIFY_CHECK_APP` green on it, daily cap (transactional),
                    evidence comment, squash merge with `sha`. Any failure: PR stays open + notify. Fakes + emulator
                    tested, never run against real GitHub
   agent/fastRevert.ts  the watch every merge starts: the incident seen again after a grace and within N minutes of the
                    MERGE (deploy completion is not observable; counted by the hour, so an error that keeps firing past
                    the window is still seen) -> revert PR of Starfish's own merge commit, merged on
-                   green checks; a later change to the same files escalates; a revert is never reverted
+                   green checks; a later change to the same files escalates; a revert is never reverted. Cleared only
+                   once the ingest checkpoint has read through the window, else a person is told after a day (#241).
+                   Runs before the merge step in the pass
   agent/pass.ts    one pass over the store: candidate selection (paged past closed/settled incidents, bounded, a cap
                    reported, #226), stack trace → repo files, bounded driver; the daily cycle cap
                    (`STARFISH_MAX_CYCLES_PER_DAY`, a count of cycles started that UTC day); a sweep that gives up and

@@ -99,7 +99,7 @@ beforeEach(() => {
   pulls = { "7": () => ({ status: 200, json: pr(7) }) };
   mergeReply = () => ({ status: 200, json: { merged: true, sha: MERGE_SHA } });
   listReply = () => ({ status: 200, json: [] });
-  compareReply = () => ({ status: 200, json: { ahead_by: 0, files: [] } });
+  compareReply = () => ({ status: 200, json: { status: "identical", ahead_by: 0, behind_by: 0, files: [] } });
   return () => rmSync(root, { recursive: true, force: true });
 });
 
@@ -167,15 +167,24 @@ describe("commentOnPullRequest", () => {
 describe("filesChangedSince", () => {
   const BASE = "1".repeat(40);
   it("lists what changed on the base branch since the verified revision, renames included", async () => {
-    compareReply = () => ({ status: 200, json: { ahead_by: 2, files: [{ filename: "a.ts" }, { filename: "b.ts", previous_filename: "old.ts" }] } });
+    compareReply = () => ({ status: 200, json: { status: "ahead", ahead_by: 2, behind_by: 0, files: [{ filename: "a.ts" }, { filename: "b.ts", previous_filename: "old.ts" }] } });
     expect(await client().filesChangedSince(BASE)).toEqual(["a.ts", "b.ts", "old.ts"]);
     expect(requests.at(-1)!.path).toBe(`/repos/${REPO}/compare/${BASE}...main?per_page=300`);
   });
   it("is empty when nothing landed since, and refuses a list GitHub may have cut", async () => {
     expect(await client().filesChangedSince(BASE)).toEqual([]);
-    compareReply = () => ({ status: 200, json: { ahead_by: 900, files: Array.from({ length: 300 }, (_, i) => ({ filename: `f${i}` })) } });
+    compareReply = () => ({ status: 200, json: { status: "ahead", ahead_by: 900, behind_by: 0, files: Array.from({ length: 300 }, (_, i) => ({ filename: `f${i}` })) } });
     await expect(client().filesChangedSince(BASE)).rejects.toMatchObject({ rule: "unexpected-response" });
     await expect(client().filesChangedSince("main")).rejects.toMatchObject({ rule: "invalid-request" });
+  });
+  it("refuses when the verified revision is no longer on the base branch: the list would start at another commit (#243)", async () => {
+    // A force-push left the verified revision off the branch: GitHub lists only what changed since the merge base.
+    compareReply = () => ({ status: 200, json: { status: "diverged", ahead_by: 1, behind_by: 3, files: [{ filename: "other.ts" }] } });
+    await expect(client().filesChangedSince(BASE)).rejects.toMatchObject({ rule: "base-diverged" });
+    compareReply = () => ({ status: 200, json: { status: "behind", ahead_by: 0, behind_by: 2, files: [] } });
+    await expect(client().filesChangedSince(BASE)).rejects.toMatchObject({ rule: "base-diverged" });
+    compareReply = () => ({ status: 200, json: { ahead_by: 0, files: [] } }); // no behind_by or status: not known, so refused
+    await expect(client().filesChangedSince(BASE)).rejects.toMatchObject({ rule: "base-diverged" });
   });
 });
 

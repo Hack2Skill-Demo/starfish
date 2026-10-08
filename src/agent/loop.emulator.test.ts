@@ -1406,6 +1406,30 @@ describe("runCycle: auto-merge evidence (#9)", () => {
     expect(opened[0]!.autoMerge).toBe(true);
   });
 
+  it.each([
+    ["still watched", "watching", "incident-merge-watched"],
+    ["being reverted", "pending", "incident-merge-watched"],
+    ["reverted", "reverted", "incident-reverted-before"],
+  ])("prepares nothing while an earlier merge for the incident is %s, and tells a person (#240)", async (_name, revertState, reason) => {
+    // The incident's earlier cycle: Starfish merged its fix, and the fast-revert watch on that merge is not over.
+    await db.collection(`cycles_${cfg}`).doc("inc1_r9").set({ incidentId: "inc1", environment: "demo", state: "done", summary: { merge: { state: "merged" }, revert: { state: revertState } } });
+    const calls: NotifyRequest[] = [];
+    const notify = async (req: NotifyRequest) => (calls.push(req), { state: "sent" as const, attempts: 1 });
+    const opened: PullRequestRequest[] = [];
+    await runCycle(mergeDeps(scripted({ triage: [act], fix: [fixWithTest], review: [held] }), true, { notify }, opened), key);
+    // No "fails before" run (it would push a test-only commit) and no pending candidate for the merge step.
+    expect(await kinds()).toEqual(["cycle:started", "triage:decision", "fix:proposed", "verify:passed", "review:approve", "pr:opened", "merge:skipped", "notify:pending", "notify:sent"]);
+    expect((await cycleDoc()).summary.merge).toMatchObject({ state: "skipped", reason, number: 7 });
+    expect(opened[0]!.autoMerge).toBeUndefined();
+    expect(calls.at(-1)).toMatchObject({ path: "human", rule: `auto-merge-${reason}` });
+  });
+
+  it("prepares as usual once the earlier merge's watch closed clear", async () => {
+    await db.collection(`cycles_${cfg}`).doc("inc1_r9").set({ incidentId: "inc1", environment: "demo", state: "done", summary: { merge: { state: "merged" }, revert: { state: "clear" } } });
+    await runCycle(mergeDeps(scripted({ triage: [act], fix: [fixWithTest], review: [held] }), true), key);
+    expect((await cycleDoc()).summary.merge).toMatchObject({ state: "pending" });
+  });
+
   it("a non-demo target, or the switch off, prepares nothing: no before-run, no candidate, a plain PR", async () => {
     const opened: PullRequestRequest[] = [];
     await runCycle(mergeDeps(scripted({ triage: [act], fix: [fixWithTest], review: [held] }), false, {}, opened), key);

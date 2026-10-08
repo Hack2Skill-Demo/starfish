@@ -34,7 +34,9 @@
  *     (`readBaseFiles`), and, when it passes, runs the patch's TESTS ALONE (new test files only) on the base
  *     revision through the same verifier, so the run record shows the test failing before the fix (`summary.before`).
  *     When it opens the pull request it records the candidate (`summary.merge`); merging is the agent pass's
- *     separate step (autoMerge.ts). A candidate that fails gate 1 is handed to a person at once.
+ *     separate step (autoMerge.ts). A candidate that fails gate 1 is handed to a person at once. Nothing is prepared
+ *     while an earlier Starfish merge for the same incident is still watched, or was reverted (#240): the pull request
+ *     is recorded as not auto-merged and a person is told.
  *
  * Infrastructure errors (the store, the opener) throw, as in cycle.ts: a worker that cannot reach what it
  * needs must not carry on. The lease then expires and the cycle is resumed.
@@ -77,7 +79,7 @@ import { linkFromEvent, linkIncident } from "./incidentLinks.js";
 import { lstat, readFile, realpath } from "node:fs/promises";
 import { join } from "node:path";
 import { assessBlastRadius, judgedTheVerifiedFiles, parsePatch, testOnlyPatch, type BlastRadius } from "./blastRadius.js";
-import { mergeRecordAtOpen } from "./autoMerge.js";
+import { earlierMergeHolds, mergeRecordAtOpen } from "./autoMerge.js";
 import { sha256 } from "./reviewer.js";
 
 /** Everything about the incident the stages need, assembled by the caller (it owns the repo checkout). */
@@ -385,6 +387,9 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
 
     // Auto-merge could apply right now (#9): never in a dry run, never without the switches.
     const autoMergeOn = async (): Promise<boolean> => !cfg.dryRun && deps.autoMergeAllowed !== undefined && (await deps.autoMergeAllowed());
+    // An earlier Starfish merge for this incident still watched, or reverted: its revert, not a second fix, is what
+    // follows, so nothing is prepared for merging this one (#240). The merge step asks again before any merge.
+    const mergeHeldBy = async (): Promise<string | null> => earlierMergeHolds(db, cfg, key.incidentId, id);
 
     // The incident's GitHub issue: one per cycle Starfish acts on or escalates, none for a declined one. Recorded on the
     // cycle (`summary.issue`) so a resumed attempt reuses it, and so a failure is visible and not silent.
@@ -419,7 +424,7 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
           reason,
           suspectedCause: suspectedCause ?? null,
           uiBaseUrl: cfg.uiBaseUrl,
-          ...(path === "act" && (await autoMergeOn()) && { autoMerge: true }),
+          ...(path === "act" && (await autoMergeOn()) && (await mergeHeldBy()) === null && { autoMerge: true }),
         });
       } catch (err) {
         const rule = typeof (err as { rule?: unknown })?.rule === "string" ? (err as { rule: string }).rule : "error";
@@ -708,7 +713,9 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
 
       // ---- auto-merge evidence (#9): gate 1, then the patch's tests alone on the base revision -----------------
       let gate1: BlastRadius | undefined;
-      if (await autoMergeOn()) {
+      const mayMerge = await autoMergeOn();
+      const heldBack = mayMerge ? await mergeHeldBy() : null;
+      if (mayMerge && heldBack === null) {
         gate1 = assessBlastRadius(fix.patch, {
           excludedPaths: [...cfg.patchExcludedPaths, ...cfg.autoMergeExcludedPaths],
           // Gate 1 judges the whole function around the change, as the base revision has it (#202).
@@ -760,6 +767,9 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
       }
       // Gate 1 read the patch's headers; the verify gate saw what `git apply` actually wrote. Unless they are the same
       // files, gate 1 judged a different change from the one that was verified, and it does not hold (#200).
+      // Only the files, not their lines: the written tree is gone by now (a scratch copy, or a branch the target's CI
+      // built), so the lines git wrote cannot be compared here. That half rests on gate 1 reading lines exactly as git
+      // does: a `\ No newline` marker anywhere but a file's end, where git would join two lines, is refused (#237).
       if (gate1?.allowed && !judgedTheVerifiedFiles(gate1, verified.changedFiles)) {
         gate1 = { ...gate1, allowed: false, problems: [...gate1.problems, "files-differ-from-verified"] };
       }
@@ -862,6 +872,19 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
         if (!pending) {
           await announce(factsOf(loaded), "human", "auto-merge-gate1", "The pull request is open, but Starfish may not merge it itself (gate 1, low blast radius, or its head is unknown). A person decides.");
         }
+      } else if (heldBack !== null) {
+        await note({
+          stage: "merge",
+          type: "skipped",
+          summary: `Not auto-merged: ${heldBack}`,
+          record: { state: "skipped", reason: heldBack, number: pr.number, patchSha256: verified.patchSha256, headSha: null, decidedAt: deps.now().toISOString() },
+        });
+        await announce(
+          factsOf(loaded),
+          "human",
+          `auto-merge-${heldBack}`,
+          "The pull request is open, but Starfish merged a fix for this incident before, and that merge is still watched for the incident coming back, or was reverted: Starfish will not merge a second fix itself. A person decides."
+        );
       }
       return await finish("done", "pr-opened", "pr");
     }

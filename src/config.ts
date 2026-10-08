@@ -214,7 +214,8 @@ export interface StarfishConfig {
   /**
    * Fast-revert (#9, src/agent/fastRevert.ts): an occurrence of the same incident later than `fastRevertGraceMinutes`
    * after Starfish's merge and within `fastRevertMinutes` of it reverts that merge. The window starts at the MERGE,
-   * because when a deployment completes is not observable yet; the grace stands in for the deploy.
+   * because when a deployment completes is not observable yet; the grace stands in for the deploy. A window no longer
+   * than its grace watches nothing, and auto-merge then refuses (`mergeBlockedBy`, #242).
    */
   fastRevertMinutes: number;
   fastRevertGraceMinutes: number;

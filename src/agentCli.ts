@@ -242,17 +242,20 @@ try {
       failed = true;
     }
 
-    // Auto-merge (#9), then the fast-revert watch on Starfish's own merges. Each step re-reads the switches itself and
-    // does nothing while automation is off; with the switches off, a waiting candidate goes to a person. A dry run merges
-    // nothing (it is one of the switches) and tells nobody, like the loop.
+    // The fast-revert watch on Starfish's own merges, then auto-merge: a merge that failed is reverted before anything
+    // else merges, and a candidate for an incident whose earlier merge is still watched is handed to a person (#240).
+    // Each step re-reads the switches itself and does nothing while automation is off; with the switches off, a waiting
+    // candidate goes to a person. A dry run merges nothing (it is one of the switches) and tells nobody, like the loop.
     const stepDeps = { db, config: cfg, client: github, now: () => new Date(), owner, blockedBy: mergeBlocked, ...(!cfg.dryRun && notify && { notify }) };
     try {
+      const r = await runFastRevertStep(stepDeps);
+      console.log(
+        `agent: fast-revert: ${r.considered} watched, ${r.cleared} cleared, ${r.uncovered} waiting for ingest to read through theirs, ${r.opened} revert(s) opened, ${r.reverted} reverted, ${r.escalated} escalated${r.paused ? " (automation off: paused)" : ""}`
+      );
+      for (const e of r.errors) console.error(`  ${e.cycleId}: fast-revert: ${e.message}`);
       const m = await runAutoMergeStep({ ...stepDeps, incidentStatus });
       console.log(`agent: auto-merge: ${m.considered} candidate(s), ${m.merged} merged, ${m.skipped} handed to a person, ${m.waiting} waiting${m.paused ? " (automation off: paused)" : ""}`);
       for (const e of m.errors) console.error(`  ${e.cycleId}: auto-merge: ${e.message}`);
-      const r = await runFastRevertStep(stepDeps);
-      console.log(`agent: fast-revert: ${r.considered} watched, ${r.cleared} cleared, ${r.opened} revert(s) opened, ${r.reverted} reverted, ${r.escalated} escalated${r.paused ? " (automation off: paused)" : ""}`);
-      for (const e of r.errors) console.error(`  ${e.cycleId}: fast-revert: ${e.message}`);
     } catch (err) {
       console.error(`agent: the merge steps failed: ${redactPii(err instanceof Error ? err.message : String(err)).slice(0, 300)}`);
       failed = true;
