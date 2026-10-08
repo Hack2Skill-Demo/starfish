@@ -8,6 +8,7 @@
  * A record is evidence the job ran, wrote to the store and finished; it is not evidence the project
  * had errors to find, so "ok" with zero incidents on a quiet project is a correct answer.
  */
+import { SETTINGS_UNUSABLE } from "./settingsSchema.js";
 import { OPEN_INCIDENT_STATUSES } from "./types.js";
 
 export type EngineState = "ok" | "failed" | "stale" | "capped" | "never";
@@ -56,11 +57,23 @@ export function parseRunRecord(data: Record<string, unknown> | undefined): RunRe
 }
 
 /**
+ * A run that refused to start because the runtime settings could not be used (#223). It records the env default's
+ * environment, because the one an admin chose could not be read, so it is this deployment's failure whatever
+ * environment it names. The UI's judge (web/src/lib/engineStatus.ts) reads it the same way.
+ */
+export function isSettingsRefusal(run: Pick<RunRecord, "outcome" | "error">): boolean {
+  return run.outcome === "failed" && run.error === SETTINGS_UNUSABLE;
+}
+
+/**
  * failed beats stale beats capped beats ok; no record at all is "never", and so is a record for another
- * environment (the label was changed): it is not this environment's run.
+ * environment (the label was changed): it is not this environment's run. Except a refusal on unusable settings,
+ * which is failed whatever environment it names (`isSettingsRefusal`).
  */
 export function judgeRun(run: RunRecord | null, environment: string, now: Date, staleMinutes: number): EngineState {
-  if (run === null || run.environment !== environment) return "never";
+  if (run === null) return "never";
+  if (isSettingsRefusal(run)) return "failed";
+  if (run.environment !== environment) return "never";
   if (run.outcome === "failed") return "failed";
   if (now.getTime() - run.finishedAt.getTime() > staleMinutes * 60_000) return "stale";
   if (run.capped) return "capped";
@@ -109,7 +122,7 @@ export function describeStatus(input: {
 
   if (run === null) {
     lines.push("engine: never recorded a run (the job has not run, or could not write the store)");
-  } else if (run.environment !== environment) {
+  } else if (run.environment !== environment && !isSettingsRefusal(run)) {
     lines.push(`engine: never recorded a run for "${environment}" (the last run recorded was for "${run.environment}")`);
   } else {
     const minutes = Math.max(0, Math.round((now.getTime() - run.finishedAt.getTime()) / 60_000));
@@ -121,6 +134,7 @@ export function describeStatus(input: {
     if (state === "stale") lines.push(`  nothing has run for more than ${staleMinutes} min (is the schedule slower than that?)`);
     if (run.capped) lines.push("  a read hit its cap: the counts are a floor, not the truth");
     if (run.error !== undefined) lines.push(`  failed with: ${run.error}`);
+    if (isSettingsRefusal(run)) lines.push("  the run read nothing: the runtime settings could not be used and no last-good copy exists");
     if (run.problems.length > 0) lines.push(`  runtime settings not used: ${run.problems.join("; ")}`);
   }
 

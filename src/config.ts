@@ -319,6 +319,13 @@ export interface StarfishConfig {
   /** The longest span one ingest window may cover, so catching up after downtime is done in bounded reads. */
   ingestMaxWindowHours: number;
   /**
+   * How long one ingest run may work before it stops (#221). No new window is started once most of it is spent, and a
+   * window's read is given up at what is left, so a stall is recorded as a failed `last_run` before whatever runs the
+   * ingest (the Cloud Run job's task timeout, the admin API's request timeout) ends the process. scripts/deploy-gcp.sh
+   * sets it and derives both timeouts from it, so they exceed it.
+   */
+  ingestRunBudgetSeconds: number;
+  /**
    * The Cloud Scheduler cron that starts the ingest (set by scripts/deploy-gcp.sh and scripts/ingest-cadence.sh).
    * Only told to the UI, through the last-run record, so it can say when the next run is expected; the engine
    * does not schedule itself. Unset: the UI says nothing about the next run.
@@ -501,6 +508,8 @@ export function loadConfig(): StarfishConfig {
       6,
       "STARFISH_INGEST_MAX_WINDOW_HOURS"
     ),
+    // 8 minutes: two under the 10-minute task timeout scripts/deploy-gcp.sh derives from it by default.
+    ingestRunBudgetSeconds: positiveNumber(process.env.STARFISH_INGEST_RUN_BUDGET_SECONDS, 480, "STARFISH_INGEST_RUN_BUDGET_SECONDS"),
     runCollection: process.env.STARFISH_RUN_COLLECTION || "starfish_runs",
     dryRun: parseBoolean(process.env.STARFISH_DRY_RUN, true, "STARFISH_DRY_RUN"),
     reviewRequired: parseBoolean(process.env.STARFISH_REVIEW_REQUIRED, true, "STARFISH_REVIEW_REQUIRED"),

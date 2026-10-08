@@ -40,6 +40,7 @@ export function testConfig(over: Partial<StarfishConfig> = {}): StarfishConfig {
     patchExcludedPaths: [],
     ingestLagMinutes: 5,
     ingestMaxWindowHours: 6,
+    ingestRunBudgetSeconds: 480,
     dryRun: true,
     reviewRequired: true,
     automationEnabled: true,

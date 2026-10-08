@@ -5,7 +5,8 @@
  * Exit 0 only when the planted incident was found (and, with --cleanup, every live smoke incident was retired and the
  * retirement read back). A cleanup that fails says which incident to delete and exits 1: a pass is never reported
  * over a leftover. --actor is the uid of an admin operator (`pnpm grant-operator`); retiring is admin-only and audited
- * (src/ingest/retire.ts). The lookup is bounded: one environment, one function name, at most 20 documents.
+ * (src/ingest/retire.ts). The lookup is bounded: one environment, one function name, the 20 most recent documents
+ * (`readSmokeIncidents`, #224), so the retired incidents earlier runs leave behind never crowd out this one.
  */
 import { parseArgs } from "node:util";
 import { initializeApp } from "firebase-admin/app";
@@ -13,7 +14,7 @@ import { getFirestore } from "firebase-admin/firestore";
 import { loadConfig } from "./config.js";
 import { retireIncident } from "./ingest/retire.js";
 import { RuntimeConfigLoader } from "./runtimeSettings.js";
-import { judgeSmoke, SMOKE_FUNCTION, type SmokeIncident } from "./smokeCheck.js";
+import { judgeSmoke, readSmokeIncidents, SMOKE_FUNCTION } from "./smokeCheck.js";
 
 const { values } = parseArgs({
   options: { since: { type: "string" }, cleanup: { type: "boolean", default: false }, actor: { type: "string" } },
@@ -35,17 +36,7 @@ const db = getFirestore(base.databaseId);
 // The engine files incidents under the runtime settings' environment (src/ingest/run.ts), not necessarily the env var's.
 const config = (await new RuntimeConfigLoader(base).resolve(db)).config;
 
-const snap = await db
-  .collection(config.incidentCollection)
-  .where("environment", "==", config.environment)
-  .where("functionName", "==", SMOKE_FUNCTION)
-  .limit(20)
-  .get();
-const incidents: SmokeIncident[] = snap.docs.map((d) => {
-  const data = d.data();
-  const last = (data.lastOccurredAt as { toDate?: () => Date } | undefined)?.toDate?.();
-  return { id: d.id, functionName: String(data.functionName), lastOccurredAt: last ?? null, retired: data.retired === true };
-});
+const incidents = await readSmokeIncidents(db, config);
 
 const verdict = judgeSmoke(incidents, plantedAt);
 console.log(verdict.ok ? `smoke-check: found the planted incident ${verdict.incidentId}` : `smoke-check: FAILED: ${verdict.reason}`);

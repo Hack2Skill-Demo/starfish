@@ -55,6 +55,15 @@ describe("EngineStatus", () => {
     expect(line).not.toHaveTextContent("new,");
   });
 
+  it("shows a refusal on unusable settings as failed, though it names the env default's environment (#223)", async () => {
+    mocks.read.mockResolvedValue(run({ environment: "dev", outcome: "failed", error: "settings-unusable", problems: ["settings read failed: 14"] }));
+    renderStatus("demo");
+    expect(await screen.findByText("Last run failed")).toBeInTheDocument();
+    const line = screen.getByTestId("engine-status");
+    expect(line).toHaveTextContent("(settings-unusable)");
+    expect(line).toHaveTextContent("runtime settings not used: settings read failed: 14");
+  });
+
   it("flags a capped read: the counts are a floor", async () => {
     mocks.read.mockResolvedValue(run({ capped: true }));
     renderStatus();

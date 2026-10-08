@@ -97,6 +97,15 @@ describe("loadConfig: ingest windows", () => {
     expect(() => loadConfig()).toThrow("STARFISH_INGEST_MAX_WINDOW_HOURS");
   });
 
+  it("reads the run budget, 480 seconds by default: under the 600 s task timeout the deploy derives from it (#221)", () => {
+    vi.stubEnv("STARFISH_INGEST_RUN_BUDGET_SECONDS", "");
+    expect(loadConfig().ingestRunBudgetSeconds).toBe(480);
+    vi.stubEnv("STARFISH_INGEST_RUN_BUDGET_SECONDS", "900");
+    expect(loadConfig().ingestRunBudgetSeconds).toBe(900);
+    vi.stubEnv("STARFISH_INGEST_RUN_BUDGET_SECONDS", "0");
+    expect(() => loadConfig()).toThrow("STARFISH_INGEST_RUN_BUDGET_SECONDS");
+  });
+
   it("reads the lookback, 24 hours by default", () => {
     vi.stubEnv("STARFISH_LOOKBACK_HOURS", "");
     expect(loadConfig().defaultLookbackHours).toBe(24);

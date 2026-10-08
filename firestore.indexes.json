@@ -9,6 +9,15 @@
       ]
     },
     {
+      "collectionGroup": "incidents",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "environment", "order": "ASCENDING" },
+        { "fieldPath": "functionName", "order": "ASCENDING" },
+        { "fieldPath": "lastOccurredAt", "order": "DESCENDING" }
+      ]
+    },
+    {
       "collectionGroup": "starfish_cycles",
       "queryScope": "COLLECTION",
       "fields": [

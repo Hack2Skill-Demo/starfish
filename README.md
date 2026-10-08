@@ -248,7 +248,8 @@ apparent over-engineering is scar tissue from real incidents, and the tests in
   and back resumes where the first one stopped instead of re-reading its lookback (#198). A run whose
   settings document could not be read or is invalid, with no earlier good one to fall back to, reads
   nothing: it records a failed run (`settings-unusable`) rather than ingest the environment defaults'
-  target, which may not be the one the admin chose. With no settings document at all the defaults are the
+  target, which may not be the one the admin chose; the UI's engine line and `pnpm status` both show that
+  record as failed, whatever environment it names (#223). With no settings document at all the defaults are the
   configuration, and the run goes ahead
 - an admin can retire an incident (`src/ingest/retire.ts`): it is closed for good with its history
   kept, and the same error firing again after the retire opens a **new** incident instead of coming

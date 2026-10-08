@@ -43,6 +43,13 @@ export const SETTINGS_VERSION = 1;
 /** The admin-edited document, and the engine's copy of the last one that validated. */
 export const SETTINGS_DOC = "current";
 export const LAST_GOOD_DOC = "last_good";
+/**
+ * The `error` an ingest run records in `last_run` when it refused to run because the settings could not be used and
+ * no last-good copy exists (src/ingest/run.ts). Here so both judges of that record (src/status.ts and the UI's
+ * web/src/lib/engineStatus.ts) read the same label: such a record carries the env-default environment, not the one
+ * an admin chose, and is a failure whatever environment it names (#223).
+ */
+export const SETTINGS_UNUSABLE = "settings-unusable";
 
 const SETTINGS_KEYS = [
   "version",

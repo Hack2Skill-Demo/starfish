@@ -317,6 +317,39 @@ describe("runIngest on the emulator", () => {
     expect((await state())?.pending).toBeDefined();
   });
 
+  it("gives up on a stalled window at the end of the run budget, not the window's own limit, and records it (#221)", async () => {
+    // The window's own limit (10 min) would fire only after the task timeout killed the process: no last_run at all.
+    const result = await runIngest(db, loader(), now, { aggregate: () => new Promise(() => {}), runBudgetMs: 50 });
+
+    expect(result).toMatchObject({ outcome: "failed", error: "TimeoutError", windows: 0 });
+    expect(await lastRun()).toMatchObject({ outcome: "failed", error: "TimeoutError" });
+    expect((await state())?.pending).toBeDefined();
+  });
+
+  it("starts no new window once most of the run budget is spent, and the next run carries on (#221)", async () => {
+    let clockMs = 0;
+    const seen: { start: number; end: number }[] = [];
+    // Each window takes 40% of the budget: after two, 20% is left, under the share a new window needs.
+    const aggregate = async (_d: Firestore, _c: StarfishConfig, w: { start: Date; end: Date }) => {
+      seen.push({ start: w.start.getTime(), end: w.end.getTime() });
+      clockMs += 400;
+      return emptyResult;
+    };
+    const deps = { aggregate, runBudgetMs: 1000, clock: () => clockMs };
+
+    const first = await runIngest(db, loader(), now, deps);
+
+    expect(first).toMatchObject({ outcome: "ok", windows: 2 });
+    expect(ms((await state())?.checkpoint)).toBe(seen[1]!.end);
+    expect((await state())?.pending).toBeUndefined();
+
+    clockMs = 0;
+    const second = await runIngest(db, loader(), now, deps);
+    expect(second).toMatchObject({ outcome: "ok", windows: 2 });
+    expect(seen[2]!.start).toBe(seen[1]!.end);
+    expect(seen.at(-1)!.end).toBe(horizon.getTime());
+  });
+
   it("two overlapping runs end up on the same windows, never on overlapping ones", async () => {
     // Two hours of lookback is one window whose end is set by the clock, so a different clock means a different window.
     config = { ...config, defaultLookbackHours: 2 };
@@ -489,6 +522,32 @@ describe("runIngest on the emulator", () => {
     expect(retry).toMatchObject({ outcome: "ok", capped: true, totals: { incidentsReplayed: 1, incidentsCreated: 1 } });
     expect(await countOf("burst failure")).toEqual([MAX_ENTRIES_PER_RUN - 10]);
     expect(await lastRun()).toMatchObject({ capped: true });
+  });
+
+  it("never narrows a window pending in the legacy state: the code that wrote it never recorded its writes (#222)", async () => {
+    config = { ...config, defaultLookbackHours: 2 };
+    const start = horizon.getTime() - 2 * HOUR;
+    const window = windowOf(new Date(start), horizon);
+    logs.entries = Array.from({ length: 10 }, (_, i) => logEntry(start + 10 * 60_000 + i, "early failure", "billing"));
+    // A deployment from before #198/#199 committed the window's upserts, then died before its checkpoint. Its single
+    // state document holds the window as pending, with no `writesBegun`: that code never wrote one.
+    await aggregateErrors(db, config, window);
+    const target = { watchedProjectId: config.watchedProjectId, environment: config.environment };
+    await db.collection(config.runCollection).doc(LEGACY_STATE_DOC).set({
+      target,
+      pending: { start: Timestamp.fromDate(window.start), end: Timestamp.fromDate(window.end) },
+    });
+    expect(await countOf("early failure")).toEqual([10]);
+
+    // Late entries arrive in the same window: the retry's read now hits the cap.
+    logs.entries.push(...Array.from({ length: MAX_ENTRIES_PER_RUN }, (_, i) => logEntry(start + HOUR + i * 100, "burst failure")));
+    const retry = await runIngest(db, loader(), now);
+
+    // Narrowed, the window got a new id and its first 10 entries were applied again under it: 20.
+    expect(await countOf("early failure")).toEqual([10]);
+    expect(retry).toMatchObject({ outcome: "ok", capped: true, totals: { incidentsReplayed: 1 } });
+    expect(ms((await state())?.checkpoint)).toBe(horizon.getTime());
+    expect((await db.collection(config.runCollection).doc(LEGACY_STATE_DOC).get()).exists).toBe(false);
   });
 
   it("does not narrow a window another attempt began writing, even on a read made before that (#199)", async () => {
