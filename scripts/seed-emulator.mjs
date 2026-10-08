@@ -88,14 +88,14 @@ const cycles = [
     id: "seed-0_r0", state: "declined", path: "decline", outcome: "declined by triage", ageMin: 50,
     events: [
       ["cycle", "started", "Attempt 1", 0, { attempt: 1 }],
-      ["triage", "decision", "Declined: the error comes from a dependency, not this code", 0.4, { rule: "upstream-fault" }, { decision: "decline", rule: "upstream-fault" }],
+      ["triage", "decision", "Declined: the error comes from a dependency, not this code", 0.4, { rule: "upstream-fault" }, { decision: "decline", rule: "upstream-fault", reason: "The error comes from a dependency's outage, not this code; there is nothing here to fix." }],
     ],
   },
   {
     id: "seed-1_r0", state: "running", ageMin: 3, live: true,
     events: [
       ["cycle", "started", "Attempt 1", 0, { attempt: 1 }],
-      ["triage", "decision", "Act: a null dereference in the order handler", 0.5, { rule: "model-act" }, { decision: "act", rule: "model-act" }],
+      ["triage", "decision", "Act: a null dereference in the order handler", 0.5, { rule: "model-act" }, { decision: "act", rule: "model-act", reason: "A null dereference in the order handler when an order has no items; a guard fixes it." }],
       ["fix", "proposed", "Proposed a two-line guard and a test", 1.8, {}, { outcome: "proposed" }],
     ],
   },
@@ -103,7 +103,7 @@ const cycles = [
     id: "seed-2_r0", state: "waiting-human", path: "pr", outcome: "pull request opened", ageMin: 20,
     events: [
       ["cycle", "started", "Attempt 1", 0, { attempt: 1 }],
-      ["triage", "decision", "Act: a missing await on a Firestore write", 0.4, { rule: "model-act" }, { decision: "act", rule: "model-act" }],
+      ["triage", "decision", "Act: a missing await on a Firestore write", 0.4, { rule: "model-act" }, { decision: "act", rule: "model-act", reason: "A Firestore write is not awaited, so the function returns before it lands; awaiting it fixes it." }],
       ["fix", "proposed", "Proposed a one-line fix and a test", 1.5, {}, { outcome: "proposed" }],
       ["verify", "passed", "The configured command passed on the patched tree", 2.6, {}, { status: "passed", rule: "passed", patchSha256: SEED_PATCH }],
       ["review", "approved", "The reviewer found nothing it could hold against the patch", 3.4, {}, { verdict: "approved", rule: "survived", patchSha256: SEED_PATCH }],

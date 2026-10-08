@@ -18,7 +18,8 @@ import { SyntheticBadge } from "../components/SyntheticBadge";
 import { EmptyState } from "../components/ui/EmptyState";
 import { formatDateTime, formatRelativeTime } from "../lib/formatters";
 import { useEnvironment } from "../lib/useSettings";
-import { CYCLE_LIMIT, subscribeCycles, subscribeEvents } from "../lib/runs";
+import { useNow } from "../lib/useNow";
+import { CYCLE_LIMIT, readCycle, subscribeCycles, subscribeEvents } from "../lib/runs";
 import {
   PATH_LABELS,
   indexRuntimeView,
@@ -35,17 +36,6 @@ import {
   type Step,
 } from "../lib/runsModel";
 
-/** Re-evaluate "live" and the running axis without waiting for the next write. */
-const TICK_MS = 15_000;
-
-function useNow(): number {
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    const t = setInterval(() => setNow(Date.now()), TICK_MS);
-    return () => clearInterval(t);
-  }, []);
-  return now;
-}
 
 export default function Runs() {
   const { environment, ready, settingsUnavailable } = useEnvironment();
@@ -74,7 +64,24 @@ export default function Runs() {
   const filter = runFilter(params);
   const visible = cycles && filter ? cycles.filter(filter.test) : cycles;
   const selectedId = params.get("run");
-  const selected = visible?.find((c) => c.id === selectedId) ?? visible?.[0] ?? null;
+  // A link to one run (the Incidents page, the evidence page) names it by id: when it is not among the newest
+  // CYCLE_LIMIT, it is read by id, so the link opens that run and not whichever is first.
+  const loaded = cycles !== null;
+  const listed = selectedId !== null && loaded && cycles.some((c) => c.id === selectedId);
+  const [linked, setLinked] = useState<CycleRow | null>(null);
+  useEffect(() => {
+    if (!ready || selectedId === null || !loaded || listed) return;
+    let live = true;
+    readCycle(selectedId, environment).then(
+      (row) => live && setLinked(row),
+      () => live && setLinked(null)
+    );
+    return () => {
+      live = false;
+    };
+  }, [ready, selectedId, loaded, listed, environment]);
+  const selected =
+    visible?.find((c) => c.id === selectedId) ?? (linked !== null && linked.id === selectedId ? linked : null) ?? visible?.[0] ?? null;
   const select = (id: string) => {
     const next = new URLSearchParams(params);
     next.set("run", id);

@@ -1,15 +1,26 @@
-import { render, screen, within } from "@testing-library/react";
+import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { Ctx, type StarfishAuthCtx } from "../auth/authCore";
 import type { IncidentRow } from "../lib/incidents";
+import { parseCycle, type CycleRow } from "../lib/runsModel";
 
 const mocks = vi.hoisted(() => ({
   listIncidents: vi.fn(),
   applyAction: vi.fn(),
   env: { environment: "prod", ready: true, settingsUnavailable: false },
+  cycles: [] as unknown[],
+  cyclesCapped: false,
+  readCycle: vi.fn(),
+}));
+vi.mock("../lib/runs", () => ({
+  subscribeCycles: (_env: string, ok: (rows: unknown[], capped: boolean) => void) => {
+    ok(mocks.cycles, mocks.cyclesCapped);
+    return () => {};
+  },
+  readCycle: mocks.readCycle,
 }));
 vi.mock("../components/EngineStatus", () => ({
   EngineStatus: ({ environment }: { environment: string }) => <div data-testid="engine-status-stub">{environment}</div>,
@@ -24,6 +35,25 @@ vi.mock("../lib/firebase", () => ({ firestore: vi.fn() }));
 vi.mock("../lib/config", () => ({ webConfig: () => ({ functionsRegion: "us-central1", incidentCollection: "incidents" }) }));
 
 import Incidents, { filterRows } from "./Incidents";
+
+const ts = (ms: number) => ({ toDate: () => new Date(ms) });
+function cycle(id: string, over: Record<string, unknown> = {}): CycleRow {
+  return parseCycle(id, {
+    incidentId: id.replace(/_r\d+$/, ""),
+    environment: "prod",
+    recurrence: Number(/_r(\d+)$/.exec(id)![1]),
+    state: "declined",
+    path: "decline",
+    attempts: 1,
+    eventCount: 1,
+    createdAt: ts(Date.now() - 60_000),
+    updatedAt: ts(Date.now() - 1000),
+    leaseExpiresAt: null,
+    deadlineAt: null,
+    summary: { triage: { decision: "decline", rule: "model-decline", reason: "A single 404 from a demo stub; no user impact." } },
+    ...over,
+  })!;
+}
 
 const base: IncidentRow = {
   id: "1",
@@ -72,6 +102,84 @@ describe("Incidents page", () => {
     mocks.env = { environment: "prod", ready: true, settingsUnavailable: false };
     mocks.listIncidents.mockResolvedValue({ rows, capped: false });
     mocks.applyAction.mockResolvedValue(undefined);
+    mocks.cycles = [];
+    mocks.cyclesCapped = false;
+    mocks.readCycle.mockResolvedValue(null);
+  });
+
+  describe("the agent's run for each incident", () => {
+    it("shows the run's state, triage's decision and reason, and links to that run", async () => {
+      mocks.cycles = [cycle("1_r0")];
+      renderPage();
+      const row = (await screen.findByText("mailDrainer")).closest("tr")!;
+      expect(within(row).getByText("Declined")).toBeInTheDocument();
+      expect(within(row).getByText("A single 404 from a demo stub; no user impact.")).toBeInTheDocument();
+      expect(within(row).getByRole("link", { name: "Run for mailDrainer" })).toHaveAttribute("href", "/runs?run=1_r0");
+    });
+
+    it("uses the run of the incident's current recurrence, never an earlier one", async () => {
+      mocks.listIncidents.mockResolvedValue({ rows: [{ ...base, recurrenceCount: 1, status: "recurred" }], capped: false });
+      mocks.cycles = [cycle("1_r0"), cycle("1_r1", { state: "waiting-human", path: "notify", summary: { triage: { decision: "notify", reason: "The API is disabled." } } })];
+      renderPage();
+      const row = (await screen.findByText("mailDrainer")).closest("tr")!;
+      expect(within(row).getByText("Waiting for a human")).toBeInTheDocument();
+      expect(within(row).getByRole("link", { name: "Run for mailDrainer" })).toHaveAttribute("href", "/runs?run=1_r1");
+    });
+
+    it("says 'No run yet' only when every run was read", async () => {
+      renderPage();
+      const row = (await screen.findByText("mailDrainer")).closest("tr")!;
+      expect(within(row).getByText("No agent run yet")).toBeInTheDocument();
+      expect(mocks.readCycle).not.toHaveBeenCalled();
+    });
+
+    it("reads a run outside the newest by its id when the list is capped", async () => {
+      mocks.cyclesCapped = true;
+      mocks.readCycle.mockImplementation(async (id: string) => (id === "1_r0" ? cycle("1_r0") : null));
+      renderPage();
+      const row = (await screen.findByText("mailDrainer")).closest("tr")!;
+      expect(await within(row).findByText("Declined")).toBeInTheDocument();
+      expect(mocks.readCycle).toHaveBeenCalledWith("1_r0", "prod");
+      const other = screen.getByText("orders-updateOrder").closest("tr")!;
+      expect(await within(other).findByText("No agent run yet")).toBeInTheDocument();
+    });
+
+    it("says nothing about an incident whose run could not be read", async () => {
+      mocks.cyclesCapped = true;
+      mocks.readCycle.mockRejectedValue(new Error("denied"));
+      renderPage();
+      const row = (await screen.findByText("mailDrainer")).closest("tr")!;
+      await vi.waitFor(() => expect(mocks.readCycle).toHaveBeenCalled());
+      expect(within(row).queryByText("No agent run yet")).toBeNull();
+      expect(within(row).queryByRole("link", { name: "Run for mailDrainer" })).toBeNull();
+    });
+
+    it("stops saying 'In progress' once the run's lease runs out, with no new snapshot", async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      try {
+        mocks.cycles = [cycle("1_r0", { state: "running", path: undefined, leaseExpiresAt: ts(Date.now() + 5000) })];
+        renderPage();
+        const row = (await screen.findByText("mailDrainer")).closest("tr")!;
+        expect(within(row).getByText("In progress")).toBeInTheDocument();
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(16_000);
+        });
+        expect(within(row).getByText("Waiting for a worker")).toBeInTheDocument();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("shows the full decision, its rule and the run in the expanded row", async () => {
+      mocks.cycles = [cycle("1_r0")];
+      renderPage();
+      const row = (await screen.findByText("mailDrainer")).closest("tr")!;
+      await userEvent.click(within(row).getByRole("button", { name: "Show incident details" }));
+      expect(screen.getByText("Agent decision")).toBeInTheDocument();
+      expect(screen.getByText("Decline")).toBeInTheDocument();
+      expect(screen.getByText("model-decline")).toBeInTheDocument();
+      expect(screen.getByRole("link", { name: /Open the run/ })).toHaveAttribute("href", "/runs?run=1_r0");
+    });
   });
 
   it("lists incidents under the environment label the settings resolved", async () => {

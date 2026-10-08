@@ -146,7 +146,7 @@ try {
     results[`${theme} /incidents (empty state)`] = await page.evaluate(AUDIT);
 
     await page.goto(base + "/settings");
-    await page.getByText("Runtime settings").waitFor();
+    await page.getByRole("heading", { name: "Runtime settings" }).waitFor();
     results[`${theme} /settings`] = await page.evaluate(AUDIT);
 
     await page.goto(base + "/runs");

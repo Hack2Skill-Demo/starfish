@@ -6,6 +6,10 @@
  *    a fixed list, so the filter lists what's present.
  *  - The expanded row shows the underlying cause (`errorDetail`) and the
  *    engine's triage state.
+ *  - Under the error, the agent's run for the incident's current recurrence
+ *    (`{id}_r{n}`): its state in the Runs page's words, triage's reason as
+ *    recorded, and a link to the run (`useIncidentRuns`); the expanded row has
+ *    the decision in full. "No agent run yet" only when every run was read.
  *  - GitHub issue / PR links appear when those fields exist, and only as https
  *    URLs. The agent copies them onto the incident when it files the issue or
  *    opens the PR, and the PR's later state when it reads it back
@@ -32,7 +36,10 @@ import {
   GitPullRequest,
   GitPullRequestClosed,
   Search,
+  ArrowRight,
+  Workflow,
 } from "lucide-react";
+import { Badge } from "../components/ui/Badge";
 import { EmptyState } from "../components/ui/EmptyState";
 import PageMeta from "../components/PageMeta";
 import SettingsUnavailableNotice from "../components/SettingsUnavailableNotice";
@@ -45,6 +52,8 @@ import { formatDateTime, formatRelativeTime } from "../lib/formatters";
 import { buildCloudLoggingUrl } from "../lib/cloudLoggingUrl";
 import { useEnvironment } from "../lib/useSettings";
 import { safeUrl } from "../lib/runsModel";
+import type { IncidentRunView } from "../lib/incidentRun";
+import { useIncidentRuns } from "../lib/useIncidentRuns";
 import {
   INCIDENT_STATUSES,
   SCAN_LIMIT,
@@ -100,6 +109,65 @@ function PrIcon({ state }: { state?: PrState }) {
   return <GitPullRequest className="h-3 w-3" />;
 }
 
+/**
+ * The agent's run under the error: its state, triage's reason in one line (the whole of it in the tooltip and the
+ * expanded row) and the way to the run. A strip rather than a column, so Status and Actions stay on screen.
+ */
+function AgentStrip({ view, functionName }: { view: IncidentRunView; functionName: string }) {
+  // Not known yet (or the runs could not be read): nothing is said rather than "no run".
+  if (view.kind === "unknown") return null;
+  if (view.kind === "none") {
+    return (
+      <p className="mt-2 flex items-center gap-1.5 text-xs text-gray-500 dark:text-gray-400">
+        <Workflow className="h-3.5 w-3.5" aria-hidden="true" />
+        No agent run yet
+      </p>
+    );
+  }
+  return (
+    <div className="mt-2 flex max-w-xs items-center gap-2 rounded-md border border-gray-200 bg-gray-50 px-2 py-1 2xl:max-w-md dark:border-gray-700 dark:bg-gray-900/40">
+      <Workflow className="h-3.5 w-3.5 shrink-0 text-gray-500 dark:text-gray-400" aria-hidden="true" />
+      <span className="shrink-0">
+        <Badge tone={view.status.tone}>{view.status.label}</Badge>
+      </span>
+      <span className="min-w-0 flex-1 truncate text-xs text-gray-600 dark:text-gray-400" title={view.reason}>
+        {view.reason ?? view.decision ?? ""}
+      </span>
+      <Link
+        to={view.href}
+        aria-label={`Run for ${functionName}`}
+        className="inline-flex shrink-0 items-center gap-0.5 text-xs font-medium text-brand-700 hover:underline dark:text-brand-400"
+      >
+        View run
+        <ArrowRight className="h-3 w-3" aria-hidden="true" />
+      </Link>
+    </div>
+  );
+}
+
+/** The expanded row's account of the agent's decision, in full. */
+function AgentDecision({ view }: { view: Extract<IncidentRunView, { kind: "run" }> }) {
+  return (
+    <div>
+      <dt className="text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">Agent decision</dt>
+      <dd className="mt-1 space-y-1.5">
+        <div className="flex flex-wrap items-center gap-2">
+          <Badge tone={view.status.tone}>{view.status.label}</Badge>
+          {view.decision && <span className="text-sm font-medium text-gray-800 dark:text-gray-200">{view.decision}</span>}
+          {view.rule && (
+            <code className="rounded bg-gray-100 px-1.5 py-0.5 text-xs text-gray-700 dark:bg-gray-700 dark:text-gray-300">{view.rule}</code>
+          )}
+        </div>
+        {view.reason && <p className="whitespace-pre-wrap break-words text-sm text-gray-700 dark:text-gray-300">{view.reason}</p>}
+        <Link to={view.href} className="inline-flex items-center gap-1 text-sm font-medium text-brand-700 hover:underline dark:text-brand-400">
+          Open the run <span className="font-mono text-xs">{view.runId}</span>
+          <ArrowRight className="h-3.5 w-3.5" aria-hidden="true" />
+        </Link>
+      </dd>
+    </div>
+  );
+}
+
 const selectClass =
   "h-10 rounded-lg border border-gray-200 bg-white px-3 text-sm text-gray-700 shadow-xs focus:border-brand-300 focus:outline-none focus:ring focus:ring-brand-500/10 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300";
 
@@ -147,6 +215,7 @@ export default function Incidents() {
 
   const all = data?.rows ?? [];
   const rows = filterRows(all, { status, service, fn: fnSearch });
+  const runOf = useIncidentRuns(environment, ready, rows);
   const services = [...new Set(all.map((r) => r.service))].sort();
   const statusCounts = Object.fromEntries(
     INCIDENT_STATUSES.map((s) => [s, all.filter((r) => r.status === s).length])
@@ -329,7 +398,8 @@ export default function Incidents() {
                   {rows.map((row) => {
                     const busy = pendingId === row.id && mutation.isPending;
                     const isExpanded = expandedIds.has(row.id);
-                    const hasDetail = Boolean(row.stackTrace || row.errorName || row.errorDetail || row.triageState);
+                    const run = runOf(row);
+                    const hasDetail = Boolean(row.stackTrace || row.errorName || row.errorDetail || row.triageState) || run.kind === "run";
                     // Stored links are data: shown only when they are https URLs, as on Runs and the evidence page.
                     const issueUrl = safeUrl(row.githubIssueUrl);
                     const prUrl = safeUrl(row.githubPrUrl);
@@ -426,6 +496,7 @@ export default function Incidents() {
                             <p className="mt-1 max-w-xs truncate text-sm text-gray-600 2xl:max-w-md dark:text-gray-400" title={row.errorMessage}>
                               {row.errorMessage}
                             </p>
+                            <AgentStrip view={run} functionName={row.functionName} />
                           </td>
                           <td
                             className="px-4 py-3 text-sm text-gray-700 dark:text-gray-300"
@@ -509,6 +580,7 @@ export default function Incidents() {
                           <tr className="bg-gray-50/70 dark:bg-gray-900/40">
                             <td colSpan={colCount} className="px-4 pb-4 pt-1">
                               <dl className="space-y-3 rounded-lg border border-gray-200 bg-white p-4 dark:border-gray-700 dark:bg-gray-800">
+                                {run.kind === "run" && <AgentDecision view={run} />}
                                 {(
                                   [
                                     ["Message", row.errorMessage],
