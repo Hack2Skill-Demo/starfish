@@ -118,32 +118,74 @@ describe("scripts/setup-github-deploy.sh", () => {
     for (const bad of ['a"b', "a b", "a)||true"]) expect(setup({ ...dry, GITHUB_SECRET: bad }).status, bad).not.toBe(0);
   });
 
-  it("limits what the deployer can grant to the roles the deploy script grants", () => {
-    const r = setup(dry);
-    const line = r.out.split("\n").find((l) => l.includes("roles/resourcemanager.projectIamAdmin")) ?? "";
-    expect(line).toContain("^;^expression=");
-    expect(line).toContain("hasOnly(['roles/logging.viewer','roles/datastore.user','roles/aiplatform.user','roles/run.builder','roles/monitoring.viewer','roles/firebaseauth.viewer'])");
-    // Every project-level role deploy-gcp.sh binds is inside that list, so the limit does not stop the deploy.
-    // With every part of the deploy turned on: the agent (both isolations), the admin API and the Monitoring signal (#176).
+  // What the deployer may grant, project by project: the roles in each projectIamAdmin binding's hasOnly list.
+  const grantable = (out) => {
+    const byProject = new Map();
+    for (const l of out.split("\n").filter((x) => x.includes("projects add-iam-policy-binding") && roleOf(x) === "roles/resourcemanager.projectIamAdmin")) {
+      const project = l.match(/projects add-iam-policy-binding (\S+)/)[1];
+      expect(byProject.has(project), `one projectIamAdmin binding on ${project}`).toBe(false);
+      expect(l, project).toContain("^;^expression=");
+      const list = l.match(/hasOnly\(\[([^\]]*)\]\)/)?.[1] ?? "";
+      byProject.set(project, list.split(",").map((s) => s.replace(/'/g, "")).filter(Boolean).sort());
+    }
+    return byProject;
+  };
+
+  it("limits what the deployer can grant on each project to the roles the deploy script binds on that project (#228)", () => {
+    // Every combination of the deploy's parts: the agent (both isolations), the admin API and the Monitoring signal (#176).
     const full = { DEPLOY_AGENT: "1", AGENT_REPO: "acme/shop", VERIFY_CHECKS: "verify", DEPLOY_ADMIN_API: "1" };
     const monitoring = { STARFISH_MONITORING_ENABLED: "true" };
-    for (const extra of [
+    const parts = [
       {},
       monitoring,
+      { DEPLOY_ADMIN_API: "1" },
       { ...monitoring, DEPLOY_ADMIN_API: "1" },
       full,
       { ...full, ...monitoring },
       { ...full, ...monitoring, VERIFY_ISOLATION: "cloud-run-job", VERIFY_COMMAND: "pnpm test" },
+    ];
+    // Where the three projects are one, two or three projects.
+    for (const layout of [
+      {},
+      { WATCHED_PROJECT_ID: "app-proj", VERTEX_PROJECT_ID: "ai-proj" },
+      { WATCHED_PROJECT_ID: "app-proj", VERTEX_PROJECT_ID: "app-proj" },
+      { VERTEX_PROJECT_ID: "ai-proj" },
+      { WATCHED_PROJECT_ID: "app-proj" },
     ]) {
-      const deploy = spawnSync("bash", [new URL("./deploy-gcp.sh", import.meta.url).pathname], {
-        env: { PATH: "/usr/bin:/bin", ...dry, ...extra }, encoding: "utf8",
-      });
-      expect(deploy.status).toBe(0);
-      const bound = [...`${deploy.stdout}`.replace(/\\/g, "").matchAll(/projects add-iam-policy-binding \S+ --member=\S+ --role=(roles\/[\w.]+)/g)].map((m) => m[1]);
-      expect(bound.length).toBeGreaterThan(0);
-      if (extra.STARFISH_MONITORING_ENABLED) expect(bound).toContain("roles/monitoring.viewer");
-      if (extra.DEPLOY_ADMIN_API) expect(bound).toContain("roles/firebaseauth.viewer");
-      for (const role of bound) expect(line, `${role} is bound by deploy-gcp.sh`).toContain(`'${role}'`);
+      const bound = new Map();
+      for (const extra of parts) {
+        const deploy = spawnSync("bash", [new URL("./deploy-gcp.sh", import.meta.url).pathname], {
+          env: { PATH: "/usr/bin:/bin", ...dry, ...layout, ...extra }, encoding: "utf8",
+        });
+        expect(deploy.status, deploy.stderr).toBe(0);
+        for (const m of deploy.stdout.replace(/\\/g, "").matchAll(/projects add-iam-policy-binding (\S+) --member=\S+ --role=(roles\/[\w.]+)/g)) {
+          bound.set(m[1], new Set([...(bound.get(m[1]) ?? []), m[2]]));
+        }
+      }
+      // Exactly the roles deploy-gcp.sh binds there, with every part on: none missing (the deploy would be refused), none
+      // more (the deployer could hand it to anyone).
+      const limits = grantable(setup({ ...dry, ...layout }).out);
+      const expected = new Map([...bound].map(([p, roles]) => [p, [...roles].sort()]));
+      expect(limits, JSON.stringify(layout)).toEqual(expected);
+    }
+    // Spelled out: the watched project (the app's production) is never given Starfish's database or Auth roles (#213).
+    const three = grantable(setup({ ...dry, WATCHED_PROJECT_ID: "app-proj", VERTEX_PROJECT_ID: "ai-proj" }).out);
+    expect(three.get("app-proj")).toEqual(["roles/logging.viewer", "roles/monitoring.viewer"]);
+    expect(three.get("ai-proj")).toEqual(["roles/aiplatform.user"]);
+    expect(three.get("star-proj")).toEqual(["roles/datastore.user", "roles/firebaseauth.viewer", "roles/run.builder"]);
+    expect(grantable(setup(dry).out).get("star-proj")).toEqual([
+      "roles/aiplatform.user", "roles/datastore.user", "roles/firebaseauth.viewer", "roles/logging.viewer", "roles/monitoring.viewer", "roles/run.builder",
+    ]);
+  });
+
+  it("takes off an earlier, wider projectIamAdmin binding before it binds the new one (#228)", () => {
+    const lines = setup({ ...dry, WATCHED_PROJECT_ID: "app-proj" }).out.split("\n");
+    for (const project of ["star-proj", "app-proj"]) {
+      const remove = lines.findIndex((l) => l.includes(`remove-iam-policy-binding ${project} `) && l.includes("--role=roles/resourcemanager.projectIamAdmin --all"));
+      const add = lines.findIndex((l) => l.includes(`projects add-iam-policy-binding ${project} `) && roleOf(l) === "roles/resourcemanager.projectIamAdmin");
+      expect(remove, project).toBeGreaterThan(-1);
+      expect(remove, project).toBeLessThan(add);
+      expect(lines[remove]).toContain("--member=serviceAccount:starfish-deployer@star-proj.iam.gserviceaccount.com");
     }
   });
 
@@ -170,6 +212,11 @@ describe("scripts/setup-github-deploy.sh", () => {
     const r = setup({ ...dry, WATCHED_PROJECT_ID: "app-proj", VERTEX_PROJECT_ID: "ai-proj" });
     expect(r.out).toContain("add-iam-policy-binding app-proj");
     expect(r.out).toContain("add-iam-policy-binding ai-proj");
+    // One project that is both the watched and the Gemini one gets each role once.
+    const shared = setup({ ...dry, WATCHED_PROJECT_ID: "app-proj", VERTEX_PROJECT_ID: "app-proj" }).out.split("\n");
+    for (const role of ["roles/serviceusage.serviceUsageAdmin", "roles/resourcemanager.projectIamAdmin"]) {
+      expect(shared.filter((l) => l.includes("projects add-iam-policy-binding app-proj ") && roleOf(l) === role), role).toHaveLength(1);
+    }
   });
 
   it("tells the person exactly what to set in GitHub, and that deploy-on-merge is a separate switch", () => {

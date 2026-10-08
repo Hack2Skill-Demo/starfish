@@ -26,6 +26,7 @@ function deploy(env, { site, apps } = {}) {
     `#!/bin/sh
 echo "$*" >> "${log}"
 case "$*" in
+  "run build") env > "${join(dir, "build-env")}"; exit 0 ;;
   *"hosting:sites:get"*) ${reply("site.json", site)} ;;
   *"apps:list WEB"*) ${reply("apps.json", apps)} ;;
 esac
@@ -43,7 +44,12 @@ exit 1
     encoding: "utf8",
   });
   const calls = existsSync(log) ? readFileSync(log, "utf8").trim().split("\n") : [];
-  return { ...r, out: `${r.stdout}${r.stderr}`.replace(/\\/g, ""), calls };
+  // The environment the build ran with (a run that is not a dry run), as name -> value.
+  const buildEnvFile = join(dir, "build-env");
+  const buildEnv = existsSync(buildEnvFile)
+    ? Object.fromEntries(readFileSync(buildEnvFile, "utf8").split("\n").filter(Boolean).map((l) => [l.slice(0, l.indexOf("=")), l.slice(l.indexOf("=") + 1)]))
+    : undefined;
+  return { ...r, out: `${r.stdout}${r.stderr}`.replace(/\\/g, ""), calls, buildEnv };
 }
 
 const READS = /^dlx firebase-tools@14 (hosting:sites:get|apps:list) /;
@@ -96,6 +102,16 @@ describe("scripts/deploy-web.sh", () => {
     const r = deploy(dry);
     expect(r.out).toContain("star-proj-starfish");
     expect(r.out).not.toMatch(/target:apply hosting starfish star-proj( |$)/m);
+  });
+
+  // The Deploy web UI workflow hands these over as repository variables (#230): the build must see them, or an Actions
+  // deploy hides the admin controls. A real (not dry) run against the stubs: the build is the first thing it runs.
+  it("builds with the admin API's URL and the stale threshold it is given", () => {
+    const r = deploy({ PROJECT_ID: "star-proj", VITE_STARFISH_ADMIN_API_URL: "https://starfish-admin-abc-uc.a.run.app", VITE_STARFISH_STALE_MINUTES: "20" });
+    expect(r.buildEnv).toBeDefined();
+    expect(r.buildEnv.VITE_STARFISH_ADMIN_API_URL).toBe("https://starfish-admin-abc-uc.a.run.app");
+    expect(r.buildEnv.VITE_STARFISH_STALE_MINUTES).toBe("20");
+    expect(r.buildEnv.VITE_STARFISH_ENV).toBe("dev");
   });
 
   it("takes the site and the environment label it is given", () => {

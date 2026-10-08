@@ -69,12 +69,18 @@
 #                            the command, fed through a private bucket. Needs VERIFY_COMMAND. More infrastructure
 #   VERIFY_CHECKS        github-actions: the check runs on the pushed commit that must all pass (STARFISH_VERIFY_CHECKS),
 #                        comma-separated, e.g. "verify" or "ci / test"
+#   VERIFY_CHECK_APP     the slug of the GitHub App whose check runs count as those checks (STARFISH_VERIFY_CHECK_APP): a run
+#                        of the same name posted by any other app is ignored, by the verify step and when an opened pull
+#                        request's checks are read. Lowercase letters, digits and hyphens. Default: the engine's own,
+#                        github-actions. Always set on the agent job, empty included, so clearing it restores the default (#229)
 #   VERIFY_COMMAND       cloud-run-job: the command that proves a patch (STARFISH_VERIFY_COMMAND), run in the verify
 #                        job, e.g. "pnpm install --frozen-lockfile && pnpm run verify". That job's image is this
 #                        repo's engine image (node, pnpm, git): a target that needs another toolchain needs another
 #   VERIFY_TIMEOUT_SECONDS  how long the checks or the command may run. Default 600
 #   VERIFY_BUCKET        cloud-run-job: the bucket for bundles and results (objects deleted after a day). Default <PROJECT_ID>-starfish-verify
-#   AGENT_BASE_BRANCH    the branch the agent checks out. Default: the engine's own default (main)
+#   AGENT_BASE_BRANCH    the branch the agent checks out. Default: the engine's own default (main). Always set on the agent
+#                        job (STARFISH_GITHUB_BASE_BRANCH), empty included, so clearing it restores the default (#233),
+#                        unless EXTRA_ENV_VARS or AGENT_EXTRA_ENV_VARS sets that name itself
 #   AGENT_SCHEDULE       cron for the agent tick. Default "30 * * * *" (hourly, after the ingest tick)
 #   AGENT_EXTRA_ENV_VARS more settings for the agent job, "@"-separated like EXTRA_ENV_VARS. The only place to turn the
 #                        agent's dry run off (STARFISH_DRY_RUN=false); neither list may set STARFISH_VERIFY_* (#147)
@@ -85,7 +91,9 @@
 #                        but Twilio's, when STARFISH_TWILIO_* are given (#37)
 #   ADMIN_SA_NAME        the admin API's service account. Default starfish-admin-api
 #   ADMIN_API_ORIGINS    the operator UI's origin(s), comma-separated, allowed to call it from a browser, e.g.
-#                        https://my-site.web.app. Empty: no browser may (a server-side caller is not affected)
+#                        https://my-site.web.app. Empty: no browser may (a server-side caller is not affected). Always set
+#                        on the admin API (STARFISH_ADMIN_API_ORIGINS), empty included, so clearing it takes every origin
+#                        away again (#233), unless EXTRA_ENV_VARS sets that name itself
 #   ADMIN_SERVICE_NAME   Default starfish-admin. Never ingested: it is in the default STARFISH_EXCLUDED_SERVICES of every
 #                        deploy, with or without DEPLOY_ADMIN_API=1, so a run that leaves the admin API out does not start
 #                        ingesting the one an earlier run deployed (#177)
@@ -120,6 +128,7 @@ ADMIN_API_ORIGINS="${ADMIN_API_ORIGINS:-}"
 ADMIN_SERVICE_NAME="${ADMIN_SERVICE_NAME:-starfish-admin}"
 VERIFY_ISOLATION="${VERIFY_ISOLATION:-github-actions}"
 VERIFY_CHECKS="${VERIFY_CHECKS:-}"
+VERIFY_CHECK_APP="${VERIFY_CHECK_APP:-}"
 VERIFY_COMMAND="${VERIFY_COMMAND:-}"
 VERIFY_TIMEOUT_SECONDS="${VERIFY_TIMEOUT_SECONDS:-600}"
 VERIFY_BUCKET="${VERIFY_BUCKET:-$PROJECT_ID-starfish-verify}"
@@ -224,6 +233,10 @@ if [ "$DEPLOY_AGENT" = "1" ]; then
       ;;
     *) die "VERIFY_ISOLATION must be github-actions or cloud-run-job: $VERIFY_ISOLATION" ;;
   esac
+  # A GitHub App's slug (empty: the engine's default, github-actions). It decides whose check runs count, so nothing else.
+  case "$VERIFY_CHECK_APP" in
+    *[!a-z0-9-]*|-*|*-) die "VERIFY_CHECK_APP must be a GitHub App's slug (lowercase letters, digits and hyphens), e.g. github-actions: $VERIFY_CHECK_APP" ;;
+  esac
   case "$VERIFY_TIMEOUT_SECONDS" in
     ''|*[!0-9]*|0) die "VERIFY_TIMEOUT_SECONDS must be a whole number of seconds above zero: $VERIFY_TIMEOUT_SECONDS" ;;
   esac
@@ -233,7 +246,7 @@ if [ "$DEPLOY_AGENT" = "1" ]; then
   for var in EXTRA_ENV_VARS AGENT_EXTRA_ENV_VARS; do
     case "@${!var}" in
       *@STARFISH_VERIFY_*)
-        die "$var may not set STARFISH_VERIFY_*: DEPLOY_AGENT sets them (isolation, checks, job, bucket, command, timeout)" ;;
+        die "$var may not set STARFISH_VERIFY_*: DEPLOY_AGENT sets them (isolation, checks, check app, job, bucket, command, timeout)" ;;
     esac
   done
   # Turning the agent's dry run off is a decision about the agent alone, so it is made in AGENT_EXTRA_ENV_VARS (or by an
@@ -328,7 +341,12 @@ if [ "$DEPLOY_AGENT" = "1" ]; then
   AGENT_ENV="GOOGLE_CLOUD_PROJECT=$PROJECT_ID@STARFISH_WATCHED_PROJECT_ID=$WATCHED_PROJECT_ID@STARFISH_VERTEX_PROJECT_ID=$VERTEX_PROJECT_ID"
   AGENT_ENV="$AGENT_ENV@GOOGLE_CLOUD_LOCATION=$REGION@STARFISH_ENV=$STARFISH_ENV@STARFISH_DATABASE_ID=$STARFISH_DATABASE_ID"
   AGENT_ENV="$AGENT_ENV@STARFISH_GITHUB_REPO=$AGENT_REPO"
-  [ -z "$AGENT_BASE_BRANCH" ] || AGENT_ENV="$AGENT_ENV@STARFISH_GITHUB_BASE_BRANCH=$AGENT_BASE_BRANCH"
+  # Always set, empty included (the engine's default, main), so a branch taken out of AGENT_BASE_BRANCH does not stay on
+  # the job (#233: --update-env-vars keeps a name it is not given). A list that sets the name itself is left to do so.
+  case "@$EXTRA_ENV_VARS@$AGENT_EXTRA_ENV_VARS" in
+    *@STARFISH_GITHUB_BASE_BRANCH=*) [ -z "$AGENT_BASE_BRANCH" ] || AGENT_ENV="$AGENT_ENV@STARFISH_GITHUB_BASE_BRANCH=$AGENT_BASE_BRANCH" ;;
+    *) AGENT_ENV="$AGENT_ENV@STARFISH_GITHUB_BASE_BRANCH=$AGENT_BASE_BRANCH" ;;
+  esac
   AGENT_EXCLUDED="starfish,$JOB_NAME,$AGENT_JOB_NAME${ADMIN_EXCLUDED}"
   [ "$VERIFY_ISOLATION" != "cloud-run-job" ] || AGENT_EXCLUDED="$AGENT_EXCLUDED,$VERIFY_JOB_NAME"
   case "@$EXTRA_ENV_VARS@$AGENT_EXTRA_ENV_VARS" in
@@ -340,6 +358,9 @@ if [ "$DEPLOY_AGENT" = "1" ]; then
   # The safety values come last (#147): where the verify step runs, and the dry run. Neither extra list may set the
   # first (checked above), and unique_names refuses any name set twice, so none can be replaced by a later entry.
   AGENT_ENV="$AGENT_ENV@STARFISH_VERIFY_ISOLATION=$VERIFY_ISOLATION@STARFISH_VERIFY_TIMEOUT_SECONDS=$VERIFY_TIMEOUT_SECONDS"
+  # Whose check runs count (#229), with either isolation: the agent also reads its opened pull requests' checks. Always
+  # set, empty included (the engine's default, github-actions), so clearing VERIFY_CHECK_APP restores the default.
+  AGENT_ENV="$AGENT_ENV@STARFISH_VERIFY_CHECK_APP=$VERIFY_CHECK_APP"
   AGENT_WAIT_SECONDS=$((VERIFY_TIMEOUT_SECONDS + 600))
   if [ "$VERIFY_ISOLATION" = "github-actions" ]; then
     AGENT_ENV="$AGENT_ENV@STARFISH_VERIFY_CHECKS=$VERIFY_CHECKS"
@@ -360,7 +381,12 @@ if [ "$DEPLOY_AGENT" = "1" ]; then
 fi
 if [ "$DEPLOY_ADMIN_API" = "1" ]; then
   ADMIN_ENV="$ENV_VARS"
-  [ -z "$ADMIN_API_ORIGINS" ] || ADMIN_ENV="$ADMIN_ENV@STARFISH_ADMIN_API_ORIGINS=$ADMIN_API_ORIGINS"
+  # Always set, empty included (no browser origin), so an origin taken out of ADMIN_API_ORIGINS does not stay allowed
+  # (#233: --update-env-vars keeps a name it is not given). EXTRA_ENV_VARS setting the name itself is left to do so.
+  case "@$EXTRA_ENV_VARS" in
+    *@STARFISH_ADMIN_API_ORIGINS=*) [ -z "$ADMIN_API_ORIGINS" ] || ADMIN_ENV="$ADMIN_ENV@STARFISH_ADMIN_API_ORIGINS=$ADMIN_API_ORIGINS" ;;
+    *) ADMIN_ENV="$ADMIN_ENV@STARFISH_ADMIN_API_ORIGINS=$ADMIN_API_ORIGINS" ;;
+  esac
   unique_names "the admin API" "$ADMIN_ENV"
 fi
 

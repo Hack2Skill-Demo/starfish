@@ -11,7 +11,8 @@
 #   REPO_ID              the repository's numeric id, which the provider trusts (a name can be renamed and then taken by
 #                        someone else; the id cannot). Default: looked up with `gh api repos/<REPO>`. To find it yourself:
 #                        `gh api repos/OWNER/NAME --jq .id`, or the top-level "id" of https://api.github.com/repos/OWNER/NAME
-#   WATCHED_PROJECT_ID   Default PROJECT_ID. VERTEX_PROJECT_ID likewise. The deployer gets its two project-wide roles there too
+#   WATCHED_PROJECT_ID   Default PROJECT_ID. VERTEX_PROJECT_ID likewise. Where one differs from PROJECT_ID the deployer may
+#                        enable APIs there, and grant there only the roles deploy-gcp.sh binds there (#228)
 #   ENVIRONMENT          the GitHub environment the jobs run in. Default deploy (the workflows are fixed to it)
 #   POOL, PROVIDER       Default github, github-deploy
 #   DEPLOYER_NAME        Default starfish-deployer
@@ -26,8 +27,10 @@
 # repository and no other environment can present a token), the deployer account, and the roles docs/deploy.md lists.
 # What it does NOT make: a key (none exists), the GitHub environment, or the repository variables: it prints them for you.
 #
-# The deployer is powerful, and bounded (#145). Granting roles on the project is limited by an IAM condition to the six
-# the deploy script binds. Service accounts: it may create and read them (a custom role), never set their IAM policy,
+# The deployer is powerful, and bounded (#145). Granting roles on a project is limited by an IAM condition to the roles
+# the deploy script binds on THAT project (#228): on PROJECT_ID roles/run.builder, roles/datastore.user and
+# roles/firebaseauth.viewer; on the watched project roles/logging.viewer and roles/monitoring.viewer; on the Gemini project
+# roles/aiplatform.user (a project that is more than one of these may be granted the roles of each). Service accounts: it may create and read them (a custom role), never set their IAM policy,
 # except on the agent's own account with cloud-run-job. Secrets and buckets: only Starfish's, by name, through conditions.
 # What is still project-wide: Cloud Run, Cloud Build, Artifact Registry, Scheduler, Firestore and the rules (the table in
 # docs/deploy.md). Anyone who can change a workflow on a branch the `deploy` environment allows can use it: limit the
@@ -173,15 +176,43 @@ bucket_is() { echo "resource.name == \"projects/_/buckets/$1\" || resource.name.
 BUCKETS="resource.name.startsWith(\"projects/_/buckets/run-sources-$PROJECT_ID-\") || $(bucket_is "${PROJECT_ID}_cloudbuild")"
 [ "$VERIFY_ISOLATION" != "cloud-run-job" ] || BUCKETS="$BUCKETS || $(bucket_is "$VERIFY_BUCKET")"
 bind "$PROJECT_ID" roles/storage.admin "$BUCKETS"
-# Granting roles is limited to the six the deploy script binds (roles/monitoring.viewer only with STARFISH_MONITORING_ENABLED=true,
-# #176; roles/firebaseauth.viewer only for the admin API's account, which checks every token for revocation): the deployer
-# cannot hand itself, or anyone, any other.
-GRANTABLE="api.getAttribute('iam.googleapis.com/modifiedGrantsByRole', []).hasOnly(['roles/logging.viewer','roles/datastore.user','roles/aiplatform.user','roles/run.builder','roles/monitoring.viewer','roles/firebaseauth.viewer'])"
-bind "$PROJECT_ID" roles/resourcemanager.projectIamAdmin "$GRANTABLE"
+# Granting roles is limited, per project, to the roles deploy-gcp.sh binds on that project (#228): the deployer cannot hand
+# itself, or anyone, any other there. On the watched project (the app's production, when it is a project of its own) that
+# is reading its logs and metrics and nothing else: never Starfish's database role or Firebase Auth's viewer, which there
+# would reach the app's own data and users. roles/monitoring.viewer is bound only with STARFISH_MONITORING_ENABLED=true
+# (#176), roles/firebaseauth.viewer only for the admin API's account (it checks every token for revocation). A project that
+# is more than one of the three may be granted the roles of each. scripts/setup-github-deploy.test.mjs checks each list
+# against what a dry run of deploy-gcp.sh binds on each project.
+STARFISH_GRANTS="roles/run.builder roles/datastore.user roles/firebaseauth.viewer"
+WATCHED_GRANTS="roles/logging.viewer roles/monitoring.viewer"
+VERTEX_GRANTS="roles/aiplatform.user"
+grantable_on() { # grantable_on <project>: the condition that limits granting there to deploy-gcp.sh's roles there
+  local roles="" role list=""
+  [ "$1" != "$PROJECT_ID" ] || roles="$roles $STARFISH_GRANTS"
+  [ "$1" != "$WATCHED_PROJECT_ID" ] || roles="$roles $WATCHED_GRANTS"
+  [ "$1" != "$VERTEX_PROJECT_ID" ] || roles="$roles $VERTEX_GRANTS"
+  for role in $roles; do list="${list:+$list,}'$role'"; done
+  echo "api.getAttribute('iam.googleapis.com/modifiedGrantsByRole', []).hasOnly([$list])"
+}
+limit_grants() { # limit_grants <project>
+  # IAM keeps one binding per condition, so a binding an earlier run made with a wider list would stay beside this one and
+  # keep allowing what it allowed: take the deployer's projectIamAdmin off first (every condition), then bind it again.
+  # A first run has nothing to remove, which is not an error.
+  if [ "$DRY_RUN" = "1" ]; then
+    echo "+ (if an earlier run bound it) gcloud projects remove-iam-policy-binding $1 --member=serviceAccount:$DEPLOYER --role=roles/resourcemanager.projectIamAdmin --all"
+  else
+    gcloud projects remove-iam-policy-binding "$1" --member="serviceAccount:$DEPLOYER" \
+      --role=roles/resourcemanager.projectIamAdmin --all --quiet --format=none >/dev/null 2>&1 || true
+  fi
+  bind "$1" roles/resourcemanager.projectIamAdmin "$(grantable_on "$1")"
+}
+limit_grants "$PROJECT_ID"
+SEEN=" $PROJECT_ID "
 for other in "$WATCHED_PROJECT_ID" "$VERTEX_PROJECT_ID"; do
-  [ "$other" != "$PROJECT_ID" ] || continue
+  case "$SEEN" in *" $other "*) continue ;; esac
+  SEEN="$SEEN$other "
   bind "$other" roles/serviceusage.serviceUsageAdmin
-  bind "$other" roles/resourcemanager.projectIamAdmin "$GRANTABLE"
+  limit_grants "$other"
 done
 
 # Does the account exist? In a dry run, say yes so every grant is shown. A grant on an account must wait for the account.
@@ -227,6 +258,7 @@ cat <<NEXT
      STARFISH_SCHEDULE              = (e.g. */5 * * * *; empty means hourly)
      STARFISH_EXTRA_ENV_VARS        = (e.g. STARFISH_EXCLUDED_SERVICES=starfish,starfish-ingest,starfish-agent,starfish-admin,traffic-*,control-*,stub-*)
      STARFISH_DEPLOY_ADMIN_API      = (1 to deploy the admin API too, with STARFISH_ADMIN_API_ORIGINS = https://<your site>.web.app)
+     STARFISH_WEB_ADMIN_API_URL     = (the admin API's URL once deployed: the web UI shows its admin controls only with it)
 3. To deploy on every merge to main that changes what runs, also set:   STARFISH_DEPLOY_ON_MERGE = true
    Until you do, the workflows only run when you start them (Actions > Deploy engine / Deploy web UI > Run workflow).
 4. Try it first: Actions > Deploy engine > Run workflow, with "dry_run" ticked. Besides printing the plan, it makes two read-only
