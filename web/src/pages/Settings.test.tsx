@@ -60,7 +60,8 @@ describe("Settings", () => {
     readIntegrations.mockResolvedValue(report({ github: true }));
     renderSettings();
     expect(await screen.findByText("Token configured")).toBeInTheDocument();
-    expect(screen.getByText(/nothing has checked it against GitHub yet/)).toBeInTheDocument();
+    expect(screen.getByText(/A token is set; the agent reports only that it is set, not whether it works\./)).toBeInTheDocument();
+    expect(screen.queryByText(/nothing has checked it/)).toBeNull();
     expect(screen.queryByText(/^Connected/)).toBeNull();
     // Slack was reported with no webhook, and the rules card says nothing: both stay or turn neutral.
     expect(screen.getByText("No webhook set")).toBeInTheDocument();
@@ -77,8 +78,15 @@ describe("Settings", () => {
     readIntegrations.mockResolvedValue(report({ slackOnCall: true, slackAlerts: true, twilio: true }));
     renderSettings();
     expect(await screen.findByText("Webhook configured")).toBeInTheDocument();
-    expect(screen.getByText(/on-call and alerts webhook is set/)).toBeInTheDocument();
+    expect(screen.getByText(/on-call and alerts webhooks are set; the agent reports only that they are set, not whether they work\./)).toBeInTheDocument();
+    expect(screen.queryByText(/nothing has posted/)).toBeNull();
     expect(screen.getByText(/Twilio credentials are set/)).toBeInTheDocument();
+  });
+
+  it("says a single webhook is set, and only that", async () => {
+    readIntegrations.mockResolvedValue(report({ slackAlerts: true }));
+    renderSettings();
+    expect(await screen.findByText(/The alerts webhook is set; the agent reports only that it is set, not whether it works\./)).toBeInTheDocument();
   });
 
   it("ignores a report written for another environment", async () => {

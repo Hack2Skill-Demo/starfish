@@ -238,6 +238,57 @@ describe("Runs page", () => {
     expect(mocks.readCycle).toHaveBeenCalledWith("old_r1", "demo");
   });
 
+  describe("a linked run that is not listed never shows another run in its place (#219)", () => {
+    const detail = () => screen.getByRole("region", { name: "Run detail" });
+
+    it("says it is loading while the read by id is pending", () => {
+      mocks.readCycle.mockReturnValue(new Promise(() => {}));
+      renderRuns("/runs?run=old_r1");
+      act(() => mocks.cyclesCb!([cycle("inc-a_r0")], true));
+      expect(within(detail()).getByText("Loading this run…")).toBeInTheDocument();
+      expect(screen.queryByRole("heading", { name: "inc-a" })).toBeNull();
+      expect(mocks.subscribedEvents).toEqual([]);
+    });
+
+    it("says it couldn't read the run when the read fails", async () => {
+      mocks.readCycle.mockRejectedValue(new Error("denied"));
+      renderRuns("/runs?run=old_r1");
+      act(() => mocks.cyclesCb!([cycle("inc-a_r0")], true));
+      expect(await within(detail()).findByRole("alert")).toHaveTextContent("Couldn't read this run");
+      expect(screen.queryByRole("heading", { name: "inc-a" })).toBeNull();
+      expect(mocks.subscribedEvents).toEqual([]);
+    });
+
+    it("says there is no such run when the read finds none", async () => {
+      mocks.readCycle.mockResolvedValue(null);
+      renderRuns("/runs?run=old_r1");
+      act(() => mocks.cyclesCb!([cycle("inc-a_r0")], true));
+      expect(await within(detail()).findByText(/No such run/)).toBeInTheDocument();
+      expect(screen.queryByRole("heading", { name: "inc-a" })).toBeNull();
+      expect(mocks.subscribedEvents).toEqual([]);
+    });
+
+    it("reads a linked run again once it was listed and dropped out, never showing the earlier answer", async () => {
+      mocks.readCycle.mockResolvedValue(null);
+      renderRuns("/runs?run=old_r1");
+      act(() => mocks.cyclesCb!([cycle("inc-a_r0")], true));
+      expect(await within(detail()).findByText(/No such run/)).toBeInTheDocument();
+      act(() => mocks.cyclesCb!([cycle("old_r1", { incidentId: "old" }), cycle("inc-a_r0")], true));
+      expect(screen.getByRole("heading", { name: "old" })).toBeInTheDocument();
+      mocks.readCycle.mockClear();
+      mocks.readCycle.mockReturnValue(new Promise(() => {}));
+      act(() => mocks.cyclesCb!([cycle("inc-a_r0")], true));
+      expect(within(detail()).getByText("Loading this run…")).toBeInTheDocument();
+      expect(mocks.readCycle).toHaveBeenCalledWith("old_r1", "demo");
+    });
+
+    it("opens the linked run even when the filter hides it, rather than the first one shown", () => {
+      renderRuns("/runs?path=pr&run=inc-b_r0");
+      act(() => mocks.cyclesCb!([cycle("inc-a_r0", { path: "pr" }), cycle("inc-b_r0", { path: "decline" })], false));
+      expect(screen.getByRole("heading", { name: "inc-b" })).toBeInTheDocument();
+    });
+  });
+
   it("reads nothing by id when the linked run is in the list", () => {
     renderRuns("/runs?run=inc-a_r0");
     act(() => mocks.cyclesCb!([cycle("inc-a_r0")], false));

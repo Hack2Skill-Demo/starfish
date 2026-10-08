@@ -83,13 +83,15 @@ export function reportedState(c: Connection, report: Integrations | null): { bad
   const when = `Reported by the agent ${formatRelativeTime(report.checkedAt)}.`;
   if (c.reported === "github") {
     return report.github
-      ? { badge: { tone: "success", label: "Token configured" }, note: `${when} A token is set; nothing has checked it against GitHub yet.` }
+      ? { badge: { tone: "success", label: "Token configured" }, note: `${when} A token is set; the agent reports only that it is set, not whether it works.` }
       : { badge: { tone: "neutral", label: "No token set" }, note: `${when} No STARFISH_GITHUB_TOKEN on the agent job.` };
   }
   const hooks = [report.slackOnCall && "on-call", report.slackAlerts && "alerts"].filter(Boolean).join(" and ");
   const twilio = report.twilio ? " Twilio credentials are set." : "";
+  const both = report.slackOnCall && report.slackAlerts;
+  const set = both ? `The ${hooks} webhooks are set; the agent reports only that they are set, not whether they work.` : `The ${hooks} webhook is set; the agent reports only that it is set, not whether it works.`;
   return hooks
-    ? { badge: { tone: "success", label: "Webhook configured" }, note: `${when} The ${hooks} webhook is set; nothing has posted to Slack yet.${twilio}` }
+    ? { badge: { tone: "success", label: "Webhook configured" }, note: `${when} ${set}${twilio}` }
     : { badge: { tone: "neutral", label: "No webhook set" }, note: `${when} No Slack webhook on the agent job.${twilio}` };
 }
 
