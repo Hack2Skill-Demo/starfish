@@ -125,12 +125,12 @@ function AgentStrip({ view, functionName }: { view: IncidentRunView; functionNam
     );
   }
   return (
-    <div className="mt-2 flex max-w-xs items-center gap-2 rounded-md border border-gray-200 bg-gray-50 px-2 py-1 2xl:max-w-md dark:border-gray-700 dark:bg-gray-900/40">
+    <div className="mt-2 flex max-w-xs items-center gap-2 whitespace-nowrap rounded-md border border-gray-200 bg-gray-50 px-2 py-1 2xl:max-w-md dark:border-gray-700 dark:bg-gray-900/40">
       <Workflow className="h-3.5 w-3.5 shrink-0 text-gray-500 dark:text-gray-400" aria-hidden="true" />
       <span className="shrink-0">
         <Badge tone={view.status.tone}>{view.status.label}</Badge>
       </span>
-      <span className="min-w-0 flex-1 truncate text-xs text-gray-600 dark:text-gray-400" title={view.reason}>
+      <span className="w-0 min-w-0 flex-1 truncate text-xs text-gray-600 dark:text-gray-400" title={view.reason}>
         {view.reason ?? view.decision ?? ""}
       </span>
       <Link
@@ -374,21 +374,24 @@ export default function Incidents() {
               <table className="w-full">
                 <thead className="bg-gray-50 dark:bg-gray-900/50">
                   <tr>
-                    {/* "First seen" only on wide screens: at laptop widths it would push
-                        Status and Actions — what an operator needs — off-screen.
-                        Last seen's tooltip carries it everywhere. */}
-                    {["Function", "Error", `Count (${windowHours}h)`, "First seen", "Last seen", "Status"].map((h) => (
+                    {/* Status and Actions — what an operator needs — should stay on screen beside the open
+                        sidebar from 1280px up, with no horizontal scroll (#214; the scroll container stays as
+                        the fallback for, say, a very long unbroken function name). So: "First seen" only on wide
+                        screens (Last seen's tooltip carries it everywhere); Error is the one elastic column, whose
+                        message and run-strip reason truncate rather than set its width (w-0 + min-w-full / flex-1);
+                        Count's header may wrap; and cells are padded px-3 inside the card's px-4 edge. */}
+                    {["Function", "Error", `Count (${windowHours}h)`, "First seen", "Last seen", "Status"].map((h, i) => (
                       <th
                         key={h}
-                        className={`whitespace-nowrap px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400 ${
-                          h === "First seen" ? "hidden 2xl:table-cell" : ""
-                        }`}
+                        className={`py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400 ${
+                          i === 0 ? "pl-4 pr-3" : "px-3"
+                        } ${h === "First seen" ? "hidden 2xl:table-cell" : ""} ${h.startsWith("Count") ? "" : "whitespace-nowrap"}`}
                       >
                         {h}
                       </th>
                     ))}
                     {canTriage && (
-                      <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
+                      <th className="py-3 pl-3 pr-4 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
                         Actions
                       </th>
                     )}
@@ -416,7 +419,7 @@ export default function Incidents() {
                     return (
                       <Fragment key={row.id}>
                         <tr className="align-top hover:bg-gray-50 dark:hover:bg-gray-900/30">
-                          <td className="px-4 py-3">
+                          <td className="py-3 pl-4 pr-3">
                             <div className="flex items-start gap-1.5">
                               <button
                                 type="button"
@@ -483,7 +486,7 @@ export default function Incidents() {
                               </div>
                             </div>
                           </td>
-                          <td className="px-4 py-3">
+                          <td className="w-full px-3 py-3">
                             <div className="flex flex-wrap items-center gap-2">
                               <span className="inline-flex items-center rounded bg-gray-100 px-1.5 py-0.5 text-xs font-medium text-gray-600 dark:bg-gray-700 dark:text-gray-300">
                                 {row.errorType}
@@ -493,13 +496,13 @@ export default function Incidents() {
                               )}
                               {row.errorCode && <span className="text-xs text-gray-500 dark:text-gray-400">{row.errorCode}</span>}
                             </div>
-                            <p className="mt-1 max-w-xs truncate text-sm text-gray-600 2xl:max-w-md dark:text-gray-400" title={row.errorMessage}>
+                            <p className="mt-1 w-0 min-w-full truncate text-sm text-gray-600 dark:text-gray-400" title={row.errorMessage}>
                               {row.errorMessage}
                             </p>
                             <AgentStrip view={run} functionName={row.functionName} />
                           </td>
                           <td
-                            className="px-4 py-3 text-sm text-gray-700 dark:text-gray-300"
+                            className="px-3 py-3 text-sm text-gray-700 dark:text-gray-300"
                             title={`${row.occurrenceCount.toLocaleString()} all-time since first seen`}
                           >
                             {row.windowedCount.toLocaleString()}
@@ -507,23 +510,23 @@ export default function Incidents() {
                                 where this incident also logged, not extra occurrences of it (#19). */}
                             {row.monitoringCount !== undefined && !row.monitoringOnly && (
                               <p
-                                className="mt-1 whitespace-nowrap text-xs text-gray-600 dark:text-gray-400"
+                                className="mt-1 text-xs text-gray-600 dark:text-gray-400"
                                 title="Failed invocations of this function that Cloud Monitoring counted, summed over the windows it read"
                               >
                                 Monitoring: {row.monitoringCount.toLocaleString()} failed
                               </p>
                             )}
                           </td>
-                          <td className="hidden whitespace-nowrap px-4 py-3 text-sm text-gray-500 2xl:table-cell dark:text-gray-400" title={formatDateTime(row.firstOccurredAt)}>
+                          <td className="hidden whitespace-nowrap px-3 py-3 text-sm text-gray-500 2xl:table-cell dark:text-gray-400" title={formatDateTime(row.firstOccurredAt)}>
                             {formatRelativeTime(row.firstOccurredAt)}
                           </td>
                           <td
-                            className="whitespace-nowrap px-4 py-3 text-sm text-gray-500 dark:text-gray-400"
+                            className="whitespace-nowrap px-3 py-3 text-sm text-gray-500 dark:text-gray-400"
                             title={`${formatDateTime(row.lastOccurredAt)} · first seen ${formatRelativeTime(row.firstOccurredAt)}`}
                           >
                             {formatRelativeTime(row.lastOccurredAt)}
                           </td>
-                          <td className="whitespace-nowrap px-4 py-3">
+                          <td className="whitespace-nowrap px-3 py-3">
                             <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${STATUS_STYLES[row.status]}`}>
                               {STATUS_LABELS[row.status]}
                             </span>
@@ -551,7 +554,7 @@ export default function Incidents() {
                             )}
                           </td>
                           {canTriage && (
-                            <td className="px-4 py-3">
+                            <td className="py-3 pl-3 pr-4">
                               <div className="flex items-center gap-1">
                                 {busy ? (
                                   <RefreshCw className="h-4 w-4 animate-spin text-gray-500 dark:text-gray-400" />
