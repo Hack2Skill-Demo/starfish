@@ -562,7 +562,7 @@ mounted, the two opt-in routes too, admin-only and audited the same way (`sendCo
 | `POST /api/incidents/<id>/retire` with `{"reason": "..."}` | closes the incident for good and frees its fingerprint, so the demo's reset can replay a fault |
 | `POST /api/oncall/people/<id>/send-code` | texts a six-digit code to that person's pending number (#37); at most one a minute |
 | `POST /api/oncall/people/<id>/confirm` with `{"code": "123456"}` | marks the number confirmed when the code matches; five wrong tries end it |
-| `GET /healthz` | `{ok:true}`, no token |
+| `GET /api/health` | `{ok:true}`, no token: the probe to use on Cloud Run. `GET /healthz` answers the same elsewhere, but on a `run.app` URL Google's front end answers it with its own 404 before it reaches the service (#212) |
 
 The audit trail is `starfish_audit` (`STARFISH_AUDIT_COLLECTION`): admin-readable, engine-written. An ingest run or a retire an
 admin made is recorded before the run or in the retire's own transaction (a refused one is not). The opt-in routes record every
@@ -602,7 +602,8 @@ repository variable `STARFISH_WEB_ADMIN_API_URL` to it and run Deploy web UI (#2
 > unauthenticated call got the 401, every sign-in got the same 401 until the service's account was given
 > `roles/firebaseauth.viewer` by hand (the revocation check is an Auth lookup; the script now grants it), and then
 > "Run ingest now" ran from the UI as an admin. Retire, the Twilio routes, App Check and a call from another origin have not
-> been exercised, and `GET /healthz` is not reachable on a `run.app` URL (Google's front end answers it).**
+> been exercised, and `GET /healthz` is not reachable on a `run.app` URL (Google's front end answers it; `GET /api/health` was added for that,
+> and has not been tried on Cloud Run yet).**
 
 ## Recording the demo: a shorter tick, and a run now (#65)
 
