@@ -144,6 +144,7 @@ the engine read itself. The admin API's service name (`starfish-admin`, `ADMIN_S
 deploy, with or without `DEPLOY_ADMIN_API=1` (#177): a later run that leaves the admin API out (the Actions workflow
 without `STARFISH_DEPLOY_ADMIN_API`, say) must not start ingesting the service an earlier run deployed, and a name no
 service has costs nothing. The agent's list adds the agent job and, with `cloud-run-job`, the verify job.
+When `STARFISH_ENV=demo`, both jobs also exclude `traffic-*`, `control-*` and `stub-*` by default.
 An explicit `STARFISH_EXCLUDED_SERVICES` in `EXTRA_ENV_VARS` replaces it, so keep the defaults in it: for the demo app,
 `EXTRA_ENV_VARS='STARFISH_EXCLUDED_SERVICES=starfish,starfish-ingest,starfish-agent,starfish-admin,traffic-*,control-*,stub-*'` (the entries
 are separated by `@`, which the script adds: no leading or trailing `@`).

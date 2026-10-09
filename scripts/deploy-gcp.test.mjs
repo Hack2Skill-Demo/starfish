@@ -31,6 +31,14 @@ function deploy(env) {
 const dry = { DRY_RUN: "1", PROJECT_ID: "star-proj" };
 
 describe("scripts/deploy-gcp.sh", () => {
+  it("excludes demo infrastructure only in the demo environment", () => {
+    const demo = deploy({ ...dry, STARFISH_ENV: "demo", DEPLOY_AGENT: "1", AGENT_REPO: "owner/repo", VERIFY_CHECKS: "verify" });
+    expect(demo.status).toBe(0);
+    expect(demo.out).toContain("STARFISH_EXCLUDED_SERVICES=starfish,starfish-ingest,starfish-admin,traffic-*,control-*,stub-*");
+    expect(demo.out).toContain("STARFISH_EXCLUDED_SERVICES=starfish,starfish-ingest,starfish-agent,starfish-admin,traffic-*,control-*,stub-*");
+    expect(deploy(dry).out).not.toContain("control-*");
+  });
+
   it("needs a project", () => {
     const r = deploy({ DRY_RUN: "1" });
     expect(r.status).not.toBe(0);
