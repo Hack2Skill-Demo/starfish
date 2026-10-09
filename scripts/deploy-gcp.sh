@@ -341,6 +341,13 @@ ENV_VARS="$ENV_VARS$(safety_defaults "$EXTRA_ENV_VARS")"
 # when this run deploys it (#177): a run without DEPLOY_ADMIN_API=1 would otherwise rewrite the list without it while
 # the service an earlier run deployed is still serving. A name no service has costs nothing.
 ADMIN_EXCLUDED=",$ADMIN_SERVICE_NAME"
+# The shared demo project also runs the scenario controller, traffic generator and vendor stubs.
+# Their failures are infrastructure signals, not shop incidents. Keep this scoped to that
+# demo environment so other installations may ingest services with these names.
+DEMO_EXCLUDED=""
+if [ "$STARFISH_ENV" = "demo" ]; then
+  DEMO_EXCLUDED=",traffic-*,control-*,stub-*"
+fi
 # An explicit list replaces the default, so it must name the admin service too (or cover it with a prefix like starfish-*).
 if [ "$DEPLOY_ADMIN_API" = "1" ]; then
   case "@$EXTRA_ENV_VARS" in
@@ -356,7 +363,7 @@ fi
 # the fixer could be asked to patch Starfish itself (#32). An explicit value in EXTRA_ENV_VARS wins.
 case "@$EXTRA_ENV_VARS" in
   *@STARFISH_EXCLUDED_SERVICES=*) ;;
-  *) ENV_VARS="$ENV_VARS@STARFISH_EXCLUDED_SERVICES=starfish,$JOB_NAME${ADMIN_EXCLUDED}" ;;
+  *) ENV_VARS="$ENV_VARS@STARFISH_EXCLUDED_SERVICES=starfish,$JOB_NAME${ADMIN_EXCLUDED}${DEMO_EXCLUDED}" ;;
 esac
 [ -z "$EXTRA_ENV_VARS" ] || ENV_VARS="$ENV_VARS@$EXTRA_ENV_VARS"
 unique_names "the ingest job" "$ENV_VARS"
@@ -370,7 +377,7 @@ if [ "$DEPLOY_AGENT" = "1" ]; then
     *@STARFISH_GITHUB_BASE_BRANCH=*) [ -z "$AGENT_BASE_BRANCH" ] || AGENT_ENV="$AGENT_ENV@STARFISH_GITHUB_BASE_BRANCH=$AGENT_BASE_BRANCH" ;;
     *) AGENT_ENV="$AGENT_ENV@STARFISH_GITHUB_BASE_BRANCH=$AGENT_BASE_BRANCH" ;;
   esac
-  AGENT_EXCLUDED="starfish,$JOB_NAME,$AGENT_JOB_NAME${ADMIN_EXCLUDED}"
+  AGENT_EXCLUDED="starfish,$JOB_NAME,$AGENT_JOB_NAME${ADMIN_EXCLUDED}${DEMO_EXCLUDED}"
   [ "$VERIFY_ISOLATION" != "cloud-run-job" ] || AGENT_EXCLUDED="$AGENT_EXCLUDED,$VERIFY_JOB_NAME"
   case "@$EXTRA_ENV_VARS@$AGENT_EXTRA_ENV_VARS" in
     *@STARFISH_EXCLUDED_SERVICES=*) ;;
