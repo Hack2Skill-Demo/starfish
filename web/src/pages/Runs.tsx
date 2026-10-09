@@ -8,6 +8,7 @@
  * that exists; it says so instead of looking like a quiet day.
  */
 import { useEffect, useMemo, useState } from "react";
+import { useQueries } from "@tanstack/react-query";
 import { Link, useSearchParams } from "react-router";
 import { Check, CircleDashed, ExternalLink, Loader2, Workflow } from "lucide-react";
 import PageMeta from "../components/PageMeta";
@@ -19,6 +20,7 @@ import { EmptyState } from "../components/ui/EmptyState";
 import { formatDateTime, formatRelativeTime } from "../lib/formatters";
 import { useEnvironment } from "../lib/useSettings";
 import { useNow } from "../lib/useNow";
+import { getIncident, type IncidentRow } from "../lib/incidents";
 import { CYCLE_LIMIT, readCycle, subscribeCycles, subscribeEvents } from "../lib/runs";
 import {
   PATH_LABELS,
@@ -95,6 +97,26 @@ export default function Runs() {
     next.set("run", id);
     setParams(next, { replace: true });
   };
+  // Cycle records carry only the incident ID. Read the visible incidents by ID so the list can identify each run
+  // without changing its stable URL or assuming that a recent run's incident is in the incident page's time window.
+  const incidentIds = useMemo(
+    () => [...new Set([...(visible ?? []).map((c) => c.incidentId), ...(selected ? [selected.incidentId] : [])])],
+    [visible, selected]
+  );
+  const incidentReads = useQueries({
+    queries: incidentIds.map((id) => ({
+      queryKey: ["run-incident", environment, id],
+      queryFn: () => getIncident(id, environment),
+      enabled: ready,
+      staleTime: 5 * 60_000,
+      retry: false,
+    })),
+  });
+  const incidents = new Map<string, IncidentRow>();
+  incidentIds.forEach((id, i) => {
+    const row = incidentReads[i]?.data;
+    if (row) incidents.set(id, row);
+  });
 
   return (
     <div className="space-y-4">
@@ -138,9 +160,9 @@ export default function Runs() {
             <p className="text-sm text-gray-600 dark:text-gray-400">No recorded run matches this filter.</p>
           ) : (
             <div className="grid gap-4 lg:grid-cols-[20rem_1fr]">
-              <RunList cycles={visible ?? []} capped={capped} selectedId={selected?.id ?? null} now={now} onSelect={select} />
+              <RunList cycles={visible ?? []} incidents={incidents} capped={capped} selectedId={selected?.id ?? null} now={now} onSelect={select} />
               {selected ? (
-                <RunDetail cycle={selected} environment={environment} now={now} />
+                <RunDetail cycle={selected} incident={incidents.get(selected.incidentId)} environment={environment} now={now} />
               ) : (
                 selectedId !== null && <LinkedRunMissing answer={linkedAnswer} />
               )}
@@ -173,12 +195,14 @@ function LinkedRunMissing({ answer }: { answer: CycleRow | null | "failed" | und
 
 function RunList({
   cycles,
+  incidents,
   capped,
   selectedId,
   now,
   onSelect,
 }: {
   cycles: CycleRow[];
+  incidents: ReadonlyMap<string, IncidentRow>;
   capped: boolean;
   selectedId: string | null;
   now: number;
@@ -190,6 +214,7 @@ function RunList({
         {cycles.map((c) => {
           const status = runStatus(c, now);
           const current = c.id === selectedId;
+          const incident = incidents.get(c.incidentId);
           return (
             <li key={c.id}>
               <button
@@ -203,12 +228,19 @@ function RunList({
                 }`}
               >
                 <div className="flex items-center justify-between gap-2">
-                  <span className="truncate font-mono text-xs text-gray-900 dark:text-gray-100">{c.incidentId}</span>
+                  <span className={`min-w-0 truncate text-sm font-medium text-gray-900 dark:text-gray-100 ${incident ? "" : "font-mono text-xs"}`} title={incident?.functionName ?? c.incidentId}>
+                    {incident?.functionName ?? c.incidentId}
+                  </span>
                   <span className="flex shrink-0 items-center gap-1">
                     {c.synthetic && <SyntheticBadge />}
                     <Badge tone={status.tone}>{status.label}</Badge>
                   </span>
                 </div>
+                {incident && (
+                  <p className="mt-1 truncate text-xs text-gray-600 dark:text-gray-400" title={`${incident.errorType}: ${incident.errorMessage}`}>
+                    {incident.errorType}{incident.errorMessage ? `: ${incident.errorMessage}` : ""}
+                  </p>
+                )}
                 <div className="mt-1 flex flex-wrap gap-x-3 text-xs text-gray-600 dark:text-gray-400">
                   {c.recurrence > 0 && <span>recurrence {c.recurrence}</span>}
                   {status.live && <span>live</span>}
@@ -228,7 +260,7 @@ function RunList({
   );
 }
 
-function RunDetail({ cycle, environment, now }: { cycle: CycleRow; environment: string; now: number }) {
+function RunDetail({ cycle, incident, environment, now }: { cycle: CycleRow; incident?: IncidentRow; environment: string; now: number }) {
   const [events, setEvents] = useState<EventRow[] | null>(null);
   const [failed, setFailed] = useState(false);
 
@@ -249,7 +281,9 @@ function RunDetail({ cycle, environment, now }: { cycle: CycleRow; environment: 
     <section aria-label="Run detail" className="space-y-4 rounded-lg border border-gray-200 bg-white p-4 dark:border-gray-700 dark:bg-gray-800">
       <header className="space-y-1">
         <div className="flex flex-wrap items-center gap-2">
-          <h2 className="font-mono text-sm font-semibold text-gray-900 dark:text-white">{cycle.incidentId}</h2>
+          <h2 className={`min-w-0 break-words text-sm font-semibold text-gray-900 dark:text-white ${incident ? "" : "font-mono"}`}>
+            {incident?.functionName ?? cycle.incidentId}
+          </h2>
           <Badge tone={status.tone}>{status.label}</Badge>
           {cycle.synthetic && <SyntheticBadge />}
         </div>
@@ -258,7 +292,18 @@ function RunDetail({ cycle, environment, now }: { cycle: CycleRow; environment: 
             Public view: a trimmed copy of the run. The model&apos;s own words and each step&apos;s details are left out of it.
           </p>
         )}
+        {incident && (
+          <p className="break-words text-sm text-gray-600 dark:text-gray-400">
+            {incident.errorType}{incident.errorMessage ? `: ${incident.errorMessage}` : ""}
+          </p>
+        )}
         <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-sm text-gray-700 dark:text-gray-300">
+          {incident && (
+            <>
+              <dt className="text-gray-600 dark:text-gray-400">Incident ID</dt>
+              <dd className="break-all font-mono text-xs">{cycle.incidentId}</dd>
+            </>
+          )}
           {cycle.path && (
             <>
               <dt className="text-gray-600 dark:text-gray-400">Path</dt>
@@ -397,4 +442,3 @@ function StepRow({ step, href }: { step: Step; href?: string }) {
     </li>
   );
 }
-

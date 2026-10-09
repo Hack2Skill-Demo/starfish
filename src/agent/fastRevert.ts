@@ -6,9 +6,9 @@
  * The watch. Every merge autoMerge.ts records starts `summary.revert` in `watching`, until `fastRevertMinutes` after the
  * merge. The incident has come back (`recurredAfterMerge`, pure) when it was seen again later than
  * `fastRevertGraceMinutes` after the merge and within the window: its `lastOccurredAt`, a regression the ingest marked
- * (`recurred`, a higher `recurrenceCount`, `lastRecurredAt`), or an hour of its occurrence series that starts after the
- * grace and no later than the window's end (or the first such hour, for a window shorter than an hour), so an error that
- * keeps firing past the window is still seen (#201). HONESTLY: the window starts at the MERGE, not at the deployment, because Starfish cannot observe when the
+ * (`recurred`, a higher `recurrenceCount`, `lastRecurredAt`), or an hour of its occurrence series wholly inside the
+ * window. A bucket crossing either boundary cannot prove an occurrence inside it, so it cannot trigger an automatic
+ * revert (#252). HONESTLY: the window starts at the MERGE, not at the deployment, because Starfish cannot observe when the
  * target's CI/CD finishes deploying (#9 keeps "start at deployment completion" open). The grace stands in for the deploy:
  * an error seen during it is the old code still running, not the fix failing. A deploy slower than the grace would
  * look like a recurrence; set the grace above the target's deploy time.
@@ -97,10 +97,9 @@ const rec = (v: unknown): Rec => (typeof v === "object" && v !== null ? (v as Re
 
 /**
  * The times a watch works with, from the merge. `start`/`end`: the window, (merge + grace, merge + `fastRevertMinutes`].
- * `reach`: the latest clock hour whose bucket still counts (see `recurredAfterMerge`): the window's end, or the first
- * hour after `start` when no hour starts inside the window. `closesAt`: the earliest a watch that saw nothing is cleared:
- * an occurrence in the hour starting at `reach` can be as late as `reach` + 1 h, and ingest needs the settle hour after
- * it. It is cleared then only once ingest's checkpoint is at or past `reach` + 1 h (#241).
+ * `reach`: a conservative ingest coverage boundary: the window's end, or the first clock hour after `start` if no
+ * clock hour starts before the deadline. `closesAt`: the earliest a watch that saw nothing is cleared, after that boundary's hour
+ * and the settle hour. It is cleared only once ingest's checkpoint is at or past `reach` + 1 h (#241).
  */
 export function watchSpan(mergedAtMs: number, cfg: Pick<FastRevertConfig, "fastRevertMinutes" | "fastRevertGraceMinutes">): { start: number; end: number; reach: number; closesAt: number } {
   const start = mergedAtMs + cfg.fastRevertGraceMinutes * 60_000;
@@ -119,16 +118,11 @@ export function watchSpan(mergedAtMs: number, cfg: Pick<FastRevertConfig, "fastR
  *     Past the window it proves nothing about the window, and an error that kept firing is past it by the time the
  *     hourly pass reads it.
  *   - a regression the ingest marked (`recurrenceCount` above the cycle's, `lastRecurredAt` in the window).
- *   - the hourly buckets. Each ingest window's occurrences are counted in the hour of that window's LATEST occurrence,
- *     so a bucket whose hour starts after `start` holds at least one occurrence after `start`: never an occurrence
- *     from before the merge or from the grace, however late it was ingested (a late batch of those lands in an hour
- *     that starts no later than `start`). Its hour may end after the window; the error that matters is one that keeps
- *     firing, so a bucket counts when its hour starts no later than `reach` (`watchSpan`): the window's end, or, when
- *     no hour starts inside the window (a window shorter than an hour), the first hour after `start`. Then an error
- *     that keeps firing through the window always leaves a counted bucket, once that hour is ingested.
- * So a recurrence counted here is always an occurrence after the grace, and less than an hour past the window's end
- * (two, when the window holds no hour boundary). What it can still miss: an ingest window longer than an hour (a catch-up
- * after an ingest outage, `ingestMaxWindowHours`) counts everything in its last hour, which can lie past `reach`.
+ *   - the hourly buckets. Each ingest window's occurrences are counted in the hour of that window's LATEST occurrence.
+ *     Only a bucket wholly inside the watch window proves that its latest occurrence was in the window. A bucket
+ *     crossing the grace or deadline could consist entirely of occurrences outside the window, so it cannot authorize
+ *     a revert (#252). This may miss an error that continued firing when no whole hour falls inside a short window;
+ *     the stored aggregate cannot distinguish that case safely.
  * A snapshot of `occurrenceCount` at the merge would add nothing: a late batch from before the merge grows it too.
  */
 export function recurredAfterMerge(
@@ -137,7 +131,7 @@ export function recurredAfterMerge(
   cfg: Pick<FastRevertConfig, "fastRevertMinutes" | "fastRevertGraceMinutes">
 ): boolean {
   if (incident.retired === true) return false;
-  const { start, end, reach } = watchSpan(merge.mergedAtMs, cfg);
+  const { start, end } = watchSpan(merge.mergedAtMs, cfg);
   if (start >= end) return false;
   const inWindow = (t: number | undefined) => t !== undefined && t > start && t <= end;
   if (inWindow(millis(incident.lastOccurredAt))) return true;
@@ -145,7 +139,7 @@ export function recurredAfterMerge(
   if (typeof recurrences === "number" && recurrences > merge.recurrence && inWindow(millis(incident.lastRecurredAt))) return true;
   for (const [key, count] of Object.entries(rec(incident.occurrencesByHour))) {
     const hourStart = Number(key) * HOUR_MS;
-    if (Number.isFinite(hourStart) && typeof count === "number" && count > 0 && hourStart > start && hourStart <= reach) return true;
+    if (Number.isFinite(hourStart) && typeof count === "number" && count > 0 && hourStart > start && hourStart + HOUR_MS <= end) return true;
   }
   return false;
 }

@@ -545,7 +545,7 @@ describe("runFastRevertStep: reverts Starfish's own merge when the incident come
     expect((await cycle("inc1_r0")).summary.revert).toMatchObject({ state: "escalated", reason: "wrong-base", escalation: "sent" });
   });
 
-  it("reverts for an error that kept firing past the window, read late by the pass (#201)", async () => {
+  it("does not revert from ambiguous hourly counts after the window (#252)", async () => {
     await seed("inc1_r0", watching());
     // Every minute from the merge to 70 minutes after it: the latest is past the window, the 13:00 hour is not.
     const byHour: Record<string, number> = {};
@@ -556,7 +556,8 @@ describe("runFastRevertStep: reverts Starfish's own merge when the incident come
     await db.collection(cfg.incidentCollection).doc("inc1").update({ lastOccurredAt: Timestamp.fromMillis(t0.getTime() + 70 * 60_000), occurrencesByHour: byHour });
     clock = new Date(t0.getTime() + 75 * 60_000);
     const gh = fakeGithub();
-    expect(await runFastRevertStep(revertDeps(gh.client))).toMatchObject({ opened: 1 });
+    expect(await runFastRevertStep(revertDeps(gh.client))).toMatchObject({ opened: 0 });
+    expect(gh.calls).toEqual([]);
   });
 
   it("leaves alone a watch whose merge record does not match it", async () => {

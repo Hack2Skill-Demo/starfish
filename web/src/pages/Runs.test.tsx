@@ -1,6 +1,7 @@
 import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { parseCycle, parseEvent, type CycleRow, type EventRow } from "../lib/runsModel";
 
@@ -16,9 +17,11 @@ const mocks = vi.hoisted(() => ({
   unsubEvents: vi.fn(),
   subscribedEvents: [] as string[],
   readCycle: vi.fn(),
+  getIncident: vi.fn(),
 }));
 
 vi.mock("../lib/useSettings", () => ({ useEnvironment: () => mocks.env }));
+vi.mock("../lib/incidents", () => ({ getIncident: mocks.getIncident }));
 vi.mock("../components/EngineStatus", () => ({ EngineStatus: ({ environment }: { environment: string }) => <div data-testid="engine">{environment}</div> }));
 vi.mock("../lib/runs", async (orig) => ({
   ...(await orig<typeof import("../lib/runs")>()),
@@ -59,10 +62,13 @@ const event = (seq: number, stage: string, type: string, summary: string, agoMs:
   parseEvent(String(seq).padStart(6, "0"), { seq, stage, type, summary, at: ts(now - agoMs), data: {} })!;
 
 function renderRuns(url = "/runs") {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
-    <MemoryRouter initialEntries={[url]}>
-      <Runs />
-    </MemoryRouter>
+    <QueryClientProvider client={queryClient}>
+      <MemoryRouter initialEntries={[url]}>
+        <Runs />
+      </MemoryRouter>
+    </QueryClientProvider>
   );
 }
 
@@ -72,6 +78,7 @@ describe("Runs page", () => {
     mocks.subscribedEvents.length = 0;
     mocks.cyclesCb = mocks.cyclesErr = mocks.eventsCb = undefined;
     mocks.env = { environment: "demo", ready: true, settingsUnavailable: false };
+    mocks.getIncident.mockResolvedValue(null);
   });
 
   it("says the settings couldn't be read, so an empty list isn't taken for a quiet day (#143)", () => {
@@ -119,6 +126,20 @@ describe("Runs page", () => {
     expect(within(detail).getByText("1 of 5 steps recorded")).toBeInTheDocument();
     // Engine health sits in the page header, for the environment shown.
     expect(screen.getByTestId("engine")).toHaveTextContent("demo");
+  });
+
+  it("labels a run with its incident function and error, keeping the ID as a fallback", async () => {
+    mocks.getIncident.mockImplementation(async (id: string) =>
+      id === "inc-a" ? { id, functionName: "control-getscenarios", errorType: "UnknownError", errorMessage: "getScenarios failed" } : null
+    );
+    renderRuns();
+    act(() => mocks.cyclesCb!([cycle("inc-a_r0"), cycle("inc-b_r0")], false));
+    const list = screen.getByRole("region", { name: "Runs" });
+    expect(await within(list).findByText("control-getscenarios")).toBeInTheDocument();
+    expect(within(list).getByText("UnknownError: getScenarios failed")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "control-getscenarios" })).toBeInTheDocument();
+    expect(within(list).getByText("inc-b")).toBeInTheDocument();
+    expect(mocks.getIncident).toHaveBeenCalledWith("inc-a", "demo");
   });
 
   it("badges a synthetic run in the list and its header, and only that run", () => {
