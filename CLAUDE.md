@@ -328,7 +328,8 @@ React 19, Vite, Tailwind 4, react-router, TanStack Query; Starfish's own theme i
   A signed-in email account with no role is not a guest. A visitor with no session is signed in
   anonymously on arrival (`RequireRole`/`enterAsGuest`) and sees Overview, Incidents, incident evidence,
   Runs and a view-only Settings with no triage or admin buttons; signing out does not re-enter guest, and if Anonymous sign-in is refused
-  they land on /signin. The public demo (#12) uses this so a judge needs no account; a private
+  they land on /signin. A build for the `demo` environment offers "See the demo view" on /signin, which starts a guest
+  session even after a sign-out (`offersGuestView`, `enterAsGuest({ requested: true })`). The public demo (#12) uses this so a judge needs no account; a private
   deployment just leaves Anonymous sign-in disabled. App Check: the UI initialises it only when built with
   `VITE_STARFISH_APPCHECK_SITE_KEY` (`lib/appCheck.ts`; absent = off, the UI and guests unchanged), and the admin API
   requires its token only with `STARFISH_ADMIN_API_APPCHECK` (default off); Firestore enforcement is a console step,

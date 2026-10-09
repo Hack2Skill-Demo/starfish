@@ -57,6 +57,15 @@ function Consumer() {
       >
         Enter as guest
       </button>
+      <button
+        onClick={() =>
+          void auth.enterAsGuest({ requested: true }).then((ok) => {
+            document.querySelector('[data-testid="guest-result"]')!.textContent = String(ok);
+          })
+        }
+      >
+        Ask for the guest view
+      </button>
     </div>
   );
 }
@@ -289,6 +298,23 @@ describe("StarfishAuthProvider", () => {
       await user.click(screen.getByText("Enter as guest"));
       await waitFor(() => expect(guestResult()).toHaveTextContent("false"));
       expect(mocks.signInAnonymously).not.toHaveBeenCalled();
+    });
+
+    it("starts a guest session after a deliberate sign-out when the visitor asks for it, and from then on", async () => {
+      renderProvider();
+      await act(() => mocks.tokenListener!({ uid: "op-1", isAnonymous: false }));
+      const user = userEvent.setup();
+      await user.click(screen.getByText("Sign out"));
+      await act(() => mocks.tokenListener!(null));
+      await user.click(screen.getByText("Ask for the guest view"));
+      await waitFor(() => expect(guestResult()).toHaveTextContent("true"));
+      expect(mocks.signInAnonymously).toHaveBeenCalledTimes(1);
+
+      // The block is lifted: the route guard's own attempt is no longer refused.
+      guestResult().textContent = "";
+      await user.click(screen.getByText("Enter as guest"));
+      await waitFor(() => expect(guestResult()).toHaveTextContent("true"));
+      expect(mocks.signInAnonymously).toHaveBeenCalledTimes(2);
     });
 
     it("clears cached data when a guest signs in as a team member, but not on a first sign-in", async () => {

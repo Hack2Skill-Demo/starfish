@@ -61,7 +61,8 @@ service cloud.firestore {
     // settings, which hold no free text.
     //
     // The demo environment label below is the default for the public demo, like the collection
-    // names above: change it here if the demo deploys under another label. A private
+    // names above: change it here if the demo deploys under another label (and in
+    // web/src/lib/dataSource.ts, whose label decides whether sign-in offers the guest view). A private
     // deployment simply leaves Anonymous sign-in disabled in the Firebase console, and this
     // never matches.
     function isGuest() {
