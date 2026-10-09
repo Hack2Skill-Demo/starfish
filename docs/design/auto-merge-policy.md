@@ -1,29 +1,92 @@
-# Auto-merge policy: merge what it can prove, escalate the rest
+# Auto-merge policy: Gemini decides how far to go, inside an admin's limits
 
-> **Status: built for the demo target behind a default-off switch (#9); other targets stay
-> PR-only. Never run against real GitHub.** Code-fix auto-merge and fast-revert are written and
-> tested against real git, a fake GitHub API and the Firestore emulator. A target can auto-merge
-> only if the deployment lists it in `STARFISH_AUTO_MERGE_TARGETS` (the demo) **and** an admin
-> turns `autoMerge` on in Settings; every other target stays PR-only even if the switch is turned
-> on by mistake. Starfish never deploys: the target's own CI/CD does. The index path (#11) is
-> separate and not covered by this switch. "As built" below says exactly what runs and what does
-> not; production targets stay PR-only until the replay evidence below justifies more.
+> **Status: built for the demo target behind default-off switches (#9); other targets stay
+> PR-only. Never run against real GitHub.** Auto-merge (code fixes and the missing-index evidence
+> PR) and fast-revert are written and tested against real git, a fake GitHub API and the Firestore
+> emulator. A target can auto-merge only if the deployment lists it in
+> `STARFISH_AUTO_MERGE_TARGETS` (the demo), an admin turns `autoMerge` on in Settings **and** lists
+> at least one merge case; every other target stays PR-only even if the switch is turned on by
+> mistake. Starfish runs no deploy of its own, but a merge is a release: the target's own CI/CD ships
+> what is merged, so merging is treated as releasing to production. "As built" below says exactly what
+> runs and what does not.
+
+## Decision (9 Oct 2026): the AI makes the executive decision
+
+Without the merge, Starfish is an assistant that opens pull requests, not a system that heals. So
+**how far Starfish goes with an incident is Gemini's decision**, and which incidents may go all the
+way is the admin's configuration:
+
+| Level | What Starfish does | Who decides |
+|---|---|---|
+| noise | records it, files nothing | triage: `decline` |
+| **log** | an issue and an alert; a person fixes it | triage: `notify` (and the fallback when a fix is declined or fails a check) |
+| **log + fix** | the issue and a verified, reviewed pull request; a person merges | triage: `act` |
+| **log + fix + merge** | Starfish merges, watches for the error coming back, and reverts | triage: `act` with one of the admin's **merge cases** |
+
+**Merge cases** (`mergeCases`: Settings, audited, or `STARFISH_MERGE_CASES`) are `id: description`
+pairs naming the kinds of incident an admin judges high-value and low-risk to fix without a person.
+Empty by default: nothing merges. Gemini's triage reads them and names one, or none ("when in
+doubt, null"); the engine keeps a case only on `act` and only if it is listed (triage.ts).
+`missing-index` is reserved for the index path, which asks no model (Google's error names the
+index): listed, its evidence PR merges once the required checks are green.
+
+**The model decides whether to merge; it never decides what is safe to merge.** What used to be
+gate 1's narrow classes and gate 2's certainty checks were Starfish deciding *what kind* of change
+may merge; that is now Gemini's call within the cases. What remains is a **floor no decision can
+lower**, all checked again right before the merge:
+
+- the switches: the kill switch, dry run off, the merge freeze off, `autoMerge` on, the target in
+  `STARFISH_AUTO_MERGE_TARGETS`, and the candidate's case **still listed** (removing a case stops
+  its merges);
+- the **safety floor** on the verified patch (`assessMergeFloor`): the diff read exactly as git
+  applies it, no control characters, one production file, tests only as **new** files (an existing
+  test is never changed, so a fix cannot turn CI green by weakening the test that judges it), and
+  nothing on the hard-exclude list (auth and access control, security rules, money, secrets and
+  crypto, schema, dependencies and imports, CI and deploy config, shared packages, the deployment's
+  exclusions), judged on the whole function around each change as the base revision has it;
+- **every run of every required check green** on the exact head Starfish built, the base branch
+  not having changed the fixed file since it was verified;
+- at most `STARFISH_MAX_MERGES_PER_DAY` (3) merges a day, an evidence comment posted first, one
+  squash merge naming the exact head;
+- the fast-revert watch on every code merge. An index evidence PR gets none: reverting the index
+  file would not remove the index, and a deploy of the reverted file could; the index path's own
+  observation tells a person if the error comes back.
+
+The old gate 2 is still computed and **reported** in the evidence comment ("would have passed" or
+which check failed), so a reader sees how certain the change was; it no longer blocks. The sections
+below on gate 1 and gate 2 describe the original #9 rules, kept for their reasoning: gate 1's
+parsing, hard-exclude list and whole-function check are exactly what the floor still runs.
+
+**What a decision by the model costs.** Production logs are attacker-influenceable, and the incident
+text reaches triage (redacted, bounded, marked as untrusted data, `vertex.ts`). A crafted error
+message could argue the model into naming a merge case, and the fixer drafts its patch from the same
+text. Before this decision, gate 1's three literal classes bounded what such a patch could be; now
+the bound is the floor (one file, tests only added, nothing near auth, rules, money, secrets, schema,
+dependencies or CI) and the target's own required checks, with the daily cap and fast-revert behind
+them. That is why the floor is not a setting and no merge case can lower it, and why the cases stay
+empty by default and the target allowlist stays environment-only.
+
+**One caveat for missing indexes:** the merge hands the index file to the target's own CI/CD. A
+pipeline that deploys indexes with `firebase deploy --force` from a stale file can delete indexes
+created in the console; a target that auto-merges index PRs should deploy indexes without `--force`.
 
 ## As built (#9)
 
 **Where it runs.** The agent loop (`src/agent/loop.ts`) prepares; the agent pass merges.
 
-1. *In the cycle*, only when the merge switches allow it right now: gate 1 runs on the proposed
-   patch (`src/agent/blastRadius.ts`). When it passes, the patch's **test files alone** are run on
-   the base revision through the same verifier the patch uses, and the result is recorded as
-   `summary.before`. When the pull request opens, the cycle records an auto-merge candidate
-   (`summary.merge`: gate 1's result, the patch hash, the head commit the opener built, whether
-   the incident's stack trace names the changed file). A candidate that fails gate 1 is handed to
-   a person at once. Nothing is prepared while an earlier Starfish merge for the same incident is
+1. *In the cycle*, only when Gemini's triage named a listed merge case and the merge switches allow
+   it right now: the safety floor runs on the proposed patch (`assessMergeFloor`,
+   `src/agent/blastRadius.ts`). When it passes, the patch's **test files alone** are run on the base
+   revision through the same verifier the patch uses, and the result is recorded as `summary.before`
+   (evidence, not required). When the pull request opens, the cycle records an auto-merge candidate
+   (`summary.merge`: the case, the floor's result, the patch hash, the base revision, the head commit
+   the opener built, whether the incident's stack trace names the changed file). A candidate that
+   fails the floor is handed to a person at once. The index path records its evidence PR as a
+   candidate (`kind: index`) when the admin lists `missing-index`. Nothing is prepared while an earlier Starfish merge for the same incident is
    still watched, or was reverted: the PR is recorded as not auto-merged and a person is told.
 2. *After each agent pass*, after the fast-revert step (`src/agent/autoMerge.ts`), each candidate
-   is taken to merged or to a person: the switches and the incident's status read fresh; gate 1 as
-   recorded; gate 2 over the run record (`certaintyGate`, a pure function); no earlier Starfish merge
+   is taken to merged or to a person: a merge case recorded (none: a person's); the switches, the
+   case still listed, and the incident's status read fresh; the floor as recorded; no earlier Starfish merge
    for the same incident still watched or reverted (the incident coming back after a merge calls for
    that merge's revert, not a second fix); the base branch has not changed the fixed file since the
    verified revision, and that revision is still on the base branch's history (after a force-push
@@ -166,7 +229,7 @@ This replaces the earlier framing of a tool that is "never allowed to merge". Th
 ladder still exists; it is now the explanation of *which* fixes may merge, not a promise that
 none will.
 
-## The rule: two gates, both required, every time
+## The original rule (#9, superseded on 9 Oct 2026 by the decision above): two gates, both required
 
 An automatic merge happens only when **both** gates pass. They are checks the system runs,
 never the model's confidence in itself.

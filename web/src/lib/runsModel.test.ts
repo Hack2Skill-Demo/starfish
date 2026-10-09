@@ -12,6 +12,7 @@ import {
   runFilter,
   runStatus,
   safeUrl,
+  triageDecision,
   triageRule,
   type CycleRow,
   type EventRow,
@@ -196,6 +197,18 @@ describe("small helpers", () => {
     expect(safeUrl("http://x.test")).toBeUndefined();
     expect(safeUrl("not a url")).toBeUndefined();
     expect(safeUrl(5)).toBeUndefined();
+  });
+
+  it("reads how far triage went, with the merge case only for a merge", () => {
+    expect(triageDecision(cycle({ summary: { triage: { level: "merge", mergeCase: "missing-await" } } }))).toEqual({
+      label: "Log + fix + merge: Starfish merges it on green checks",
+      mergeCase: "missing-await",
+    });
+    expect(triageDecision(cycle({ summary: { triage: { level: "fix", mergeCase: "missing-await" } } }))).toEqual({ label: "Log + fix: a verified pull request; a person merges" });
+    expect(triageDecision(cycle({ summary: { triage: { level: "log" } } }))?.label).toContain("a person fixes it");
+    expect(triageDecision(cycle({ summary: { triage: { level: "noise" } } }))?.label).toContain("nothing filed");
+    expect(triageDecision(cycle({ summary: { triage: { level: "everything" } } }))).toBeUndefined();
+    expect(triageDecision(cycle())).toBeUndefined();
   });
 
   it("reads the triage rule from the run record", () => {

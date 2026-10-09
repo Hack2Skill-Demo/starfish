@@ -6,10 +6,13 @@ Guidance for Claude Code when working in this repository.
 
 An AI ops engineer for teams that don't have one: it watches a Firebase/GCP project's logs,
 judges which incidents are urgent, drafts a fix with Gemini, verifies it deterministically,
-adversarially reviews it, and **stops at a pull request**. It never deploys. It merges only
-where an admin turned auto-merge on for that target (the demo, listed in `STARFISH_AUTO_MERGE_TARGETS`)
-and every gate passes (#9: built behind a default-off switch, never run against real GitHub); every
-other target is PR-only.
+adversarially reviews it, and **stops at a pull request** unless Gemini decides the incident is one
+of the admin's merge cases. It runs no deploy itself, but a merge is a release: the target's CI/CD
+ships what is merged. How far it goes (log, log + fix, log + fix + merge) is
+Gemini's decision; it merges only where an admin turned auto-merge on for that target (the demo,
+listed in `STARFISH_AUTO_MERGE_TARGETS`), listed the case, and the safety floor and every required
+check pass (built behind default-off switches, never run against real GitHub); every other target is
+PR-only.
 
 Two constraints shape everything: the model it uses is **Gemini on Vertex AI**, and it must
 be **generic** (below).
@@ -101,9 +104,10 @@ asked. `/ship` encodes the loop:
 didn't create, force-pushing shared branches); genuinely ambiguous scope; anything that
 would let Starfish **merge or deploy on its own** (the trust ladder in the README is a
 product decision, not a code change; the decided direction and its preconditions are in
-`docs/design/auto-merge-policy.md`: built for the demo target behind a default-off switch, never run
-against real GitHub; widening it to another target, loosening a gate or the hard-exclude list, or
-defaulting it on is that product decision); spending that isn't free (new paid GCP services);
+`docs/design/auto-merge-policy.md`: Gemini decides how far to go within the admin's merge cases,
+built for the demo target behind default-off switches, never run against real GitHub; widening it to
+another target, lowering the safety floor or the hard-exclude list, or defaulting it on is that
+product decision); spending that isn't free (new paid GCP services);
 and changes to what the pitch claims.
 
 ## Git
@@ -154,18 +158,24 @@ src/
                    last-good), replay the pending window or plan the next, advance the checkpoint only
                    after it all commits, write last_run. State per (watched project, environment). Bounded by a
                    run budget (`STARFISH_INGEST_RUN_BUDGET_SECONDS`) the deploy's timeouts are derived from (#221)
-  agent/triage.ts  stage 1 of the agent loop (#8): act/notify/decline for one incident; deterministic
-                   gates before the model, local validation after it; run by `pnpm agent` (deployable, never run)
+  agent/triage.ts  stage 1 of the agent loop (#8): act/notify/decline for one incident, and how far to go
+                   (`triageLevel`: noise, log, fix, merge): on act the model may name one of the admin's merge cases
+                   (`mergeCases`; `missing-index` never offered), kept only if listed. Deterministic gates before the
+                   model, local validation after it; run by `pnpm agent` (deployable, never run)
   agent/fixer.ts   stage 2: minimal patch or honest decline from a stubbed-testable model call;
                    fails closed, redacts both ways. Run by `pnpm agent` (deployable, never run)
   agent/cycle.ts   cycle per (incident, recurrence), transactional lease with fencing, append-only run events
                    (redacted), the cycle's run record (summary.<stage>, path) and its model-call and revision counts (#182); infrastructure errors throw, logical refusals are returned. Run by `pnpm agent` (deployable, never run)
   agent/loop.ts    one cycle: lease -> triage -> fix -> verify -> review -> PR (interface); rechecks status +
                    kill switch, one shared revision, call budget, dry run by default. Run by `pnpm agent`. Where
-                   auto-merge may apply it also runs gate 1 and the "fails before" run (`summary.before`) and records
-                   the candidate (`summary.merge` pending); it never merges itself. Gate 1 holds only if its files are
-                   exactly the files the verify gate saw change
-  agent/blastRadius.ts  auto-merge gate 1 (#9), pure: a conservative diff classifier (null guard on an explicit null/undefined
+                   triage named a merge case auto-merge may apply to, it also runs the safety floor and the "fails
+                   before" run (`summary.before`, reported) and records the candidate (`summary.merge` pending, with the
+                   case); it never merges itself. The floor holds only if its files are exactly the files the verify
+                   gate saw change
+  agent/blastRadius.ts  the safety floor every merge needs (`assessMergeFloor`: gate 1's parsing, hard-exclude list and
+                   whole-function check, tests only as new files, one production file, any number of hunks; no fix
+                   class or size rule). And #9's original gate 1 (`assessBlastRadius`, no longer used to merge), pure:
+                   a conservative diff classifier (null guard on an explicit null/undefined
                    check, never `!x`, that leaves with nothing or throws, ended by `;` or a block, after a line that ends
                    a statement; `?.` (never before a call) and only `?? null`/`?? undefined`, never on a line that
                    compares or does arithmetic; missing await; Firestore undefined field; literals and comments
@@ -175,9 +185,11 @@ src/
                    statement of the whole enclosing function in the base file, which the loop passes in, and for a null
                    guard on every statement naming one, a check written as a call included). Unsure is never
                    allowed
-  agent/autoMerge.ts  the switches (`mergeBlockedBy`), gate 2 (`certaintyGate`, pure over the run record; the stack
-                   frame matched against the checkout's whole file list) and the merge step after the pass: fresh
-                   switches + incident status, gates, no earlier merge of the incident still watched or reverted (#240),
+  agent/autoMerge.ts  the switches (`mergeBlockedBy`, with the candidate's merge case still listed), gate 2 (`certaintyGate`,
+                   pure over the run record, now reported in the evidence, not required) and the merge step after the
+                   pass: a merge case recorded, fresh switches + incident status, the floor, no earlier merge of the
+                   incident still watched or reverted (#240), the index path's evidence PR (`kind: index`, no revert
+                   watch),
                    PR into the configured base with the head Starfish built, every
                    run of the named checks from `STARFISH_VERIFY_CHECK_APP` green on it, daily cap (transactional),
                    evidence comment, squash merge with `sha`. Any failure: PR stays open + notify. Fakes + emulator
@@ -246,7 +258,8 @@ src/
                    `observe.ts` decides healed / recurred after the quiet window (writes the run record only, never the incident)
   agent/indexPath.ts  the loop's index path: a MissingIndexError skips triage and the model when an index target is allowed;
                    attempt recorded (fenced) before the create, operation after; the incident's issue via the loop's openIssue
-                   (linked, never closed, by the evidence PR); evidence PR via the PR opener. Run by
+                   (linked, never closed, by the evidence PR); evidence PR via the PR opener, recorded as an auto-merge
+                   candidate when the admin lists the reserved `missing-index` merge case. Run by
                    `pnpm agent`; tested against fakes and the emulator, never run against Google
   integrations/slack.ts  Slack delivery (#17): one "needs a human" message through an incoming webhook, from redacted plain-text
                    fields; bounded retries, a failed delivery is a recorded result (`summary.notify`), a dry run sends nothing; the webhook

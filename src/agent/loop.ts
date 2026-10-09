@@ -29,14 +29,17 @@
  *     cycle waiting for a person and nothing is opened. Opening is an interface (`openPullRequest`)
  *     keyed by the cycle id so a retry after a timeout cannot open a second one; the loop itself never merges
  *     and never deploys.
- *   - AUTO-MERGE EVIDENCE (#9). Only where auto-merge could apply (`autoMergeAllowed`, dry run off), the loop runs
- *     gate 1 on the proposed patch (blastRadius.ts) with the changed file's content read from the base checkout
- *     (`readBaseFiles`), and, when it passes, runs the patch's TESTS ALONE (new test files only) on the base
- *     revision through the same verifier, so the run record shows the test failing before the fix (`summary.before`).
- *     When it opens the pull request it records the candidate (`summary.merge`); merging is the agent pass's
- *     separate step (autoMerge.ts). A candidate that fails gate 1 is handed to a person at once. Nothing is prepared
- *     while an earlier Starfish merge for the same incident is still watched, or was reverted (#240): the pull request
- *     is recorded as not auto-merged and a person is told.
+ *   - HOW FAR TO GO is triage's decision (triage.ts `triageLevel`): decline (noise), notify (log), act (log + fix), or
+ *     act with one of the admin's merge cases (log + fix + merge). The cases are passed to triage from the config.
+ *   - AUTO-MERGE EVIDENCE (#9). Only where Gemini named a merge case and auto-merge could apply to it right now
+ *     (`autoMergeAllowed(case)`, dry run off), the loop runs the safety floor on the proposed patch (blastRadius.ts
+ *     `assessMergeFloor`) with the changed file's content read from the base checkout (`readBaseFiles`), and, when it
+ *     passes, runs the patch's TESTS ALONE (new test files only) on the base revision through the same verifier, so the
+ *     run record shows whether the test failed before the fix (`summary.before`, reported in the evidence, not
+ *     required). When it opens the pull request it records the candidate (`summary.merge`, with the case); merging is
+ *     the agent pass's separate step (autoMerge.ts). A candidate that fails the floor is handed to a person at once.
+ *     Nothing is prepared while an earlier Starfish merge for the same incident is still watched, or was reverted
+ *     (#240): the pull request is recorded as not auto-merged and a person is told.
  *
  * Infrastructure errors (the store, the opener) throw, as in cycle.ts: a worker that cannot reach what it
  * needs must not carry on. The lease then expires and the cycle is resumed.
@@ -71,15 +74,16 @@ import type { IssueRequest } from "../integrations/githubPr.js";
 import type { AlertRequest, DeliveryResult, NotifyRequest } from "../integrations/slack.js";
 import { proposeFix, type FixRequest, type FixRule, type SourceFile } from "./fixer.js";
 import { reviewPatch, type Attack, type ReviewVerdict } from "./reviewer.js";
-import { triageIncident, type AskJson, type TriageSubject } from "./triage.js";
+import { triageIncident, triageLevel, type AskJson, type TriageSubject } from "./triage.js";
 import { verifyPatch, type VerifyConfig, type VerifyRequest, type VerifyResult } from "./verifyGate.js";
 import { causeClass, type ReconsiderPolicy } from "./reconsider.js";
 import { isIndexIncident, runIndexPath, type IndexHealWiring } from "./indexPath.js";
 import { linkFromEvent, linkIncident } from "./incidentLinks.js";
 import { lstat, readFile, realpath } from "node:fs/promises";
 import { join } from "node:path";
-import { assessBlastRadius, judgedTheVerifiedFiles, parsePatch, testOnlyPatch, type BlastRadius } from "./blastRadius.js";
+import { assessMergeFloor, judgedTheVerifiedFiles, parsePatch, testOnlyPatch, type BlastRadius } from "./blastRadius.js";
 import { earlierMergeHolds, mergeRecordAtOpen } from "./autoMerge.js";
+import { INDEX_MERGE_CASE } from "../settingsSchema.js";
 import { sha256 } from "./reviewer.js";
 
 /** Everything about the incident the stages need, assembled by the caller (it owns the repo checkout). */
@@ -138,7 +142,7 @@ export interface IndexEvidence {
 
 export interface LoopDeps {
   db: Firestore;
-  config: Pick<StarfishConfig, "dryRun" | "reviewRequired" | "modelCallBudget" | "uiBaseUrl" | "model" | "incidentCollection" | "autoMergeExcludedPaths"> &
+  config: Pick<StarfishConfig, "dryRun" | "reviewRequired" | "modelCallBudget" | "uiBaseUrl" | "model" | "incidentCollection" | "autoMergeExcludedPaths" | "mergeCases"> &
     CycleConfig &
     VerifyConfig;
   /** This worker's identity, for the lease. */
@@ -164,9 +168,10 @@ export interface LoopDeps {
   openPullRequest?: (req: PullRequestRequest) => Promise<{ number: number; url: string; headSha?: string }>;
   /**
    * Auto-merge (#9): whether it could apply to this deployment's target right now, read fresh (the switches in
-   * autoMerge.ts `mergeBlockedBy`). Absent, or false: nothing about merging is prepared and the pull request is the end.
+   * autoMerge.ts `mergeBlockedBy`); with a merge case, that the case is still listed too. Absent, or false: nothing about
+   * merging is prepared and the pull request is the end.
    */
-  autoMergeAllowed?: () => Promise<boolean>;
+  autoMergeAllowed?: (mergeCase?: string) => Promise<boolean>;
   /**
    * The pull request this cycle already opened, or null (#134). Asked once at the start of an attempt that has none
    * recorded, so an attempt resumed after the open succeeded but its record did not stops there instead of redoing
@@ -385,8 +390,9 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
       return why === null ? null : haltFor(why);
     };
 
-    // Auto-merge could apply right now (#9): never in a dry run, never without the switches.
-    const autoMergeOn = async (): Promise<boolean> => !cfg.dryRun && deps.autoMergeAllowed !== undefined && (await deps.autoMergeAllowed());
+    // Auto-merge could apply right now (#9): never in a dry run, never without the switches; with a case, that case listed.
+    const autoMergeOn = async (mergeCase?: string): Promise<boolean> =>
+      !cfg.dryRun && deps.autoMergeAllowed !== undefined && (await deps.autoMergeAllowed(mergeCase));
     // An earlier Starfish merge for this incident still watched, or reverted: its revert, not a second fix, is what
     // follows, so nothing is prepared for merging this one (#240). The merge step asks again before any merge.
     const mergeHeldBy = async (): Promise<string | null> => earlierMergeHolds(db, cfg, key.incidentId, id);
@@ -394,7 +400,9 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
     // The incident's GitHub issue: one per cycle Starfish acts on or escalates, none for a declined one. Recorded on the
     // cycle (`summary.issue`) so a resumed attempt reuses it, and so a failure is visible and not silent.
     let issue: { number: number; url: string } | undefined;
-    const fileIssue = async (loaded: LoopSubject, path: IssueRequest["path"], reason: string, suspectedCause: string | undefined): Promise<void> => {
+    // `mergeCase`: the admin's case Gemini named in triage (triage.ts), when it named one: only then may the issue say
+    // Starfish could merge the fix itself.
+    const fileIssue = async (loaded: LoopSubject, path: IssueRequest["path"], reason: string, suspectedCause: string | undefined, mergeCase?: string): Promise<void> => {
       if (!deps.openIssue) return;
       const snap = await db.collection(cfg.cycleCollection).doc(id).get();
       const prior = (snap.data()?.summary as { issue?: { state?: unknown; number?: unknown; url?: unknown } } | undefined)?.issue;
@@ -424,7 +432,7 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
           reason,
           suspectedCause: suspectedCause ?? null,
           uiBaseUrl: cfg.uiBaseUrl,
-          ...(path === "act" && (await autoMergeOn()) && (await mergeHeldBy()) === null && { autoMerge: true }),
+          ...(path === "act" && mergeCase !== undefined && (await autoMergeOn(mergeCase)) && (await mergeHeldBy()) === null && { autoMerge: true }),
         });
       } catch (err) {
         const rule = typeof (err as { rule?: unknown })?.rule === "string" ? (err as { rule: string }).rule : "error";
@@ -524,10 +532,10 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
         record: { opened: true, number: priorPr.number, url: priorPr.url, ...(priorPr.patchSha256 !== undefined && { patchSha256: priorPr.patchSha256 }) },
       });
       if (priorPr.index) return await finish("done", "index-pr-opened", "index");
-      // Where auto-merge could apply, the attempt that opened it never recorded it as a candidate (#184): what gate 1 and
+      // Where auto-merge could apply, the attempt that opened it never recorded it as a candidate (#184): what the floor and
       // the "fails before" run saw is gone with it, so it is never merged on a guess. Recorded as skipped, and a person
       // is told the decision is theirs.
-      if (!priorPr.mergeRecorded && (await autoMergeOn())) {
+      if (priorPr.mergeCase !== undefined && !priorPr.mergeRecorded && (await autoMergeOn(priorPr.mergeCase))) {
         await note({
           stage: "merge",
           type: "skipped",
@@ -604,6 +612,8 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
         },
         beat: keeper.beat,
         ...(!cfg.dryRun && deps.openPullRequest && { openPullRequest: deps.openPullRequest }),
+        // The admin's reserved `missing-index` case, read fresh: listed, the evidence PR merges once its checks are green.
+        indexMergeAllowed: async () => (await autoMergeOn(INDEX_MERGE_CASE)) && (await mergeHeldBy()) === null,
       });
     }
 
@@ -622,18 +632,24 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
       }
       return deps.ask<T>(prompt, system, schema);
     };
-    const triage = await triageIncident(loaded.subject, countedAsk);
+    const triage = await triageIncident(loaded.subject, countedAsk, { mergeCases: cfg.mergeCases });
     if (spendError !== undefined) throw spendError;
+    // The merge case Gemini named (triage.ts): Starfish may merge only what it named.
+    const chosenCase = triage.mergeCase;
+    const level = triageLevel(triage);
     await note({
       stage: "triage",
       type: "decision",
       summary: triage.reason,
-      data: { decision: triage.decision, rule: triage.rule },
+      data: { decision: triage.decision, rule: triage.rule, ...(level !== null && { level }) },
       record: {
         decision: triage.decision,
         rule: triage.rule,
         reason: triage.reason,
         suspectedCause: triage.suspectedCause ?? null,
+        // How far Starfish goes (noise, log, fix, merge), and the admin's merge case Gemini named for "merge".
+        level,
+        mergeCase: triage.mergeCase ?? null,
         // The configured model, only when the decision was the model's: a gate (missing or zero recount) asked none.
         ...(triage.rule.startsWith("model-") && { model: cfg.model }),
         ...counterCheckRecord(loaded.subject.incident.logCounterCheck),
@@ -645,7 +661,7 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
       // anything is filed or posted (#181).
       stop = await halted();
       if (stop) return stop;
-      await fileIssue(loaded, triage.decision, triage.reason, triage.suspectedCause);
+      await fileIssue(loaded, triage.decision, triage.reason, triage.suspectedCause, chosenCase);
       await alertTeam(loaded, triage.decision, triage.reason);
     }
     switch (triage.decision) {
@@ -711,17 +727,18 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
         return await handOver(factsOf(loaded), "human", fix.rule, fix.rootCause, fix.rule, "human");
       }
 
-      // ---- auto-merge evidence (#9): gate 1, then the patch's tests alone on the base revision -----------------
-      let gate1: BlastRadius | undefined;
-      const mayMerge = await autoMergeOn();
+      // ---- auto-merge evidence (#9): the safety floor, then the patch's tests alone on the base revision -------
+      // Only where Gemini named a merge case: the decision to merge is its, inside the cases an admin listed.
+      let floor: BlastRadius | undefined;
+      const mayMerge = chosenCase !== undefined && (await autoMergeOn(chosenCase));
       const heldBack = mayMerge ? await mergeHeldBy() : null;
       if (mayMerge && heldBack === null) {
-        gate1 = assessBlastRadius(fix.patch, {
+        floor = assessMergeFloor(fix.patch, {
           excludedPaths: [...cfg.patchExcludedPaths, ...cfg.autoMergeExcludedPaths],
-          // Gate 1 judges the whole function around the change, as the base revision has it (#202).
+          // The floor judges the whole function around each change, as the base revision has it (#202).
           baseFiles: await readBaseFiles(loaded.sourceDir, fix.patch),
         });
-        if (gate1.allowed) {
+        if (floor.allowed) {
           stop = await halted();
           if (stop) return stop;
           await recordFailsBefore(deps, { id, loaded, heartbeat: keeper.beat, note, renew }, fix.patch);
@@ -765,13 +782,13 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
         }
         return await handOver(factsOf(loaded), "human", `verify-${verified.rule}`, verified.reason, `verify-${verified.rule}`, "human");
       }
-      // Gate 1 read the patch's headers; the verify gate saw what `git apply` actually wrote. Unless they are the same
-      // files, gate 1 judged a different change from the one that was verified, and it does not hold (#200).
+      // The floor read the patch's headers; the verify gate saw what `git apply` actually wrote. Unless they are the same
+      // files, the floor judged a different change from the one that was verified, and it does not hold (#200).
       // Only the files, not their lines: the written tree is gone by now (a scratch copy, or a branch the target's CI
-      // built), so the lines git wrote cannot be compared here. That half rests on gate 1 reading lines exactly as git
+      // built), so the lines git wrote cannot be compared here. That half rests on the floor reading lines exactly as git
       // does: a `\ No newline` marker anywhere but a file's end, where git would join two lines, is refused (#237).
-      if (gate1?.allowed && !judgedTheVerifiedFiles(gate1, verified.changedFiles)) {
-        gate1 = { ...gate1, allowed: false, problems: [...gate1.problems, "files-differ-from-verified"] };
+      if (floor?.allowed && !judgedTheVerifiedFiles(floor, verified.changedFiles)) {
+        floor = { ...floor, allowed: false, problems: [...floor.problems, "files-differ-from-verified"] };
       }
 
       let review: { verdict: ReviewVerdict; attacks: Attack[] } | undefined;
@@ -849,7 +866,7 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
         verify: { status: verified.status, rule: verified.rule, changedFiles: verified.changedFiles, output: verified.output },
         ...(issue && { issueNumber: issue.number }),
         ...(review && { review }),
-        ...(gate1?.allowed === true && { autoMerge: true }),
+        ...(floor?.allowed === true && { autoMerge: true }),
       });
       await note({
         stage: "pr",
@@ -858,19 +875,33 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
         data: { number: pr.number, patchSha256: verified.patchSha256 },
         record: { opened: true, number: pr.number, url: pr.url, patchSha256: verified.patchSha256 },
       });
-      // The auto-merge candidate (#9): pending for the pass's merge step, or handed to a person now when gate 1 failed.
-      if (gate1) {
-        const record = mergeRecordAtOpen({ gate1, pr, patchSha256: verified.patchSha256, incident: loaded.subject.incident, repoFiles: loaded.repoFiles ?? [], now: deps.now() });
+      // The auto-merge candidate (#9): pending for the pass's merge step, or handed to a person now when the floor failed.
+      if (floor && chosenCase !== undefined) {
+        const record = mergeRecordAtOpen({
+          floor,
+          mergeCase: chosenCase,
+          pr,
+          patchSha256: verified.patchSha256,
+          baseRevision: loaded.baseRevision,
+          incident: loaded.subject.incident,
+          repoFiles: loaded.repoFiles ?? [],
+          now: deps.now(),
+        });
         const pending = record.state === "pending";
         await note({
           stage: "merge",
           type: String(record.state),
-          summary: pending ? "Auto-merge candidate: waiting for the required checks" : `Not auto-merged: ${String(record.reason)}`,
-          data: { gate1: gate1.allowed ? "pass" : "fail" },
+          summary: pending ? `Auto-merge candidate (${chosenCase}): waiting for the required checks` : `Not auto-merged: ${String(record.reason)}`,
+          data: { floor: floor.allowed ? "pass" : "fail", mergeCase: chosenCase },
           record,
         });
         if (!pending) {
-          await announce(factsOf(loaded), "human", "auto-merge-gate1", "The pull request is open, but Starfish may not merge it itself (gate 1, low blast radius, or its head is unknown). A person decides.");
+          await announce(
+            factsOf(loaded),
+            "human",
+            "auto-merge-floor",
+            "The pull request is open, but Starfish may not merge it itself (the change is outside the safety floor, or its head is unknown). A person decides."
+          );
         }
       } else if (heldBack !== null) {
         await note({
@@ -896,14 +927,14 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
   }
 }
 
-/** The most files, and the largest file, read for gate 1: a patch gate 1 can pass changes one source file. */
+/** The most files, and the largest file, read for the safety floor: a patch it can pass changes one source file. */
 const MAX_BASE_FILES = 4;
 const MAX_BASE_FILE_BYTES = 1024 * 1024;
 
 /**
- * The base revision's content of the existing files a patch changes, read from the cycle's checkout (#202): what gate 1
- * judges the enclosing function on. A file is read only when it is a regular file reached with no symbolic link on the
- * way, inside the checkout, within the size cap, and text; anything else is left out, and gate 1 then refuses (no base
+ * The base revision's content of the existing files a patch changes, read from the cycle's checkout (#202): what the
+ * safety floor judges the enclosing function on. A file is read only when it is a regular file reached with no symbolic link on the
+ * way, inside the checkout, within the size cap, and text; anything else is left out, and the floor then refuses (no base
  * is not a pass). Never throws.
  */
 export async function readBaseFiles(sourceDir: string, patch: string): Promise<Map<string, string>> {
@@ -925,17 +956,18 @@ export async function readBaseFiles(sourceDir: string, patch: string): Promise<M
       const content = await readFile(full, "utf8");
       if (!content.includes("\0")) out.set(rel, content);
     } catch {
-      // Missing or unreadable: left out, and gate 1 refuses.
+      // Missing or unreadable: left out, and the floor refuses.
     }
   }
   return out;
 }
 
 /**
- * The "fails before" half of gate 2 (#9), recorded as `summary.before`: the patch's TEST files alone, on the base revision,
- * through the same verifier the patch goes through. `failed` is the evidence wanted: the test fails without the fix. A
- * patch with no test file, or a verifier that broke, is recorded as such, and gate 2 then fails: missing is not a failure
- * of the test. With `github-actions` this is a commit on `starfish/<cycle>` that the target's CI judges, deleted again.
+ * "Fails before" (#9), recorded as `summary.before`: the patch's TEST files alone, on the base revision, through the same
+ * verifier the patch goes through. `failed` is the evidence wanted: the test fails without the fix. A patch with no test
+ * file, or a verifier that broke, is recorded as such: missing is not a failure of the test. Reported in the merge's
+ * evidence comment; no longer required to merge. With `github-actions` this is a commit on `starfish/<cycle>` that the
+ * target's CI judges, deleted again.
  */
 async function recordFailsBefore(
   deps: LoopDeps,
@@ -973,6 +1005,8 @@ interface OpenedPullRequest {
   index: boolean;
   /** Whether the cycle holds an auto-merge record (`summary.merge`) for it (#184). */
   mergeRecorded: boolean;
+  /** The merge case the cycle's triage named, when it named one: only then could the pull request have been a candidate. */
+  mergeCase?: string;
   /** The incident's issue, when one was recorded: the message to a person links it. */
   issueNumber?: number;
   issueUrl?: string;
@@ -982,21 +1016,28 @@ interface OpenedPullRequest {
 async function openedPullRequest(deps: LoopDeps, id: string): Promise<OpenedPullRequest | null> {
   const snap = await deps.db.collection(deps.config.cycleCollection).doc(id).get();
   const summary = snap.data()?.summary as
-    | { pr?: { opened?: unknown; number?: unknown; url?: unknown; patchSha256?: unknown }; index?: unknown; merge?: unknown; issue?: { state?: unknown; number?: unknown; url?: unknown } }
+    | {
+        pr?: { opened?: unknown; number?: unknown; url?: unknown; patchSha256?: unknown };
+        index?: unknown;
+        merge?: unknown;
+        issue?: { state?: unknown; number?: unknown; url?: unknown };
+        triage?: { mergeCase?: unknown };
+      }
     | undefined;
   // An index cycle's PR is its evidence PR: the cycle keeps the index path (and its runtime record) when it is resumed.
   const index = summary?.index !== undefined;
   const mergeRecorded = summary?.merge !== undefined;
+  const mergeCase = typeof summary?.triage?.mergeCase === "string" && summary.triage.mergeCase !== "" ? { mergeCase: summary.triage.mergeCase } : {};
   const issue = summary?.issue;
   const issueFields =
     issue?.state === "opened" && typeof issue.number === "number" && typeof issue.url === "string" ? { issueNumber: issue.number, issueUrl: issue.url } : {};
   const pr = summary?.pr;
   if (pr?.opened === true && typeof pr.number === "number" && typeof pr.url === "string") {
-    return { number: pr.number, url: pr.url, ...(typeof pr.patchSha256 === "string" && { patchSha256: pr.patchSha256 }), index, mergeRecorded, ...issueFields };
+    return { number: pr.number, url: pr.url, ...(typeof pr.patchSha256 === "string" && { patchSha256: pr.patchSha256 }), index, mergeRecorded, ...mergeCase, ...issueFields };
   }
   if (deps.config.dryRun || !deps.openPullRequest || !deps.findPullRequest) return null;
   const found = await deps.findPullRequest(id);
-  return found && { ...found, index, mergeRecorded, ...issueFields };
+  return found && { ...found, index, mergeRecorded, ...mergeCase, ...issueFields };
 }
 
 /**

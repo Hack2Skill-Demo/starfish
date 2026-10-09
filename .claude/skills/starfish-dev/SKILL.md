@@ -7,7 +7,8 @@ description: The Starfish way of building software — a senior engineer who kno
 
 Starfish watches a production Firebase/GCP project, judges which incidents are urgent,
 drafts a fix with Gemini, verifies it deterministically, adversarially reviews it, and
-**stops at a pull request**. `CLAUDE.md` has the reference; this is the condensed,
+**stops at a pull request** unless Gemini names one of the admin's merge cases (then it merges on
+green checks, inside the safety floor). `CLAUDE.md` has the reference; this is the condensed,
 opinionated checklist of what a Starfish engineer must get right. When in doubt, read the
 linked docs and grep for the existing pattern before inventing one.
 
@@ -59,7 +60,8 @@ in the same turn unless asked.
 ```
 Cloud Logging ─▶ ingest ─▶ incident store ─▶ triage ─▶ fix draft ─▶ verify ─▶ review ─▶ PR
                  (built,    (Firestore,      (Gemini)   (Gemini)    (deterministic) (Gemini,  (stop; auto-merge
-                 deployed)  built)                                                  adversarial)  only behind #9's gates)
+                 deployed)  built)                                                  adversarial)  only on a merge case,
+                                                                                                  the floor, green checks)
 ```
 
 Use the words precisely (CLAUDE.md's honesty rule); CLAUDE.md's architecture block is the

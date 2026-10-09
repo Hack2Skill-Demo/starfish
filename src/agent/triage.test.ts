@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
-import { MAX_REASON_LEN, TRIAGE_SCHEMA, renderForTriage, triageIncident, type AskJson } from "./triage.js";
+import { MAX_REASON_LEN, TRIAGE_SCHEMA, TRIAGE_SYSTEM, renderForTriage, triageIncident, triageLevel, type AskJson } from "./triage.js";
 import { SEEDED_SECRETS } from "../ingest/testSecrets.js";
 import { INCIDENT_STATUSES, OPEN_INCIDENT_STATUSES, type Incident, type SpikeFixture } from "../types.js";
 
@@ -299,5 +299,74 @@ describe("triageIncident: a Monitoring-only incident (#19)", () => {
     expect(text).toContain("source: Cloud Monitoring only");
     expect(text).toContain("failed invocations counted by Cloud Monitoring: 37");
     expect(renderForTriage({ incident: incident(), status: "new" })).not.toContain("Cloud Monitoring");
+  });
+});
+
+describe("triageIncident: how far to go, and the merge case (Gemini's executive decision)", () => {
+  const cases = [
+    { id: "missing-await", description: "a promise is used before it is awaited" },
+    { id: "firestore-undefined-field", description: "a Firestore write fails because a field is undefined" },
+    { id: "missing-index", description: "the index path's own case" },
+  ];
+  const subject = { incident: incident(), status: "new" as const };
+
+  it("asks exactly as before when no case is listed: no merge section, no merge field", async () => {
+    const { ask, calls } = stub(act);
+    await triageIncident(subject, ask, { mergeCases: [] });
+    expect(calls[0]!.system).toBe(TRIAGE_SYSTEM);
+    expect(calls[0]!.schema).toEqual(TRIAGE_SCHEMA);
+  });
+
+  it("offers the listed cases (never the index path's reserved one) and requires an answer for the merge field", async () => {
+    const { ask, calls } = stub({ ...act, mergeCase: null });
+    await triageIncident(subject, ask, { mergeCases: cases });
+    const { system, schema } = calls[0]!;
+    expect(system).toContain("MERGE CASES");
+    expect(system).toContain("- missing-await: a promise is used before it is awaited");
+    expect(system).toContain("- firestore-undefined-field:");
+    expect(system).not.toContain("missing-index");
+    expect(system).toContain("When in doubt, null");
+    expect((schema.required as string[])).toContain("mergeCase");
+    expect(JSON.stringify(schema.properties)).toContain("missing-await, firestore-undefined-field");
+  });
+
+  it("keeps a listed case on act: the level is merge", async () => {
+    const { ask } = stub({ ...act, mergeCase: "missing-await" });
+    const r = await triageIncident(subject, ask, { mergeCases: cases });
+    expect(r).toMatchObject({ decision: "act", mergeCase: "missing-await" });
+    expect(triageLevel(r)).toBe("merge");
+  });
+
+  it.each([
+    ["a case nobody listed", { ...act, mergeCase: "rewrite-everything" }],
+    ["the index path's reserved case", { ...act, mergeCase: "missing-index" }],
+    ["a case on notify", { decision: "notify", reasoning: "quota", suspectedCause: null, mergeCase: "missing-await" }],
+    ["a case on decline", { decision: "decline", reasoning: "noise", suspectedCause: null, mergeCase: "missing-await" }],
+    ["a case that is not a string", { ...act, mergeCase: 7 }],
+  ])("drops %s: a person merges whatever is fixed", async (_name, answer) => {
+    const { ask } = stub(answer);
+    const r = await triageIncident(subject, ask, { mergeCases: cases });
+    expect(r.mergeCase).toBeUndefined();
+    expect(r.rule).toMatch(/^model-/); // a malformed merge choice costs the merge, never the triage
+  });
+
+  it("drops the case when no case is listed at all, whatever the model says", async () => {
+    const { ask } = stub({ ...act, mergeCase: "missing-await" });
+    expect((await triageIncident(subject, ask)).mergeCase).toBeUndefined();
+  });
+
+  it("never merges a Monitoring-only incident with no cause: act becomes notify, and the case goes with it", async () => {
+    const { ask } = stub({ ...act, mergeCase: "missing-await" });
+    const r = await triageIncident({ incident: incident({ signalSource: "monitoring", logCounterCheck: { window: "24h", count: 0 } }), status: "new" }, ask, { mergeCases: cases });
+    expect(r).toMatchObject({ decision: "notify", rule: "monitoring-only-no-cause" });
+    expect(r.mergeCase).toBeUndefined();
+  });
+
+  it("names the level of every decision", () => {
+    expect(triageLevel({ decision: "decline" })).toBe("noise");
+    expect(triageLevel({ decision: "notify" })).toBe("log");
+    expect(triageLevel({ decision: "act" })).toBe("fix");
+    expect(triageLevel({ decision: "act", mergeCase: "missing-await" })).toBe("merge");
+    for (const d of ["skip", "defer", "error"] as const) expect(triageLevel({ decision: d })).toBeNull();
   });
 });

@@ -19,12 +19,19 @@ export interface RuntimeSettings {
   /** The kill switch: false stops the agent loop at its next step. */
   automationEnabled?: boolean;
   /**
-   * Auto-merge for this deployment's target (#9): a pull request whose gates all pass is merged. The engine's default
-   * is off, and it only ever applies to a target the deployment lists in STARFISH_AUTO_MERGE_TARGETS (the demo).
+   * Auto-merge for this deployment's target (#9): a pull request for an incident Gemini named one of `mergeCases` for,
+   * inside the safety floor and with every required check green, is merged. The engine's default is off, and it only
+   * ever applies to a target the deployment lists in STARFISH_AUTO_MERGE_TARGETS (the demo).
    */
   autoMerge?: boolean;
   /** The global off switch for merging: true stops every automatic merge and revert, whatever `autoMerge` says. */
   mergeFreeze?: boolean;
+  /**
+   * The kinds of incident Starfish may merge a fix for by itself (docs/design/auto-merge-policy.md). Gemini decides
+   * whether an incident is one of them; nothing merges for an incident it does not name one of these for. An empty list
+   * (the engine's default) means nothing merges.
+   */
+  mergeCases?: MergeCase[];
   /** The most model calls one cycle may make. */
   modelCallBudget?: number;
   /** The Gemini model id the agent asks (triage, fix, review), e.g. gemini-3.1-pro-preview. */
@@ -36,6 +43,48 @@ export interface RuntimeSettings {
    * and the Vertex AI API enabled; the deploy grants that only on its own VERTEX_PROJECT_ID.
    */
   vertexProjectId?: string;
+}
+
+/**
+ * One kind of incident an admin lets Starfish merge a fix for with no person in the loop: Gemini reads the description
+ * and must name the id to choose "merge" for an incident. Descriptions are written for the model, in plain words
+ * ("a Firestore write fails because a field is undefined").
+ */
+export interface MergeCase {
+  id: string;
+  description: string;
+}
+
+/**
+ * The reserved case of the missing-index path (#11), which asks no model: Google's error names the exact index. Listed,
+ * it lets that path's evidence pull request merge once the required checks are green; not listed, a person merges it.
+ */
+export const INDEX_MERGE_CASE = "missing-index";
+export const MAX_MERGE_CASES = 20;
+export const MAX_MERGE_CASE_DESCRIPTION = 300;
+/** A case id: lowercase letters, digits and '-', 2-40 characters, starting with a letter. firestore.rules caps the list's size. */
+export const MERGE_CASE_ID = /^[a-z][a-z0-9-]{1,39}$/;
+
+/**
+ * Check a list of merge cases (from the settings document or the environment). The problem names the rule, never a
+ * value. Ids are unique; descriptions are 1-300 characters with no control characters, since they reach the model.
+ */
+export function validateMergeCases(raw: unknown): { ok: true; cases: MergeCase[] } | { ok: false; problem: string } {
+  const rule = `mergeCases: a list of at most ${MAX_MERGE_CASES} cases, each { id, description }: a unique id of 2-40 lowercase letters, digits or '-' starting with a letter, and a description of 1-${MAX_MERGE_CASE_DESCRIPTION} characters with no control characters`;
+  if (!Array.isArray(raw) || raw.length > MAX_MERGE_CASES) return { ok: false, problem: rule };
+  const cases: MergeCase[] = [];
+  const seen = new Set<string>();
+  for (const entry of raw as unknown[]) {
+    if (!isPlainObject(entry) || Object.keys(entry).some((k) => k !== "id" && k !== "description")) return { ok: false, problem: rule };
+    const { id, description } = entry;
+    if (typeof id !== "string" || !MERGE_CASE_ID.test(id) || seen.has(id)) return { ok: false, problem: rule };
+    if (typeof description !== "string") return { ok: false, problem: rule };
+    const text = description.trim();
+    if (text === "" || text.length > MAX_MERGE_CASE_DESCRIPTION || CONTROL.test(text)) return { ok: false, problem: rule };
+    seen.add(id);
+    cases.push({ id, description: text });
+  }
+  return { ok: true, cases };
 }
 
 /** The document's schema version. A document of another version is invalid to this engine. */
@@ -63,6 +112,7 @@ const SETTINGS_KEYS = [
   "automationEnabled",
   "autoMerge",
   "mergeFreeze",
+  "mergeCases",
   "modelCallBudget",
   "model",
   "location",
@@ -170,6 +220,12 @@ export function validateSettings(raw: unknown): Validation {
       if (typeof raw[flag] === "boolean") settings[flag] = raw[flag] as boolean;
       else problems.push(`${flag}: true or false`);
     }
+  }
+
+  if (raw.mergeCases !== undefined) {
+    const checked = validateMergeCases(raw.mergeCases);
+    if (checked.ok) settings.mergeCases = checked.cases;
+    else problems.push(checked.problem);
   }
 
   if (raw.modelCallBudget !== undefined) {

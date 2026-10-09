@@ -25,15 +25,16 @@ export function makeAutomationSwitch(loader: Pick<RuntimeConfigLoader, "resolve"
 
 /**
  * The merge switches (#9), read FRESH each time like the kill switch: null when merging is allowed now, else why not
- * (autoMerge.ts `mergeBlockedBy`: the kill switch, dry run, the merge freeze, `autoMerge`, the target allowlist). Fails
- * closed: settings that cannot be read, or are unusable with nothing good known, block merging.
+ * (autoMerge.ts `mergeBlockedBy`: the kill switch, dry run, the merge freeze, `autoMerge`, the target allowlist, and with a
+ * case, that the case is still listed). Fails closed: settings that cannot be read, or are unusable with nothing good
+ * known, block merging.
  */
-export function makeMergeSwitch(loader: Pick<RuntimeConfigLoader, "resolve">, db: Firestore): () => Promise<string | null> {
-  return async () => {
+export function makeMergeSwitch(loader: Pick<RuntimeConfigLoader, "resolve">, db: Firestore): (mergeCase?: string) => Promise<string | null> {
+  return async (mergeCase?: string) => {
     try {
       const resolved = await loader.resolve(db);
       if (!resolved.actionsAllowed) return "settings-unusable";
-      return mergeBlockedBy(resolved.config);
+      return mergeBlockedBy(resolved.config, mergeCase);
     } catch {
       return "settings-unreadable";
     }

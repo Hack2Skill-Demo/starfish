@@ -28,6 +28,13 @@
  * checked here and redacted again before it is stored, because it is shown to people (guests,
  * on the public demo) and a model can echo what it was shown.
  *
+ * HOW FAR TO GO (docs/design/auto-merge-policy.md) is triage's call too: decline is noise, notify is "log" (an issue and an
+ * alert, a person fixes it), act is "log + fix" (a verified pull request a person merges). When an admin has listed merge
+ * cases, the model may also name one for an `act`: "log + fix + merge", Starfish merging the fix itself. The engine
+ * keeps only a case that is listed and only on `act`; anything else is dropped, so the level falls back to "fix" and a
+ * person merges. Naming a case is the model's decision; whether the merge then happens is still the switches', the
+ * safety floor's (blastRadius.ts `assessMergeFloor`) and the required checks' (autoMerge.ts).
+ *
  * Run by the agent job (`pnpm agent`), and not on Google's Agent Development Kit yet: this is the stage's
  * contract, testable with a stubbed model, so the orchestration can be put around it.
  */
@@ -35,6 +42,7 @@ import { askJson } from "../vertex.js";
 import { clipWellFormed, sanitize } from "../ingest/redact.js";
 import type { ErrorLogSample } from "../ingest/counterCheck.js";
 import { OPEN_INCIDENT_STATUSES, type Incident, type IncidentStatus } from "../types.js";
+import { INDEX_MERGE_CASE, MAX_MERGE_CASE_DESCRIPTION, type MergeCase } from "../settingsSchema.js";
 
 export type TriageDecision = "act" | "notify" | "decline" | "defer" | "skip" | "error";
 
@@ -57,6 +65,26 @@ export interface TriageResult {
   reason: string;
   /** Present when the model chose act or notify and named one. Redacted and bounded. */
   suspectedCause?: string;
+  /**
+   * The admin's merge case the model said this incident is, kept only on `act` and only when that case is listed: the
+   * model's decision to go as far as "log + fix + merge". Absent: a person merges whatever is fixed.
+   */
+  mergeCase?: string;
+}
+
+/** How far Starfish goes with an incident, in the words the UI and the docs use. Null: nothing was decided yet. */
+export type TriageLevel = "noise" | "log" | "fix" | "merge";
+
+export function triageLevel(r: Pick<TriageResult, "decision" | "mergeCase">): TriageLevel | null {
+  if (r.decision === "decline") return "noise";
+  if (r.decision === "notify") return "log";
+  if (r.decision === "act") return r.mergeCase !== undefined ? "merge" : "fix";
+  return null;
+}
+
+export interface TriageOptions {
+  /** The merge cases an admin listed (config `mergeCases`). The index path's reserved case is never offered: no model decides it. */
+  mergeCases?: readonly MergeCase[];
 }
 
 export interface TriageSubject {
@@ -110,6 +138,44 @@ export const TRIAGE_SCHEMA = {
   required: ["decision", "reasoning", "suspectedCause"],
 };
 
+/** The merge cases the model may name: the admin's list without the index path's reserved one. */
+export function offeredMergeCases(cases: readonly MergeCase[] | undefined): MergeCase[] {
+  return (cases ?? []).filter((c) => c.id !== INDEX_MERGE_CASE);
+}
+
+/**
+ * The system instruction's merge section, when an admin listed cases. The cases are the admin's configuration, not
+ * incident text, but they are redacted and bounded like anything else that reaches the model.
+ */
+export function mergeCasesInstruction(cases: readonly MergeCase[]): string {
+  const listed = cases.map((c) => `- ${c.id}: ${sanitize(c.description, MAX_MERGE_CASE_DESCRIPTION) ?? ""}`).join("\n");
+  return `
+
+MERGE CASES
+The team lets Starfish merge a fix by itself, with no person reviewing it, only for these kinds of incident:
+${listed}
+
+Set "mergeCase" to one of these ids only when you chose "act" AND the incident is clearly that kind: a high-value,
+low-risk fault that a small change fixes safely. When in doubt, null: Starfish still drafts and verifies the fix, and a
+person merges it. Yours is not the last check: the fix must also pass the team's required CI checks, and Starfish never
+merges a change to auth, security rules, money, secrets, schema, dependencies or CI config.`;
+}
+
+/** The answer schema with the merge-case field, which the model must then always fill (an id, or null). */
+export function triageSchemaWithMergeCase(cases: readonly MergeCase[]): Record<string, unknown> {
+  return {
+    ...TRIAGE_SCHEMA,
+    properties: {
+      ...TRIAGE_SCHEMA.properties,
+      mergeCase: {
+        type: ["string", "null"],
+        description: `One of: ${cases.map((c) => c.id).join(", ")}. Only with "act"; null when in doubt.`,
+      },
+    },
+    required: [...TRIAGE_SCHEMA.required, "mergeCase"],
+  };
+}
+
 /** What the model is shown. A whitelist, so a field added to Incident later is not sent by accident. */
 export function renderForTriage(subject: TriageSubject): string {
   const { incident: i, samples = [] } = subject;
@@ -157,12 +223,18 @@ function counterCheckLine(i: Incident): string {
 
 const bound = (text: string, max = MAX_REASON_LEN) => clipWellFormed(text, max);
 
-function result(decision: TriageDecision, rule: TriageRule, reason: string, suspectedCause?: string): TriageResult {
-  return { decision, rule, reason: bound(reason), ...(suspectedCause ? { suspectedCause: bound(suspectedCause) } : {}) };
+function result(decision: TriageDecision, rule: TriageRule, reason: string, suspectedCause?: string, mergeCase?: string): TriageResult {
+  return {
+    decision,
+    rule,
+    reason: bound(reason),
+    ...(suspectedCause ? { suspectedCause: bound(suspectedCause) } : {}),
+    ...(mergeCase !== undefined && { mergeCase }),
+  };
 }
 
 /** A model answer that is the shape asked for, or null. Anything else is not trusted. */
-function parseModelAnswer(raw: unknown): { decision: ModelDecision; reasoning: string; suspectedCause?: string } | null {
+function parseModelAnswer(raw: unknown): { decision: ModelDecision; reasoning: string; suspectedCause?: string; mergeCase?: string } | null {
   if (raw === null || typeof raw !== "object") return null;
   const a = raw as Record<string, unknown>;
   if (!MODEL_DECISIONS.includes(a.decision as ModelDecision)) return null;
@@ -172,6 +244,8 @@ function parseModelAnswer(raw: unknown): { decision: ModelDecision; reasoning: s
     decision: a.decision as ModelDecision,
     reasoning: a.reasoning,
     ...(typeof a.suspectedCause === "string" && a.suspectedCause.trim() !== "" && { suspectedCause: a.suspectedCause }),
+    // Not a string: no case. A malformed merge choice costs the merge, never the triage.
+    ...(typeof a.mergeCase === "string" && { mergeCase: a.mergeCase }),
   };
 }
 
@@ -186,7 +260,7 @@ export function hasCauseEvidence(incident: Incident): boolean {
 }
 
 /** Never throws: a failure is a result, because an unrecorded failure would look like a decision not to act. */
-export async function triageIncident(subject: TriageSubject, ask: AskJson = askJson): Promise<TriageResult> {
+export async function triageIncident(subject: TriageSubject, ask: AskJson = askJson, options: TriageOptions = {}): Promise<TriageResult> {
   if (!(OPEN_INCIDENT_STATUSES as readonly string[]).includes(subject.status)) {
     return result("skip", "status-not-open", `Incident is ${subject.status}; triage only looks at open incidents.`);
   }
@@ -208,9 +282,14 @@ export async function triageIncident(subject: TriageSubject, ask: AskJson = askJ
     );
   }
 
+  const cases = offeredMergeCases(options.mergeCases);
   let raw: unknown;
   try {
-    raw = await ask<unknown>(renderForTriage(subject), TRIAGE_SYSTEM, TRIAGE_SCHEMA);
+    raw = await ask<unknown>(
+      renderForTriage(subject),
+      cases.length > 0 ? TRIAGE_SYSTEM + mergeCasesInstruction(cases) : TRIAGE_SYSTEM,
+      cases.length > 0 ? triageSchemaWithMergeCase(cases) : TRIAGE_SCHEMA
+    );
   } catch (err) {
     // An error's message can quote the incident text it was given, so only its name is kept.
     return result("error", "model-call-failed", `The model call failed (${err instanceof Error ? err.name : "unknown error"}).`);
@@ -228,5 +307,7 @@ export async function triageIncident(subject: TriageSubject, ask: AskJson = askJ
       answer.suspectedCause
     );
   }
-  return result(answer.decision, `model-${answer.decision}`, answer.reasoning, answer.decision === "decline" ? undefined : answer.suspectedCause);
+  // Kept only on act, and only a case the admin listed: an unknown id, or one on notify or decline, is dropped.
+  const mergeCase = answer.decision === "act" && cases.some((c) => c.id === answer.mergeCase) ? answer.mergeCase : undefined;
+  return result(answer.decision, `model-${answer.decision}`, answer.reasoning, answer.decision === "decline" ? undefined : answer.suspectedCause, mergeCase);
 }

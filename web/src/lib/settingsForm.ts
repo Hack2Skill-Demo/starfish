@@ -26,6 +26,7 @@ export const FIELD_NAMES = [
   "automationEnabled",
   "autoMerge",
   "mergeFreeze",
+  "mergeCases",
   "modelCallBudget",
   "model",
   "location",
@@ -50,6 +51,13 @@ export function formFromStored(stored: StoredSettings | null): FormState {
           .map(([pattern, service]) => `${pattern}: ${String(service)}`)
           .join("\n")
       : "";
+  // One "id: description" per line, as the form edits them.
+  const cases = (v: unknown) =>
+    Array.isArray(v)
+      ? v
+          .map((c) => (c && typeof c === "object" ? `${String((c as Record<string, unknown>).id ?? "")}: ${String((c as Record<string, unknown>).description ?? "")}` : ""))
+          .join("\n")
+      : "";
   return {
     watchedProjectId: { override: "watchedProjectId" in s, text: typeof s.watchedProjectId === "string" ? s.watchedProjectId : "" },
     environment: { override: "environment" in s, text: typeof s.environment === "string" ? s.environment : "" },
@@ -62,6 +70,7 @@ export function formFromStored(stored: StoredSettings | null): FormState {
     // Both merge switches start from off: turning auto-merge on is a deliberate admin action (#9).
     autoMerge: { override: "autoMerge" in s, text: typeof s.autoMerge === "boolean" ? String(s.autoMerge) : "false" },
     mergeFreeze: { override: "mergeFreeze" in s, text: typeof s.mergeFreeze === "boolean" ? String(s.mergeFreeze) : "false" },
+    mergeCases: { override: "mergeCases" in s, text: cases(s.mergeCases) },
     modelCallBudget: { override: "modelCallBudget" in s, text: typeof s.modelCallBudget === "number" ? String(s.modelCallBudget) : "" },
     model: { override: "model" in s, text: typeof s.model === "string" ? s.model : "" },
     location: { override: "location" in s, text: typeof s.location === "string" ? s.location : "" },
@@ -107,6 +116,15 @@ export function settingsFromForm(form: FormState): FormResult {
       else patterns[pattern] = service;
     });
     raw.servicePatterns = patterns;
+  }
+
+  if (form.mergeCases.override) {
+    // "id: description" per line; the id is everything before the first colon. An override with no line is "none".
+    raw.mergeCases = lines(form.mergeCases.text).map((line, i) => {
+      const at = line.indexOf(":");
+      if (at < 0) problems.push(`mergeCases: line ${i + 1} must be "id: description"`);
+      return { id: at < 0 ? line : line.slice(0, at).trim(), description: at < 0 ? "" : line.slice(at + 1).trim() };
+    });
   }
 
   const checked = validateSettings(raw);

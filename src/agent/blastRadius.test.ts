@@ -4,7 +4,7 @@
  */
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { assessBlastRadius, excludedLineCategories, excludedPathCategories, isTestPath, judgedTheVerifiedFiles, parsePatch, testOnlyPatch, type BlastRadiusConfig } from "./blastRadius.js";
+import { assessBlastRadius, assessMergeFloor, excludedLineCategories, excludedPathCategories, isTestPath, judgedTheVerifiedFiles, parsePatch, testOnlyPatch, type BlastRadiusConfig } from "./blastRadius.js";
 
 /**
  * The base revision of every file a patch changes, as the patch's own old side: each hunk's context and removed lines
@@ -700,5 +700,77 @@ describe("judgedTheVerifiedFiles (#200)", () => {
     expect(judgedTheVerifiedFiles(r, [SRC])).toBe(false);
     expect(judgedTheVerifiedFiles(r, [])).toBe(false);
     expect(judgedTheVerifiedFiles({ testFiles: [] }, [])).toBe(false);
+  });
+});
+
+describe("assessMergeFloor: the safety floor under every merge Gemini decides", () => {
+  const floor = (patch: string, over: Partial<BlastRadiusConfig> = {}) => assessMergeFloor(patch, { excludedPaths: [], baseFiles: basesOf(patch), ...over });
+  /** A change gate 1 refuses for its shape alone: no allowed class, larger than its limits. */
+  const rewrite = diff(SRC, [
+    "  const order = await load(id);",
+    "-  return order.total;",
+    "+  const items = order.items ?? [];",
+    "+  const names = items.map((item) => item.name);",
+    "+  const unique = [...new Set(names)];",
+    "+  const sorted = unique.sort();",
+    "+  log(\"names\", sorted.length);",
+    "+  const label = sorted.join(\", \");",
+    "+  const result = { label };",
+    "+  return result.label;",
+  ]);
+
+  it("allows what gate 1 allows, and changes gate 1 refuses only for their shape", () => {
+    for (const p of [guard, missingAwait, undefinedField, guard + addedTest]) expect(floor(p)).toMatchObject({ allowed: true, sourceFile: SRC, problems: [] });
+    expect(gate(rewrite).allowed).toBe(false);
+    expect(floor(rewrite)).toMatchObject({ allowed: true, sourceFile: SRC });
+  });
+
+  it("allows more than one hunk in the one file", () => {
+    const base = ["export function a(x) {", "  return x.total;", "}", "", "", "", "", "", "export function b(y) {", "  return y.total;", "}"].join("\n") + "\n";
+    const two = [
+      `--- a/${SRC}`,
+      `+++ b/${SRC}`,
+      "@@ -1,3 +1,4 @@",
+      " export function a(x) {",
+      "+  if (x == null) return null;",
+      "   return x.total;",
+      " }",
+      "@@ -9,3 +10,4 @@",
+      " export function b(y) {",
+      "+  if (y == null) return null;",
+      "   return y.total;",
+      " }",
+      "",
+    ].join("\n");
+    expect(floor(two, { baseFiles: new Map([[SRC, base]]) })).toMatchObject({ allowed: true });
+  });
+
+  it.each([
+    ["an existing test file changed", diff(TEST, ["  const x = 1;", "-  expect(x).toBe(2);", "+  expect(x).toBe(1);", "   done();"])],
+    ["a second production file", guard + diff("functions/src/orders/other.ts", ["  const a = 1;", "+  if (a == null) return null;", "   return a;"])],
+    ["a security rules file", diff("firestore.rules", ["  match /orders/{id} {", "-    allow read: if false;", "+    allow read: if true;", "  }"])],
+    ["a dependency change", diff("package.json", ["  \"dependencies\": {", "-    \"x\": \"1.0.0\",", "+    \"x\": \"2.0.0\",", "  }"])],
+    ["an auth line", diff(SRC, ["  const order = await load(id);", "-  if (!context.auth) throw new Error(\"x\");", "+  if (context.auth == null) return null;", "   return order.total;"])],
+    ["a money path", diff("functions/src/billing/charge.ts", ["  const order = await load(id);", "+  if (order == null) return null;", "   return order.total;"])],
+    ["a new import", diff(SRC, ["  const order = await load(id);", "+  const fs = require(\"fs\");", "   return order.total;"])],
+    ["a path the deployment excludes", guard, { excludedPaths: ["functions/src/orders/"] }],
+  ])("refuses %s", (_name, patch, over?: Partial<BlastRadiusConfig>) => {
+    const r = floor(patch, over ?? {});
+    expect(r.allowed).toBe(false);
+    expect(r.problems.length).toBeGreaterThan(0);
+  });
+
+  it("refuses when the function around the change decides access, money or a secret, however far from the change", () => {
+    const FILE = "functions/src/docs/read.ts";
+    const base = ["export function read(doc, user) {", "  if (doc.ownerId !== user.uid) return \"not yours\";", "  const a = 1;", "  const meta = doc.meta;", "  log(meta);", "  return null;", "}"].join("\n") + "\n";
+    const patch = [`--- a/${FILE}`, `+++ b/${FILE}`, "@@ -4,2 +4,3 @@", "   const meta = doc.meta;", "+  if (meta == null) return null;", "   log(meta);", ""].join("\n");
+    expect(floor(patch, { baseFiles: new Map([[FILE, base]]) }).problems).toContain("excluded:access-control");
+  });
+
+  it("refuses without the base file, or when the base does not hold the hunk: unsure is never allowed", () => {
+    expect(floor(guard, { baseFiles: new Map() }).problems).toContain("base-not-available");
+    expect(floor(guard, { baseFiles: new Map([[SRC, "something else\n"]]) }).problems).toContain("base-mismatch");
+    expect(floor("not a diff").problems).toContain("diff-not-understood");
+    expect(floor(guard.replace("return null;", "return null;\u2028")).problems).toContain("control-characters");
   });
 });

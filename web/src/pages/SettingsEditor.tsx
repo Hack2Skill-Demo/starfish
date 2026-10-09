@@ -90,7 +90,7 @@ const FIELDS: Record<
     multiline: false,
     kind: "switch",
     placeholder: "",
-    hint: "On: a pull request whose two gates both pass (one small allowed fix in one function, and the evidence that it is right) is merged without a person, and reverted if the same error comes back soon after. Only for a target the engine lists as auto-mergeable (the demo); any other target stays pull-request-only. Needs dry run off. Starfish never deploys. The engine's default is off. Never run against real GitHub.",
+    hint: "On: Starfish merges a fix itself when Gemini decides the incident is one of the merge cases below, the change stays outside the hard-exclude list (auth, security rules, money, secrets, schema, dependencies, CI config; tests only added, never changed) and every required check is green. Each merge is reverted if the same error comes back soon after. Only for a target the engine lists as auto-mergeable (the demo); any other target stays pull-request-only. Needs dry run off. A merge is a release: Starfish runs no deploy itself, but the target's own CI/CD ships what is merged. The engine's default is off. Never run against real GitHub.",
   },
   mergeFreeze: {
     label: "Merge freeze",
@@ -98,6 +98,12 @@ const FIELDS: Record<
     kind: "switch",
     placeholder: "",
     hint: "The global off switch for merging. On: Starfish merges and reverts nothing, whatever auto-merge says; a pull request waiting to merge is handed to a person. The engine's default is off.",
+  },
+  mergeCases: {
+    label: "Merge cases",
+    multiline: true,
+    placeholder: "missing-index: a Firestore query fails because a composite index is missing\nfirestore-undefined-field: a Firestore write fails because a field is undefined",
+    hint: 'One "id: description" per line, at most 20. The kinds of incident Starfish may merge a fix for by itself: Gemini reads the descriptions and must name one to choose "merge". missing-index is the index path\'s own case (no model): listed, its evidence pull request merges once its checks are green. An override with nothing in it, like the engine\'s default, means nothing merges.',
   },
   modelCallBudget: {
     label: "Model calls per cycle",

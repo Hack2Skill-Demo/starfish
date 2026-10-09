@@ -61,6 +61,7 @@ export function testConfig(over: Partial<StarfishConfig> = {}): StarfishConfig {
     mergeFreeze: false,
     autoMergeTargets: [],
     autoMergeExcludedPaths: [],
+    mergeCases: [],
     maxMergesPerDay: 3,
     mergeCheckWaitMinutes: 120,
     fastRevertMinutes: 60,

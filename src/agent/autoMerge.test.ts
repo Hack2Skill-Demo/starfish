@@ -1,12 +1,13 @@
 /**
- * Auto-merge's pure parts (#9): the switches, gate 2 over a run record, what the loop records when it opens the pull
- * request, and the evidence comment. The merge step itself is tested against the emulator (autoMerge.emulator.test.ts).
+ * Auto-merge's pure parts (#9): the switches (with the admin's merge cases), gate 2 over a run record (now reported, not
+ * required), what the loop and the index path record when they open a pull request, and the evidence comment. The merge
+ * step itself is tested against the emulator (autoMerge.emulator.test.ts).
  */
 import { describe, expect, it } from "vitest";
 import { SEEDED_SECRETS } from "../ingest/testSecrets.js";
 import { testConfig } from "../testConfig.js";
-import { assessBlastRadius } from "./blastRadius.js";
-import { certaintyGate, mergeBlockedBy, mergeEvidenceText, mergeRecordAtOpen } from "./autoMerge.js";
+import { assessMergeFloor } from "./blastRadius.js";
+import { certaintyGate, indexMergeRecordAtOpen, mergeBlockedBy, mergeEvidenceText, mergeRecordAtOpen } from "./autoMerge.js";
 
 const P = "a".repeat(64);
 const HEAD = "b".repeat(40);
@@ -20,7 +21,7 @@ function provenSummary(over: Record<string, Record<string, unknown>> = {}): Reco
     verify: { status: "passed", rule: "command-passed", patchSha256: P },
     review: { verdict: "approve", rule: "reviewed", held: 3, flagged: 0, broken: 0, patchSha256: P },
     pr: { opened: true, number: 7, patchSha256: P },
-    merge: { state: "pending", number: 7, patchSha256: P, headSha: HEAD, gate1: "pass", fixClass: "firestore-undefined-field", sourceFile: "functions/src/orders/createOrder.ts", causeFrame: true },
+    merge: { state: "pending", kind: "code", mergeCase: "firestore-undefined-field", number: 7, patchSha256: P, headSha: HEAD, floor: "pass", sourceFile: "functions/src/orders/createOrder.ts", causeFrame: true },
   };
   for (const [k, v] of Object.entries(over)) base[k] = { ...base[k], ...v };
   return base;
@@ -56,6 +57,15 @@ describe("mergeBlockedBy: the switches", () => {
 
   it("puts the global off switch above the per-target switch", () => {
     expect(mergeBlockedBy({ ...on, mergeFreeze: true, autoMerge: true })).toBe("merge-freeze");
+  });
+
+  it("with a merge case, blocks unless the admin still lists that case: removing a case stops its merges", () => {
+    const listed = { ...on, mergeCases: [{ id: "missing-await", description: "a promise is not awaited" }] };
+    expect(mergeBlockedBy(listed, "missing-await")).toBeNull();
+    expect(mergeBlockedBy(listed, "null-guard")).toBe("case-not-listed");
+    expect(mergeBlockedBy(on, "missing-await")).toBe("case-not-listed"); // the default: no case, nothing merges
+    // The other switches still come first.
+    expect(mergeBlockedBy({ ...listed, autoMerge: false }, "missing-await")).toBe("auto-merge-off");
   });
 });
 
@@ -108,27 +118,32 @@ describe("certaintyGate: gate 2 over the run record", () => {
 
 describe("mergeRecordAtOpen", () => {
   const SRC = "functions/src/orders/createOrder.ts";
+  const BASE = "e".repeat(40);
   /** A guard in a whole three-line file, judged with that file as its base. */
   const guarded = (path: string) =>
-    assessBlastRadius(`--- a/${path}\n+++ b/${path}\n@@ -1,3 +1,4 @@\n   const o = get(id);\n+  if (o == null) return null;\n   return o;\n }\n`, {
+    assessMergeFloor(`--- a/${path}\n+++ b/${path}\n@@ -1,3 +1,4 @@\n   const o = get(id);\n+  if (o == null) return null;\n   return o;\n }\n`, {
       excludedPaths: [],
       baseFiles: new Map([[path, "  const o = get(id);\n  return o;\n}\n"]]),
     });
-  const gate1 = guarded(SRC);
+  const floor = guarded(SRC);
   const now = new Date("2026-10-06T12:00:00.000Z");
   const stack = "Error: x\n    at createOrder (/workspace/lib/orders/createOrder.js:12:5)";
   const repoFiles = [SRC, "functions/src/orders/createOrder.test.ts", "functions/src/index.ts"];
+  const open = (over: Partial<Parameters<typeof mergeRecordAtOpen>[0]> = {}) =>
+    mergeRecordAtOpen({ floor, mergeCase: "null-guard", pr: { number: 7, url: "u", headSha: HEAD }, patchSha256: P, baseRevision: BASE, incident: { stackTrace: stack }, repoFiles, now, ...over });
 
-  it("is a pending candidate when gate 1 passed and the head is known, with the stack frame tying the cause to the file", () => {
-    expect(gate1.allowed).toBe(true);
-    expect(mergeRecordAtOpen({ gate1, pr: { number: 7, url: "u", headSha: HEAD }, patchSha256: P, incident: { stackTrace: stack }, repoFiles, now })).toEqual({
+  it("is a pending candidate for the merge case Gemini named, when the floor held and the head is known", () => {
+    expect(floor.allowed).toBe(true);
+    expect(open()).toEqual({
       state: "pending",
+      kind: "code",
+      mergeCase: "null-guard",
       number: 7,
       patchSha256: P,
       headSha: HEAD,
-      gate1: "pass",
-      fixClass: "null-guard",
+      floor: "pass",
       sourceFile: SRC,
+      baseRevision: BASE,
       causeFrame: true,
       causeCode: false,
       pendingSince: now.toISOString(),
@@ -136,8 +151,8 @@ describe("mergeRecordAtOpen", () => {
   });
 
   it("records no structural cause when the stack names another file, or there is none", () => {
-    expect(mergeRecordAtOpen({ gate1, pr: { number: 7, url: "u", headSha: HEAD }, patchSha256: P, incident: { stackTrace: "at other (/workspace/lib/x/other.js:1:1)" }, repoFiles, now }).causeFrame).toBe(false);
-    expect(mergeRecordAtOpen({ gate1, pr: { number: 7, url: "u", headSha: HEAD }, patchSha256: P, incident: {}, repoFiles, now }).causeFrame).toBe(false);
+    expect(open({ incident: { stackTrace: "at other (/workspace/lib/x/other.js:1:1)" } }).causeFrame).toBe(false);
+    expect(open({ incident: {} }).causeFrame).toBe(false);
   });
 
   it("matches the frame against the checkout's whole file list: a frame of another file with the same tail is not the changed file (#203)", () => {
@@ -145,8 +160,7 @@ describe("mergeRecordAtOpen", () => {
     const other = "functions/src/admin/orders/index.ts";
     const g = guarded(changed);
     expect(g.allowed).toBe(true);
-    const at = (frame: string, files: string[]) =>
-      mergeRecordAtOpen({ gate1: g, pr: { number: 7, url: "u", headSha: HEAD }, patchSha256: P, incident: { stackTrace: `Error: x\n    at h (${frame}:12:20)` }, repoFiles: files, now }).causeFrame;
+    const at = (frame: string, files: string[]) => open({ floor: g, incident: { stackTrace: `Error: x\n    at h (${frame}:12:20)` }, repoFiles: files }).causeFrame;
     expect(at("/workspace/lib/admin/orders/index.js", [changed, other])).toBe(false);
     expect(at("/workspace/lib/orders/index.js", [changed, other])).toBe(false); // the same tail as both: a tie
     expect(at("/workspace/functions/lib/orders/index.js", [changed, other])).toBe(true);
@@ -154,11 +168,36 @@ describe("mergeRecordAtOpen", () => {
     expect(at("/workspace/functions/lib/orders/index.js", [])).toBe(false);
   });
 
-  it("is skipped when gate 1 failed, or when the opener cannot vouch for the head", () => {
-    const bad = assessBlastRadius(`--- a/package.json\n+++ b/package.json\n@@ -1 +1 @@\n-a\n+b\n`, { excludedPaths: [] });
-    expect(mergeRecordAtOpen({ gate1: bad, pr: { number: 7, url: "u", headSha: HEAD }, patchSha256: P, incident: {}, repoFiles, now })).toMatchObject({ state: "skipped", gate1: "fail" });
-    expect(mergeRecordAtOpen({ gate1, pr: { number: 7, url: "u" }, patchSha256: P, incident: {}, repoFiles, now })).toMatchObject({ state: "skipped", reason: "head-unknown", headSha: null });
-    expect(mergeRecordAtOpen({ gate1, pr: { number: 7, url: "u", headSha: "not-a-sha" }, patchSha256: P, incident: {}, repoFiles, now })).toMatchObject({ state: "skipped", reason: "head-unknown" });
+  it("is skipped when the floor failed, or when the opener cannot vouch for the head", () => {
+    const bad = assessMergeFloor(`--- a/package.json\n+++ b/package.json\n@@ -1 +1 @@\n-a\n+b\n`, { excludedPaths: [] });
+    expect(open({ floor: bad })).toMatchObject({ state: "skipped", floor: "fail", mergeCase: "null-guard" });
+    expect(String(open({ floor: bad }).reason)).toMatch(/^floor:/);
+    expect(open({ pr: { number: 7, url: "u" }, incident: {} })).toMatchObject({ state: "skipped", reason: "head-unknown", headSha: null });
+    expect(open({ pr: { number: 7, url: "u", headSha: "not-a-sha" }, incident: {} })).toMatchObject({ state: "skipped", reason: "head-unknown" });
+  });
+});
+
+describe("indexMergeRecordAtOpen: the missing-index evidence pull request", () => {
+  const now = new Date("2026-10-06T12:00:00.000Z");
+  const base = { pr: { number: 9, url: "u", headSha: HEAD }, patchSha256: P, indexFile: "firestore.indexes.json", baseRevision: "e".repeat(40), now };
+
+  it("is a pending candidate of the reserved case: no model, the index file as its one file", () => {
+    expect(indexMergeRecordAtOpen(base)).toEqual({
+      state: "pending",
+      kind: "index",
+      mergeCase: "missing-index",
+      number: 9,
+      patchSha256: P,
+      headSha: HEAD,
+      floor: "pass",
+      sourceFile: "firestore.indexes.json",
+      baseRevision: "e".repeat(40),
+      pendingSince: now.toISOString(),
+    });
+  });
+
+  it("is skipped when the head is unknown", () => {
+    expect(indexMergeRecordAtOpen({ ...base, pr: { number: 9, url: "u" } })).toMatchObject({ state: "skipped", reason: "head-unknown", headSha: null });
   });
 });
 
@@ -168,15 +207,47 @@ describe("mergeEvidenceText", () => {
     { id: 12, name: "unrelated", status: "completed", conclusion: "failure", url: "", app: "github-actions", title: "", summary: "" },
   ];
 
-  it("states every gate's evidence, the CI run on the head, and the fast-revert promise", () => {
+  it("states who decided (Gemini, an admin's case), the floor, how certain, the CI run on the head, and the fast-revert promise", () => {
     const text = mergeEvidenceText({ cycleId: "inc1_r0", summary: provenSummary(), checks, requiredChecks: ["verify"], headSha: HEAD, fastRevertMinutes: 60 });
-    for (const s of ["Gate 1", "firestore-undefined-field", "Gate 2", "Test before the fix: **failed**", "Test after the fix: **passed**", P, "**approve**", "0 broken", "42 errors over 24h", "check run 11", "within 60 minutes", "inc1_r0", HEAD]) {
+    for (const s of [
+      "Gemini triaged the incident as merge case",
+      "firestore-undefined-field",
+      "which an admin listed",
+      "The safety floor",
+      "reported, not required",
+      "Test before the fix: **failed**",
+      "Test after the fix: **passed**",
+      P,
+      "**approve**",
+      "0 broken",
+      "42 errors over 24h",
+      "The old certainty gate: would have passed",
+      "check run 11",
+      "within 60 minutes",
+      "inc1_r0",
+      HEAD,
+    ]) {
       expect(text).toContain(s);
     }
     expect(text).not.toContain("unrelated"); // only the named checks are evidence
   });
 
-  it("claims no more than gate 1 and the checks hold: tests only as new files, and an app is not a workflow (#204, #205)", () => {
+  it("reports a failed certainty check without claiming it was required", () => {
+    const text = mergeEvidenceText({ cycleId: "inc1_r0", summary: provenSummary({ review: { flagged: 1 } }), checks, requiredChecks: ["verify"], headSha: HEAD, fastRevertMinutes: 60 });
+    expect(text).toContain("would not have passed (review-approve)");
+  });
+
+  it("for an index pull request, says no model decided it and promises no revert", () => {
+    const summary = { merge: { kind: "index", mergeCase: "missing-index", sourceFile: "firestore.indexes.json" } };
+    const text = mergeEvidenceText({ cycleId: "inc2_r0", summary, checks, requiredChecks: ["verify"], headSha: HEAD, fastRevertMinutes: 60 });
+    expect(text).toContain("No model decided it");
+    expect(text).toContain("firestore.indexes.json");
+    expect(text).not.toContain("The safety floor");
+    expect(text).not.toContain("within 60 minutes");
+    expect(text).toContain("no revert watch is started");
+  });
+
+  it("claims no more than the floor and the checks hold: tests only as new files, and an app is not a workflow (#204, #205)", () => {
     const text = mergeEvidenceText({ cycleId: "inc1_r0", summary: provenSummary(), checks, requiredChecks: ["verify"], headSha: HEAD, fastRevertMinutes: 60 });
     expect(text).toContain("an existing test file is never changed");
     expect(text).not.toContain("only gained whole new tests");

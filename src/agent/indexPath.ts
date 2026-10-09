@@ -32,7 +32,9 @@ import { healIndex, specFromError, type HealSettings } from "../indexheal/heal.j
 import { indexFilePatch } from "../indexheal/indexFilePatch.js";
 import type { ProbeVerdict } from "../indexheal/probe.js";
 import { indexRootCause } from "../integrations/githubPr.js";
+import { INDEX_MERGE_CASE } from "../settingsSchema.js";
 import type { Incident } from "../types.js";
+import { indexMergeRecordAtOpen } from "./autoMerge.js";
 import type { CyclePath, CycleState, RunEvent } from "./cycle.js";
 import type { LoopResult, LoopSubject, PullRequestRequest } from "./loop.js";
 import { utcDay } from "./reconsider.js";
@@ -119,7 +121,12 @@ export interface IndexPathContext {
   fileIssue: (reason: string) => Promise<number | undefined>;
   /** Proves the lease is still held (throws when it is lost) and renews it when due. */
   beat: () => Promise<void>;
-  openPullRequest?: (req: PullRequestRequest) => Promise<{ number: number; url: string }>;
+  openPullRequest?: (req: PullRequestRequest) => Promise<{ number: number; url: string; headSha?: string }>;
+  /**
+   * Whether the evidence pull request may be merged by Starfish: the admin listed the reserved `missing-index` merge case
+   * and the merge switches allow it now (read fresh). Absent, or false: a person merges it.
+   */
+  indexMergeAllowed?: () => Promise<boolean>;
 }
 
 const sha256 = (s: string) => createHash("sha256").update(s, "utf8").digest("hex");
@@ -323,5 +330,17 @@ export async function runIndexPath(ctx: IndexPathContext): Promise<LoopResult> {
     data: { number: pr.number, patchSha256 },
     record: { opened: true, number: pr.number, url: pr.url, patchSha256 },
   });
+  // Listed as a merge case, the evidence PR is an auto-merge candidate: the agent pass's merge step waits for its required
+  // checks and merges it (autoMerge.ts). No model decided it: Google's error named the index, which already exists.
+  if (ctx.indexMergeAllowed && (await ctx.indexMergeAllowed())) {
+    const merge = indexMergeRecordAtOpen({ pr, patchSha256, indexFile: path, baseRevision: ctx.loaded.baseRevision, now: ctx.now() });
+    await ctx.note({
+      stage: "merge",
+      type: String(merge.state),
+      summary: merge.state === "pending" ? `Auto-merge candidate (${INDEX_MERGE_CASE}): waiting for the required checks` : `Not auto-merged: ${String(merge.reason)}`,
+      data: { mergeCase: INDEX_MERGE_CASE },
+      record: merge,
+    });
+  }
   return ctx.finish("done", "index-pr-opened", "index");
 }

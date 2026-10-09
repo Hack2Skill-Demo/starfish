@@ -1,23 +1,29 @@
 /**
- * Auto-merge (#9, docs/design/auto-merge-policy.md): Starfish merges the pull requests it can prove are safe, and
- * hands everything else to a person. Built for the demo target behind a default-off switch; never run against real
- * GitHub (tested with fakes and the Firestore emulator).
+ * Auto-merge (#9, docs/design/auto-merge-policy.md): Starfish merges a fix itself where Gemini decided the incident is one
+ * of the merge cases an admin listed, and hands everything else to a person. Built for the demo target behind default-off
+ * switches; never run against real GitHub (tested with fakes and the Firestore emulator).
+ *
+ * WHO DECIDES: Gemini's triage names the case (triage.ts `mergeCase`), or the missing-index path claims its reserved case
+ * (`INDEX_MERGE_CASE`, no model: Google's error names the index). Nothing here second-guesses WHAT KIND of change it is;
+ * this step only refuses what must never merge, and waits for proof the change is green.
  *
  * NOTHING MERGES UNLESS ALL OF THIS HOLDS, checked again right before the merge:
  *   switches   automation on (the kill switch), dry run off, `autoMerge` on (an admin's setting, default off),
  *              `mergeFreeze` off (the global off switch), this deployment's `githubRepo` listed in
- *              `autoMergeTargets` (environment-only: the demo), and today's merges under `maxMergesPerDay`;
- *   gate 1     low blast radius: a static check of the verified patch (blastRadius.ts), recorded when the pull request
- *              was opened;
- *   gate 2     certainty: a pure function of the cycle's run record (`certaintyGate`): a structural cause, the test
- *              FAILING before the fix and the gate PASSING after it on the exact patch, the adversarial review
- *              approving that same patch with nothing broken or flagged, and a counter-check that counted errors;
+ *              `autoMergeTargets` (environment-only: the demo), the candidate's case still listed in `mergeCases` (read
+ *              fresh: an admin who removes a case stops its merges), and today's merges under `maxMergesPerDay`;
+ *   the floor  the safety floor on the verified patch (blastRadius.ts `assessMergeFloor`), recorded when the pull request
+ *              was opened: one production file, tests only as new files, nothing on the hard-exclude list. The index
+ *              path's patch is Starfish's own (indexFilePatch.ts: entries only added) and is not run through it;
  *   the PR     still open, from `starfish/<cycle>` into the configured base branch (a retargeted PR is refused, #186),
  *              its head the very commit Starfish built from the verified patch, and every run of every named required
  *              check (`verifyChecks`, posted by `verifyCheckApp`, #205) a success on that head: all of them, re-runs
  *              included (`filter=all`), and a head whose runs cannot all be read is handed to a person;
  *   evidence   posted on the pull request as one comment BEFORE the merge; a merge with no evidence does not happen.
  * Then one squash merge, with GitHub told the exact head (`sha`), so a head that moved refuses.
+ *
+ * Gate 2 (`certaintyGate`: fails before, passes after, review approved) is no longer required: it is reported in the
+ * evidence comment, so a person reading it later sees how certain the change was.
  *
  * Any gate that fails leaves the pull request open and tells a person (the same notify path the loop uses). It
  * never merges on "almost": a check still running waits (at most `mergeCheckWaitMinutes`), anything else is final.
@@ -26,7 +32,7 @@
  *
  * Where the pieces run: the loop (loop.ts) records the "fails before" run and gate 1 when it opens the pull request
  * (`summary.before`, `summary.merge` pending); this step, once per agent pass (agentCli.ts), takes each pending
- * candidate to merged or skipped. A merge starts the fast-revert watch (fastRevert.ts). Starfish never deploys: the
+ * candidate to merged or skipped. A merge starts the fast-revert watch (fastRevert.ts). A merge is a release, though Starfish runs no deploy: the
  * target's own CI/CD does, and Starfish cannot see when it finishes.
  */
 import { Timestamp, type DocumentReference, type Firestore } from "firebase-admin/firestore";
@@ -35,6 +41,7 @@ import { redactPii } from "../ingest/redact.js";
 import { inert, type CheckRun, type GithubClient, type PullRequestResult } from "../integrations/githubPr.js";
 import type { DeliveryResult, NotifyRequest } from "../integrations/slack.js";
 import { OPEN_INCIDENT_STATUSES, type Incident, type IncidentStatus } from "../types.js";
+import { INDEX_MERGE_CASE } from "../settingsSchema.js";
 import type { BlastRadius } from "./blastRadius.js";
 import { sanitizeEvent, type CycleConfig } from "./cycle.js";
 import { pathsFromStack } from "./pass.js";
@@ -44,7 +51,7 @@ import { requiredRuns, summarizeChecks } from "./reconcile.js";
 
 export type MergeSwitchConfig = Pick<
   StarfishConfig,
-  "automationEnabled" | "dryRun" | "autoMerge" | "mergeFreeze" | "githubRepo" | "autoMergeTargets" | "fastRevertMinutes" | "fastRevertGraceMinutes"
+  "automationEnabled" | "dryRun" | "autoMerge" | "mergeFreeze" | "githubRepo" | "autoMergeTargets" | "fastRevertMinutes" | "fastRevertGraceMinutes" | "mergeCases"
 >;
 
 /**
@@ -52,8 +59,9 @@ export type MergeSwitchConfig = Pick<
  * nothing is decided while automation is off. Every other reason is a decision: the candidate goes to a person.
  * A fast-revert window that ends before its grace does (`fastRevertMinutes` <= `fastRevertGraceMinutes`) watches
  * nothing, so a merge would have no safety net: that blocks merging too, rather than failing the whole job (#242).
+ * With `mergeCase`, that case must also be listed now: removing a case stops the merges it allowed.
  */
-export function mergeBlockedBy(cfg: MergeSwitchConfig): string | null {
+export function mergeBlockedBy(cfg: MergeSwitchConfig, mergeCase?: string): string | null {
   if (!cfg.automationEnabled) return "automation-disabled";
   if (cfg.dryRun) return "dry-run";
   if (cfg.mergeFreeze) return "merge-freeze";
@@ -61,6 +69,7 @@ export function mergeBlockedBy(cfg: MergeSwitchConfig): string | null {
   const repo = cfg.githubRepo.toLowerCase();
   if (repo === "" || !cfg.autoMergeTargets.some((t) => t.toLowerCase() === repo)) return "target-not-allowed";
   if (!(cfg.fastRevertMinutes > cfg.fastRevertGraceMinutes)) return "fast-revert-window-empty";
+  if (mergeCase !== undefined && !cfg.mergeCases.some((c) => c.id === mergeCase)) return "case-not-listed";
   return null;
 }
 
@@ -124,9 +133,14 @@ export function certaintyGate(summaryRaw: unknown): CertaintyResult {
 
 /** The `summary.merge` record the loop writes when it opens a pull request auto-merge could apply to. Flat. */
 export function mergeRecordAtOpen(input: {
-  gate1: BlastRadius;
+  /** The safety floor on the verified patch (blastRadius.ts `assessMergeFloor`). */
+  floor: BlastRadius;
+  /** The merge case Gemini named for the incident (triage.ts): the decision this candidate exists for. */
+  mergeCase: string;
   pr: PullRequestResult;
   patchSha256: string;
+  /** The revision the patch was verified on: a later change to the same file there was never tested with it. */
+  baseRevision: string;
   incident: Pick<Incident, "stackTrace" | "errorCode" | "errorName">;
   /**
    * The checkout's whole file list (`LoopSubject.repoFiles`). The stack is matched against all of it, as the pass
@@ -136,22 +150,46 @@ export function mergeRecordAtOpen(input: {
   repoFiles: readonly string[];
   now: Date;
 }): Record<string, string | number | boolean | null> {
-  const { gate1, pr } = input;
+  const { floor, pr } = input;
   const causeFrame =
-    gate1.sourceFile !== undefined && input.repoFiles.includes(gate1.sourceFile) && pathsFromStack(input.incident.stackTrace, input.repoFiles, [], 5).includes(gate1.sourceFile);
+    floor.sourceFile !== undefined && input.repoFiles.includes(floor.sourceFile) && pathsFromStack(input.incident.stackTrace, input.repoFiles, [], 5).includes(floor.sourceFile);
   const head = pr.headSha !== undefined && SHA1_RE.test(pr.headSha) ? pr.headSha : null;
-  const reason = !gate1.allowed ? `gate1:${gate1.problems.join(",")}` : head === null ? "head-unknown" : null;
+  const reason = !floor.allowed ? `floor:${floor.problems.join(",")}` : head === null ? "head-unknown" : null;
   return {
     state: reason === null ? "pending" : "skipped",
     ...(reason !== null && { reason }),
+    kind: "code",
+    mergeCase: input.mergeCase,
     number: pr.number,
     patchSha256: input.patchSha256,
     headSha: head,
-    gate1: gate1.allowed ? "pass" : "fail",
-    fixClass: gate1.fixClass ?? null,
-    sourceFile: gate1.sourceFile ?? null,
+    floor: floor.allowed ? "pass" : "fail",
+    sourceFile: floor.sourceFile ?? null,
+    baseRevision: input.baseRevision,
     causeFrame,
     causeCode: typeof input.incident.errorCode === "string" || typeof input.incident.errorName === "string",
+    pendingSince: input.now.toISOString(),
+  };
+}
+
+/**
+ * The `summary.merge` record of the missing-index path's evidence pull request, when the admin listed its reserved case.
+ * No model decided it and no floor is run: the patch is Starfish's own (indexFilePatch.ts adds index entries and nothing
+ * else), and the index it records already exists in production. It still waits for green required checks.
+ */
+export function indexMergeRecordAtOpen(input: { pr: PullRequestResult; patchSha256: string; indexFile: string; baseRevision: string; now: Date }): Record<string, string | number | boolean | null> {
+  const head = input.pr.headSha !== undefined && SHA1_RE.test(input.pr.headSha) ? input.pr.headSha : null;
+  return {
+    state: head === null ? "skipped" : "pending",
+    ...(head === null && { reason: "head-unknown" }),
+    kind: "index",
+    mergeCase: INDEX_MERGE_CASE,
+    number: input.pr.number,
+    patchSha256: input.patchSha256,
+    headSha: head,
+    floor: "pass",
+    sourceFile: input.indexFile,
+    baseRevision: input.baseRevision,
     pendingSince: input.now.toISOString(),
   };
 }
@@ -169,7 +207,7 @@ export interface EvidenceInput {
 
 const codeSpan = (v: unknown, max: number) => `\`${String(v ?? "").replace(/[`\s]+/g, " ").slice(0, max)}\``;
 
-/** The one comment posted on the pull request before Starfish merges it: what every gate saw. Inert, redacted text. */
+/** The one comment posted on the pull request before Starfish merges it: what decided it and what every check saw. Inert, redacted text. */
 export function mergeEvidenceText(input: EvidenceInput): string {
   const s = input.summary;
   const triage = rec(s.triage);
@@ -179,33 +217,47 @@ export function mergeEvidenceText(input: EvidenceInput): string {
   const review = rec(s.review);
   const merge = rec(s.merge);
   const named = input.checks.filter((c) => input.requiredChecks.includes(c.name));
+  const index = merge.kind === "index";
+  const certainty = certaintyGate(s);
   const lines = [
     "## Starfish auto-merge: the evidence",
     "",
-    `Every gate passed, so Starfish is squash-merging this pull request at ${codeSpan(input.headSha, 40)}. It does not deploy: this repository's own CI/CD does.`,
+    `Every check passed, so Starfish is squash-merging this pull request at ${codeSpan(input.headSha, 40)}. Starfish runs no deploy itself, but this merge is a release: this repository's own CI/CD ships it.`,
     "",
-    "### Gate 1: low blast radius",
+    "### The decision",
     "",
-    `- Class: ${codeSpan(merge.fixClass, 40)}, in one hunk of ${codeSpan(merge.sourceFile, 200)} with no function or class boundary between its changed lines and at least three lines of context on each side (fewer only at the file's start or end); any other file is a new test file made only of added lines (an existing test file is never changed)`,
-    "- The files the verify gate saw the patch change are exactly the files this check read",
-    "- Hard-exclude list (auth and access control, security rules, money paths, secrets, schema, dependencies, CI config, shared packages): no path word and no changed line matched it, and no statement that decides something in the whole enclosing function (as the base revision has it) names access control, money or a secret (a word match, not a proof)",
+    index
+      ? `- Merge case ${codeSpan(merge.mergeCase, 40)}, listed by an admin: a missing Firestore index. No model decided it: Google's error named the exact index, which already exists in production; this adds its entry to ${codeSpan(merge.sourceFile, 200)} and nothing else.`
+      : `- Gemini triaged the incident as merge case ${codeSpan(merge.mergeCase, 40)}, which an admin listed: ${inert(String(triage.reason ?? ""), 300).replace(/\s+/g, " ")}`,
     "",
-    "### Gate 2: certainty",
-    "",
-    `- Structural cause: the incident's stack trace names ${codeSpan(merge.sourceFile, 200)}`,
-    `- Test before the fix: **${inert(String(before.status ?? "missing"), 20)}** (the patch's tests alone on the base revision; patch ${codeSpan(String(before.patchSha256 ?? "").slice(0, 12), 12)})`,
-    `- Test after the fix: **${inert(String(verify.status ?? "missing"), 20)}** on patch SHA-256 ${codeSpan(verify.patchSha256, 64)}`,
-    `- Adversarial review: **${inert(String(review.verdict ?? "missing"), 30)}**: ${Number(review.held ?? 0)} attacks held, ${Number(review.flagged ?? 0)} flagged, ${Number(review.broken ?? 0)} broken`,
-    `- Counter-check: ${typeof triage.counterCount === "number" ? triage.counterCount : "missing"} errors over ${inert(String(triage.counterWindow ?? "an unknown window"), 20)}`,
-    `- Root cause, as the fixer put it: ${inert(String(fix.rootCause ?? ""), 300).replace(/\s+/g, " ")}`,
-    "",
+    ...(index
+      ? []
+      : [
+          "### The safety floor",
+          "",
+          `- One production file, ${codeSpan(merge.sourceFile, 200)}; any other file is a new test file made only of added lines (an existing test file is never changed)`,
+          "- The files the verify gate saw the patch change are exactly the files this check read",
+          "- Hard-exclude list (auth and access control, security rules, money paths, secrets, schema, dependencies, CI config, shared packages): no path word and no changed line matched it, and no statement of the function around any change (as the base revision has it) names access control, money or a secret (a word match, not a proof)",
+          "",
+          "### How certain (reported, not required)",
+          "",
+          `- Test before the fix: **${inert(String(before.status ?? "missing"), 20)}** (the patch's tests alone on the base revision)`,
+          `- Test after the fix: **${inert(String(verify.status ?? "missing"), 20)}** on patch SHA-256 ${codeSpan(verify.patchSha256, 64)}`,
+          `- Adversarial review: **${inert(String(review.verdict ?? "missing"), 30)}**: ${Number(review.held ?? 0)} attacks held, ${Number(review.flagged ?? 0)} flagged, ${Number(review.broken ?? 0)} broken`,
+          `- Counter-check: ${typeof triage.counterCount === "number" ? triage.counterCount : "missing"} errors over ${inert(String(triage.counterWindow ?? "an unknown window"), 20)}`,
+          `- The old certainty gate: ${certainty.pass ? "would have passed" : `would not have passed (${certainty.failedChecks.join(", ")})`}`,
+          `- Root cause, as the fixer put it: ${inert(String(fix.rootCause ?? ""), 300).replace(/\s+/g, " ")}`,
+          "",
+        ]),
     "### CI on this head",
     "",
     ...(named.length > 0 ? named.map((c) => `- ${codeSpan(c.name, 100)}: ${inert(c.conclusion ?? c.status, 20)} (check run ${c.id}${c.url ? `, ${codeSpan(c.url, 200)}` : ""})`) : ["- none"]),
     "",
     "Every run of each named check counts, re-runs included. Runs are counted only from the configured GitHub App; that tells apps apart, not workflows: every GitHub Actions workflow in this repository posts as the same app.",
     "",
-    `If this error comes back within ${input.fastRevertMinutes} minutes of the merge, Starfish opens and merges a revert of it, and tells a person.`,
+    index
+      ? "A revert of this change would not remove the index, so no revert watch is started; if the error comes back, the index path's own observation tells a person."
+      : `If this error comes back within ${input.fastRevertMinutes} minutes of the merge, Starfish opens and merges a revert of it, and tells a person.`,
     "",
     `Run: ${codeSpan(input.cycleId, 128)}`,
     "",
@@ -230,8 +282,11 @@ export interface AutoMergeDeps {
   now: () => Date;
   /** This worker, for the claim on a candidate. */
   owner: string;
-  /** The switches, read FRESH each time it is asked (`mergeBlockedBy` over the current runtime settings). */
-  blockedBy: () => Promise<string | null>;
+  /**
+   * The switches, read FRESH each time it is asked (`mergeBlockedBy` over the current runtime settings). With a case:
+   * that case must still be listed.
+   */
+  blockedBy: (mergeCase?: string) => Promise<string | null>;
   /** The incident's status right now, or null if it is gone. */
   incidentStatus: (incidentId: string) => Promise<IncidentStatus | null>;
   /** Tells a person. Never throws (slack.ts); absent: nobody is told, and the record says so. */
@@ -350,6 +405,7 @@ const SKIP_WORDS: Record<string, string> = {
   "evidence-not-posted": "The evidence could not be posted on the pull request, and Starfish never merges without it.",
   interrupted: "An earlier attempt to merge was interrupted, and a merge is never retried blindly.",
   "incident-reverted-before": "Starfish already reverted one of its own merges for this incident, or handed a person what its watch of one found.",
+  "no-merge-case": "No merge case was decided for this incident, so it is not Starfish's to merge.",
   "incident-merge-watched": "Starfish merged a fix for this incident earlier, and that merge is still being watched for the incident coming back (or being reverted); a second fix must not take the revert's place.",
 };
 
@@ -381,8 +437,7 @@ export async function earlierMergeHolds(db: Firestore, cfg: Pick<CycleConfig, "c
 }
 
 function skipSentence(reason: string): string {
-  if (reason.startsWith("gate2:")) return `Gate 2 (certainty) did not hold: ${reason.slice(6)}. The pull request stays open for a person.`;
-  if (reason.startsWith("gate1:")) return `Gate 1 (low blast radius) did not hold: ${reason.slice(6)}. The pull request stays open for a person.`;
+  if (reason.startsWith("floor:")) return `The safety floor did not hold: ${reason.slice(6)}. The pull request stays open for a person.`;
   if (reason.startsWith("merge-refused:")) return `GitHub refused the merge (${reason.slice(14)}). The pull request stays open for a person.`;
   if (reason.startsWith("switch:")) return `Auto-merge is not allowed now (${reason.slice(7)}). The pull request stays open for a person.`;
   return `${SKIP_WORDS[reason] ?? `Auto-merge stopped: ${reason}.`} The pull request stays open for a person.`;
@@ -452,8 +507,12 @@ export async function runAutoMergeStep(deps: AutoMergeDeps): Promise<AutoMergeSu
 
     if (typeof number !== "number" || typeof headSha !== "string" || !SHA1_RE.test(headSha)) return skip("head-unknown");
 
-    // The switches, fresh. Automation off pauses; anything else is decided.
-    const blocked = await d.blockedBy();
+    // The decision this candidate exists for: Gemini's merge case (or the index path's). None: a person's.
+    const mergeCase = typeof merge.mergeCase === "string" && merge.mergeCase !== "" ? merge.mergeCase : undefined;
+    if (mergeCase === undefined) return skip("no-merge-case");
+
+    // The switches, fresh, with the case still listed. Automation off pauses; anything else is decided.
+    const blocked = await d.blockedBy(mergeCase);
     if (blocked === "automation-disabled") return "paused";
     if (blocked !== null) return skip(`switch:${blocked}`);
 
@@ -462,9 +521,7 @@ export async function runAutoMergeStep(deps: AutoMergeDeps): Promise<AutoMergeSu
     if (status === null) return skip("incident-gone");
     if (!OPEN.includes(status)) return skip(`incident-${status}`);
 
-    if (merge.gate1 !== "pass") return skip(`gate1:${String(merge.reason ?? "not-recorded")}`);
-    const gate2 = certaintyGate(summary);
-    if (!gate2.pass) return skip(`gate2:${gate2.failedChecks.join(",")}`);
+    if (merge.floor !== "pass") return skip(`floor:${String(merge.reason ?? "not-recorded")}`);
 
     // An earlier merge for this incident still watched, or already reverted: a second try goes to a person (#240).
     const held = await earlierMergeHolds(db, cfg, incidentId, cycle.id);
@@ -478,7 +535,7 @@ export async function runAutoMergeStep(deps: AutoMergeDeps): Promise<AutoMergeSu
 
     // The checks ran on the base revision the patch was verified on. A later commit on the base branch that changed the
     // same file was never tested with it: a person merges that.
-    const baseRevision = rec(summary.verify).baseRevision;
+    const baseRevision = merge.baseRevision ?? rec(summary.verify).baseRevision;
     if (typeof baseRevision !== "string" || !SHA1_RE.test(baseRevision)) return skip("base-unknown");
     let changed: string[];
     try {
@@ -518,7 +575,7 @@ export async function runAutoMergeStep(deps: AutoMergeDeps): Promise<AutoMergeSu
     const claimedMerge = { ...merge, claimedBy: d.owner, claimedAt };
 
     // Asked once more right before acting: an admin who just turned it off, or an operator who just resolved, wins.
-    const late = await d.blockedBy();
+    const late = await d.blockedBy(mergeCase);
     const lateStatus = await d.incidentStatus(incidentId);
     if (late !== null || lateStatus === null || !OPEN.includes(lateStatus)) {
       return skipClaimed(late !== null ? `switch:${late}` : `incident-${lateStatus ?? "gone"}`);
@@ -532,8 +589,8 @@ export async function runAutoMergeStep(deps: AutoMergeDeps): Promise<AutoMergeSu
     let merged: { sha: string };
     try {
       merged = await client.mergePullRequest(cycle.id, number, headSha, {
-        title: `Starfish: merge #${number} (${String(merge.fixClass ?? "fix")})`,
-        body: `Auto-merged by Starfish after every gate passed; the evidence is on the pull request.\n\nRun: ${cycle.id}\nPatch SHA-256: ${String(merge.patchSha256 ?? "")}`,
+        title: `Starfish: merge #${number} (${mergeCase})`,
+        body: `Auto-merged by Starfish: merge case ${mergeCase}, and every check passed; the evidence is on the pull request.\n\nRun: ${cycle.id}\nPatch SHA-256: ${String(merge.patchSha256 ?? "")}`,
       });
     } catch (err) {
       return skipClaimed(`merge-refused:${ruleOf(err)}`);
@@ -547,13 +604,16 @@ export async function runAutoMergeStep(deps: AutoMergeDeps): Promise<AutoMergeSu
     }
   }
 
-  /** The merge, and the fast-revert watch it starts, in one write. */
+  /**
+   * The merge, and the fast-revert watch it starts, in one write. An index evidence pull request starts none: reverting
+   * the index file would not remove the index (and a deploy of the reverted file could), so its watch is closed `clear`
+   * at once and the index path's own observation (observe.ts) tells a person if the error comes back.
+   */
   async function recordMerged(d: AutoMergeDeps, cycle: { id: string }, merge: Rec, mergeSha: string, mergedAt: string, from: (m: Rec) => boolean): Promise<boolean> {
     const at = Date.parse(mergedAt);
     const until = new Date((Number.isFinite(at) ? at : d.now().getTime()) + d.config.fastRevertMinutes * 60_000).toISOString();
-    return moveRecord(d.db, d.config, cycle.id, "merge", from, { ...merge, state: "merged", mergeSha, mergedAt, decidedAt: d.now().toISOString() }, {
-      also: { revert: { state: "watching", mergeSha, mergedAt, until } },
-    });
+    const revert = merge.kind === "index" ? { state: "clear", reason: "index-not-reverted", mergeSha, mergedAt } : { state: "watching", mergeSha, mergedAt, until };
+    return moveRecord(d.db, d.config, cycle.id, "merge", from, { ...merge, state: "merged", mergeSha, mergedAt, decidedAt: d.now().toISOString() }, { also: { revert } });
   }
 }
 
