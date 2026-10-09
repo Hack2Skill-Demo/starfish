@@ -1,15 +1,19 @@
 /**
  * SignIn — email + password on Firebase
  * Auth; the route guard resolves roles and routes the operator on from here.
+ * On the public demo it also offers the guest view (#12), for a visitor who
+ * lands here (after signing out, or from a "Team sign in" link) without an account.
  */
-import { useState } from "react";
-import { useLocation, useNavigate } from "react-router";
+import { useEffect, useState } from "react";
+import { Link, useLocation, useNavigate } from "react-router";
 import { signInWithEmailAndPassword } from "firebase/auth";
 import { Loader2, Eye, EyeOff, AlertCircle } from "lucide-react";
 import PageMeta from "../components/PageMeta";
 import { Button } from "../components/ui/Button";
 import { firebaseAuth } from "../lib/firebase";
 import { StarfishLogo } from "../layout/StarfishLogo";
+import { offersGuestView } from "../lib/dataSource";
+import { useAuth } from "./authCore";
 
 /** Firebase Auth error code → message. Never reveals whether the email exists. */
 export function signInErrorMessage(code: string | undefined): string {
@@ -52,6 +56,23 @@ export function SignIn() {
   const [showPassword, setShowPassword] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const { user, guest, enterAsGuest } = useAuth();
+  const [enteringGuest, setEnteringGuest] = useState(false);
+
+  // The guest session is in once the token event has set it: navigating before that would
+  // reach the route guard with nobody signed in.
+  useEffect(() => {
+    if (enteringGuest && guest) navigate("/overview", { replace: true });
+  }, [enteringGuest, guest, navigate]);
+
+  const handleGuest = async () => {
+    setError(null);
+    setEnteringGuest(true);
+    if (!(await enterAsGuest({ requested: true }))) {
+      setEnteringGuest(false);
+      setError("The demo view isn't available right now. Please try again later.");
+    }
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -148,6 +169,27 @@ export function SignIn() {
                 )}
               </Button>
             </form>
+
+            {offersGuestView() && (guest || !user) && (
+              <div className="mt-6 border-t border-gray-200 pt-6 text-center text-sm text-gray-600 dark:border-gray-700 dark:text-gray-400">
+                No account?{" "}
+                {guest ? (
+                  <Link to="/overview" className="font-medium text-brand-700 hover:underline dark:text-brand-400">
+                    See the demo view
+                  </Link>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => void handleGuest()}
+                    disabled={enteringGuest || isLoading}
+                    className="font-medium text-brand-700 hover:underline disabled:cursor-not-allowed disabled:opacity-60 dark:text-brand-400"
+                  >
+                    {enteringGuest ? "Opening the demo view..." : "See the demo view"}
+                  </button>
+                )}
+                <span className="mt-1 block text-xs">Read-only, no sign-in needed.</span>
+              </div>
+            )}
           </div>
         </div>
       </div>

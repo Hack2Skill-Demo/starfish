@@ -25,6 +25,17 @@ export interface DataSource {
   publicEvents?: string;
 }
 
+/**
+ * The one environment firestore.rules serves a guest, and the engine's default STARFISH_PUBLIC_ENVIRONMENTS. A build for
+ * any other environment would show a guest nothing, so only this one offers the guest view on the sign-in page.
+ */
+export const PUBLIC_DEMO_ENVIRONMENT = "demo";
+
+/** Whether this build is the public demo, so the sign-in page offers the guest view. */
+export function offersGuestView(): boolean {
+  return webConfig().environment === PUBLIC_DEMO_ENVIRONMENT;
+}
+
 /** True for an anonymous session: the public demo's guest. */
 export function isGuestSession(): boolean {
   return firebaseAuth().currentUser?.isAnonymous === true;

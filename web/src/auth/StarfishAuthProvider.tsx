@@ -154,11 +154,13 @@ export function StarfishAuthProvider({
   // attempt in flight is shared. A settled one is not kept: a visitor who was a guest, signed
   // in with email and was then signed out without meaning to (a failed focus token check or
   // roles read, above) must get a fresh attempt, not the old `true` with nobody signed in,
-  // which left RequireRole on "Loading..." until a reload (#144).
+  // which left RequireRole on "Loading..." until a reload (#144). Asking for the guest view
+  // from the sign-in page is the visitor's own choice, so it lifts the sign-out block.
   const guestAttempt = useRef<Promise<boolean> | null>(null);
   const signedOutOnPurpose = useRef(false);
 
-  const enterAsGuest = useCallback(async (): Promise<boolean> => {
+  const enterAsGuest = useCallback(async (opts?: { requested?: boolean }): Promise<boolean> => {
+    if (opts?.requested) signedOutOnPurpose.current = false;
     if (signedOutOnPurpose.current) return false;
     if (guestAttempt.current) return guestAttempt.current;
     const attempt = signInAnonymously(auth)

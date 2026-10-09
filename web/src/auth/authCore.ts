@@ -52,8 +52,10 @@ export type StarfishAuthCtx = {
    * Try to start a guest session for a signed-out visitor. Resolves true if one started,
    * false if it can't (Anonymous sign-in is off for this project, a network failure, or the
    * visitor just signed out on purpose). Safe to call repeatedly: it makes one attempt.
+   * `requested`: the visitor asked for the guest view themselves (the sign-in page's link), which a
+   * deliberate sign-out does not block.
    */
-  enterAsGuest: () => Promise<boolean>;
+  enterAsGuest: (opts?: { requested?: boolean }) => Promise<boolean>;
 };
 
 export const Ctx = createContext<StarfishAuthCtx | null>(null);
