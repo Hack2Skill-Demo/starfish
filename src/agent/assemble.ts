@@ -7,7 +7,8 @@
  * `[]` when Cloud Logging fails (missing is not zero: triage is told the check is missing). A checkout that
  * fails THROWS: with no source there is nothing to fix, and the cycle's lease will expire and be resumed.
  *
- * Files come only from the repository's own file list (`pathsFromStack`), are read as plain regular files
+ * Files come only from the repository's own file list (`pathsFromStack`; when no frame names a repository file, the one
+ * file that exports the failing function, `findSourceByFunctionName`, #259), are read as plain regular files
  * (never a symlink, never binary, bounded), and carry whatever the repository holds: the loop's stages
  * redact them before a model sees them.
  *
@@ -28,6 +29,7 @@ import { INCIDENT_STATUSES } from "../types.js";
 import type { LoopSubject } from "./loop.js";
 import { pathsFromStack } from "./pass.js";
 import type { SourceFile } from "./fixer.js";
+import { findSourceByFunctionName, type SourceProvenance } from "./sourceByName.js";
 
 export interface Checkout {
   /** The working tree (no `.git` content is ever shown to a model). */
@@ -77,7 +79,7 @@ export function createGitCheckout(cfg: CheckoutConfig, deps: CheckoutDeps): Chec
   };
 }
 
-export type AssembleConfig = Pick<StarfishConfig, "environment" | "incidentCollection" | "patchExcludedPaths" | "logResourceTypes" | "ignoredMessages" | "excludedServices">;
+export type AssembleConfig = Pick<StarfishConfig, "environment" | "incidentCollection" | "patchExcludedPaths" | "functionsSourceRoots" | "logResourceTypes" | "ignoredMessages" | "excludedServices">;
 
 export interface AssembleDeps {
   db: Firestore;
@@ -182,11 +184,23 @@ export function createLoader(deps: AssembleDeps): Loader {
         const file = await readSource(checkout.dir, rel, maxBytes);
         if (file) files.push(file);
       }
+      let provenance: SourceProvenance = { rule: "stack" };
+      if (wanted.length === 0) {
+        // Only framework frames (a callable failing through logger.error / HttpsError), or no stack at all (#259): the
+        // function's name still says which export failed. Never a structural cause (autoMerge.ts reads the stack alone).
+        const byName = await findSourceByFunctionName(incident.functionName, checkout.files, (rel) => readSource(checkout.dir, rel, maxBytes), {
+          roots: deps.config.functionsSourceRoots,
+          excluded: deps.config.patchExcludedPaths,
+        });
+        if (byName.file) files.push(byName.file);
+        provenance = { rule: byName.file ? "function-name" : "none", search: byName.outcome };
+      }
 
       return {
         // An operator's correction (src/triageRules.ts): it caps triage, and is never shown to the model.
         subject: { incident, status, ...(correction && { correction }), ...(samples.length > 0 && { samples }) },
         files,
+        source: provenance,
         sourceDir: checkout.dir,
         baseRevision: checkout.revision,
         repoFiles: checkout.files,

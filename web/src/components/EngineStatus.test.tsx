@@ -35,7 +35,7 @@ describe("EngineStatus", () => {
   it("says the engine is running, when it last ran and what it found", async () => {
     mocks.read.mockResolvedValue(run());
     renderStatus();
-    expect(await screen.findByText("Engine running")).toBeInTheDocument();
+    expect(await screen.findByText("Ingest running")).toBeInTheDocument();
     expect(screen.getByTestId("engine-status")).toHaveTextContent("2 new, 5 updated, 1 recurred");
     expect(screen.getByTestId("engine-status")).toHaveTextContent("10 minutes ago");
   });
@@ -43,13 +43,13 @@ describe("EngineStatus", () => {
   it("says the engine stopped, instead of leaving a quiet list to look like good news", async () => {
     mocks.read.mockResolvedValue(run({ finishedAt: new Date(Date.now() - 5 * 3600_000) }));
     renderStatus();
-    expect(await screen.findByText("Engine not running")).toBeInTheDocument();
+    expect(await screen.findByText("Ingest not running")).toBeInTheDocument();
   });
 
   it("shows a failed run with its error label and no counts", async () => {
     mocks.read.mockResolvedValue(run({ outcome: "failed", error: "UNAVAILABLE" }));
     renderStatus();
-    expect(await screen.findByText("Last run failed")).toBeInTheDocument();
+    expect(await screen.findByText("Last ingest run failed")).toBeInTheDocument();
     const line = screen.getByTestId("engine-status");
     expect(line).toHaveTextContent("(UNAVAILABLE)");
     expect(line).not.toHaveTextContent("new,");
@@ -58,7 +58,7 @@ describe("EngineStatus", () => {
   it("shows a refusal on unusable settings as failed, though it names the env default's environment (#223)", async () => {
     mocks.read.mockResolvedValue(run({ environment: "dev", outcome: "failed", error: "settings-unusable", problems: ["settings read failed: 14"] }));
     renderStatus("demo");
-    expect(await screen.findByText("Last run failed")).toBeInTheDocument();
+    expect(await screen.findByText("Last ingest run failed")).toBeInTheDocument();
     const line = screen.getByTestId("engine-status");
     expect(line).toHaveTextContent("(settings-unusable)");
     expect(line).toHaveTextContent("runtime settings not used: settings read failed: 14");
@@ -67,35 +67,35 @@ describe("EngineStatus", () => {
   it("flags a capped read: the counts are a floor", async () => {
     mocks.read.mockResolvedValue(run({ capped: true }));
     renderStatus();
-    expect(await screen.findByText("Engine running, read capped")).toBeInTheDocument();
+    expect(await screen.findByText("Ingest running, read capped")).toBeInTheDocument();
     expect(screen.getByTestId("engine-status")).toHaveTextContent("a floor");
   });
 
   it("says when no run has been recorded, and that the list may be out of date", async () => {
     mocks.read.mockResolvedValue(null);
     renderStatus();
-    expect(await screen.findByText("No engine run recorded")).toBeInTheDocument();
+    expect(await screen.findByText("No ingest run recorded")).toBeInTheDocument();
     expect(screen.getByTestId("engine-status")).toHaveTextContent("may be out of date");
   });
 
   it("lists the runtime settings the engine could not use", async () => {
     mocks.read.mockResolvedValue(run({ problems: ["watchedProjectId must be a string"] }));
     renderStatus();
-    await screen.findByText("Engine running");
+    await screen.findByText("Ingest running");
     expect(screen.getByTestId("engine-status")).toHaveTextContent("runtime settings not used: watchedProjectId must be a string");
   });
 
   it("doesn't alarm when the record can't be read (a viewer who may not read it)", async () => {
     mocks.read.mockRejectedValue(new Error("permission-denied"));
     renderStatus();
-    expect(await screen.findByText("Engine status unavailable.")).toBeInTheDocument();
-    expect(screen.queryByText("Engine not running")).toBeNull();
+    expect(await screen.findByText("Ingest status unavailable.")).toBeInTheDocument();
+    expect(screen.queryByText("Ingest not running")).toBeNull();
   });
 
   it("treats a run recorded for another environment as no run", async () => {
     mocks.read.mockResolvedValue(run({ environment: "prod" }));
     renderStatus("demo");
-    expect(await screen.findByText("No engine run recorded")).toBeInTheDocument();
+    expect(await screen.findByText("No ingest run recorded")).toBeInTheDocument();
   });
 
   it("as a card, says the same and how far the engine is to its next run", async () => {
@@ -106,7 +106,7 @@ describe("EngineStatus", () => {
         <EngineStatus environment="demo" variant="card" />
       </QueryClientProvider>
     );
-    expect(await screen.findByText("Engine running")).toBeInTheDocument();
+    expect(await screen.findByText("Ingest running")).toBeInTheDocument();
     expect(screen.getByTestId("engine-status")).toHaveTextContent("Last run 10 minutes ago: 2 new, 5 updated, 1 recurred.");
     expect(screen.getByTestId("engine-status")).toHaveTextContent("Next run expected in 45 minutes");
     expect(screen.getByRole("img", { name: "25% of the way to the next run" })).toBeInTheDocument();
@@ -119,7 +119,7 @@ describe("EngineStatus", () => {
         <EngineStatus environment="demo" variant="card" />
       </QueryClientProvider>
     );
-    expect(await screen.findByText("Engine running")).toBeInTheDocument();
+    expect(await screen.findByText("Ingest running")).toBeInTheDocument();
     expect(screen.queryByRole("img")).toBeNull();
   });
 });

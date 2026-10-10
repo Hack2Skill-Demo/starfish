@@ -130,7 +130,7 @@ describe("loadConfig: ingest windows", () => {
 });
 
 describe("loadConfig: the verify gate", () => {
-  const KEYS = ["STARFISH_VERIFY_COMMAND", "STARFISH_VERIFY_TIMEOUT_SECONDS", "STARFISH_PATCH_EXCLUDED_PATHS"];
+  const KEYS = ["STARFISH_VERIFY_COMMAND", "STARFISH_VERIFY_TIMEOUT_SECONDS", "STARFISH_PATCH_EXCLUDED_PATHS", "STARFISH_FUNCTIONS_SOURCE_ROOTS"];
   beforeEach(() => {
     for (const k of KEYS) vi.stubEnv(k, "");
     vi.stubEnv("GOOGLE_CLOUD_PROJECT", "home-project");
@@ -161,6 +161,17 @@ describe("loadConfig: the verify gate", () => {
 
   it("keeps the built-in excluded paths when none are added", () => {
     expect(loadConfig().patchExcludedPaths).toEqual(expect.arrayContaining([".git/", ".github/", ".claude/", ".env"]));
+  });
+
+  it("searches the whole checkout for a function's source by default, or the configured roots (#259)", () => {
+    expect(loadConfig().functionsSourceRoots).toEqual([]);
+    vi.stubEnv("STARFISH_FUNCTIONS_SOURCE_ROOTS", "./functions/src/, packages/api ,");
+    expect(loadConfig().functionsSourceRoots).toEqual(["functions/src", "packages/api"]);
+  });
+
+  it.each(["/abs", "../up", "functions/../x", ".", "a\\b", "a//b"])("refuses a functions source root outside the checkout: %j", (root) => {
+    vi.stubEnv("STARFISH_FUNCTIONS_SOURCE_ROOTS", root);
+    expect(() => loadConfig()).toThrow(/STARFISH_FUNCTIONS_SOURCE_ROOTS/);
   });
 });
 

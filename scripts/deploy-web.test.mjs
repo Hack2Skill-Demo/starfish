@@ -2,7 +2,7 @@
 // unsafe inputs, prints the whole plan, changes nothing (it only reads), and keeps Starfish off the project's
 // default site. And that the site it deploys to ends up linked to Starfish's web app (#156).
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -12,7 +12,9 @@ const script = new URL("./deploy-web.sh", import.meta.url).pathname;
 // A pnpm first on PATH that logs every call and answers only the two reads a dry run may make, from canned replies
 // (`site`: the hosting:sites:get reply; `apps`: the apps:list reply; either absent = that read fails, as when the
 // shell is not signed in). Anything else it is asked to do fails, and shows up in `calls`.
-function deploy(env, { site, apps, siteError } = {}) {
+// `google` (#262) stands in for Google's REST APIs: gcloud then hands out a token, and curl answers a GET of the rules
+// release, the ruleset or the index list with its `{ status, body }` (one absent: no response, as with no network).
+function deploy(env, { site, apps, siteError, google } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "pnpm-stub-"));
   const log = join(dir, "calls");
   const reply = (name, body, error) => {
@@ -40,10 +42,43 @@ exit 1
   );
   chmodSync(join(dir, "pnpm"), 0o755);
   // gcloud and curl are stubbed too: a dry run must call neither (every call shows up in `calls`).
-  for (const tool of ["gcloud", "curl"]) {
-    writeFileSync(join(dir, tool), `#!/bin/sh\necho "${tool} $*" >> "${log}"\nexit 1\n`);
-    chmodSync(join(dir, tool), 0o755);
+  writeFileSync(
+    join(dir, "gcloud"),
+    `#!/bin/sh\necho "gcloud $*" >> "${log}"\n${google ? `[ "$*" = "auth print-access-token" ] && echo ${TOKEN} && exit 0\n` : ""}exit 1\n`,
+  );
+  for (const [name, answer] of Object.entries(google ?? {})) {
+    writeFileSync(join(dir, `${name}.status`), String(answer.status));
+    writeFileSync(join(dir, `${name}.json`), typeof answer.body === "string" ? answer.body : JSON.stringify(answer.body ?? {}));
   }
+  // curl as the script calls it: -o <file> -w '%{http_code}' ... <url>, the token on stdin (kept, for the test to see).
+  writeFileSync(
+    join(dir, "curl"),
+    `#!/bin/sh
+echo "curl $*" >> "${log}"
+cat >> "${join(dir, "stdin")}"
+out=""; url=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -o) out="$2"; shift 2 ;;
+    -H|-w|-X|-d) shift 2 ;;
+    -*) shift ;;
+    *) url="$1"; shift ;;
+  esac
+done
+case "$url" in
+  https://firebaserules.googleapis.com/v1/projects/*/releases/cloud.firestore/*) f=release ;;
+  https://firebaserules.googleapis.com/v1/projects/*/rulesets/*) f=ruleset ;;
+  https://firestore.googleapis.com/v1/projects/*/databases/*/collectionGroups/-/indexes*) f=indexes ;;
+  *) printf 000; exit 7 ;;
+esac
+[ -f "${dir}/$f.status" ] || { printf 000; exit 7; }
+[ -z "$out" ] || cp "${dir}/$f.json" "$out"
+cat "${dir}/$f.status"
+exit 0
+`,
+  );
+  chmodSync(join(dir, "gcloud"), 0o755);
+  chmodSync(join(dir, "curl"), 0o755);
   const r = spawnSync("bash", [script], {
     env: { PATH: `${dir}:${dirname(process.execPath)}:/usr/bin:/bin`, ...env },
     encoding: "utf8",
@@ -54,8 +89,24 @@ exit 1
   const buildEnv = existsSync(buildEnvFile)
     ? Object.fromEntries(readFileSync(buildEnvFile, "utf8").split("\n").filter(Boolean).map((l) => [l.slice(0, l.indexOf("=")), l.slice(l.indexOf("=") + 1)]))
     : undefined;
-  return { ...r, out: `${r.stdout}${r.stderr}`.replace(/\\/g, ""), calls, buildEnv };
+  const stdin = existsSync(join(dir, "stdin")) ? readFileSync(join(dir, "stdin"), "utf8") : "";
+  return { ...r, out: `${r.stdout}${r.stderr}`.replace(/\\/g, ""), calls, buildEnv, stdin };
 }
+
+const TOKEN = "ya29.stub-token";
+const repoRules = readFileSync(new URL("../firestore.rules", import.meta.url), "utf8");
+const RULESET = "projects/star-proj/rulesets/0a1b2c3d-4e5f";
+const index = (group, state) => ({
+  name: `projects/star-proj/databases/starfish/collectionGroups/${group}/indexes/CICAgI${group}`,
+  state,
+  fields: [{ fieldPath: "environment", order: "ASCENDING" }, { fieldPath: "updatedAt", order: "DESCENDING" }, { fieldPath: "__name__", order: "DESCENDING" }],
+});
+// Google's replies once the engine deploy has published this repository's rules and every index has built.
+const deployed = ({ rules = repoRules, indexes = [index("starfish_cycles", "READY")] } = {}) => ({
+  release: { status: 200, body: { name: "projects/star-proj/releases/cloud.firestore/starfish", rulesetName: RULESET } },
+  ruleset: { status: 200, body: { name: RULESET, source: { files: [{ name: "firestore.rules", content: rules }] } } },
+  indexes: { status: 200, body: { indexes } },
+});
 
 const READS = /^dlx firebase-tools@14 (hosting:sites:get|apps:list) /;
 const onlyReads = (calls) => calls.every((c) => READS.test(c));
@@ -112,7 +163,10 @@ describe("scripts/deploy-web.sh", () => {
   // The Deploy web UI workflow hands these over as repository variables (#230): the build must see them, or an Actions
   // deploy hides the admin controls. A real (not dry) run against the stubs: the build is the first thing it runs.
   it("builds with the admin API's URL and the stale threshold it is given", () => {
-    const r = deploy({ PROJECT_ID: "star-proj", VITE_STARFISH_ADMIN_API_URL: "https://starfish-admin-abc-uc.a.run.app", VITE_STARFISH_STALE_MINUTES: "20" });
+    const r = deploy(
+      { PROJECT_ID: "star-proj", VITE_STARFISH_ADMIN_API_URL: "https://starfish-admin-abc-uc.a.run.app", VITE_STARFISH_STALE_MINUTES: "20" },
+      { google: deployed() },
+    );
     expect(r.buildEnv).toBeDefined();
     expect(r.buildEnv.VITE_STARFISH_ADMIN_API_URL).toBe("https://starfish-admin-abc-uc.a.run.app");
     expect(r.buildEnv.VITE_STARFISH_STALE_MINUTES).toBe("20");
@@ -123,6 +177,127 @@ describe("scripts/deploy-web.sh", () => {
     const r = deploy({ ...dry, HOSTING_SITE: "judges", STARFISH_ENV: "demo" });
     expect(r.out).toContain("target:apply hosting starfish judges");
     expect(r.out).toContain("VITE_STARFISH_ENV=demo");
+  });
+
+  // A UI published ahead of its rules and indexes read "couldn't be read" on every guest tile (#262). Real (not dry) runs
+  // against the stubs: the check comes before the build, so a build that ran is a check that passed.
+  describe("refuses to publish a UI whose rules are not deployed (#262)", () => {
+    const real = { PROJECT_ID: "star-proj" };
+    const built = (r) => r.buildEnv !== undefined;
+
+    it("reads the live release of Starfish's database, then its ruleset, and builds when it is this repository's rules", () => {
+      const r = deploy(real, { google: deployed() });
+      expect(built(r)).toBe(true);
+      const gets = r.calls.filter((c) => c.startsWith("curl "));
+      expect(gets[0]).toContain("https://firebaserules.googleapis.com/v1/projects/star-proj/releases/cloud.firestore/starfish");
+      expect(gets[1]).toContain(`https://firebaserules.googleapis.com/v1/${RULESET}`);
+      expect(gets[2]).toContain("https://firestore.googleapis.com/v1/projects/star-proj/databases/starfish/collectionGroups/-/indexes");
+      expect(r.out).toContain("the live rules of database starfish are firestore.rules");
+      expect(r.out).toContain("all 1 composite indexes are READY");
+      // The token goes in on stdin, never in an argument other users of the host can list, nor in the output.
+      expect(r.stdin).toContain(`Authorization: Bearer ${TOKEN}`);
+      expect(r.calls.join("\n")).not.toContain(TOKEN);
+      expect(r.out).not.toContain(TOKEN);
+    });
+
+    it("reads the database it is given", () => {
+      const r = deploy({ ...real, STARFISH_DATABASE_ID: "ops-store" }, { google: deployed() });
+      expect(built(r)).toBe(true);
+      expect(r.calls.join("\n")).toContain("/releases/cloud.firestore/ops-store");
+      expect(r.calls.join("\n")).toContain("/databases/ops-store/collectionGroups/-/indexes");
+    });
+
+    it("refuses a database id that is not one, before any call", () => {
+      const r = deploy({ ...real, STARFISH_DATABASE_ID: "star/../x" }, { google: deployed() });
+      expect(r.status).not.toBe(0);
+      expect(r.out).toContain("STARFISH_DATABASE_ID must be");
+      expect(r.calls).toEqual([]);
+    });
+
+    it("stops before the build when the live rules differ, and says to run the engine deploy first", () => {
+      const scratch = mkdtempSync(join(tmpdir(), "deploy-web-tmp-"));
+      const r = deploy({ ...real, TMPDIR: scratch }, { google: deployed({ rules: "rules_version = '2';\nservice cloud.firestore {}\n" }) });
+      expect(r.status).not.toBe(0);
+      // The replies it read are removed, though the refusal exits from inside the check.
+      expect(readdirSync(scratch)).toEqual([]);
+      expect(built(r)).toBe(false);
+      expect(r.out).toContain(`the live rules of database starfish (${RULESET}) are not this repository's firestore.rules`);
+      expect(r.out).toContain("run the engine deploy first (scripts/deploy-gcp.sh");
+      expect(r.out).toContain("ALLOW_RULES_DRIFT=1");
+      expect(r.calls.some((c) => c.includes("deploy --only hosting"))).toBe(false);
+    });
+
+    it("takes the same rules with Windows line endings as the same", () => {
+      const r = deploy(real, { google: deployed({ rules: repoRules.replace(/\n/g, "\r\n") }) });
+      expect(built(r)).toBe(true);
+    });
+
+    it("a database with no rules released is refused, not passed", () => {
+      const r = deploy(real, { google: { ...deployed(), release: { status: 404, body: { error: { code: 404 } } } } });
+      expect(r.status).not.toBe(0);
+      expect(built(r)).toBe(false);
+      expect(r.out).toContain("no Firestore rules are released for database starfish in star-proj");
+    });
+
+    it("says so when the live rules cannot be read, and does not pass silently", () => {
+      for (const [google, says] of [
+        [undefined, "no access token from gcloud"],
+        [{ ...deployed(), release: { status: 403, body: {} } }, "HTTP 403"],
+        [{ ...deployed(), release: undefined }, "HTTP 000"],
+        [{ ...deployed(), release: { status: 200, body: { rulesetName: "../../evil" } } }, "names no ruleset"],
+        [{ ...deployed(), ruleset: { status: 500, body: {} } }, "could not read the live ruleset"],
+        [{ ...deployed(), ruleset: { status: 200, body: "not json" } }, "could not compare the live ruleset"],
+      ]) {
+        const r = deploy(real, { google: google && Object.fromEntries(Object.entries(google).filter(([, v]) => v)) });
+        expect(r.status, says).not.toBe(0);
+        expect(built(r), says).toBe(false);
+        expect(r.out, says).toContain(says);
+        expect(r.out, says).toContain("run the engine deploy first");
+      }
+    });
+
+    it("ALLOW_RULES_DRIFT=1 deploys anyway, with a warning", () => {
+      const r = deploy({ ...real, ALLOW_RULES_DRIFT: "1" }, { google: deployed({ rules: "something else" }) });
+      expect(built(r)).toBe(true);
+      expect(r.out).toContain("WARNING: the live rules of database starfish");
+      expect(r.out).toContain("ALLOW_RULES_DRIFT=1: deploying anyway");
+      const unread = deploy({ ...real, ALLOW_RULES_DRIFT: "1" });
+      expect(built(unread)).toBe(true);
+      expect(unread.out).toContain("WARNING: could not read the live rules");
+    });
+
+    it("warns about an index that is still building, and does not stop for it", () => {
+      const r = deploy(real, {
+        google: deployed({ indexes: [index("starfish_cycles", "READY"), index("starfish_public_events", "CREATING")] }),
+      });
+      expect(built(r)).toBe(true);
+      expect(r.out).toContain("WARNING: index on starfish_public_events (environment, updatedAt) is CREATING");
+      expect(r.out).not.toContain("index on starfish_cycles");
+    });
+
+    it("warns when the indexes cannot be read, and does not stop for it", () => {
+      const r = deploy(real, { google: { ...deployed(), indexes: { status: 403, body: {} } } });
+      expect(built(r)).toBe(true);
+      expect(r.out).toContain("WARNING: could not read the indexes of database starfish (HTTP 403)");
+    });
+
+    it("a dry run prints the check and makes none of its calls", () => {
+      const r = deploy(dry, { google: deployed() });
+      expect(r.status).toBe(0);
+      expect(onlyReads(r.calls)).toBe(true);
+      expect(r.out).toContain("+ curl -H 'Authorization: Bearer <gcloud access token>' -H 'x-goog-user-project: star-proj' https://firebaserules.googleapis.com/v1/projects/star-proj/releases/cloud.firestore/starfish");
+      expect(r.out).toContain("compared with firestore.rules; a difference, or a read that fails, stops the deploy here");
+      expect(r.out).toContain("collectionGroups/-/indexes");
+      expect(r.out.indexOf("releases/cloud.firestore/starfish")).toBeLessThan(r.out.indexOf("pnpm run build"));
+      expect(deploy({ ...dry, ALLOW_RULES_DRIFT: "1" }).out).toContain("ALLOW_RULES_DRIFT=1: a difference, or a read that fails, only warns");
+    });
+
+    it("on the demo label, points at the guests' copies backfill, without running it", () => {
+      const r = deploy({ ...dry, STARFISH_ENV: "demo" });
+      expect(r.out).toContain("pnpm public-view -- --apply --project=star-proj");
+      expect(r.calls.some((c) => c.includes("public-view"))).toBe(false);
+      expect(deploy(dry).out).not.toContain("public-view");
+    });
   });
 
   describe("links the site to Starfish's web app, so init.json has an appId (#156)", () => {
@@ -179,7 +354,7 @@ describe("scripts/deploy-web.sh", () => {
     // #265: the deployer had no Hosting role, the read was refused, and the script went on as if the site were missing.
     it("outside a dry run, stops on a site read refused for any reason but a 404, before touching apps or sites", () => {
       const refused = JSON.stringify({ status: "error", error: "HTTP Error: 403, The caller does not have permission" });
-      const r = deploy({ PROJECT_ID: "star-proj" }, { siteError: refused, apps: appsReply });
+      const r = deploy({ PROJECT_ID: "star-proj" }, { siteError: refused, apps: appsReply, google: deployed() });
       expect(r.status).not.toBe(0);
       expect(r.out).toContain("could not read Hosting site star-proj-starfish, and the reply was not a 404");
       expect(r.out).toContain("roles/firebasehosting.admin");
@@ -188,7 +363,7 @@ describe("scripts/deploy-web.sh", () => {
 
     it("outside a dry run, a 404 is a missing site: it goes on to Starfish's web app", () => {
       const missing = JSON.stringify({ status: "error", error: "HTTP Error: 404, Requested entity was not found." });
-      const r = deploy({ PROJECT_ID: "star-proj" }, { siteError: missing });
+      const r = deploy({ PROJECT_ID: "star-proj" }, { siteError: missing, google: deployed() });
       expect(r.status).not.toBe(0); // the stub refuses apps:list, as Actions' deployer does
       expect(r.calls.some((c) => c.includes("apps:list WEB"))).toBe(true);
       expect(r.out).toContain("create and link the site once from a terminal");

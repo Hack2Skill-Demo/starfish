@@ -19,8 +19,10 @@ import { Link } from "react-router";
 import { useQuery } from "@tanstack/react-query";
 import PageMeta from "../components/PageMeta";
 import SettingsUnavailableNotice from "../components/SettingsUnavailableNotice";
+import StoreReadHint from "../components/StoreReadHint";
 import { Badge } from "../components/ui/Badge";
 import { HourlyBars } from "../components/HourlyBars";
+import { AgentStatus } from "../components/AgentStatus";
 import { EngineStatus } from "../components/EngineStatus";
 import { formatRelativeTime } from "../lib/formatters";
 import { listIncidents } from "../lib/incidents";
@@ -115,8 +117,24 @@ export default function Overview() {
         <p className="mt-1 text-lg text-gray-900 dark:text-gray-100" data-testid="headline">
           {cyclesFailed ? "The agent's runs couldn't be read." : counts ? headline(counts) : "Loading…"}
         </p>
-        <div className="mt-2">{ready && <EngineStatus environment={environment} />}</div>
+        {ready && (
+          <div className="mt-2 space-y-1">
+            <EngineStatus environment={environment} />
+            <AgentStatus environment={environment} />
+          </div>
+        )}
       </div>
+
+      {(cyclesFailed || incidents.isError || activityFailed) && (
+        // #262: one hint for the page, where each part that failed says only that it couldn't be read.
+        <p
+          role="status"
+          data-testid="read-failure-hint"
+          className="rounded-lg border border-warning-200 bg-warning-50 px-4 py-3 text-sm text-warning-800 dark:border-warning-500/30 dark:bg-warning-500/10 dark:text-warning-200"
+        >
+          Some of this page couldn&apos;t be read. <StoreReadHint />
+        </p>
+      )}
 
       <section aria-label="Counts" className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
         <Tile label="Waiting on a human" value={counts?.waitingHuman} failed={cyclesFailed} to="/runs?state=waiting-human" note="runs" />

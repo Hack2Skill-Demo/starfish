@@ -26,6 +26,7 @@ on:
       - 'src/settingsSchema.ts'
       - 'src/triageRules.ts'
       - 'src/oncallSchema.ts'
+      - 'src/agentRunRecord.ts'
       - 'firebase.json'
       - 'scripts/deploy-web.sh'
       - '.github/workflows/deploy-web.yml'
@@ -110,6 +111,10 @@ jobs:
 
       # Values reach the script through the environment, never by interpolation into the shell text.
       # An unset variable is an empty string, which the script treats as "use my default".
+      # Before it builds, the script compares the live Firestore rules of the Starfish database with firestore.rules and
+      # stops when they differ or cannot be read (#262): run Deploy engine first, which publishes the rules and indexes,
+      # then this. ALLOW_RULES_DRIFT is deliberately not passed, so a run from here cannot skip that check.
+      # (Its dry run prints the check and does not make it.)
       - name: Deploy
         env:
           PROJECT_ID: ${{ vars.STARFISH_GCP_PROJECT_ID }}

@@ -26,6 +26,7 @@ vi.mock("../lib/incidents", () => ({ getIncident: mocks.getIncident }));
 vi.mock("../components/EngineStatus", () => ({ EngineStatus: ({ environment }: { environment: string }) => <div data-testid="engine">{environment}</div> }));
 // The button decides for itself who sees it (AdminActions.test.tsx); here only that the page offers it.
 vi.mock("../components/AdminActions", () => ({ RunAgentButton: () => <button type="button">Run agent now</button> }));
+vi.mock("../components/AgentStatus", () => ({ AgentStatus: ({ environment }: { environment: string }) => <div data-testid="agent">{environment}</div> }));
 vi.mock("../lib/runs", async (orig) => ({
   ...(await orig<typeof import("../lib/runs")>()),
   subscribeCycles: (_env: string, ok: CyclesCb, err: (e: Error) => void, max: number) => {
@@ -116,6 +117,8 @@ describe("Runs page", () => {
     renderRuns();
     act(() => mocks.cyclesErr!(new Error("denied")));
     expect(screen.getByRole("alert")).toHaveTextContent("Couldn't read the runs");
+    expect(screen.getByRole("alert")).toHaveTextContent("Check that firestore.rules and firestore.indexes.json are deployed");
+    expect(screen.getByRole("alert")).toHaveTextContent("may still be building");
   });
 
   it("lists runs, opens the newest, and draws a partial run's missing steps as not reached", () => {
@@ -134,8 +137,9 @@ describe("Runs page", () => {
     for (const stage of ["fix", "verify", "review", "pr"]) expect(status(stage)).toBe("not-reached");
     expect(within(detail).getByText("Attempt 1")).toBeInTheDocument();
     expect(within(detail).getByText("1 of 5 steps recorded")).toBeInTheDocument();
-    // Engine health sits in the page header, for the environment shown.
-    expect(screen.getByTestId("engine")).toHaveTextContent("demo");
+    // The agent's health sits in the page header, for the environment shown; not the ingest's (#274).
+    expect(screen.getByTestId("agent")).toHaveTextContent("demo");
+    expect(screen.queryByTestId("engine")).toBeNull();
   });
 
   it("labels a run with its incident function and error, keeping the ID as a fallback", async () => {

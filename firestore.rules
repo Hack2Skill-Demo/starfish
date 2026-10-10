@@ -57,8 +57,8 @@ service cloud.firestore {
     // reads the TRIMMED COPIES instead (starfish_public_*, below): allowlist projections the
     // engine writes for the demo environment (src/publicView.ts), holding ids, statuses, counts,
     // times, names, a bounded one-line title, links and the run record's enumerated values. Besides
-    // those, a guest reads only last_run, starfish_runs/integrations and the operator copy of the
-    // settings, which hold no free text.
+    // those, a guest reads only last_run, starfish_runs/agent_last_run, starfish_runs/integrations and
+    // the operator copy of the settings, which hold no free text.
     //
     // The demo environment label below is the default for the public demo, like the collection
     // names above: change it here if the demo deploys under another label (and in
@@ -328,6 +328,15 @@ service cloud.firestore {
     // starfish_runs/integrations  which credentials the agent job holds (src/agent/integrations.ts): booleans
     //                         and a time, never a value. Read like last_run; only the engine writes.
     match /starfish_runs/integrations {
+      allow get: if isOperator() || guestGet();
+      allow list: if isOperator() || guestList();
+      allow write: if false;
+    }
+
+    // starfish_runs/agent_last_run  the outcome of the latest agent pass (src/agent/lastRun.ts, #274): when it ran,
+    //                         how it went, counts, enumerated step labels and its interval; never a message or an
+    //                         incident's text. Read like last_run; only the engine writes.
+    match /starfish_runs/agent_last_run {
       allow get: if isOperator() || guestGet();
       allow list: if isOperator() || guestList();
       allow write: if false;

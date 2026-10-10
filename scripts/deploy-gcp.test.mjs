@@ -323,6 +323,18 @@ describe("scripts/deploy-gcp.sh", () => {
     expect(deploy({ ...dry, RUN_AFTER_DEPLOY: "1" }).out).toContain("gcloud run jobs execute starfish-ingest");
   });
 
+  // #262: after the rules and indexes, it says an index takes minutes to build and how to backfill the guests' copies;
+  // it prints the backfill and never runs it.
+  it("after the rules, prints the guests' copies backfill and that an index takes minutes, and runs neither", () => {
+    const r = deploy(dry);
+    const after = r.out.slice(r.out.indexOf("deploy --only firestore"));
+    expect(after).toContain("a new index can take minutes to build");
+    expect(after).toContain("pnpm public-view -- --apply --project=star-proj");
+    expect(after).toContain("STARFISH_DATABASE_ID=starfish");
+    expect(r.out).not.toMatch(/^\+ .*public-view/m);
+    expect(deploy({ ...dry, SKIP_FIRESTORE_RULES: "1" }).out).not.toContain("public-view");
+  });
+
   describe("the switches that let Starfish act on its own (#174)", () => {
     // --update-env-vars keeps a name it is not given: a switch taken out of a list must be set back to off, not left on.
     const switches = {
@@ -719,6 +731,10 @@ describe("scripts/deploy-gcp.sh: the agent and its isolated verify job (#74), VE
     const r = deploy({ ...agent, AGENT_SCHEDULE: "*/10 * * * *", AGENT_BASE_BRANCH: "develop", AGENT_EXTRA_ENV_VARS: "STARFISH_MAX_CYCLES_PER_PASS=1" });
     expect(r.out).toContain("gcloud scheduler jobs create http starfish-agent-tick");
     expect(r.out).toContain("--schedule=*/10 * * * *");
+    // The agent job is told its own schedule, so the UI can say when the next pass is expected (#274); the ingest job is not.
+    expect(line(r.out, "gcloud run jobs deploy starfish-agent")).toContain("@STARFISH_AGENT_SCHEDULE=*/10 * * * *");
+    expect(line(r.out, "gcloud run jobs deploy starfish-ingest")).toContain("STARFISH_INGEST_SCHEDULE=");
+    expect(line(r.out, "gcloud run jobs deploy starfish-ingest")).not.toContain("STARFISH_AGENT_SCHEDULE");
     expect(r.out).toContain("STARFISH_GITHUB_BASE_BRANCH=develop");
     expect(r.out).toContain("STARFISH_MAX_CYCLES_PER_PASS=1");
     expect(grants(r.out, sa("starfish-scheduler"))).toEqual(["roles/run.invoker", "roles/run.invoker"]);

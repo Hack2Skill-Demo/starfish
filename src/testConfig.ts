@@ -38,6 +38,7 @@ export function testConfig(over: Partial<StarfishConfig> = {}): StarfishConfig {
     reconsiderMaxPerDay: 3,
     reconsiderBurstOccurrences: 20,
     patchExcludedPaths: [],
+    functionsSourceRoots: [],
     ingestLagMinutes: 5,
     ingestMaxWindowHours: 6,
     ingestRunBudgetSeconds: 480,

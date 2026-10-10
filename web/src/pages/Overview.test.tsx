@@ -17,6 +17,7 @@ const mocks = vi.hoisted(() => ({
 }));
 vi.mock("../lib/useSettings", () => ({ useEnvironment: () => mocks.env }));
 vi.mock("../components/EngineStatus", () => ({ EngineStatus: ({ environment }: { environment: string }) => <div data-testid="engine">{environment}</div> }));
+vi.mock("../components/AgentStatus", () => ({ AgentStatus: ({ environment }: { environment: string }) => <div data-testid="agent">{environment}</div> }));
 vi.mock("../lib/incidents", async (orig) => ({ ...(await orig<typeof import("../lib/incidents")>()), listIncidents: mocks.listIncidents }));
 vi.mock("../lib/runs", async (orig) => ({
   ...(await orig<typeof import("../lib/runs")>()),
@@ -83,7 +84,9 @@ describe("Overview page", () => {
     expect(screen.getByTestId("headline")).toHaveTextContent("No agent runs are recorded for this environment.");
     expect(await screen.findByText(/No logged errors in the last 24 hours/)).toBeInTheDocument();
     expect(screen.getByText(/Nothing has run the agent loop/)).toBeInTheDocument();
+    // Both lines, side by side: the ingest's and the agent's (#274).
     expect(screen.getByTestId("engine")).toHaveTextContent("demo");
+    expect(screen.getByTestId("agent")).toHaveTextContent("demo");
   });
 
   it("counts what is waiting on a human, running, open and regressed from stored records", async () => {
@@ -168,6 +171,34 @@ describe("Overview page", () => {
     act(() => mocks.cyclesErr!(new Error("denied")));
     expect(screen.getByTestId("headline")).toHaveTextContent("The agent's runs couldn't be read.");
     expect(await screen.findByText("Couldn't read the incidents.")).toBeInTheDocument();
+  });
+
+  // #262: a UI deployed ahead of its rules or indexes read "couldn't be read" on every tile, with nothing to say why.
+  it("says what to check when a read fails, the hint the Runs page gives, and nothing when every read works", async () => {
+    renderPage();
+    act(() => mocks.cyclesCb!([], false));
+    act(() => mocks.eventsCb!([]));
+    await waitFor(() => expect(tile("Open incidents")).toHaveTextContent("0"));
+    expect(screen.queryByTestId("read-failure-hint")).toBeNull();
+
+    act(() => mocks.eventsErr!(new Error("failed-precondition: the query requires an index")));
+    const hint = screen.getByTestId("read-failure-hint");
+    expect(hint).toHaveTextContent("Some of this page couldn't be read.");
+    expect(hint).toHaveTextContent("Check that firestore.rules and firestore.indexes.json are deployed to the Starfish database.");
+    expect(hint).toHaveTextContent("An index deployed in the last few minutes may still be building");
+    expect(screen.getAllByTestId("read-failure-hint")).toHaveLength(1);
+  });
+
+  it("gives the hint when the incidents can't be read", async () => {
+    mocks.listIncidents.mockRejectedValue(new Error("denied"));
+    renderPage();
+    expect(await screen.findByTestId("read-failure-hint")).toBeInTheDocument();
+  });
+
+  it("gives the hint when the runs can't be read", () => {
+    renderPage();
+    act(() => mocks.cyclesErr!(new Error("denied")));
+    expect(screen.getByTestId("read-failure-hint")).toBeInTheDocument();
   });
 
   it("stops showing the last figures once a read fails, instead of passing them off as current (#195)", async () => {

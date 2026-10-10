@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { describeReadFailure, describeStatus, judgeRun, parseRunRecord, totalIncidents, unmetMinimums, type RunRecord } from "./status.js";
+import { describeAgentStatus, describeReadFailure, describeStatus, judgeAgentRun, judgeRun, parseRunRecord, totalIncidents, unmetMinimums, type RunRecord } from "./status.js";
+import type { AgentRunRecord } from "./agentRunRecord.js";
 import { SETTINGS_UNUSABLE } from "./settingsSchema.js";
 
 const NOW = new Date("2026-10-10T12:00:00Z");
@@ -208,5 +209,49 @@ describe("describeReadFailure: the store could not be read at all", () => {
     expect(line).not.toContain("secret/path.ts");
     expect(line.length).toBeLessThan(320);
     expect(describeReadFailure("plain string")).toContain("plain string");
+  });
+});
+
+describe("the agent pass's record (#274)", () => {
+  const pass = (over: Partial<AgentRunRecord> = {}): AgentRunRecord => ({
+    environment: "demo",
+    outcome: "ok",
+    finishedAt: minutesAgo(5),
+    dryRun: true,
+    considered: 2,
+    ran: 1,
+    cycleErrors: 0,
+    aborted: false,
+    gaveUp: 0,
+    scanCapped: false,
+    failedSteps: [],
+    problems: [],
+    ...over,
+  });
+
+  it("is judged like the ingest's: failed, then stale, then a capped scan", () => {
+    expect(judgeAgentRun(null, "demo", NOW, 90)).toBe("never");
+    expect(judgeAgentRun(pass(), "demo", NOW, 90)).toBe("ok");
+    expect(judgeAgentRun(pass({ outcome: "failed", finishedAt: minutesAgo(500) }), "demo", NOW, 90)).toBe("failed");
+    expect(judgeAgentRun(pass({ finishedAt: minutesAgo(500), scanCapped: true }), "demo", NOW, 90)).toBe("stale");
+    expect(judgeAgentRun(pass({ scanCapped: true }), "demo", NOW, 90)).toBe("capped");
+    expect(judgeAgentRun(pass({ environment: "prod" }), "demo", NOW, 90)).toBe("never");
+    expect(judgeAgentRun(pass({ environment: "dev", outcome: "failed", error: SETTINGS_UNUSABLE }), "demo", NOW, 90)).toBe("failed");
+  });
+
+  it("describes the pass in a few lines, and says when none was recorded", () => {
+    expect(describeAgentStatus({ run: null, now: NOW, staleMinutes: 90, environment: "demo" })[0]).toContain("no pass recorded");
+    expect(describeAgentStatus({ run: pass({ environment: "prod" }), now: NOW, staleMinutes: 90, environment: "demo" })[0]).toContain('last pass recorded was for "prod"');
+    const ok = describeAgentStatus({ run: pass(), now: NOW, staleMinutes: 90, environment: "demo" });
+    expect(ok).toEqual(["agent: ok. Last pass ok (dry run), finished 5 min ago: 2 candidate(s), 1 cycle(s) run, 0 threw"]);
+    const bad = describeAgentStatus({
+      run: pass({ outcome: "failed", failedSteps: ["cycles", "pull-requests"], aborted: true, skipped: "daily-cap", daily: { cap: 30, startedBefore: 30 } }),
+      now: NOW,
+      staleMinutes: 90,
+      environment: "demo",
+    }).join("\n");
+    expect(bad).toContain("failed: cycles, pull-requests");
+    expect(bad).toContain("daily cycle cap of 30 was reached");
+    expect(bad).toContain("stopped early");
   });
 });

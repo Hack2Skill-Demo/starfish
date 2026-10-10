@@ -179,6 +179,12 @@ describe(".github/workflows/deploy-web.yml", () => {
     }
   });
 
+  // The script refuses a UI whose rules are not deployed (#262); a run from Actions must not be able to skip that.
+  it("never passes the override of the rules check", () => {
+    expect(code(web)).not.toContain("ALLOW_RULES_DRIFT");
+    expect(webScript).toMatch(/^# {3}ALLOW_RULES_DRIFT=1\b/m);
+  });
+
   // Without the admin API's URL an Actions deploy builds a UI with the admin controls hidden (#230).
   it("hands the build the admin API's URL and the stale threshold, through the environment", () => {
     const env = code(web).split("- name: Deploy")[1] ?? "";

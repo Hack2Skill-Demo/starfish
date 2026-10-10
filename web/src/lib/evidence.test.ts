@@ -75,6 +75,15 @@ describe("buildEvidence", () => {
     expect(e.samePatch).toBe(true);
   });
 
+  it("shows which rule found the source the fixer was shown (#259)", () => {
+    const e = buildEvidence(row, cycle({ fix: { outcome: "declined", rule: "fixer-declined", rootCause: "x", source: "function-name", sourceFiles: 1, sourceSearch: "found" } }));
+    expect(stage(e, "fix").fields.filter((f) => f.label.startsWith("Source") || f.label.startsWith("Function-name"))).toEqual([
+      { label: "Source found by", value: "function-name", mono: true },
+      { label: "Source files shown", value: "1" },
+      { label: "Function-name search", value: "found", mono: true },
+    ]);
+  });
+
   it("flags a patch hash that differs between stages", () => {
     const e = buildEvidence(row, cycle({ verify: { status: "passed", patchSha256: HASH }, review: { verdict: "approve", patchSha256: "b".repeat(64) } }));
     expect(e.samePatch).toBe(false);

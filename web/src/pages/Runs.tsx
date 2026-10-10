@@ -13,7 +13,8 @@ import { Link, useSearchParams } from "react-router";
 import { Check, Copy, CornerDownRight, ExternalLink, FileText, RotateCcw, Square, Workflow } from "lucide-react";
 import PageMeta from "../components/PageMeta";
 import SettingsUnavailableNotice from "../components/SettingsUnavailableNotice";
-import { EngineStatus } from "../components/EngineStatus";
+import StoreReadHint from "../components/StoreReadHint";
+import { AgentStatus } from "../components/AgentStatus";
 import { RunAgentButton } from "../components/AdminActions";
 import { Badge } from "../components/ui/Badge";
 import { SyntheticBadge } from "../components/SyntheticBadge";
@@ -162,13 +163,13 @@ export default function Runs() {
             each step; a step it has not recorded reads &quot;not reached&quot;.
           </p>
         </div>
-        {ready && <EngineStatus environment={environment} variant="card" />}
+        {/* The agent's own status (#274): this page is about agent runs, not the ingest's. */}
+        {ready && <AgentStatus environment={environment} variant="card" />}
       </div>
 
       {failed ? (
         <p role="alert" className="text-sm text-error-700 dark:text-error-400">
-          Couldn&apos;t read the runs. Check that firestore.rules and firestore.indexes.json are deployed to the
-          Starfish database.
+          Couldn&apos;t read the runs. <StoreReadHint />
         </p>
       ) : cycles === null ? (
         <p className="text-sm text-gray-600 dark:text-gray-400">Loading runs…</p>
