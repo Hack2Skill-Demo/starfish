@@ -208,11 +208,20 @@ describe("scripts/setup-github-deploy.sh", () => {
     }
   });
 
-  it("lets the deployer act as only the five accounts the deploy uses, never project-wide", () => {
+  it("lets the deployer act as only the five accounts the deploy uses and the one that builds its images, never project-wide", () => {
     const r = setup(dry);
     const acts = r.out.split("\n").filter((l) => l.includes("--role=roles/iam.serviceAccountUser"));
-    expect(acts).toHaveLength(5);
-    for (const l of acts) expect(l).toMatch(/service-accounts add-iam-policy-binding starfish-(engine|scheduler|agent|verifier|admin-api)@/);
+    expect(acts).toHaveLength(6);
+    const build = acts.filter((l) => l.includes("-compute@developer.gserviceaccount.com"));
+    // A build from source runs AS the build account, and Cloud Build refuses a caller that may not act as it.
+    expect(build).toHaveLength(1);
+    expect(build[0]).toContain("--member=serviceAccount:starfish-deployer@star-proj.iam.gserviceaccount.com");
+    for (const l of acts.filter((x) => !build.includes(x))) expect(l).toMatch(/service-accounts add-iam-policy-binding starfish-(engine|scheduler|agent|verifier|admin-api)@/);
+    // Named: that account instead of the default, and nothing that could reach a command line.
+    const named = setup({ ...dry, BUILD_SERVICE_ACCOUNT: "starfish-builder@star-proj.iam.gserviceaccount.com" }).out;
+    expect(named).toContain("service-accounts add-iam-policy-binding starfish-builder@star-proj.iam.gserviceaccount.com");
+    expect(named).not.toContain("-compute@developer.gserviceaccount.com");
+    expect(setup({ ...dry, BUILD_SERVICE_ACCOUNT: "x; rm -rf /" }).status).not.toBe(0);
     expect(r.out).not.toMatch(/projects add-iam-policy-binding \S+ --member=\S+ --role=roles\/iam\.serviceAccountUser/);
   });
 
