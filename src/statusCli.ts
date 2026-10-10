@@ -4,7 +4,9 @@
  * run is ok and recent and the minimums hold (src/status.ts). Both minimums default to 0: a quiet project
  * is a correct answer. --min-entries is about the last run (log entries it processed), --min-incidents
  * about the store.
- * Needs credentials for the project (`gcloud auth application-default login`), or the emulator.
+ * Needs credentials for the project (`gcloud auth application-default login`), or the emulator. When the store cannot
+ * be read at all (expired or missing credentials, no permission), it says so in one line and exits 2: the engine was
+ * not checked, which is a different answer from "the engine is not ok" (exit 1).
  * It resolves the runtime settings the way the engine does (#190), and so, like each engine run, may save the
  * engine's last-good copy of a valid settings document, or remove it when there is none: best effort, never fatal.
  */
@@ -14,7 +16,7 @@ import { getFirestore } from "firebase-admin/firestore";
 import { loadConfig } from "./config.js";
 import { LAST_RUN_DOC } from "./ingest/run.js";
 import { RuntimeConfigLoader } from "./runtimeSettings.js";
-import { describeStatus, parseRunRecord, unmetMinimums } from "./status.js";
+import { describeReadFailure, describeStatus, parseRunRecord, unmetMinimums } from "./status.js";
 import { INCIDENT_STATUSES } from "./types.js";
 
 const { values } = parseArgs({
@@ -46,18 +48,26 @@ const db = getFirestore(base.databaseId);
 // way src/ingest/run.ts resolves it; the env var is only its default.
 const resolved = await new RuntimeConfigLoader(base).resolve(db);
 const config = resolved.config;
-if (resolved.problems.length > 0) console.log(`runtime settings unusable (${resolved.problems.join("; ")}); using the ${resolved.source} configuration`);
 
-const runSnap = await db.collection(config.runCollection).doc(LAST_RUN_DOC).get();
-
-// One aggregate count per status: bounded however many incidents there are. A retired incident is in no list in the UI
-// (src/ingest/retire.ts), so it is taken out of the count here too: two aggregates per status, total minus retired.
+// The settings loader never throws: a failed read becomes "settings unusable". When the very next read fails too, the
+// cause is the sign-in or the permission, not the settings, so that is what is said, once, with no stack trace.
+let runSnap: Awaited<ReturnType<ReturnType<typeof db.doc>["get"]>>;
 const counts: Record<string, number> = {};
-for (const status of INCIDENT_STATUSES) {
-  const q = db.collection(config.incidentCollection).where("environment", "==", config.environment).where("status", "==", status);
-  const [all, retired] = await Promise.all([q.count().get(), q.where("retired", "==", true).count().get()]);
-  counts[status] = Math.max(0, all.data().count - retired.data().count);
+try {
+  runSnap = await db.collection(config.runCollection).doc(LAST_RUN_DOC).get();
+
+  // One aggregate count per status: bounded however many incidents there are. A retired incident is in no list in the UI
+  // (src/ingest/retire.ts), so it is taken out of the count here too: two aggregates per status, total minus retired.
+  for (const status of INCIDENT_STATUSES) {
+    const q = db.collection(config.incidentCollection).where("environment", "==", config.environment).where("status", "==", status);
+    const [all, retired] = await Promise.all([q.count().get(), q.where("retired", "==", true).count().get()]);
+    counts[status] = Math.max(0, all.data().count - retired.data().count);
+  }
+} catch (err) {
+  console.error(`status: ${describeReadFailure(err)}`);
+  process.exit(2);
 }
+if (resolved.problems.length > 0) console.log(`runtime settings unusable (${resolved.problems.join("; ")}); using the ${resolved.source} configuration`);
 
 const run = parseRunRecord(runSnap.data());
 const report = describeStatus({
