@@ -6,6 +6,9 @@ import {
   formatClock,
   formatDuration,
   groupByDay,
+  runSummary,
+  splitTrace,
+  trackMarks,
   indexRuntimeView,
   isHealedRun,
   parseCycle,
@@ -368,3 +371,39 @@ describe("the live track", () => {
     expect(days[3]!.label).toMatch(/2025/);
   });
 });
+
+describe("the run's summary, its error, and the list's strip", () => {
+  it("says what a worker is on, or how the run ended and after which recorded step", () => {
+    const live = buildWaterfall(cycle(), [ev("triage", "decision", 1000)], T0 + 5000);
+    expect(runSummary(cycle(), live.steps, T0 + 5000)).toBe("Working on draft a fix now.");
+    const ended = cycle({ state: "waiting-human", leaseExpiresAt: null, path: "human" });
+    const w = buildWaterfall(ended, [ev("triage", "decision", 1000), ev("fix", "declined", 2000), ev("notify", "sent", 3000)], T0 + 5000);
+    expect(runSummary(ended, w.steps, T0 + 5000)).toBe("Handed to a person after draft a fix (declined).");
+    const pr = cycle({ state: "done", leaseExpiresAt: null, path: "pr" });
+    expect(runSummary(pr, buildWaterfall(pr, [ev("triage", "d", 1), ev("fix", "p", 2), ev("verify", "v", 3), ev("review", "r", 4), ev("pr", "opened", 5)], T0 + 9).steps, T0 + 9)).toBe("Pull request opened.");
+    const orphan = cycle({ leaseExpiresAt: new Date(T0 - 1) });
+    expect(runSummary(orphan, buildWaterfall(orphan, [], T0).steps, T0)).toMatch(/No worker holds this run/);
+  });
+
+  it("splits a message that carries its stack, and leaves anything else whole", () => {
+    const t = splitTrace("Error: getScenarios failed at entryFromArgs (file:///w/node_modules/ff/logger/index.mjs:119:13) at Module.error (file:///w/node_modules/ff/lib/e");
+    expect(t.headline).toBe("getScenarios failed");
+    expect(t.frames).toEqual([
+      { fn: "entryFromArgs", at: "file:///w/node_modules/ff/logger/index.mjs:119:13", library: true },
+      { fn: "Module.error", at: "file:///w/node_modules/ff/lib/e", library: true },
+    ]);
+    expect(splitTrace("x at handler (/srv/app/src/a.ts:3:1)").frames[0]).toMatchObject({ fn: "handler", library: false });
+    expect(splitTrace("Look at the logs for details")).toEqual({ headline: "Look at the logs for details", frames: [] });
+    expect(splitTrace("Error: quota hit at noon")).toEqual({ headline: "quota hit at noon", frames: [] });
+  });
+
+  it("marks a stage on the strip only on evidence in the cycle document, never from the stage order", () => {
+    const c = cycle({ state: "waiting-human", leaseExpiresAt: null, stage: "notify", summary: { triage: { rule: "r" }, fix: { outcome: "declined" } } });
+    expect(trackMarks(c, T0)).toEqual(["done", "done", "none", "none", "none"]);
+    const gap = cycle({ state: "waiting-human", leaseExpiresAt: null, stage: "review", summary: { triage: { rule: "r" } } });
+    expect(trackMarks(gap, T0)).toEqual(["done", "none", "none", "done", "none"]);
+    const live = cycle({ stage: "triage", summary: { triage: { rule: "r" } } });
+    expect(trackMarks(live, T0)).toEqual(["done", "running", "none", "none", "none"]);
+  });
+});
+

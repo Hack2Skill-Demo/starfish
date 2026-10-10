@@ -97,4 +97,30 @@ describe("EngineStatus", () => {
     renderStatus("demo");
     expect(await screen.findByText("No engine run recorded")).toBeInTheDocument();
   });
+
+  it("as a card, says the same and how far the engine is to its next run", async () => {
+    const startedAt = new Date(Date.now() - 15 * 60_000);
+    mocks.read.mockResolvedValue(run({ startedAt, intervalMinutes: 60 }));
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <EngineStatus environment="demo" variant="card" />
+      </QueryClientProvider>
+    );
+    expect(await screen.findByText("Engine running")).toBeInTheDocument();
+    expect(screen.getByTestId("engine-status")).toHaveTextContent("Last run 10 minutes ago: 2 new, 5 updated, 1 recurred.");
+    expect(screen.getByTestId("engine-status")).toHaveTextContent("Next run expected in 45 minutes");
+    expect(screen.getByRole("img", { name: "25% of the way to the next run" })).toBeInTheDocument();
+  });
+
+  it("as a card, draws no bar when the engine recorded no schedule", async () => {
+    mocks.read.mockResolvedValue(run());
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <EngineStatus environment="demo" variant="card" />
+      </QueryClientProvider>
+    );
+    expect(await screen.findByText("Engine running")).toBeInTheDocument();
+    expect(screen.queryByRole("img")).toBeNull();
+  });
 });
+

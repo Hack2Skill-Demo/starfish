@@ -139,7 +139,8 @@ describe("Runs page", () => {
     act(() => mocks.cyclesCb!([cycle("inc-a_r0"), cycle("inc-b_r0")], false));
     const list = screen.getByRole("region", { name: "Runs" });
     expect(await within(list).findByText("control-getscenarios")).toBeInTheDocument();
-    expect(within(list).getByText("UnknownError: getScenarios failed")).toBeInTheDocument();
+    expect(within(list).getByText("UnknownError")).toBeInTheDocument();
+    expect(within(list).getByText(/· getScenarios failed/)).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "control-getscenarios" })).toBeInTheDocument();
     expect(within(list).getByText("inc-b")).toBeInTheDocument();
     expect(mocks.getIncident).toHaveBeenCalledWith("inc-a", "demo");
@@ -206,7 +207,7 @@ describe("Runs page", () => {
     ];
     const first = renderRuns("/runs?heal=healed");
     act(() => mocks.cyclesCb!(rows, false));
-    expect(screen.getByTestId("path-filter")).toHaveTextContent("Missing-index heals that held through their window (1)");
+    expect(screen.getByTestId("path-filter")).toHaveTextContent("Missing-index heals that held through their window · 1");
     let list = screen.getByRole("region", { name: "Runs" });
     expect(within(list).getByText("inc-a")).toBeInTheDocument();
     expect(within(list).queryByText("inc-b")).toBeNull();
@@ -251,7 +252,7 @@ describe("Runs page", () => {
   it("does not link a pull request URL that isn't https", () => {
     renderRuns();
     act(() => mocks.cyclesCb!([cycle("inc-a_r0", { summary: { pr: { url: "javascript:alert(1)", number: 9 } } })], false));
-    expect(screen.queryByRole("link", { name: /Pull request/ })).toBeNull();
+    expect(screen.queryByRole("link", { name: /Pull request #/ })).toBeNull();
   });
 
   it("opens a linked run that is not among the newest, read by its id, rather than the first in the list", async () => {
@@ -322,7 +323,7 @@ describe("Runs page", () => {
   it("says when the list is capped", () => {
     renderRuns();
     act(() => mocks.cyclesCb!([cycle("inc-a_r0")], true));
-    expect(screen.getByText(/most recently updated runs/)).toBeInTheDocument();
+    expect(screen.getByText(/^Showing the 50 most recently updated runs/)).toBeInTheDocument();
   });
 
   it("reads older runs on request, says it is loading until they arrive, and keeps the runs already shown", async () => {
@@ -390,5 +391,78 @@ describe("Runs page", () => {
     expect(screen.getByRole("list", { name: "Steps" }).querySelector('[data-step="notify"]')).toBeNull();
     expect(within(screen.getByRole("list", { name: "Also recorded" })).getByText("Tell a person: sent")).toBeInTheDocument();
     expect(screen.getByText("3 of 6 steps recorded")).toBeInTheDocument();
+  });
+
+  it("counts the listed runs by how they stand, each tile a link to that list", () => {
+    renderRuns();
+    act(() =>
+      mocks.cyclesCb!(
+        [
+          cycle("inc-a_r0", { state: "waiting-human", leaseExpiresAt: null, path: "human" }),
+          cycle("inc-b_r0", { state: "declined", leaseExpiresAt: null, path: "decline" }),
+          cycle("inc-c_r0", { state: "waiting-human", leaseExpiresAt: null, path: "pr" }),
+        ],
+        false
+      )
+    );
+    const tiles = screen.getByRole("navigation", { name: "Run counts" });
+    expect(within(tiles).getByRole("link", { name: /2\s*Waiting for a human/ })).toHaveAttribute("href", "/runs?state=waiting-human");
+    expect(within(tiles).getByRole("link", { name: /1\s*Declined/ })).toHaveAttribute("href", "/runs?state=declined");
+    expect(within(tiles).getByRole("link", { name: /1\s*Pull request opened/ })).toHaveAttribute("href", "/runs?path=pr");
+    expect(within(tiles).getByRole("link", { name: /3\s*All runs/ })).toHaveAttribute("aria-current", "true");
+  });
+
+  it("says the counts cover only the runs read when the list is capped", () => {
+    renderRuns();
+    act(() => mocks.cyclesCb!([cycle("inc-a_r0")], true));
+    expect(screen.getByText("Counts cover the 50 most recently updated runs.")).toBeInTheDocument();
+  });
+
+  it("splits the error's message from the stack frames written into it, and keeps the raw text on request", async () => {
+    mocks.getIncident.mockResolvedValue({
+      id: "inc-a",
+      functionName: "control-getscenarios",
+      errorType: "UnknownError",
+      errorMessage: "Error: getScenarios failed at entryFromArgs (file:///w/node_modules/firebase-functions/lib/esm/logger/index.mjs:119:13) at Module.error (file:///w/node_modules/firebase-functions/lib/e",
+    });
+    renderRuns();
+    act(() => mocks.cyclesCb!([cycle("inc-a_r0", { state: "waiting-human", leaseExpiresAt: null, path: "human" })], false));
+    const failed = await screen.findByRole("region", { name: "What failed" });
+    expect(within(failed).getByText("getScenarios failed")).toBeInTheDocument();
+    expect(within(within(failed).getByRole("list", { name: "Stack frames" })).getAllByRole("listitem")).toHaveLength(2);
+    expect(within(failed).getByText(/none points at the app's own code/)).toBeInTheDocument();
+    await userEvent.click(within(failed).getByRole("button", { name: "Show the raw message" }));
+    expect(within(failed).getByText(/^Error: getScenarios failed at entryFromArgs/)).toBeInTheDocument();
+  });
+
+  it("says in one line how a finished run ended, and draws the hand-off off the step it came after", () => {
+    renderRuns();
+    act(() => mocks.cyclesCb!([cycle("inc-a_r0", { state: "waiting-human", leaseExpiresAt: null, path: "human" })], false));
+    act(() => mocks.eventsCb!([event(1, "triage", "decision", "Act", 50_000), event(2, "fix", "declined", "No fix", 20_000)]));
+    expect(screen.getByTestId("run-summary")).toHaveTextContent("Handed to a person after draft a fix (declined).");
+    const fix = screen.getByRole("list", { name: "Steps" }).querySelector('[data-step="fix"]')!;
+    expect(fix).toHaveTextContent("Handed to a person");
+  });
+
+  it("replays a finished run from its recorded events, labelled as a replay, and stops on request", async () => {
+    renderRuns();
+    act(() => mocks.cyclesCb!([cycle("inc-a_r0", { state: "waiting-human", leaseExpiresAt: null, path: "human" })], false));
+    act(() => mocks.eventsCb!([event(1, "triage", "decision", "Act", 50_000), event(2, "fix", "declined", "No fix", 20_000)]));
+    const detail = screen.getByRole("region", { name: "Run detail" });
+    await userEvent.click(within(detail).getByRole("button", { name: "Replay this run" }));
+    expect(within(detail).getByText("Replaying")).toBeInTheDocument();
+    expect(screen.getByTestId("run-summary")).toHaveTextContent(/^Replaying the recorded run\./);
+    const steps = within(detail).getByRole("list", { name: "Steps" });
+    expect(steps.querySelector('[data-step="triage"]')?.getAttribute("data-status")).toBe("running");
+    expect(steps.querySelector('[data-step="fix"]')?.getAttribute("data-status")).toBe("not-reached");
+    await userEvent.click(within(detail).getByRole("button", { name: "Stop replay" }));
+    expect(steps.querySelector('[data-step="fix"]')?.getAttribute("data-status")).toBe("done");
+  });
+
+  it("offers no replay while a worker holds the run", () => {
+    renderRuns();
+    act(() => mocks.cyclesCb!([cycle("inc-a_r0")], false));
+    act(() => mocks.eventsCb!([event(1, "triage", "decision", "Act", 30_000)]));
+    expect(screen.queryByRole("button", { name: "Replay this run" })).toBeNull();
   });
 });
