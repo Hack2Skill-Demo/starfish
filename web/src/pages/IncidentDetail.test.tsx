@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter, Route, Routes } from "react-router";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -9,13 +9,20 @@ import { Ctx, type StarfishAuthCtx } from "../auth/authCore";
 const mocks = vi.hoisted(() => ({
   getIncident: vi.fn(),
   readCycle: vi.fn(),
+  saveCorrection: vi.fn(),
+  readCorrections: vi.fn(),
   env: { environment: "demo", ready: true, settingsUnavailable: false },
 }));
 vi.mock("../lib/useSettings", () => ({ useEnvironment: () => mocks.env }));
 vi.mock("../lib/incidents", async (orig) => ({ ...(await orig<typeof import("../lib/incidents")>()), getIncident: mocks.getIncident }));
 vi.mock("../lib/runs", async (orig) => ({ ...(await orig<typeof import("../lib/runs")>()), readCycle: mocks.readCycle }));
 vi.mock("../lib/firebase", () => ({ firestore: vi.fn() }));
-vi.mock("../lib/config", () => ({ webConfig: () => ({}) }));
+vi.mock("../lib/config", () => ({ webConfig: () => ({ incidentCollection: "incidents" }) }));
+vi.mock("../lib/correctionWrite", async (orig) => ({
+  ...(await orig<typeof import("../lib/correctionWrite")>()),
+  saveCorrection: mocks.saveCorrection,
+  readCorrections: mocks.readCorrections,
+}));
 
 import IncidentDetail from "./IncidentDetail";
 
@@ -47,9 +54,11 @@ const guestCtx: StarfishAuthCtx = {
   enterAsGuest: async () => false,
 };
 
-function renderPage(id = "inc-1") {
+const operatorCtx: StarfishAuthCtx = { ...guestCtx, guest: false, user: { uid: "op1" } as StarfishAuthCtx["user"], roles: ["operator"], role: "operator" };
+
+function renderPage(id = "inc-1", ctx: StarfishAuthCtx = guestCtx) {
   return render(
-    <Ctx.Provider value={guestCtx}>
+    <Ctx.Provider value={ctx}>
       <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
         <MemoryRouter initialEntries={[`/incidents/${id}`]}>
           <Routes>
@@ -67,6 +76,8 @@ describe("IncidentDetail page", () => {
     vi.clearAllMocks();
     mocks.getIncident.mockResolvedValue(row);
     mocks.readCycle.mockResolvedValue(null);
+    mocks.saveCorrection.mockResolvedValue(undefined);
+    mocks.readCorrections.mockResolvedValue([]);
     mocks.env = { environment: "demo", ready: true, settingsUnavailable: false };
   });
 
@@ -176,5 +187,20 @@ describe("IncidentDetail page", () => {
     renderPage("x");
     expect(await screen.findByRole("alert")).toHaveTextContent("Couldn't read this incident");
     expect(mocks.readCycle).not.toHaveBeenCalled();
+  });
+  it("offers a guest no correction; an operator corrects how far Starfish goes, and sees the current one", async () => {
+    const guest = renderPage();
+    await screen.findByRole("heading", { name: "orders-create" });
+    expect(screen.queryByRole("button", { name: "Correct triage" })).not.toBeInTheDocument();
+    guest.unmount();
+
+    mocks.getIncident.mockResolvedValue({ ...row, correction: { level: "fix", by: "op2", note: "not a merge" } });
+    renderPage("inc-1", operatorCtx);
+    expect(await screen.findByText(/Corrected to/)).toHaveTextContent("Corrected to fix: not a merge");
+    fireEvent.click(screen.getByRole("button", { name: "Correct triage" }));
+    fireEvent.change(screen.getByRole("combobox", { name: "At most" }), { target: { value: "log" } });
+    fireEvent.change(screen.getByRole("textbox", { name: "Why (optional)" }), { target: { value: "payments: a person fixes it" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save correction" }));
+    await waitFor(() => expect(mocks.saveCorrection).toHaveBeenCalledWith(undefined, "incidents", "inc-1", "op1", "log", "payments: a person fixes it"));
   });
 });

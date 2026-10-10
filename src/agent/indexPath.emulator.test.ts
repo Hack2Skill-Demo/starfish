@@ -352,6 +352,16 @@ describe("runCycle: a missing index takes the index path", () => {
     expect((await cycleDoc()).summary.index).toBeUndefined();
   });
 
+  it("an incident an operator held to log or noise does not take the index path: nothing is created, triage decides", async () => {
+    const a = fakeAdmin();
+    const probe = fakeProbe(a);
+    const held: LoopDeps["load"] = async () => ({ subject: { incident, status: "new", correction: { level: "noise", by: "u1" } }, files: [], sourceDir: src, baseRevision: "a".repeat(40) });
+    const r = await runCycle(deps(wiring(a.admin, probe), { load: held }), key);
+    expect(a.calls).toEqual([]);
+    expect(r).toMatchObject({ state: "declined", outcome: "correction-cap" });
+    expect((await cycleDoc()).summary.index).toBeUndefined();
+  });
+
   it("does not open a pull request when the index file already has the entry; the runtime is still observed", async () => {
     writeFileSync(
       join(src, "firestore.indexes.json"),

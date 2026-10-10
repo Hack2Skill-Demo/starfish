@@ -136,8 +136,43 @@ service cloud.firestore {
         && resource.data.status in ['new', 'acknowledged', 'logged', 'recurred']
         && resource.data.get('retired', false) != true;
 
+      // A correction (the feedback engine, src/triageRules.ts): an operator says how far Starfish should have gone with
+      // this incident, at most. It only ever caps the engine (a level below what triage chose holds it back; `merge`
+      // holds nothing back), never raises it. Written in ONE batch with its history entry, which must be new: the
+      // incident keeps the latest correction, `corrections` keeps every one. Allowed whatever the status (a correction of
+      // a resolved incident is still feedback), but never on a retired one. The levels: LEVELS in src/triageRules.ts.
+      allow update: if isOperator()
+        && request.resource.data.diff(resource.data).affectedKeys()
+             .hasOnly(['correctedLevel', 'correctedBy', 'correctedAt', 'correctionNote', 'correctionId'])
+        && request.resource.data.correctedLevel in ['noise', 'log', 'fix', 'merge']
+        && request.resource.data.correctedBy == request.auth.uid
+        && request.resource.data.correctedAt == request.time
+        && (!('correctionNote' in request.resource.data)
+            || (request.resource.data.correctionNote is string
+                && request.resource.data.correctionNote.size() >= 1 && request.resource.data.correctionNote.size() <= 300))
+        && request.resource.data.correctionId is string
+        && request.resource.data.correctionId.size() >= 8 && request.resource.data.correctionId.size() <= 64
+        && !exists(/databases/$(database)/documents/incidents/$(incidentId)/corrections/$(request.resource.data.correctionId))
+        && existsAfter(/databases/$(database)/documents/incidents/$(incidentId)/corrections/$(request.resource.data.correctionId))
+        && resource.data.get('retired', false) != true;
+
       // Incidents are created and removed by the engine only.
       allow create, delete: if false;
+
+      // The correction history: immutable, each entry equal to the correction it was written with.
+      match /corrections/{correctionId} {
+        allow read: if isOperator();
+        allow create: if isOperator()
+          && request.resource.data.keys().hasOnly(['level', 'by', 'at', 'note'])
+          && request.resource.data.keys().hasAll(['level', 'by', 'at'])
+          && request.resource.data.by == request.auth.uid
+          && request.resource.data.at == request.time
+          && getAfter(/databases/$(database)/documents/incidents/$(incidentId)).data.correctionId == correctionId
+          && getAfter(/databases/$(database)/documents/incidents/$(incidentId)).data.correctedLevel == request.resource.data.level
+          && getAfter(/databases/$(database)/documents/incidents/$(incidentId)).data.get('correctionNote', null)
+               == request.resource.data.get('note', null);
+        allow update, delete: if false;
+      }
     }
 
     // ---- Runtime settings (src/runtimeSettings.ts) --------------------------
@@ -173,7 +208,7 @@ service cloud.firestore {
     function settingsShapeOk(d) {
       return d.keys().hasOnly(['version', 'revision', 'auditId', 'watchedProjectId', 'environment',
                                'logResourceTypes', 'servicePatterns', 'ignoredMessages',
-                               'dryRun', 'reviewRequired', 'automationEnabled', 'autoMerge', 'mergeFreeze', 'mergeCases', 'modelCallBudget',
+                               'dryRun', 'reviewRequired', 'automationEnabled', 'autoMerge', 'mergeFreeze', 'mergeCases', 'classRules', 'modelCallBudget',
                                'model', 'location', 'vertexProjectId', 'updatedAt', 'updatedBy'])
         && d.keys().hasAll(['version', 'revision', 'auditId', 'updatedAt', 'updatedBy'])
         && d.version == 1
@@ -196,6 +231,8 @@ service cloud.firestore {
         && (!('mergeFreeze' in d) || d.mergeFreeze is bool)
         // MAX_MERGE_CASES in src/settingsSchema.ts; each case's id and description are checked by the engine on read.
         && (!('mergeCases' in d) || (d.mergeCases is list && d.mergeCases.size() <= 20))
+        // MAX_CLASS_RULES in src/triageRules.ts; each rule is checked by the engine on read (validateClassRules).
+        && (!('classRules' in d) || (d.classRules is list && d.classRules.size() <= 50))
         && (!('modelCallBudget' in d) || (d.modelCallBudget is int && d.modelCallBudget >= 1 && d.modelCallBudget <= 50))
         // The same patterns as MODEL_ID and VERTEX_LOCATION in src/settingsSchema.ts.
         && (!('model' in d) || (d.model is string && d.model.matches('^[a-z][a-z0-9._-]{0,63}$')))

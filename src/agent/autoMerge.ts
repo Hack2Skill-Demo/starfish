@@ -12,6 +12,8 @@
  *              `mergeFreeze` off (the global off switch), this deployment's `githubRepo` listed in
  *              `autoMergeTargets` (environment-only: the demo), the candidate's case still listed in `mergeCases` (read
  *              fresh: an admin who removes a case stops its merges), and today's merges under `maxMergesPerDay`;
+ *   no cap     no admin class rule and no operator's correction holds the incident below "merge" (src/triageRules.ts),
+ *              read fresh: a correction made after triage still stops the merge;
  *   the floor  the safety floor on the verified patch (blastRadius.ts `assessMergeFloor`), recorded when the pull request
  *              was opened: one production file, tests only as new files, nothing on the hard-exclude list. The index
  *              path's patch is Starfish's own (indexFilePatch.ts: entries only added) and is not run through it;
@@ -42,6 +44,7 @@ import { inert, type CheckRun, type GithubClient, type PullRequestResult } from 
 import type { DeliveryResult, NotifyRequest } from "../integrations/slack.js";
 import { OPEN_INCIDENT_STATUSES, type Incident, type IncidentStatus } from "../types.js";
 import { INDEX_MERGE_CASE } from "../settingsSchema.js";
+import type { LevelCap } from "../triageRules.js";
 import type { BlastRadius } from "./blastRadius.js";
 import { sanitizeEvent, type CycleConfig } from "./cycle.js";
 import { pathsFromStack } from "./pass.js";
@@ -289,6 +292,12 @@ export interface AutoMergeDeps {
   blockedBy: (mergeCase?: string) => Promise<string | null>;
   /** The incident's status right now, or null if it is gone. */
   incidentStatus: (incidentId: string) => Promise<IncidentStatus | null>;
+  /**
+   * The rules engine's cap on the incident right now (src/triageRules.ts `levelCap`: the admin's class rules and an
+   * operator's correction), read fresh, or null when nothing holds it back. Any cap stops the merge: a cap is at most
+   * "fix". Throws when it can't be read, so the candidate waits for the next pass rather than merging on a guess.
+   */
+  incidentCap: (incidentId: string) => Promise<LevelCap | null>;
   /** Tells a person. Never throws (slack.ts); absent: nobody is told, and the record says so. */
   notify?: (req: NotifyRequest) => Promise<DeliveryResult>;
 }
@@ -520,6 +529,9 @@ export async function runAutoMergeStep(deps: AutoMergeDeps): Promise<AutoMergeSu
     const status = await d.incidentStatus(incidentId);
     if (status === null) return skip("incident-gone");
     if (!OPEN.includes(status)) return skip(`incident-${status}`);
+    // An admin's rule or an operator's correction made since triage: "no further than fix" is a person merging.
+    const cap = await d.incidentCap(incidentId);
+    if (cap !== null) return skip(`capped:${cap.by}`);
 
     if (merge.floor !== "pass") return skip(`floor:${String(merge.reason ?? "not-recorded")}`);
 

@@ -12,6 +12,7 @@ import { parseAllowedTargets } from "./indexheal/createIndexUrl.js";
 import { INDEX_FILE_PATH_RE } from "./indexheal/indexFilePatch.js";
 import { parseIndexProbes, type IndexProbeSpec } from "./indexheal/probe.js";
 import { validateMergeCases, type MergeCase } from "./settingsSchema.js";
+import { validateClassRules, type ClassRule } from "./triageRules.js";
 
 export interface StarfishConfig {
   /** GCP project Starfish runs in: its Firestore store and its Vertex AI calls. */
@@ -232,6 +233,12 @@ export interface StarfishConfig {
    * applies, and so does the safety floor (blastRadius.ts `assessMergeFloor`) and green required checks.
    */
   mergeCases: MergeCase[];
+  /**
+   * The rules engine (src/triageRules.ts): incidents matching a rule (error type, error code, service, function) go no
+   * further than its level, noise, log or fix, whatever triage chose; an operator's correction of one incident caps it the
+   * same way. Rules only hold Starfish back. Empty by default. An admin's Settings list replaces this one.
+   */
+  classRules: ClassRule[];
   /** The most pull requests Starfish merges per UTC day in this environment (reverts not counted). */
   maxMergesPerDay: number;
   /** How long an auto-merge candidate may wait for its required checks before it is handed to a person. */
@@ -558,6 +565,7 @@ export function loadConfig(): StarfishConfig {
     autoMergeTargets: validRepos(parseList(process.env.STARFISH_AUTO_MERGE_TARGETS, ",") ?? []),
     autoMergeExcludedPaths: parseList(process.env.STARFISH_AUTO_MERGE_EXCLUDED_PATHS, ",") ?? [],
     mergeCases: parseMergeCases(process.env.STARFISH_MERGE_CASES),
+    classRules: parseClassRules(process.env.STARFISH_CLASS_RULES),
     maxMergesPerDay: positiveNumber(process.env.STARFISH_MAX_MERGES_PER_DAY, 3, "STARFISH_MAX_MERGES_PER_DAY"),
     mergeCheckWaitMinutes: positiveNumber(process.env.STARFISH_MERGE_CHECK_WAIT_MINUTES, 120, "STARFISH_MERGE_CHECK_WAIT_MINUTES"),
     fastRevertMinutes: positiveNumber(process.env.STARFISH_FAST_REVERT_MINUTES, 60, "STARFISH_FAST_REVERT_MINUTES"),
@@ -784,6 +792,24 @@ function parseMergeCases(raw: string | undefined): MergeCase[] {
   const checked = validateMergeCases(parsed);
   if (!checked.ok) throw new Error(`STARFISH_MERGE_CASES: ${checked.problem}`);
   return checked.cases;
+}
+
+/**
+ * `STARFISH_CLASS_RULES`: a JSON list of `{ "id", "match": { errorType?, errorCode?, service?, functionName? }, "maxLevel",
+ * "note"? }` (triageRules.ts `validateClassRules`). Unset or blank: none. Anything else that does not validate throws at
+ * startup: a typo must not quietly drop a rule someone relies on to hold Starfish back.
+ */
+function parseClassRules(raw: string | undefined): ClassRule[] {
+  if (raw === undefined || raw.trim() === "") return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new Error("STARFISH_CLASS_RULES must be a JSON list of { id, match, maxLevel, note? }");
+  }
+  const checked = validateClassRules(parsed);
+  if (!checked.ok) throw new Error(`STARFISH_CLASS_RULES: ${checked.problem}`);
+  return checked.rules;
 }
 
 /** Environment labels as the settings schema allows them (ENVIRONMENT in src/settingsSchema.ts); a typo is refused at startup. */

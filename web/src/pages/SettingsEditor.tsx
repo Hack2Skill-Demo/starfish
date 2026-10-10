@@ -105,6 +105,12 @@ const FIELDS: Record<
     placeholder: "missing-index: a Firestore query fails because a composite index is missing\nfirestore-undefined-field: a Firestore write fails because a field is undefined",
     hint: 'One "id: description" per line, at most 20. The kinds of incident Starfish may merge a fix for by itself: Gemini reads the descriptions and must name one to choose "merge". missing-index is the index path\'s own case (no model): listed, its evidence pull request merges once its checks are green. An override with nothing in it, like the engine\'s default, means nothing merges.',
   },
+  classRules: {
+    label: "Class rules",
+    multiline: true,
+    placeholder: "payments-human | service=payments | log | money: a person fixes it\nhealth-noise | functionName=healthCheck, errorType=TimeoutError | noise",
+    hint: 'The rules engine. One "id | key=value, key=value | level | note" per line, at most 50; keys errorType, errorCode, service, functionName, matched exactly; level noise, log or fix; the note optional. An incident matching every field of a rule goes no further than its level, whatever Gemini decides: noise declines it without asking the model, log files the issue and stops, fix opens the pull request but never merges it. Rules only hold Starfish back; an operator\'s correction on an incident\'s page caps it the same way, and the lowest wins. Built and tested against fakes and the emulator; not yet run on a real incident.',
+  },
   modelCallBudget: {
     label: "Model calls per cycle",
     multiline: false,

@@ -53,6 +53,7 @@ PROJECT_ID=<p> scripts/deploy-gcp.sh   # Cloud Run job + Scheduler + Secret Mana
 scripts/setup-github-deploy.sh   # one-time: lets GitHub Actions deploy with no key (WIF); deploy-on-merge is then a repo variable (docs/deploy.md); run on the demo project 2026-10-10
 scripts/ingest-cadence.sh status|recording|restore|now   # the ingest's tick for recording the demo, and a run now (#65); DRY_RUN=1 prints
 pnpm scoreboard       # scoreboard/RESULTS.md from recorded runs (#10; format in scoreboard/FORMAT.md; no run recorded yet)
+pnpm feedback-corpus -- --out=<new dir>   # operators' noise/log corrections -> a replay corpus (#267); reads the store, writes local files; never run on a real project
 pnpm replay           # replay the agent's stages over a corpus into a results file (#10); --check-corpus checks the cases without a model; needs Vertex for a real run, none recorded
 pnpm escalate         # one tick of the phone escalation (#37); the agent pass runs it too; off unless STARFISH_PHONE_ESCALATION; never run against real Twilio
 pnpm scrub            # dry-run: how many stored incidents still hold a credential/email (--apply to rewrite)
@@ -162,6 +163,13 @@ src/
                    (`triageLevel`: noise, log, fix, merge): on act the model may name one of the admin's merge cases
                    (`mergeCases`; `missing-index` never offered), kept only if listed. Deterministic gates before the
                    model, local validation after it; run by `pnpm agent` (deployed to the demo project, dry run: ran on real incidents 2026-10-08)
+  triageRules.ts   the rules engine and the feedback engine (#267), pure, shared with the UI: an admin's class rules
+                   (`classRules`, `STARFISH_CLASS_RULES`: match error type/code, service, function -> noise, log or fix) and an
+                   operator's correction of one incident (`corrected*` on it, history in `incidents/{id}/corrections`,
+                   firestore.rules) cap how far Starfish goes; the lowest wins. Triage applies it in code (noise: no model call;
+                   log: act -> notify; fix: no merge case offered), the merge step reads it fresh (`makeCapReader`), a correction
+                   above noise reopens a decline (reconsider.ts `corrected`). Only ever holds Starfish back. Tested against fakes
+                   and the emulator; not yet run on a real incident. `scoreboard/feedbackCorpus.ts` = `pnpm feedback-corpus`
   agent/fixer.ts   stage 2: minimal patch or honest decline from a stubbed-testable model call;
                    fails closed, redacts both ways. Run by `pnpm agent` (deployed, dry run: ran 2026-10-08 and declined, #259)
   agent/cycle.ts   cycle per (incident, recurrence), transactional lease with fencing, append-only run events
@@ -319,8 +327,8 @@ the engine recorded healed, `isHealedRun`; its activity feed is a
 collection-group query over `events`, with its own rule and index; a guest's reads `starfish_public_events`), the
 **Incidents** page (under each error, the incident's current run: its state, triage's reason and a link to it, `lib/useIncidentRuns.ts`), a **Runs** page (live subscription to `{cycleCollection}` and its events,
 `web/src/lib/runs.ts`; the waterfall logic is pure in `runsModel.ts`: a step with no event is "not
-reached", a cycle whose lease ran out is not "in progress"), an **incident evidence** page (`/incidents/:id`, `lib/evidence.ts`: only stored records, never a placeholder result), and a **Settings** page: the Gemini, GitHub and Slack connections (GitHub and Slack read `{runCollection}/integrations`, the agent's own report of what it holds: "configured", never "connected", and "not connected yet" until the agent has run and reported), an
-admin editor for the runtime settings (`src/runtimeSettings.ts` reads what it saves), and, for admins only, **On-call** (#37,
+reached", a cycle whose lease ran out is not "in progress"), an **incident evidence** page (`/incidents/:id`, `lib/evidence.ts`: only stored records, never a placeholder result; an operator's "Correct triage", the feedback engine, `components/CorrectionControl.tsx`, `lib/correctionWrite.ts`), and a **Settings** page: the Gemini, GitHub and Slack connections, the rules and feedback engines' card (GitHub and Slack read `{runCollection}/integrations`, the agent's own report of what it holds: "configured", never "connected", and "not connected yet" until the agent has run and reported), an
+admin editor for the runtime settings (`src/runtimeSettings.ts` reads what it saves; Class rules is the rules engine), and, for admins only, **On-call** (#37,
 `pages/OnCallEditor.tsx`, `lib/onCallWrite.ts`): the people (numbers shown masked, typed in but never read back), the
 opt-in code, and the call policy.
 React 19, Vite, Tailwind 4, react-router, TanStack Query; Starfish's own theme in

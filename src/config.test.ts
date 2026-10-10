@@ -569,6 +569,7 @@ describe("loadConfig: auto-merge and fast-revert (#9)", () => {
     "STARFISH_FAST_REVERT_MINUTES",
     "STARFISH_FAST_REVERT_GRACE_MINUTES",
     "STARFISH_MERGE_CASES",
+    "STARFISH_CLASS_RULES",
   ];
   beforeEach(() => {
     vi.stubEnv("GOOGLE_CLOUD_PROJECT", "home-project");
@@ -587,7 +588,20 @@ describe("loadConfig: auto-merge and fast-revert (#9)", () => {
       fastRevertMinutes: 60,
       fastRevertGraceMinutes: 10,
       mergeCases: [],
+      classRules: [],
     });
+  });
+
+  it("reads the class rules from a JSON list, and refuses a bad one at startup", () => {
+    const rules = [{ id: "payments-human", match: { service: "payments" }, maxLevel: "log" }];
+    vi.stubEnv("STARFISH_CLASS_RULES", JSON.stringify(rules));
+    expect(loadConfig().classRules).toEqual(rules);
+    vi.stubEnv("STARFISH_CLASS_RULES", " ");
+    expect(loadConfig().classRules).toEqual([]);
+    for (const bad of ["[{", "{}", JSON.stringify([{ ...rules[0], maxLevel: "merge" }])]) {
+      vi.stubEnv("STARFISH_CLASS_RULES", bad);
+      expect(() => loadConfig()).toThrow("STARFISH_CLASS_RULES");
+    }
   });
 
   it("reads the merge cases from a JSON list", () => {

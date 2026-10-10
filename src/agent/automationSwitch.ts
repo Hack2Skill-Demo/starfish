@@ -10,6 +10,7 @@
  */
 import type { Firestore } from "firebase-admin/firestore";
 import type { RuntimeConfigLoader } from "./../runtimeSettings.js";
+import { levelCap, readCorrection, type LevelCap, type RuleSubject } from "../triageRules.js";
 import { mergeBlockedBy } from "./autoMerge.js";
 
 export function makeAutomationSwitch(loader: Pick<RuntimeConfigLoader, "resolve">, db: Firestore): () => Promise<boolean> {
@@ -39,4 +40,26 @@ export function makeMergeSwitch(loader: Pick<RuntimeConfigLoader, "resolve">, db
       return "settings-unreadable";
     }
   };
+}
+
+/**
+ * The rules engine's cap on one incident (src/triageRules.ts), read FRESH like the switches: the class rules of the
+ * current runtime settings and the operator's correction on the incident as stored now. Null: nothing holds it back.
+ * Fails closed: settings that can't be read or are unusable with nothing good known, or an incident that can't be read,
+ * THROW, so the merge step leaves the candidate for the next pass instead of merging on a guess.
+ */
+export function makeCapReader(loader: Pick<RuntimeConfigLoader, "resolve">, db: Firestore, incidentCollection: string): (incidentId: string) => Promise<LevelCap | null> {
+  return async (incidentId: string) => {
+    const resolved = await loader.resolve(db);
+    if (!resolved.actionsAllowed) throw new Error("settings unusable: the class rules are unknown");
+    const snap = await db.collection(incidentCollection).doc(incidentId).get();
+    const doc = snap.data();
+    return levelCap(ruleSubjectOf(doc), resolved.config.classRules, readCorrection(doc));
+  };
+}
+
+/** The fields of a stored incident a class rule matches on. */
+export function ruleSubjectOf(doc: Record<string, unknown> | undefined): RuleSubject {
+  const text = (v: unknown) => (typeof v === "string" && v !== "" ? v : undefined);
+  return { errorType: text(doc?.errorType), errorCode: text(doc?.errorCode), service: text(doc?.service), functionName: text(doc?.functionName) };
 }

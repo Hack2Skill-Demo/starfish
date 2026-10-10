@@ -14,6 +14,7 @@
  * The checkout is a shallow clone of the base branch; its tip is the pinned revision the patch is verified
  * against and the pull request is opened on, so the two cannot disagree.
  */
+import { readCorrection } from "../triageRules.js";
 import { lstat, mkdtemp, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -161,6 +162,7 @@ export function createLoader(deps: AssembleDeps): Loader {
       if (data.environment !== deps.config.environment || data.retired === true) return null;
       const status = INCIDENT_STATUSES.includes(data.status as IncidentStatus) ? (data.status as IncidentStatus) : "new";
       const incident = toIncident(incidentId, data);
+      const correction = readCorrection(data);
 
       // Both degrade to null / [] rather than throw; a missing check is reported to triage as missing.
       const opts = deps.now ? { nowMs: deps.now() } : {};
@@ -182,7 +184,8 @@ export function createLoader(deps: AssembleDeps): Loader {
       }
 
       return {
-        subject: { incident, status, ...(samples.length > 0 && { samples }) },
+        // An operator's correction (src/triageRules.ts): it caps triage, and is never shown to the model.
+        subject: { incident, status, ...(correction && { correction }), ...(samples.length > 0 && { samples }) },
         files,
         sourceDir: checkout.dir,
         baseRevision: checkout.revision,

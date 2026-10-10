@@ -211,6 +211,17 @@ describe("small helpers", () => {
     expect(triageDecision(cycle())).toBeUndefined();
   });
 
+  it("says who held Starfish back, when the rules engine capped the decision", () => {
+    expect(triageDecision(cycle({ summary: { triage: { level: "log", cap: "log", capBy: "rule", capRule: "payments-human" } } }))?.heldBy).toBe(
+      "Held to log by the admin's class rule payments-human"
+    );
+    expect(triageDecision(cycle({ summary: { triage: { level: "fix", cap: "fix", capBy: "correction", capRule: null } } }))?.heldBy).toBe(
+      "Held to fix by an operator's correction"
+    );
+    expect(triageDecision(cycle({ summary: { triage: { level: "fix", cap: null, capBy: null } } }))?.heldBy).toBeUndefined();
+    expect(triageDecision(cycle({ summary: { triage: { level: "fix", cap: "merge", capBy: "rule" } } }))?.heldBy).toBeUndefined();
+  });
+
   it("reads the triage rule from the run record", () => {
     expect(triageRule(cycle({ summary: { triage: { rule: "exhausted-budget" } } }))).toBe("exhausted-budget");
     expect(triageRule(cycle())).toBeUndefined();

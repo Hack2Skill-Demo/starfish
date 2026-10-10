@@ -222,7 +222,7 @@ const tokenOrNull: Shape = (v) => (v === null ? null : token(v));
  */
 export const PUBLIC_SUMMARY: Readonly<Record<string, Readonly<Record<string, Shape>>>> = {
   // `level` (noise, log, fix, merge) and `mergeCase` (an admin's case id) are engine tokens, not model text.
-  triage: { decision: token, rule: token, model: token, level: tokenOrNull, mergeCase: tokenOrNull, counterCount: countOrNull, counterCapped: bool, counterWindow: token, counterCheckedAt: iso },
+  triage: { decision: token, rule: token, model: token, level: tokenOrNull, mergeCase: tokenOrNull, cap: tokenOrNull, capBy: tokenOrNull, capRule: tokenOrNull, counterCount: countOrNull, counterCapped: bool, counterWindow: token, counterCheckedAt: iso },
   fix: { outcome: token, rule: token, testAdded: boolOrNull, revisions: count },
   verify: { status: token, rule: token, patchSha256: hex, baseRevision: hex, files: count, exitCode: intOrNull, durationMs: nonNegative },
   review: { verdict: tokenOrNull, rule: token, attacks: count, held: count, flagged: count, broken: count, patchSha256: hex },

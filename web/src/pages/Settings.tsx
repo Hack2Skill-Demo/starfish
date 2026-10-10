@@ -6,7 +6,8 @@
  * them; the agent states at the start of each pass whether each is set (`lib/integrations.ts`), and
  * the page then says "configured" and when it was reported. Until the agent has reported, it says
  * "not connected yet". Gemini runs through the engine's own config (src/config.ts), which this page
- * describes but can't read from the browser. The rules and feedback engines land here once built.
+ * describes but can't read from the browser. The rules and feedback engines are described here; their controls are the
+ * Class rules setting (admins) and the correction on an incident's page (operators).
  */
 import { useQuery } from "@tanstack/react-query";
 import { Bot, GitBranch, MessageSquare, SlidersHorizontal, type LucideIcon } from "lucide-react";
@@ -21,7 +22,7 @@ import { readIntegrations, reportFor, type Integrations } from "../lib/integrati
 import { SettingsEditor } from "./SettingsEditor";
 import { OnCallEditor } from "./OnCallEditor";
 
-type ConnectionState = "engine" | "planned";
+type ConnectionState = "engine" | "built" | "planned";
 
 interface Connection {
   name: string;
@@ -64,14 +65,16 @@ export const CONNECTIONS: Connection[] = [
   {
     name: "Rules & feedback engines",
     icon: SlidersHorizontal,
-    state: "planned",
-    purpose: "Which incident classes may auto-fix, and human corrections that retrain them.",
-    detail: "Policy written in docs/design/auto-merge-policy.md; not built.",
+    state: "built",
+    purpose: "How far Starfish may go with each kind of incident, and a person's correction of one incident.",
+    detail:
+      "Rules engine: an admin's class rules (Class rules, under Runtime settings) hold matching incidents to noise, log or fix, whatever Gemini decides. Feedback engine: on an incident's page, an operator corrects how far Starfish should go with it; the correction caps it the same way, stops a merge still waiting for its checks, sends a declined incident back to triage when it says it deserved more, and is kept as history. pnpm feedback-corpus turns corrections into replay cases. Both only hold Starfish back: widening what merges stays the admin's merge cases. Built and tested against fakes and the emulator; not yet run on a real incident.",
   },
 ];
 
 const STATE_BADGE: Record<ConnectionState, { tone: "success" | "neutral"; label: string }> = {
   engine: { tone: "success", label: "Configured on the engine" },
+  built: { tone: "success", label: "Built" },
   planned: { tone: "neutral", label: "Not connected yet" },
 };
 

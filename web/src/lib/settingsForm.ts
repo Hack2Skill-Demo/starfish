@@ -27,6 +27,7 @@ export const FIELD_NAMES = [
   "autoMerge",
   "mergeFreeze",
   "mergeCases",
+  "classRules",
   "modelCallBudget",
   "model",
   "location",
@@ -58,6 +59,17 @@ export function formFromStored(stored: StoredSettings | null): FormState {
           .map((c) => (c && typeof c === "object" ? `${String((c as Record<string, unknown>).id ?? "")}: ${String((c as Record<string, unknown>).description ?? "")}` : ""))
           .join("\n")
       : "";
+  // One "id | key=value, key=value | level | note" per line (the note optional).
+  const rules = (v: unknown) =>
+    Array.isArray(v)
+      ? v
+          .map((r) => {
+            const rule = (r && typeof r === "object" ? r : {}) as Record<string, unknown>;
+            const match = rule.match && typeof rule.match === "object" ? Object.entries(rule.match as Record<string, unknown>).map(([k, val]) => `${k}=${String(val)}`).join(", ") : "";
+            return [String(rule.id ?? ""), match, String(rule.maxLevel ?? ""), ...(typeof rule.note === "string" && rule.note !== "" ? [rule.note] : [])].join(" | ");
+          })
+          .join("\n")
+      : "";
   return {
     watchedProjectId: { override: "watchedProjectId" in s, text: typeof s.watchedProjectId === "string" ? s.watchedProjectId : "" },
     environment: { override: "environment" in s, text: typeof s.environment === "string" ? s.environment : "" },
@@ -71,6 +83,7 @@ export function formFromStored(stored: StoredSettings | null): FormState {
     autoMerge: { override: "autoMerge" in s, text: typeof s.autoMerge === "boolean" ? String(s.autoMerge) : "false" },
     mergeFreeze: { override: "mergeFreeze" in s, text: typeof s.mergeFreeze === "boolean" ? String(s.mergeFreeze) : "false" },
     mergeCases: { override: "mergeCases" in s, text: cases(s.mergeCases) },
+    classRules: { override: "classRules" in s, text: rules(s.classRules) },
     modelCallBudget: { override: "modelCallBudget" in s, text: typeof s.modelCallBudget === "number" ? String(s.modelCallBudget) : "" },
     model: { override: "model" in s, text: typeof s.model === "string" ? s.model : "" },
     location: { override: "location" in s, text: typeof s.location === "string" ? s.location : "" },
@@ -124,6 +137,20 @@ export function settingsFromForm(form: FormState): FormResult {
       const at = line.indexOf(":");
       if (at < 0) problems.push(`mergeCases: line ${i + 1} must be "id: description"`);
       return { id: at < 0 ? line : line.slice(0, at).trim(), description: at < 0 ? "" : line.slice(at + 1).trim() };
+    });
+  }
+
+  if (form.classRules.override) {
+    // "id | key=value, key=value | level | note" per line; the note is optional and may hold "|". An override with no line is "none".
+    raw.classRules = lines(form.classRules.text).map((line, i) => {
+      const [id = "", matchText = "", maxLevel = "", ...note] = line.split("|").map((part) => part.trim());
+      const match: Record<string, string> = {};
+      for (const pair of matchText.split(",").map((p) => p.trim()).filter((p) => p !== "")) {
+        const at = pair.indexOf("=");
+        if (at < 0) problems.push(`classRules: line ${i + 1} must match as "key=value, key=value"`);
+        else match[pair.slice(0, at).trim()] = pair.slice(at + 1).trim();
+      }
+      return { id, match, maxLevel, ...(note.join(" | ") !== "" && { note: note.join(" | ") }) };
     });
   }
 

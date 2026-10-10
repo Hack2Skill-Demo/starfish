@@ -13,6 +13,7 @@
     "spike": "tsx src/spike.ts",
     "scrub": "tsx src/scrubCli.ts",
     "scoreboard": "tsx src/scoreboardCli.ts",
+    "feedback-corpus": "tsx src/feedbackCorpusCli.ts",
     "seed-demo": "tsx src/seedDemoCli.ts",
     "public-view": "tsx src/publicViewCli.ts",
     "replay": "tsx src/replayCli.ts",

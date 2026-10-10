@@ -2,7 +2,8 @@
  * IncidentDetail — the evidence behind one incident, stage by stage: what was detected, and what the
  * agent recorded about triage, the fix, the verify gate, the review and the pull request. Everything
  * comes from stored records (web/src/lib/evidence.ts); a stage with no record says "not reached"
- * rather than showing a result. Read-only for guests and operators; an admin also gets Retire (admin API, #63).
+ * rather than showing a result. Read-only for guests; an operator can correct how far Starfish goes with it (the feedback
+ * engine, CorrectionControl), and an admin also gets Retire (admin API, #63).
  */
 import { useQuery } from "@tanstack/react-query";
 import { Link, useParams } from "react-router";
@@ -13,6 +14,7 @@ import { Badge, type BadgeTone } from "../components/ui/Badge";
 import { SyntheticBadge } from "../components/SyntheticBadge";
 import { MonitoringOnlyBadge } from "../components/MonitoringOnlyBadge";
 import { RetireControl } from "../components/AdminActions";
+import { CorrectionControl } from "../components/CorrectionControl";
 import { HourlyBars } from "../components/HourlyBars";
 import { hourlySeries } from "../lib/overviewModel";
 import { formatDateTime } from "../lib/formatters";
@@ -100,7 +102,8 @@ function Evidence({ row, cycle, runPending, runFailed }: { row: IncidentRow; cyc
             Public view: a trimmed copy of the record. Error detail, stack traces and the model&apos;s own words are left out of it.
           </p>
         )}
-        <div className="mt-2">
+        <div className="mt-2 flex flex-wrap items-start gap-2">
+          <CorrectionControl row={row} />
           <RetireControl incidentId={row.id} />
         </div>
         {evidence.cycleId && (

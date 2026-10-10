@@ -134,7 +134,7 @@ designed but not built (see the README's Status section and
 | Gemini fix-quality spike harness | Built, not yet run against Vertex |
 | Triage, fixer, deterministic verify gate, adversarial reviewer, PR | Not built |
 | Scoped auto-merge, missing-index heal, fast-revert | Designed only |
-| Feedback engine: a human reclassification becomes a rule override and a replay test | Designed only |
+| Feedback engine: a human reclassification becomes a rule override and a replay test | Built (#267): an operator's correction caps the incident and becomes a replay case; not yet run on a real incident |
 
 How the literature maps onto the design:
 
@@ -144,7 +144,7 @@ How the literature maps onto the design:
 | Re-observe after acting | Fast-revert: same fingerprint recurring within N minutes of the fix going live | Not built |
 | Cheapest safe action first | Class table: decline, notify, draft PR, auto-merge | No revert-first strategy like SapFix's |
 | Validate by execution | Deterministic verify gate; index heal re-runs the failing query | Not built |
-| Learn from history | Feedback engine and replay scoring | No retrieval of similar past incidents yet (cf. RCACopilot) |
+| Learn from history | Feedback engine and replay scoring | Corrections only hold Starfish back; no class widens from a replay score by itself, and no retrieval of similar past incidents yet (cf. RCACopilot) |
 | Scope by blast radius | Two-gate auto-merge; security rules always human | Matches the literature; not built |
 
 The missing-index heal fits the literature best. Google's error message specifies the fix, so

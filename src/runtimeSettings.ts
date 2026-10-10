@@ -50,6 +50,7 @@ function snapshot(config: StarfishConfig): StarfishConfig {
     autoMergeTargets: Object.freeze([...config.autoMergeTargets]) as string[],
     autoMergeExcludedPaths: Object.freeze([...config.autoMergeExcludedPaths]) as string[],
     mergeCases: Object.freeze(config.mergeCases.map((c) => Object.freeze({ ...c }))) as StarfishConfig["mergeCases"],
+    classRules: Object.freeze(config.classRules.map((r) => Object.freeze({ ...r, match: Object.freeze({ ...r.match }) }))) as StarfishConfig["classRules"],
   });
 }
 
@@ -68,6 +69,7 @@ export function applySettings(base: StarfishConfig, settings: RuntimeSettings): 
     ...(settings.autoMerge !== undefined && { autoMerge: settings.autoMerge }),
     ...(settings.mergeFreeze !== undefined && { mergeFreeze: settings.mergeFreeze }),
     ...(settings.mergeCases !== undefined && { mergeCases: settings.mergeCases }),
+    ...(settings.classRules !== undefined && { classRules: settings.classRules }),
     ...(settings.modelCallBudget !== undefined && { modelCallBudget: settings.modelCallBudget }),
     ...(settings.model !== undefined && { model: settings.model }),
     ...(settings.location !== undefined && { location: settings.location }),

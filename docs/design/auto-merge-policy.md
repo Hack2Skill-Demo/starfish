@@ -271,6 +271,25 @@ The **feedback engine** is how this table gets corrected. When a human reclassif
 incident, for example one wrongly treated as a hotfix, the correction becomes a rule override
 and a replay test case. An auto-merge class widens only when the replay score earns it.
 
+**As built (#267, `src/triageRules.ts`; tested against fakes and the emulator, not yet run on a real
+incident).** The rules engine is the admin's **class rules** (Settings → Class rules, or
+`STARFISH_CLASS_RULES`): a rule matches an incident's error type, error code, service or function, exactly,
+and sets the most Starfish may do with it, `noise`, `log` or `fix`. Triage applies it in code, not in the
+prompt: held to noise, the incident is declined without asking the model; held to log, Gemini's *act*
+becomes *notify*; held to fix, no merge case is offered, so the pull request waits for a person. The
+feedback engine is an operator's **correction** on the incident's page, stored on the incident with an
+immutable history under it (`firestore.rules` ties the two writes together). It caps that incident the
+same way. The merge step reads the cap fresh, so a correction made after triage still stops a pending
+merge. A declined incident corrected to anything above noise is triaged again (`reconsider.ts`,
+`corrected`), and the index path is not taken for an incident held to noise or log. `pnpm feedback-corpus`
+writes the noise and log corrections as `decline` and `notify` replay cases. A `fix` or `merge`
+correction needs a code-fix case with a snapshot and an evaluator, which a person builds.
+
+Both only **hold Starfish back**: the lowest cap wins, so an operator can't lift an admin's rule, and
+nothing here lists a merge case or turns on a switch. **Widening is not built and stays a person's
+decision**: no class widens from a replay score by itself. An admin adds a merge case, and the replay
+scoreboard (#10) is the evidence they weigh.
+
 ## Missing indexes: why they can heal end to end
 
 Missing composite indexes are common in Firebase projects for a structural reason. The query
@@ -327,7 +346,8 @@ Starfish connects three systems, configured on a settings page:
 - **Slack** (channels for notify / escalate / healed)
 
 It also exposes the **rules engine** (the class table above, per project) and the **feedback
-engine** (reclassification history).
+engine** (reclassification history). Both are built: class rules under Runtime settings, the correction and
+its history on an incident's page (above).
 
 GitHub and Slack integration and the settings page are designed; the settings page exists but
 only describes the connections today.
