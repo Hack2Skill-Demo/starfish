@@ -17,6 +17,10 @@
 #                        comma-separated). On each one's project the deployer may also grant roles/datastore.indexAdmin and
 #                        roles/datastore.viewer, which deploy-gcp.sh binds to the agent conditioned to that database. Set it
 #                        here as there; changing it means running this again
+#   BUILD_SERVICE_ACCOUNT  deploy-gcp.sh's: the account Cloud Run builds the image as. Default: the project's Compute Engine
+#                        default account. The deployer is allowed to act as it, which a build from source requires; what
+#                        that account may do, the deployer can then do through a build, so keep it to roles/run.builder
+#                        (deploy-gcp.sh grants only that) or name an account made for building
 #   ENVIRONMENT          the GitHub environment the jobs run in. Default deploy (the workflows are fixed to it)
 #   POOL, PROVIDER       Default github, github-deploy
 #   DEPLOYER_NAME        Default starfish-deployer
@@ -47,6 +51,7 @@ REPO="${REPO:-}"
 WATCHED_PROJECT_ID="${WATCHED_PROJECT_ID:-$PROJECT_ID}"
 VERTEX_PROJECT_ID="${VERTEX_PROJECT_ID:-$PROJECT_ID}"
 INDEX_TARGETS="${INDEX_TARGETS:-}"
+BUILD_SERVICE_ACCOUNT="${BUILD_SERVICE_ACCOUNT:-}"
 ENVIRONMENT="${ENVIRONMENT:-deploy}"
 POOL="${POOL:-github}"
 PROVIDER="${PROVIDER:-github-deploy}"
@@ -85,6 +90,7 @@ for var in ENGINE_SA_NAME SCHEDULER_SA_NAME AGENT_SA_NAME VERIFIER_SA_NAME ADMIN
 done
 case "$DEPLOYER_ROLE_ID$SA_IAM_ROLE_ID" in *[!A-Za-z0-9_.]*) die "DEPLOYER_ROLE_ID and SA_IAM_ROLE_ID may hold only letters, digits, _ ." ;; esac
 case "$VERIFY_ISOLATION" in github-actions|cloud-run-job) ;; *) die "VERIFY_ISOLATION must be github-actions or cloud-run-job: $VERIFY_ISOLATION" ;; esac
+case "$BUILD_SERVICE_ACCOUNT" in *[!A-Za-z0-9.@_-]*) die "BUILD_SERVICE_ACCOUNT must be a service account's email: $BUILD_SERVICE_ACCOUNT" ;; esac
 # The projects of INDEX_TARGETS, as deploy-gcp.sh validates each entry (PROJECT_RE and DATABASE_RE, createIndexUrl.ts).
 INDEX_PROJECTS=" "
 if [ -n "$INDEX_TARGETS" ]; then
@@ -251,6 +257,16 @@ for sa in "$ENGINE_SA_NAME" "$SCHEDULER_SA_NAME" "$AGENT_SA_NAME" "$VERIFIER_SA_
   run gcloud iam service-accounts add-iam-policy-binding "$account" --project="$PROJECT_ID" \
     --role=roles/iam.serviceAccountUser --member="serviceAccount:$DEPLOYER"
 done
+
+# `gcloud run ... deploy --source` builds the image AS the build account (deploy-gcp.sh: BUILD_SERVICE_ACCOUNT, else the
+# Compute Engine default account), and Cloud Build refuses a caller that may not act as it: "caller does not have
+# permission to act as service account", which stopped the first real run of the deploy workflow (2026-10-10) at its
+# first image. A person deploying as an owner never meets it. It is one more account the deployer reaches, so it is
+# named apart from the five above: whatever that account may do, a build can do.
+step "May act as the account Cloud Run builds images as"
+BUILD_SA="${BUILD_SERVICE_ACCOUNT:-$PROJECT_NUMBER-compute@developer.gserviceaccount.com}"
+run gcloud iam service-accounts add-iam-policy-binding "$BUILD_SA" --project="$PROJECT_ID" \
+  --role=roles/iam.serviceAccountUser --member="serviceAccount:$DEPLOYER"
 
 if [ "$VERIFY_ISOLATION" = "cloud-run-job" ]; then
   # With cloud-run-job the deploy lets the agent's account sign URLs as itself (a grant on that account's own policy),

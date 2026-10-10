@@ -50,7 +50,7 @@ pnpm ingest           # one ingest run: next window(s) of the watched project's 
 PROJECT_ID=<p> scripts/deploy-gcp.sh   # Cloud Run job + Scheduler + Secret Manager; DRY_RUN=1 prints the plan (docs/deploy.md)
 # The whole setup, in order (docs/setup.md): scripts/preflight-gcp.sh → deploy-gcp.sh → pnpm grant-operator →
 # scripts/smoke-gcp.sh → scripts/deploy-web.sh. pnpm status: is the deployed engine alive? Run once on the demo project (2026-10-05), the smoke test included; the agent job was deployed there on 2026-10-07 and runs hourly in dry run.
-scripts/setup-github-deploy.sh   # one-time: lets GitHub Actions deploy with no key (WIF); deploy-on-merge is then a repo variable (docs/deploy.md); never run
+scripts/setup-github-deploy.sh   # one-time: lets GitHub Actions deploy with no key (WIF); deploy-on-merge is then a repo variable (docs/deploy.md); run on the demo project 2026-10-10
 scripts/ingest-cadence.sh status|recording|restore|now   # the ingest's tick for recording the demo, and a run now (#65); DRY_RUN=1 prints
 pnpm scoreboard       # scoreboard/RESULTS.md from recorded runs (#10; format in scoreboard/FORMAT.md; no run recorded yet)
 pnpm replay           # replay the agent's stages over a corpus into a results file (#10); --check-corpus checks the cases without a model; needs Vertex for a real run, none recorded
