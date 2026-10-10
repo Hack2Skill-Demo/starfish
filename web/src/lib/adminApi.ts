@@ -1,6 +1,6 @@
 /**
- * The browser's side of the admin API (src/adminApi.ts): "Run ingest now" and "Retire an incident".
- * Both send the signed-in person's Firebase ID token in a header; the server decides from the operator
+ * The browser's side of the admin API (src/adminApi.ts): "Run ingest now", "Run agent now" and "Retire an incident".
+ * Each sends the signed-in person's Firebase ID token in a header; the server decides from the operator
  * record whether that person is an admin, so hiding the buttons from everyone else is a courtesy, not
  * the check. Nothing here throws: an answer is a typed result with a message safe to show.
  */
@@ -48,8 +48,9 @@ function messageFor(status: number): string {
 /**
  * `serverSays`: for a refusal that is not about the session (401) or the role (403), show the server's own short reason
  * (the on-call routes' "wrong code", "the code expired: send a new one"), which it chose to be safe to show.
+ * `messages`: what a status means on THIS route, where the general wording would be about something else.
  */
-async function post(deps: AdminApiDeps, path: string, body?: unknown, serverSays = false): Promise<AdminResult<unknown>> {
+async function post(deps: AdminApiDeps, path: string, body?: unknown, serverSays = false, messages: Partial<Record<number, string>> = {}): Promise<AdminResult<unknown>> {
   if (!deps.baseUrl) return { ok: false, message: "The admin service is not configured for this site." };
   let token: string | null;
   try {
@@ -88,7 +89,7 @@ async function post(deps: AdminApiDeps, path: string, body?: unknown, serverSays
         // no readable reason: the generic message below
       }
     }
-    return { ok: false, message: messageFor(res.status) };
+    return { ok: false, message: messages[res.status] ?? messageFor(res.status) };
   }
   try {
     return { ok: true, value: await res.json() };
@@ -116,6 +117,25 @@ export async function runIngestNow(deps: AdminApiDeps): Promise<AdminResult<Inge
       ...(typeof b.error === "string" && { error: b.error }),
     },
   };
+}
+
+/** What the agent route's own refusals mean (src/adminApi.ts, #276). */
+const AGENT_MESSAGES: Partial<Record<number, string>> = {
+  404: "This deployment has no agent job the admin service can start.",
+  409: "An agent pass is already being started. Try again in a moment.",
+  502: "The agent job could not be started. Check the admin service's logs.",
+};
+
+/**
+ * Start one agent pass (#276). Success means the start was accepted, nothing more: the pass runs in its own job and
+ * shows up as runs once it records them.
+ */
+export async function runAgentNow(deps: AdminApiDeps): Promise<AdminResult<null>> {
+  const r = await post(deps, "/api/agent/run", undefined, false, AGENT_MESSAGES);
+  if (!r.ok) return r;
+  // Only the server's own "started" counts: any other 2xx body is not read as a start.
+  if ((r.value as { started?: unknown } | null)?.started !== true) return { ok: false, message: messageFor(500) };
+  return { ok: true, value: null };
 }
 
 export async function retireIncident(deps: AdminApiDeps, incidentId: string, reason: string): Promise<AdminResult<{ alreadyRetired: boolean }>> {

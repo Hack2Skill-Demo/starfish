@@ -88,6 +88,51 @@ describe("scripts/deploy-gcp.sh", () => {
       expect(engine(r.out)).toBe(engine(deploy({ ...dry, WATCHED_PROJECT_ID: "app-proj" }).out));
     });
 
+    describe("run agent now (#276)", () => {
+      const both = { ...admin, DEPLOY_AGENT: "1", AGENT_REPO: "o/r", VERIFY_CHECKS: "verify" };
+      const service = (out) => out.split("\n").find((l) => l.includes("gcloud run deploy starfish-admin")) ?? "";
+      const member = "--member=serviceAccount:starfish-admin-api@star-proj.iam.gserviceaccount.com";
+      const startGrants = (out) => out.split("\n").filter((l) => l.includes(member) && l.includes("roles/run.invoker"));
+
+      it("names the agent job to the admin API and lets its account start that one job, when one run deploys both", () => {
+        const r = deploy(both);
+        expect(r.status).toBe(0);
+        expect(service(r.out)).toMatch(/STARFISH_AGENT_JOB=starfish-agent(@|'|"|$)/);
+        const grants = startGrants(r.out);
+        expect(grants).toHaveLength(1);
+        expect(grants[0]).toContain("gcloud run jobs add-iam-policy-binding starfish-agent");
+        expect(grants[0]).toContain("--region=us-central1");
+        // On the job, never on the project, and never the role that runs a job with overrides.
+        expect(r.out.split("\n").filter((l) => l.includes(member) && l.includes("gcloud projects") && l.includes("roles/run."))).toEqual([]);
+        expect(r.out.split("\n").filter((l) => l.includes(member) && l.includes("jobsExecutorWithOverrides"))).toEqual([]);
+        // The grant comes after the job exists.
+        expect(r.out.indexOf("gcloud run jobs deploy starfish-agent")).toBeLessThan(r.out.indexOf(grants[0]));
+      });
+
+      it("follows a renamed agent job", () => {
+        const r = deploy({ ...both, AGENT_JOB_NAME: "ops-agent" });
+        expect(service(r.out)).toContain("STARFISH_AGENT_JOB=ops-agent");
+        expect(startGrants(r.out)[0]).toContain("add-iam-policy-binding ops-agent");
+      });
+
+      it("sets the name empty and grants nothing on a run that does not deploy the agent, so the route goes away again", () => {
+        const r = deploy(admin);
+        expect(service(r.out)).toMatch(/STARFISH_AGENT_JOB=(@|'|"|$)/);
+        expect(startGrants(r.out)).toEqual([]);
+      });
+
+      it("refuses the name from either list: it is set where the grant is made, so the two can't disagree", () => {
+        for (const env of [{ EXTRA_ENV_VARS: "STARFISH_AGENT_JOB=elsewhere" }, { AGENT_EXTRA_ENV_VARS: "STARFISH_AGENT_JOB_REGION=europe-west1" }, { EXTRA_ENV_VARS: "STARFISH_MODEL=x@STARFISH_AGENT_JOB=" }]) {
+          const r = deploy({ ...both, ...env });
+          expect(r.status).toBe(1);
+          expect(r.out).toContain("may not set STARFISH_AGENT_JOB");
+          expect(r.gcloudCalled).toBe(false);
+        }
+        // A name that only looks like it is not refused.
+        expect(deploy({ ...both, EXTRA_ENV_VARS: "STARFISH_AGENT_JOBS_NOTE=x" }).status).toBe(0);
+      });
+    });
+
     it("keeps the service's own errors out of ingest, in the job and the agent", () => {
       expect(deploy(admin).out).toContain("STARFISH_EXCLUDED_SERVICES=starfish,starfish-ingest,starfish-admin");
       const withAgent = deploy({ ...admin, DEPLOY_AGENT: "1", AGENT_REPO: "o/r", VERIFY_CHECKS: "verify", STARFISH_GITHUB_TOKEN: "x" });

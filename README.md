@@ -237,7 +237,7 @@ is tested; "deployed" means it has run in a real project: the ingest half and th
 | Firestore (its own `starfish` database) | incidents, settings, cycles, run records | built; rules and store tested on the emulator |
 | Firebase Auth | operator sign-in, guest view | built |
 | Cloud Run (a job) | runs one ingest per tick, as its own least-privilege service account | `Dockerfile` and deploy script written; deployed once, on the demo project (2026-10-05) |
-| Cloud Run (a service): the admin API | "Run ingest now" and Retire for an admin, from the UI (`DEPLOY_ADMIN_API=1`) | in the deploy script; deployed once, to the demo project (2026-10-07), and "Run ingest now" ran from the UI; Retire and the Twilio routes not tried |
+| Cloud Run (a service): the admin API | "Run ingest now", "Run agent now" (#276) and Retire for an admin, from the UI (`DEPLOY_ADMIN_API=1`) | in the deploy script; deployed once, to the demo project (2026-10-07), and "Run ingest now" ran from the UI; Retire, the Twilio routes and "Run agent now" (built later, never run against real Cloud Run) not tried |
 | Cloud Run: agent job and verify job, Cloud Storage bucket | the agent runs triage → fix → review; the target's tests run only in a separate job whose service account holds no roles, fed through the bucket (`DEPLOY_AGENT=1`) | in the deploy script (`docs/deploy.md`); never deployed |
 | Cloud Scheduler | starts that job on a cron (`SCHEDULE`, hourly by default) | in the deploy script; deployed once, on the demo project (2026-10-05); the agent's tick never deployed |
 | Secret Manager | the GitHub token the pull-request step uses; the Slack webhooks and Twilio's credentials (#37) the same way, in secrets of their own | secret, access grant and mount are in the deploy script, and `loadGithubToken()` reads it; the opener is built and tested against a local git remote and a fake API, **not against real GitHub**; its only caller is the agent job (a dry run, never run) |
@@ -296,6 +296,12 @@ apparent over-engineering is scar tissue from real incidents, and the tests in
   run (same windows, checkpoint and last-run record, and two together converge), behind an admin check
   made from the operator record and an audit entry written before the run. The admin API (see above) is the endpoint that calls it: deployed once to the demo project (2026-10-07); the Incidents page has a "Run ingest now" button for admins when the site knows the admin API's URL, and it ran once from the deployed UI as an admin. Retire has not been tried against the deployed service. The short schedule for recording the demo is the `SCHEDULE` of
   the deploy script (#6; the ingest job has been deployed once, to the demo project, and `scripts/ingest-cadence.sh` changes the tick); a setting nothing reads would be a control that does nothing
+- an agent pass can be started on demand by an admin (`src/agent/trigger.ts`, #276): the admin API starts the **deployed agent job**
+  itself, the one its schedule starts (`POST /api/agent/run`, `src/agent/agentJob.ts`), behind the same admin check and an audit entry
+  written before the start. The pass runs as the agent's own account with its own switches, caps and leases, so a click is one
+  tick, early; the admin API holds none of the agent's credentials, only the right to start that one job. The Runs page has a
+  "Run agent now" button for admins; it reports that the pass started, not what it did. Built; tested with stubs and the
+  emulator; never run against real Cloud Run
 - a fingerprint ignores what varies per occurrence (ids, paths, timestamps, counts) but not
   what makes a bug distinct (status codes, quoted property names), and treats a function's
   first- and second-generation spellings as one

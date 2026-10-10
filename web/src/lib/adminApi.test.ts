@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { confirmOnCallNumber, retireIncident, runIngestNow, sendOnCallCode, type AdminApiDeps } from "./adminApi";
+import { confirmOnCallNumber, retireIncident, runAgentNow, runIngestNow, sendOnCallCode, type AdminApiDeps } from "./adminApi";
 
 vi.mock("./config", () => ({ webConfig: () => ({ adminApiUrl: "" }) }));
 vi.mock("./firebase", () => ({ firebaseAuth: vi.fn() }));
@@ -52,6 +52,43 @@ describe("runIngestNow", () => {
       throw new TypeError("Failed to fetch");
     }) as unknown as typeof fetch;
     expect(await runIngestNow(deps(f))).toEqual({ ok: false, message: "Could not reach the admin service." });
+  });
+});
+
+describe("runAgentNow (#276)", () => {
+  it("posts to the agent route with the bearer token, and reads only the server's own \"started\" as a start", async () => {
+    const f = reply(202, { ok: true, started: true });
+    expect(await runAgentNow(deps(f))).toEqual({ ok: true, value: null });
+    const [url, init] = (f as unknown as ReturnType<typeof vi.fn>).mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("https://admin.example/api/agent/run");
+    expect(init.method).toBe("POST");
+    expect(init.body).toBeUndefined();
+    expect((init.headers as Record<string, string>).authorization).toBe("Bearer tok");
+
+    expect(await runAgentNow(deps(reply(200, { ok: true })))).toMatchObject({ ok: false });
+    expect(await runAgentNow(deps(reply(200, null)))).toMatchObject({ ok: false });
+  });
+
+  it.each([
+    [401, "expired"],
+    [403, "Only admins"],
+    [404, "no agent job"],
+    [409, "already being started"],
+    [502, "could not be started"],
+    [500, "could not do that"],
+  ])("explains a %i in the route's own words, never the server's detail", async (status, text) => {
+    const r = await runAgentNow(deps(reply(status, { error: "internal detail" })));
+    expect(r.ok).toBe(false);
+    expect(!r.ok && r.message).toContain(text);
+    expect(!r.ok && r.message).not.toContain("internal detail");
+    expect(!r.ok && r.message).not.toContain("incident");
+  });
+
+  it("does not call the network without a token or a configured URL", async () => {
+    const f = reply(202, { started: true });
+    expect(await runAgentNow(deps(f, null))).toMatchObject({ ok: false });
+    expect(await runAgentNow({ ...deps(f), baseUrl: "" })).toMatchObject({ ok: false });
+    expect(f).not.toHaveBeenCalled();
   });
 });
 

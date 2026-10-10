@@ -1,7 +1,8 @@
 /**
- * The admin API (#63, #65): the authenticated door to two things only an admin may do and that the operator UI
- * and the demo's reset script cannot do by writing to the store: run ingest now (`triggerIngest`) and retire an
- * incident (`retireIncident`). This file is the request handling, with nothing of the network or Firebase in it:
+ * The admin API (#63, #65): the authenticated door to the things only an admin may do and that the operator UI
+ * and the demo's reset script cannot do by writing to the store: run ingest now (`triggerIngest`), retire an
+ * incident (`retireIncident`) and, where an agent job is named, start one agent pass (`triggerAgentPass`, #276).
+ * This file is the request handling, with nothing of the network or Firebase in it:
  * `src/adminApiCli.ts` serves it and supplies the token check, so every rule here is testable with stubs.
  *
  * Who may call. The caller sends a Firebase ID token (`Authorization: Bearer ...`); `verifyToken` turns it
@@ -18,6 +19,11 @@
  * returns an error's text from inside (a failed run's message is redacted and cut), reads at most 4 KB of body, and
  * runs one ingest at a time per instance: a second request while one runs is a 409, not a pile-up.
  *
+ * "Run agent now" (#276): `POST /api/agent/run` starts the deployed agent job once and answers 202 when Cloud Run
+ * accepted the start; it never waits for the pass, which reports itself in its cycles. The pass is the scheduled one
+ * (same switches, caps and leases), so this adds no way for Starfish to act that a schedule tick does not have. One
+ * start at a time per instance (a 409 otherwise); a start Cloud Run refuses is a 502. No agent job named: a 404.
+ *
  * Phone escalation (#37): two more admin routes, `POST /api/oncall/people/<id>/send-code` and `.../confirm` (a person's
  * consent to be phoned, src/oncall/optIn.ts), under the same token rules; and Twilio's webhooks, `POST /twilio/*`, which
  * carry no ID token and are handed to src/oncall/webhooks.ts, which refuses anything without a valid Twilio signature.
@@ -30,6 +36,7 @@
 import { redactPii, truncate } from "./ingest/redact.js";
 import type { RetireResult } from "./ingest/retire.js";
 import type { TriggerResult } from "./ingest/trigger.js";
+import type { AgentTriggerResult } from "./agent/trigger.js";
 import type { ConfirmResult, SendCodeResult } from "./oncall/optIn.js";
 import type { TwilioWebhookRequest, TwilioWebhookResponse } from "./oncall/webhooks.js";
 
@@ -83,6 +90,11 @@ export interface AdminApiDeps {
   runIngest(actorUid: string): Promise<TriggerResult>;
   retire(incidentId: string, actorUid: string, reason: string): Promise<RetireResult>;
   /**
+   * Start one agent pass (#276): the admin check, the audit entry, then the job start. Resolves once the start was
+   * accepted; throws when it was not. Absent (no agent job named on this deployment): the route is a 404.
+   */
+  runAgent?(actorUid: string): Promise<AgentTriggerResult>;
+  /**
    * When set, a POST must also carry a Firebase App Check token this accepts (throws for anything else): the call then
    * has to come from the registered web app, not just from someone holding an ID token. Absent: no App Check check (the
    * default; `STARFISH_ADMIN_API_APPCHECK`).
@@ -130,6 +142,7 @@ function corsHeaders(deps: AdminApiDeps, origin: string | undefined): Record<str
 
 export function createAdminApi(deps: AdminApiDeps): (req: ApiRequest) => Promise<ApiResponse> {
   let ingestRunning = false;
+  let agentStarting = false;
 
   return async (req) => {
     const cors = corsHeaders(deps, req.origin);
@@ -156,7 +169,7 @@ export function createAdminApi(deps: AdminApiDeps): (req: ApiRequest) => Promise
 
     const retireMatch = RETIRE_RE.exec(req.path);
     const onCallMatch = ONCALL_RE.exec(req.path);
-    const route = req.path === "/api/ingest/run" ? "ingest" : retireMatch ? "retire" : onCallMatch && (onCallMatch[2] === "send-code" ? deps.sendOnCallCode : deps.confirmOnCallNumber) ? "oncall" : undefined;
+    const route = req.path === "/api/ingest/run" ? "ingest" : req.path === "/api/agent/run" && deps.runAgent ? "agent" : retireMatch ? "retire" : onCallMatch && (onCallMatch[2] === "send-code" ? deps.sendOnCallCode : deps.confirmOnCallNumber) ? "oncall" : undefined;
     if (route === undefined) return reply(404, { error: "not found" });
     if (req.method !== "POST") return reply(405, { error: "method not allowed" });
 
@@ -205,6 +218,22 @@ export function createAdminApi(deps: AdminApiDeps): (req: ApiRequest) => Promise
         return reply(500, { error: "the run failed to start" });
       } finally {
         ingestRunning = false;
+      }
+    }
+
+    if (route === "agent") {
+      if (agentStarting) return reply(409, { error: "an agent pass is already being started here" });
+      agentStarting = true;
+      try {
+        const result = await deps.runAgent!(uid);
+        if (!result.ok) return reply(result.reason === "not-admin" ? 403 : 400, { error: result.reason === "not-admin" ? "admins only" : "bad request" });
+        // Accepted, not done: the pass runs in its own job and records its own cycles.
+        return reply(202, { ok: true, started: true });
+      } catch {
+        // Why Cloud Run refused (a missing role, no such job) stays in the service's log.
+        return reply(502, { error: "the agent job could not be started" });
+      } finally {
+        agentStarting = false;
       }
     }
 

@@ -8,6 +8,7 @@ import { Ctx, type StarfishAuthCtx } from "../auth/authCore";
 const mocks = vi.hoisted(() => ({
   adminApiUrl: "https://admin.example",
   runIngestNow: vi.fn(),
+  runAgentNow: vi.fn(),
   retireIncident: vi.fn(),
   toast: { success: vi.fn(), error: vi.fn() },
   navigate: vi.fn(),
@@ -17,12 +18,13 @@ vi.mock("../lib/firebase", () => ({ firebaseAuth: vi.fn() }));
 vi.mock("../lib/adminApi", () => ({
   appAdminApi: () => ({ baseUrl: "x", getToken: async () => "t" }),
   runIngestNow: mocks.runIngestNow,
+  runAgentNow: mocks.runAgentNow,
   retireIncident: mocks.retireIncident,
 }));
 vi.mock("./ui/toast", () => ({ toast: mocks.toast }));
 vi.mock("react-router", async (orig) => ({ ...(await orig<typeof import("react-router")>()), useNavigate: () => mocks.navigate }));
 
-import { RetireControl, RunIngestButton, describeRun } from "./AdminActions";
+import { RetireControl, RunAgentButton, RunIngestButton, describeRun } from "./AdminActions";
 
 function renderWith(ui: React.ReactNode, roles: StarfishAuthCtx["roles"]) {
   const ctx: StarfishAuthCtx = { user: null, roles, role: roles[0] ?? null, loading: false, signOut: async () => {}, guest: false, enterAsGuest: async () => false };
@@ -79,6 +81,47 @@ describe("RunIngestButton", () => {
     await userEvent.click(screen.getByRole("button", { name: /run ingest now/i }));
     await waitFor(() => expect(mocks.toast.error).toHaveBeenCalledWith("Only admins can do this."));
     expect(mocks.toast.success).not.toHaveBeenCalled();
+  });
+});
+
+describe("RunAgentButton (#276)", () => {
+  it("is absent for operators, guests, and a site with no admin API URL", () => {
+    renderWith(<RunAgentButton />, ["operator"]);
+    renderWith(<RunAgentButton />, []);
+    mocks.adminApiUrl = "";
+    renderWith(<RunAgentButton />, ["admin"]);
+    expect(screen.queryByRole("button", { name: /run agent now/i })).toBeNull();
+  });
+
+  it("says the pass started, never that it finished", async () => {
+    mocks.runAgentNow.mockResolvedValue({ ok: true, value: null });
+    renderWith(<RunAgentButton />, ["admin"]);
+    await userEvent.click(screen.getByRole("button", { name: /run agent now/i }));
+    await waitFor(() => expect(mocks.toast.success).toHaveBeenCalledTimes(1));
+    const said = String(mocks.toast.success.mock.calls[0]![0]);
+    expect(said).toContain("Agent pass started");
+    expect(said).not.toMatch(/finished|done|complete/i);
+    expect(mocks.runAgentNow).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows the refusal and nothing else when the start fails", async () => {
+    mocks.runAgentNow.mockResolvedValue({ ok: false, message: "The agent job could not be started. Check the admin service's logs." });
+    renderWith(<RunAgentButton />, ["admin"]);
+    await userEvent.click(screen.getByRole("button", { name: /run agent now/i }));
+    await waitFor(() => expect(mocks.toast.error).toHaveBeenCalledWith("The agent job could not be started. Check the admin service's logs."));
+    expect(mocks.toast.success).not.toHaveBeenCalled();
+  });
+
+  it("cannot be clicked twice while a start is in flight", async () => {
+    let release: (v: unknown) => void = () => {};
+    mocks.runAgentNow.mockReturnValue(new Promise((r) => (release = r)));
+    renderWith(<RunAgentButton />, ["admin"]);
+    const button = screen.getByRole("button", { name: /run agent now/i });
+    await userEvent.click(button);
+    expect(screen.getByRole("button", { name: /starting/i })).toHaveProperty("disabled", true);
+    release({ ok: true, value: null });
+    await waitFor(() => expect(screen.getByRole("button", { name: /run agent now/i })).toHaveProperty("disabled", false));
+    expect(mocks.runAgentNow).toHaveBeenCalledTimes(1);
   });
 });
 

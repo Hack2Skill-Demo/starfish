@@ -247,7 +247,11 @@ src/
                    to the patch hash the gate tested. Run by `pnpm agent` (deployed; not yet reached on a real incident)
   agent/verifyGate.ts  stage 3: apply a patch in a scratch copy, judge the tree that results, run the
                    configured command with a scrubbed env. Not a sandbox; run by `pnpm agent` (deployed; not yet reached on a real incident)
-  adminApi.ts      the admin API's rules (#63, #65): a Firebase ID token -> uid, admin from the operator record on every call, `POST /api/ingest/run`
+  agent/trigger.ts  an admin's "Run agent now" (#276): the admin check, an audit entry BEFORE the start, then `agent/agentJob.ts`
+                   starts the DEPLOYED agent job once (Cloud Run `jobs.run`, no override): the pass a tick runs, same switches,
+                   caps and leases, under the agent's own account. Stubs + emulator tested, never run against real Cloud Run
+  adminApi.ts      the admin API's rules (#63, #65): a Firebase ID token -> uid, admin from the operator record on every call, `POST /api/ingest/run`,
+                   `POST /api/agent/run` (#276: 202 once the start is accepted, a 404 where `STARFISH_AGENT_JOB` is unset; never run)
                    and `POST /api/incidents/<id>/retire` (with Twilio, the on-call opt-in `send-code`/`confirm`, every admin's attempt audited
                    without the number or the code, #172), one 401, bounded body, CORS allowlist, one ingest at a time. `adminApiServer.ts` is its HTTP
                    shell, `adminApiCli.ts` the Cloud Run service (`DEPLOY_ADMIN_API=1`): deployed once to the demo project (2026-10-07), "Run ingest now" run from the UI; Retire and the Twilio routes not yet tried
@@ -363,7 +367,7 @@ React 19, Vite, Tailwind 4, react-router, TanStack Query; Starfish's own theme i
   (`STARFISH_DATABASE_ID` / `VITE_STARFISH_DATABASE_ID`), which `firebase.json` targets for
   rules and indexes. Never deploy `firestore.rules` to the watched app's database: a rules
   file governs a whole database and would replace the app's own rules.
-- **Admin controls:** an admin sees "Run ingest now" (Incidents) and "Retire" (an incident) when the build has `VITE_STARFISH_ADMIN_API_URL`; they call the admin API with the ID token (`web/src/lib/adminApi.ts`, `components/AdminActions.tsx`). Hiding them is not the gate: the API re-checks the role. Built and unit-tested; "Run ingest now" has run once against the deployed service (2026-10-07), Retire has not.
+- **Admin controls:** an admin sees "Run ingest now" (Incidents), "Run agent now" (Runs, #276: it reports that the pass started, never what it did) and "Retire" (an incident) when the build has `VITE_STARFISH_ADMIN_API_URL`; they call the admin API with the ID token (`web/src/lib/adminApi.ts`, `components/AdminActions.tsx`). Hiding them is not the gate: the API re-checks the role. Built and unit-tested; "Run ingest now" has run once against the deployed service (2026-10-07), Retire and "Run agent now" have not.
 - **Engine status:** Overview, Incidents and Runs show a line from `{runCollection}/last_run` (`web/src/lib/engineStatus.ts`):
   failed, stopped (older than `VITE_STARFISH_STALE_MINUTES`), capped, or never recorded. Read errors say nothing. When the
   job knows its schedule (`STARFISH_INGEST_SCHEDULE`, set by the deploy and cadence scripts) it records the interval, and the

@@ -1,18 +1,18 @@
 /**
- * The admin-only controls over the admin API (#63, #65): "Run ingest now" on the Incidents page and "Retire"
- * on an incident. They render only for an admin and only when the site was built with an admin API URL; the
+ * The admin-only controls over the admin API (#63, #65): "Run ingest now" on the Incidents page, "Run agent now" on
+ * the Runs page (#276) and "Retire" on an incident. They render only for an admin and only when the site was built with an admin API URL; the
  * server checks the role again on every call, so these are a convenience and never the gate. An outcome is
  * reported as the engine reported it: a run that failed says so, and nothing is called done early.
  */
 import { useState } from "react";
 import { useNavigate } from "react-router";
 import { useQueryClient } from "@tanstack/react-query";
-import { Play, Archive } from "lucide-react";
+import { Play, Archive, Workflow } from "lucide-react";
 import { Button } from "./ui/Button";
 import { toast } from "./ui/toast";
 import { useAuth } from "../auth/authCore";
 import { webConfig } from "../lib/config";
-import { appAdminApi, retireIncident, runIngestNow, type AdminApiDeps, type IngestSummary } from "../lib/adminApi";
+import { appAdminApi, retireIncident, runAgentNow, runIngestNow, type AdminApiDeps, type IngestSummary } from "../lib/adminApi";
 
 /** True when this viewer should see the admin controls. */
 export function useAdminControls(): boolean {
@@ -53,6 +53,40 @@ export function RunIngestButton({ api = appAdminApi, onDone }: { api?: () => Adm
   return (
     <Button variant="secondary" size="sm" onClick={click} disabled={busy} aria-busy={busy}>
       <Play className="h-4 w-4" aria-hidden /> {busy ? "Running…" : "Run ingest now"}
+    </Button>
+  );
+}
+
+/**
+ * Starts one agent pass (#276): the pass the schedule runs, started now, with the same switches and caps. The answer is
+ * only that it started; the Runs page shows what it does as the engine records it, so nothing here is refreshed.
+ */
+export function RunAgentButton({ api = appAdminApi }: { api?: () => AdminApiDeps }) {
+  const show = useAdminControls();
+  const [busy, setBusy] = useState(false);
+  if (!show) return null;
+
+  const click = async () => {
+    setBusy(true);
+    const r = await runAgentNow(api());
+    setBusy(false);
+    if (!r.ok) {
+      toast.error(r.message);
+      return;
+    }
+    toast.success("Agent pass started. It runs in its own job and takes a few minutes; its runs appear here as it records them.");
+  };
+
+  return (
+    <Button
+      variant="secondary"
+      size="sm"
+      onClick={click}
+      disabled={busy}
+      aria-busy={busy}
+      title="Starts the pass the schedule runs, now: same switches, same caps"
+    >
+      <Workflow className="h-4 w-4" aria-hidden /> {busy ? "Starting…" : "Run agent now"}
     </Button>
   );
 }

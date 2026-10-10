@@ -99,7 +99,8 @@ describe("scripts/preflight-gcp.sh", () => {
     const unknown = run({ STUB_BILLING: "" });
     expect(unknown.status).toBe(0);
     expect(unknown.out).toContain("warn  could not read billing");
-  });
+    // Two runs of the script: about 3 s alone, and past vitest's 5 s when the whole suite runs beside it on a busy machine.
+  }, 20_000);
 
   it("names the permissions it did not see, as a warning and not a verdict", () => {
     const r = run({ STUB_GRANTED: ["run.jobs.create", "iam.serviceAccounts.create"] });
