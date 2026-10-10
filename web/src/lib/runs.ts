@@ -18,28 +18,33 @@ import { dataSource } from "./dataSource";
 import { parseCycle, parseEvent, type CycleRow, type EventRow } from "./runsModel";
 import { latestActivity, parseActivity, parsePublicActivity, type ActivityRow } from "./overviewModel";
 
-/** Cycles read for the list. The page says so when it hits this. */
+/** Cycles read for the list at first, and how many more each "Show older runs" adds. The page says so when it hits this. */
 export const CYCLE_LIMIT = 50;
+/** The most the list ever reads: "Show older runs" grows the read, so it has a ceiling too. */
+export const CYCLE_LIMIT_MAX = 500;
 /** Events read for one cycle: a cycle is a handful of stages, so this is a ceiling, not a window. */
 export const EVENT_LIMIT = 200;
 
+/** The newest `max` cycles (bounded by CYCLE_LIMIT_MAX), live; `capped` when there may be older ones. */
 export function subscribeCycles(
   environment: string,
   onData: (rows: CycleRow[], capped: boolean) => void,
-  onError: (err: Error) => void
+  onError: (err: Error) => void,
+  max: number = CYCLE_LIMIT
 ): Unsubscribe {
+  const n = Math.min(Math.max(1, Math.floor(Number.isFinite(max) ? max : CYCLE_LIMIT)), CYCLE_LIMIT_MAX);
   const q = query(
     collection(firestore(), dataSource().cycles),
     where("environment", "==", environment),
     orderBy("updatedAt", "desc"),
-    limit(CYCLE_LIMIT)
+    limit(n)
   );
   return onSnapshot(
     q,
     (snap) => {
       // A document that doesn't parse is left out rather than shown half-understood.
       const rows = snap.docs.flatMap((d) => parseCycle(d.id, d.data()) ?? []);
-      onData(rows, snap.size >= CYCLE_LIMIT);
+      onData(rows, snap.size >= n);
     },
     onError
   );

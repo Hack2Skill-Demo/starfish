@@ -16,6 +16,7 @@ const mocks = vi.hoisted(() => ({
   unsubCycles: vi.fn(),
   unsubEvents: vi.fn(),
   subscribedEvents: [] as string[],
+  cycleLimits: [] as number[],
   readCycle: vi.fn(),
   getIncident: vi.fn(),
 }));
@@ -25,7 +26,8 @@ vi.mock("../lib/incidents", () => ({ getIncident: mocks.getIncident }));
 vi.mock("../components/EngineStatus", () => ({ EngineStatus: ({ environment }: { environment: string }) => <div data-testid="engine">{environment}</div> }));
 vi.mock("../lib/runs", async (orig) => ({
   ...(await orig<typeof import("../lib/runs")>()),
-  subscribeCycles: (_env: string, ok: CyclesCb, err: (e: Error) => void) => {
+  subscribeCycles: (_env: string, ok: CyclesCb, err: (e: Error) => void, max: number) => {
+    mocks.cycleLimits.push(max);
     mocks.cyclesCb = ok as never;
     mocks.cyclesErr = err;
     return mocks.unsubCycles;
@@ -76,6 +78,7 @@ describe("Runs page", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.subscribedEvents.length = 0;
+    mocks.cycleLimits.length = 0;
     mocks.cyclesCb = mocks.cyclesErr = mocks.eventsCb = undefined;
     mocks.env = { environment: "demo", ready: true, settingsUnavailable: false };
     mocks.getIncident.mockResolvedValue(null);
@@ -320,5 +323,72 @@ describe("Runs page", () => {
     renderRuns();
     act(() => mocks.cyclesCb!([cycle("inc-a_r0")], true));
     expect(screen.getByText(/most recently updated runs/)).toBeInTheDocument();
+  });
+
+  it("reads older runs on request, says it is loading until they arrive, and keeps the runs already shown", async () => {
+    renderRuns();
+    act(() => mocks.cyclesCb!([cycle("inc-a_r0")], true));
+    expect(mocks.cycleLimits).toEqual([50]);
+    expect(screen.getByText("Showing the 50 most recently updated runs.")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "Show older runs" }));
+    expect(mocks.cycleLimits).toEqual([50, 100]);
+    expect(screen.getByRole("button", { name: "Loading older runs…" })).toBeDisabled();
+    expect(screen.getByRole("heading", { name: "inc-a" })).toBeInTheDocument();
+
+    act(() => mocks.cyclesCb!([cycle("inc-a_r0"), cycle("old_r0", { updatedAt: ts(now - 3 * 86_400_000) })], false));
+    expect(screen.queryByRole("button", { name: /older runs/ })).toBeNull();
+    expect(within(screen.getByRole("region", { name: "Runs" })).getByText("old")).toBeInTheDocument();
+  });
+
+  it("stops offering older runs at the ceiling, and says older ones are not listed", async () => {
+    renderRuns();
+    for (let n = 50; n < 500; n += 50) {
+      act(() => mocks.cyclesCb!([cycle("inc-a_r0")], true));
+      await userEvent.click(screen.getByRole("button", { name: "Show older runs" }));
+    }
+    act(() => mocks.cyclesCb!([cycle("inc-a_r0")], true));
+    expect(mocks.cycleLimits.at(-1)).toBe(500);
+    expect(screen.queryByRole("button", { name: /older runs/ })).toBeNull();
+    expect(screen.getByText("Showing the 500 most recently updated runs; older ones are not listed.")).toBeInTheDocument();
+  });
+
+  it("puts the runs under a heading per day", () => {
+    renderRuns();
+    act(() => mocks.cyclesCb!([cycle("inc-a_r0"), cycle("old_r0", { updatedAt: ts(now - 3 * 86_400_000) })], false));
+    const list = screen.getByRole("region", { name: "Runs" });
+    const days = within(list).getAllByRole("heading", { level: 3 }).map((h) => h.textContent);
+    expect(days[0]).toBe("Today");
+    expect(days).toHaveLength(2);
+  });
+
+  it("times the step a worker is on, from when the step before ended, and only that step", () => {
+    renderRuns();
+    act(() => mocks.cyclesCb!([cycle("inc-a_r0")], false));
+    act(() => mocks.eventsCb!([event(1, "triage", "decision", "Act", 30_000)]));
+    const steps = screen.getByRole("list", { name: "Steps" });
+    const fix = steps.querySelector('[data-step="fix"]')!;
+    expect(fix.getAttribute("data-status")).toBe("running");
+    expect(fix).toHaveTextContent(/Running · 0:3\d/);
+    expect(steps.querySelectorAll('[data-status="running"]')).toHaveLength(1);
+    expect(screen.getByText(/^Running for/)).toBeInTheDocument();
+  });
+
+  it("animates nothing on a run no worker holds", () => {
+    renderRuns();
+    act(() => mocks.cyclesCb!([cycle("inc-a_r0", { leaseExpiresAt: ts(now - 1000) })], false));
+    act(() => mocks.eventsCb!([event(1, "triage", "decision", "Act", 30_000)]));
+    const steps = screen.getByRole("list", { name: "Steps" });
+    expect(steps.querySelectorAll('[data-status="running"]')).toHaveLength(0);
+    expect(screen.queryByText(/^Running for/)).toBeNull();
+  });
+
+  it("shows a step recorded beside the loop's own apart from the track", () => {
+    renderRuns();
+    act(() => mocks.cyclesCb!([cycle("inc-a_r0", { state: "waiting-human", leaseExpiresAt: null, path: "human" })], false));
+    act(() => mocks.eventsCb!([event(1, "triage", "decision", "Act", 50_000), event(2, "fix", "declined", "No fix", 20_000), event(3, "notify", "sent", "Told the on-call", 10_000)]));
+    expect(screen.getByRole("list", { name: "Steps" }).querySelector('[data-step="notify"]')).toBeNull();
+    expect(within(screen.getByRole("list", { name: "Also recorded" })).getByText("Tell a person: sent")).toBeInTheDocument();
+    expect(screen.getByText("3 of 6 steps recorded")).toBeInTheDocument();
   });
 });

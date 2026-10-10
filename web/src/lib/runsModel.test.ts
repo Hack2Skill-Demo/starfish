@@ -3,7 +3,9 @@ import {
   ago,
   buildWaterfall,
   prStateView,
+  formatClock,
   formatDuration,
+  groupByDay,
   indexRuntimeView,
   isHealedRun,
   parseCycle,
@@ -321,5 +323,48 @@ describe("isHealedRun and runFilter (#38)", () => {
     expect(f("state=running")?.test(cycle({ state: "done" }))).toBe(false);
     expect(f("path=pr")?.label).toBe("Pull request opened");
     for (const q of ["", "heal=yes", "state=done", "path=bogus", "path=toString", "state=__proto__"]) expect(f(q), q).toBeNull();
+  });
+});
+
+describe("the live track", () => {
+  it("dates a running step from the end of the step before, and only a running one", () => {
+    const live = buildWaterfall(cycle(), [ev("triage", "decision", 16_000)], T0 + 30_000);
+    expect(live.steps[1]).toMatchObject({ stage: "fix", status: "running", since: new Date(T0 + 16_000) });
+    expect(live.steps.filter((s) => s.since !== undefined)).toHaveLength(1);
+    const first = buildWaterfall(cycle(), [], T0 + 5_000);
+    expect(first.steps[0]).toMatchObject({ stage: "triage", status: "running", since: new Date(T0) });
+  });
+
+  it("formats a running timer", () => {
+    expect(formatClock(7_400)).toBe("0:07");
+    expect(formatClock(65_000)).toBe("1:05");
+    expect(formatClock(3_729_000)).toBe("1:02:09");
+    expect(formatClock(-5)).toBe("0:00");
+    expect(formatClock(Number.NaN)).toBe("0:00");
+  });
+
+  it("marks a step recorded beside the run's own path, and none of the path's", () => {
+    const w = buildWaterfall(cycle({ state: "waiting-human", leaseExpiresAt: null }), [ev("triage", "decision", 1000), ev("notify", "sent", 2000)], T0 + 5000);
+    expect(w.steps.filter((s) => s.side).map((s) => s.stage)).toEqual(["notify"]);
+    // On the missing-index path, a triage event is beside the path, not on its track.
+    const index = buildWaterfall(cycle({ path: "index", state: "done", leaseExpiresAt: null }), [ev("triage", "decision", 1000), ev("index", "ready", 2000)], T0 + 5000);
+    expect(index.steps.filter((s) => !s.side).map((s) => s.stage)).toEqual(["index", "pr"]);
+    expect(index.steps.filter((s) => s.side).map((s) => s.stage)).toEqual(["triage"]);
+  });
+
+  it("groups runs by the local day they were last updated, keeping their order", () => {
+    const now = new Date(2026, 9, 10, 15, 0).getTime();
+    const at = (y: number, m: number, d: number, h = 9) => cycle({ updatedAt: new Date(y, m, d, h) });
+    const a = { ...at(2026, 9, 10, 14), id: "a" };
+    const b = { ...at(2026, 9, 10, 1), id: "b" };
+    const c = { ...at(2026, 9, 9), id: "c" };
+    const d = { ...at(2026, 9, 8), id: "d" };
+    const e = { ...at(2025, 11, 31), id: "e" };
+    const days = groupByDay([a, b, c, d, e], now);
+    expect(days.map((x) => x.cycles.map((r) => r.id))).toEqual([["a", "b"], ["c"], ["d"], ["e"]]);
+    expect(days[0]!.label).toBe("Today");
+    expect(days[1]!.label).toBe("Yesterday");
+    expect(days[2]!.label).not.toMatch(/2026/);
+    expect(days[3]!.label).toMatch(/2025/);
   });
 });

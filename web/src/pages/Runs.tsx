@@ -1,8 +1,8 @@
 /**
- * Runs — the agent's cycles as they happen: a list of runs, and for the one selected a waterfall of
- * its stages. Both are live subscriptions to what the engine writes (src/agent/cycle.ts); nothing
+ * Runs — the agent's cycles as they happen: a list of runs by day, and for the one selected its stages as a track, a
+ * time bar and a log. Both are live subscriptions to what the engine writes (src/agent/cycle.ts); nothing
  * here is inferred. A step with no event is "not reached", a cycle with no worker on it is not "in
- * progress", and nothing is drawn for a stage the loop has no code for (merge, deploy, recovery).
+ * progress" (and nothing on it animates), and nothing is drawn for a stage the loop has no code for (merge, deploy, recovery).
  *
  * Where the agent job (`DEPLOY_AGENT=1`, #74) has not run, this page is empty until it does; it says so instead of looking
  * like a quiet day. On the demo project it runs hourly since 2026-10-07 (in dry run until 2026-10-10).
@@ -10,7 +10,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useQueries } from "@tanstack/react-query";
 import { Link, useSearchParams } from "react-router";
-import { Check, CircleDashed, ExternalLink, Loader2, Workflow } from "lucide-react";
+import { Check, ExternalLink, Workflow } from "lucide-react";
 import PageMeta from "../components/PageMeta";
 import SettingsUnavailableNotice from "../components/SettingsUnavailableNotice";
 import { EngineStatus } from "../components/EngineStatus";
@@ -19,14 +19,16 @@ import { SyntheticBadge } from "../components/SyntheticBadge";
 import { EmptyState } from "../components/ui/EmptyState";
 import { formatDateTime, formatRelativeTime } from "../lib/formatters";
 import { useEnvironment } from "../lib/useSettings";
-import { useNow } from "../lib/useNow";
+import { TICK_MS, useNow } from "../lib/useNow";
 import { getIncident, type IncidentRow } from "../lib/incidents";
-import { CYCLE_LIMIT, readCycle, subscribeCycles, subscribeEvents } from "../lib/runs";
+import { CYCLE_LIMIT, CYCLE_LIMIT_MAX, readCycle, subscribeCycles, subscribeEvents } from "../lib/runs";
 import {
   PATH_LABELS,
   indexRuntimeView,
   buildWaterfall,
+  formatClock,
   formatDuration,
+  groupByDay,
   prStateView,
   progressText,
   runFilter,
@@ -36,7 +38,10 @@ import {
   triageRule,
   type CycleRow,
   type EventRow,
+  type RunStatus,
   type Step,
+  type StepStatus,
+  type Waterfall,
 } from "../lib/runsModel";
 
 
@@ -47,21 +52,34 @@ export default function Runs() {
   const [cycles, setCycles] = useState<CycleRow[] | null>(null);
   const [capped, setCapped] = useState(false);
   const [failed, setFailed] = useState(false);
+  // How many runs the list reads: "Show older runs" adds CYCLE_LIMIT, up to CYCLE_LIMIT_MAX; `shown` is what the last
+  // snapshot answered, so the button can say it is loading. Another environment starts again from the first page.
+  const [pageLimit, setPageLimit] = useState(CYCLE_LIMIT);
+  const [shown, setShown] = useState(CYCLE_LIMIT);
+  const [listEnv, setListEnv] = useState(environment);
+  if (listEnv !== environment) {
+    setListEnv(environment);
+    setPageLimit(CYCLE_LIMIT);
+    setShown(CYCLE_LIMIT);
+    setCycles(null);
+  }
 
   useEffect(() => {
     if (!ready) return;
-    setCycles(null);
     setFailed(false);
+    // A bigger page re-subscribes; the rows already shown stay until the new snapshot replaces them.
     return subscribeCycles(
       environment,
       (rows, isCapped) => {
         setCycles(rows);
         setCapped(isCapped);
+        setShown(pageLimit);
         setFailed(false);
       },
-      () => setFailed(true)
+      () => setFailed(true),
+      pageLimit
     );
-  }, [environment, ready]);
+  }, [environment, ready, pageLimit]);
 
   // `?path=`, `?state=` or `?heal=` narrows the list (the Overview links here). An unknown value filters nothing.
   const filter = runFilter(params);
@@ -160,8 +178,18 @@ export default function Runs() {
           {visible && visible.length === 0 ? (
             <p className="text-sm text-gray-600 dark:text-gray-400">No recorded run matches this filter.</p>
           ) : (
-            <div className="grid gap-4 lg:grid-cols-[20rem_1fr]">
-              <RunList cycles={visible ?? []} incidents={incidents} capped={capped} selectedId={selected?.id ?? null} now={now} onSelect={select} />
+            <div className="grid grid-cols-[minmax(0,1fr)] gap-4 lg:grid-cols-[20rem_minmax(0,1fr)]">
+              <RunList
+                cycles={visible ?? []}
+                incidents={incidents}
+                capped={capped}
+                shown={shown}
+                loadingOlder={pageLimit > shown}
+                onShowOlder={pageLimit < CYCLE_LIMIT_MAX ? () => setPageLimit((n) => Math.min(n + CYCLE_LIMIT, CYCLE_LIMIT_MAX)) : undefined}
+                selectedId={selected?.id ?? null}
+                now={now}
+                onSelect={select}
+              />
               {selected ? (
                 <RunDetail cycle={selected} incident={incidents.get(selected.incidentId)} environment={environment} now={now} />
               ) : (
@@ -194,10 +222,28 @@ function LinkedRunMissing({ answer }: { answer: CycleRow | null | "failed" | und
   );
 }
 
+/** A run's state, with a pulsing dot while a worker holds it (still, for anyone who asked for reduced motion). */
+function StatusBadge({ status }: { status: RunStatus }) {
+  return (
+    <Badge tone={status.tone}>
+      {status.live && (
+        <span className="relative mr-1.5 flex h-2 w-2" aria-hidden>
+          <span className="absolute inline-flex h-full w-full rounded-full bg-current opacity-60 motion-safe:animate-ping" />
+          <span className="relative inline-flex h-2 w-2 rounded-full bg-current" />
+        </span>
+      )}
+      {status.label}
+    </Badge>
+  );
+}
+
 function RunList({
   cycles,
   incidents,
   capped,
+  shown,
+  loadingOlder,
+  onShowOlder,
   selectedId,
   now,
   onSelect,
@@ -205,57 +251,82 @@ function RunList({
   cycles: CycleRow[];
   incidents: ReadonlyMap<string, IncidentRow>;
   capped: boolean;
+  /** How many runs the list read. */
+  shown: number;
+  loadingOlder: boolean;
+  /** Absent once the list reads as many as it ever will (CYCLE_LIMIT_MAX). */
+  onShowOlder?: () => void;
   selectedId: string | null;
   now: number;
   onSelect: (id: string) => void;
 }) {
+  const days = groupByDay(cycles, now);
   return (
-    <section aria-label="Runs" className="space-y-2">
-      <ul className="space-y-2">
-        {cycles.map((c) => {
-          const status = runStatus(c, now);
-          const current = c.id === selectedId;
-          const incident = incidents.get(c.incidentId);
-          return (
-            <li key={c.id}>
-              <button
-                type="button"
-                aria-current={current ? "true" : undefined}
-                onClick={() => onSelect(c.id)}
-                className={`w-full rounded-lg border p-3 text-left ${
-                  current
-                    ? "border-brand-500 bg-brand-50 dark:border-brand-400 dark:bg-brand-500/10"
-                    : "border-gray-200 bg-white hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-800 dark:hover:bg-gray-700"
-                }`}
-              >
-                <div className="flex items-center justify-between gap-2">
-                  <span className={`min-w-0 truncate text-sm font-medium text-gray-900 dark:text-gray-100 ${incident ? "" : "font-mono text-xs"}`} title={incident?.functionName ?? c.incidentId}>
-                    {incident?.functionName ?? c.incidentId}
-                  </span>
-                  <span className="flex shrink-0 items-center gap-1">
-                    {c.synthetic && <SyntheticBadge />}
-                    <Badge tone={status.tone}>{status.label}</Badge>
-                  </span>
-                </div>
-                {incident && (
-                  <p className="mt-1 truncate text-xs text-gray-600 dark:text-gray-400" title={`${incident.errorType}: ${incident.errorMessage}`}>
-                    {incident.errorType}{incident.errorMessage ? `: ${incident.errorMessage}` : ""}
-                  </p>
-                )}
-                <div className="mt-1 flex flex-wrap gap-x-3 text-xs text-gray-600 dark:text-gray-400">
-                  {c.recurrence > 0 && <span>recurrence {c.recurrence}</span>}
-                  {status.live && <span>live</span>}
-                  <span>{formatRelativeTime(c.updatedAt)}</span>
-                </div>
-              </button>
-            </li>
-          );
-        })}
-      </ul>
+    <section aria-label="Runs" className="space-y-4">
+      {days.map((day) => (
+        <div key={day.key} className="space-y-2">
+          <h3 className="flex items-center gap-2 px-1 text-xs font-semibold uppercase tracking-wide text-gray-600 dark:text-gray-400">
+            {day.label}
+            <span className="h-px flex-1 bg-gray-200 dark:bg-gray-700" aria-hidden />
+          </h3>
+          <ul className="space-y-2">
+            {day.cycles.map((c) => {
+              const status = runStatus(c, now);
+              const current = c.id === selectedId;
+              const incident = incidents.get(c.incidentId);
+              return (
+                <li key={c.id}>
+                  <button
+                    type="button"
+                    aria-current={current ? "true" : undefined}
+                    onClick={() => onSelect(c.id)}
+                    className={`w-full rounded-lg border p-3 text-left ${
+                      current
+                        ? "border-brand-500 bg-brand-50 dark:border-brand-400 dark:bg-brand-500/10"
+                        : "border-gray-200 bg-white hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-800 dark:hover:bg-gray-700"
+                    }`}
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className={`min-w-0 truncate text-sm font-medium text-gray-900 dark:text-gray-100 ${incident ? "" : "font-mono text-xs"}`} title={incident?.functionName ?? c.incidentId}>
+                        {incident?.functionName ?? c.incidentId}
+                      </span>
+                      <span className="flex shrink-0 items-center gap-1">
+                        {c.synthetic && <SyntheticBadge />}
+                        <StatusBadge status={status} />
+                      </span>
+                    </div>
+                    {incident && (
+                      <p className="mt-1 truncate text-xs text-gray-600 dark:text-gray-400" title={`${incident.errorType}: ${incident.errorMessage}`}>
+                        {incident.errorType}{incident.errorMessage ? `: ${incident.errorMessage}` : ""}
+                      </p>
+                    )}
+                    <div className="mt-1 flex flex-wrap gap-x-3 text-xs text-gray-600 dark:text-gray-400">
+                      {c.recurrence > 0 && <span>recurrence {c.recurrence}</span>}
+                      <span>{formatRelativeTime(c.updatedAt)}</span>
+                    </div>
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      ))}
       {capped && (
-        <p className="text-xs text-gray-600 dark:text-gray-400">
-          Showing the {CYCLE_LIMIT} most recently updated runs; older ones are not listed.
-        </p>
+        <div className="space-y-2">
+          <p className="px-1 text-xs text-gray-600 dark:text-gray-400">
+            Showing the {shown} most recently updated runs{onShowOlder ? "." : "; older ones are not listed."}
+          </p>
+          {onShowOlder && (
+            <button
+              type="button"
+              onClick={onShowOlder}
+              disabled={loadingOlder}
+              className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2.5 text-sm font-medium text-gray-900 hover:bg-gray-50 disabled:cursor-wait disabled:opacity-70 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100 dark:hover:bg-gray-700"
+            >
+              {loadingOlder ? "Loading older runs…" : "Show older runs"}
+            </button>
+          )}
+        </div>
       )}
     </section>
   );
@@ -272,12 +343,15 @@ function RunDetail({ cycle, incident, environment, now }: { cycle: CycleRow; inc
   }, [cycle.id, environment]);
 
   const status = runStatus(cycle, now);
+  // While a worker holds the run, its timer and time bar move every second; otherwise the page's own tick is enough.
+  const tick = useNow(status.live ? 1000 : TICK_MS);
+  const clock = Math.max(now, tick);
   const rule = triageRule(cycle);
   const decision = triageDecision(cycle);
   const prUrl = safeUrl(cycle.summary.pr?.url);
   const prNow = prStateView(cycle, now);
   const indexNow = indexRuntimeView(cycle);
-  const water = useMemo(() => (events ? buildWaterfall(cycle, events, now) : null), [cycle, events, now]);
+  const water = useMemo(() => (events ? buildWaterfall(cycle, events, clock) : null), [cycle, events, clock]);
 
   return (
     <section aria-label="Run detail" className="space-y-4 rounded-lg border border-gray-200 bg-white p-4 dark:border-gray-700 dark:bg-gray-800">
@@ -286,7 +360,7 @@ function RunDetail({ cycle, incident, environment, now }: { cycle: CycleRow; inc
           <h2 className={`min-w-0 break-words text-sm font-semibold text-gray-900 dark:text-white ${incident ? "" : "font-mono"}`}>
             {incident?.functionName ?? cycle.incidentId}
           </h2>
-          <Badge tone={status.tone}>{status.label}</Badge>
+          <StatusBadge status={status} />
           {cycle.synthetic && <SyntheticBadge />}
         </div>
         {cycle.trimmed && (
@@ -391,11 +465,10 @@ function RunDetail({ cycle, incident, environment, now }: { cycle: CycleRow; inc
         <p className="text-sm text-gray-600 dark:text-gray-400">Loading steps…</p>
       ) : (
         <>
-          <ol aria-label="Steps" className="space-y-2">
-            {water.steps.map((step) => (
-              <StepRow key={step.stage} step={step} href={step.stage === "pr" ? prUrl : undefined} />
-            ))}
-          </ol>
+          <StepTrack steps={water.steps.filter((s) => !s.side)} clock={clock} />
+          <SideSteps steps={water.steps.filter((s) => s.side)} />
+          <TimeBar water={water} live={status.live} clock={clock} />
+          <StepLog steps={water.steps.filter((s) => s.status === "done")} prUrl={prUrl} />
           {water.notes.length > 0 && (
             <div>
               <h3 className="text-sm font-medium text-gray-900 dark:text-white">Cycle notes</h3>
@@ -414,43 +487,163 @@ function RunDetail({ cycle, incident, environment, now }: { cycle: CycleRow; inc
   );
 }
 
-const STEP_LABEL = { done: "Done", running: "Running", "not-reached": "Not reached" } as const;
+/** The line under a step on the track: what it ended in and how long it took, or how long it has been running. */
+function stepLine(step: Step, clock: number): string {
+  if (step.status === "running") return step.since ? `Running · ${formatClock(clock - step.since.getTime())}` : "Running";
+  if (step.status === "not-reached") return "Not reached";
+  return `Done${step.outcome ? `: ${step.outcome}` : ""}${step.durationMs !== undefined ? ` · ${formatDuration(step.durationMs)}` : ""}`;
+}
 
-function StepRow({ step, href }: { step: Step; href?: string }) {
-  const Icon = step.status === "done" ? Check : step.status === "running" ? Loader2 : CircleDashed;
+function StepNode({ status }: { status: StepStatus }) {
+  if (status === "done") {
+    return (
+      <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-brand-700 text-white dark:bg-brand-400 dark:text-gray-950">
+        <Check className="h-4 w-4" strokeWidth={3} aria-hidden />
+      </span>
+    );
+  }
+  if (status === "running") {
+    return (
+      <span className="relative flex h-7 w-7 shrink-0 items-center justify-center">
+        <span className="absolute inset-0 rounded-full border-2 border-info-200 border-t-info-700 motion-safe:animate-spin dark:border-info-900 dark:border-t-info-400" />
+        <span className="h-2 w-2 rounded-full bg-info-700 dark:bg-info-400" />
+      </span>
+    );
+  }
+  return <span className="h-7 w-7 shrink-0 rounded-full border-2 border-dashed border-gray-300 dark:border-gray-600" />;
+}
+
+/** The line into a step: solid once it happened, pulsing while it runs, dashed while it is not reached. */
+const RAIL: Record<StepStatus, string> = {
+  done: "h-0.5 bg-brand-600 dark:bg-brand-400",
+  running: "h-0.5 bg-info-500 motion-safe:animate-pulse dark:bg-info-400",
+  "not-reached": "border-t-2 border-dashed border-gray-300 dark:border-gray-600",
+};
+
+/** The loop's stages in order. Only a step a worker is on right now spins; a step with no event is "not reached". */
+function StepTrack({ steps, clock }: { steps: Step[]; clock: number }) {
   return (
-    <li className="rounded-lg border border-gray-200 p-3 dark:border-gray-700" data-step={step.stage} data-status={step.status}>
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-        <Icon
-          className={`h-4 w-4 ${step.status === "running" ? "animate-spin text-info-800 dark:text-info-400" : step.status === "done" ? "text-success-700 dark:text-success-400" : "text-gray-500 dark:text-gray-400"}`}
-          aria-hidden
-        />
-        <span className="font-medium text-gray-900 dark:text-white">{step.title}</span>
-        <span className="text-xs text-gray-600 dark:text-gray-400">
-          {STEP_LABEL[step.status]}
-          {step.outcome ? `: ${step.outcome}` : ""}
-        </span>
-        {step.at && (
-          <span className="ml-auto text-xs text-gray-600 dark:text-gray-400">
-            {formatDateTime(step.at)}
-            {step.durationMs !== undefined ? ` · ${formatDuration(step.durationMs)} since the step before` : ""}
-          </span>
+    <div className="overflow-x-auto pb-1">
+      <ol aria-label="Steps" className="flex min-w-[34rem]">
+        {steps.map((step, i) => {
+          const next = steps[i + 1];
+          return (
+            <li key={step.stage} data-step={step.stage} data-status={step.status} className="flex min-w-0 flex-1 flex-col gap-1">
+              <div className="mb-1.5 flex items-center" aria-hidden>
+                <StepNode status={step.status} />
+                {next && <span className={`mx-2 flex-1 rounded ${RAIL[next.status]}`} />}
+              </div>
+              <span className={`pr-3 text-sm font-semibold ${step.status === "not-reached" ? "text-gray-600 dark:text-gray-400" : "text-gray-900 dark:text-white"}`}>
+                {step.title}
+              </span>
+              <span
+                className={`pr-3 text-xs ${step.status === "running" ? "font-medium tabular-nums text-info-800 dark:text-info-400" : "text-gray-600 dark:text-gray-400"}`}
+                title={step.status === "running" ? "Counted from when the step before ended: the engine records a step's end, not its start" : undefined}
+              >
+                {stepLine(step, clock)}
+              </span>
+            </li>
+          );
+        })}
+      </ol>
+    </div>
+  );
+}
+
+/** Steps recorded beside the loop's own (the issue, the alert, telling a person, a phone call...). */
+function SideSteps({ steps }: { steps: Step[] }) {
+  if (steps.length === 0) return null;
+  return (
+    <div className="flex flex-wrap items-center gap-2 text-xs">
+      <span className="text-gray-600 dark:text-gray-400">Also recorded:</span>
+      <ul aria-label="Also recorded" className="flex flex-wrap gap-2">
+        {steps.map((s) => (
+          <li key={s.stage} className="inline-flex items-center gap-1.5 rounded-full bg-gray-100 px-2.5 py-1 font-medium text-gray-700 dark:bg-gray-700 dark:text-gray-200">
+            <Check className="h-3 w-3" aria-hidden />
+            {s.title}
+            {s.outcome ? `: ${s.outcome}` : ""}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+const SEGMENT_COLORS = [
+  "bg-brand-600 dark:bg-brand-400",
+  "bg-warning-500 dark:bg-warning-400",
+  "bg-success-600 dark:bg-success-400",
+  "bg-gray-500 dark:bg-gray-400",
+  "bg-brand-300 dark:bg-brand-200",
+];
+
+/** Where the run's time went: one segment per recorded step, and the running one growing while a worker holds it. */
+function TimeBar({ water, live, clock }: { water: Waterfall; live: boolean; clock: number }) {
+  const done = water.steps.filter((s) => s.status === "done" && s.width !== undefined && s.durationMs !== undefined);
+  const running = water.steps.find((s) => s.status === "running");
+  if (done.length === 0 && !running) return null;
+  const span = water.endMs - water.startMs;
+  const runningShare = running?.since ? Math.max(0, (water.endMs - running.since.getTime()) / span) : 0;
+  const parts = [...done.map((s) => `${s.title} ${formatDuration(s.durationMs!)}`), ...(running ? [`${running.title} running`] : [])];
+  return (
+    <div className="space-y-2 rounded-lg bg-gray-50 p-3 dark:bg-gray-900/40">
+      <p className="text-xs font-medium tabular-nums text-gray-900 dark:text-white">
+        {live ? `Running for ${formatDuration(clock - water.startMs)}` : `${formatDuration(span)} from start to the last update`}
+      </p>
+      <div role="img" aria-label={`Time per step: ${parts.join(", ")}`} className="flex h-2.5 gap-0.5 overflow-hidden rounded-full bg-gray-200 dark:bg-gray-700">
+        {done.map((s, i) => (
+          <span key={s.stage} className={SEGMENT_COLORS[i % SEGMENT_COLORS.length]} style={{ flexBasis: `${Math.max(s.width! * 100, 0.75).toFixed(2)}%` }} />
+        ))}
+        {running && (
+          <span className="bg-info-500 motion-safe:animate-pulse dark:bg-info-400" style={{ flexBasis: `${Math.max(runningShare * 100, 0.75).toFixed(2)}%` }} />
         )}
       </div>
-      {step.summary && <p className="mt-1 text-sm text-gray-700 dark:text-gray-300">{step.summary}</p>}
-      {href && step.status === "done" && (
-        <a href={href} target="_blank" rel="noreferrer noopener" className="mt-1 inline-flex items-center gap-1 break-all text-sm font-medium text-brand-700 hover:underline dark:text-brand-400">
-          Open the pull request <ExternalLink className="h-3 w-3" aria-hidden />
-        </a>
-      )}
-      {step.status === "done" && step.offset !== undefined && step.width !== undefined && (
-        <div className="mt-2 h-2 rounded bg-gray-100 dark:bg-gray-700" aria-hidden>
-          <div
-            className="h-2 rounded bg-brand-600 dark:bg-brand-400"
-            style={{ marginLeft: `${(step.offset * 100).toFixed(2)}%`, width: `${Math.max(step.width * 100, 1).toFixed(2)}%` }}
-          />
-        </div>
-      )}
-    </li>
+      <ul className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-gray-600 dark:text-gray-400" aria-hidden>
+        {done.map((s, i) => (
+          <li key={s.stage} className="inline-flex items-center gap-1.5">
+            <span className={`h-2.5 w-2.5 rounded-sm ${SEGMENT_COLORS[i % SEGMENT_COLORS.length]}`} />
+            {s.title} <span className="tabular-nums text-gray-900 dark:text-gray-100">{formatDuration(s.durationMs!)}</span>
+          </li>
+        ))}
+        {running && (
+          <li className="inline-flex items-center gap-1.5">
+            <span className="h-2.5 w-2.5 rounded-sm bg-info-500 dark:bg-info-400" />
+            {running.title} <span className="font-medium text-info-800 dark:text-info-400">running</span>
+          </li>
+        )}
+      </ul>
+    </div>
+  );
+}
+
+/** What each recorded step said, when, and the pull request from its own step once that step happened. */
+function StepLog({ steps, prUrl }: { steps: Step[]; prUrl?: string }) {
+  if (steps.length === 0) return null;
+  return (
+    <div>
+      <h3 className="text-sm font-medium text-gray-900 dark:text-white">Step log</h3>
+      <ol aria-label="Step log" className="mt-1 divide-y divide-gray-100 dark:divide-gray-700">
+        {steps.map((step) => (
+          <li key={step.stage} className="py-2">
+            <div className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5">
+              <span className="text-sm font-medium text-gray-900 dark:text-white">{step.title}</span>
+              <span className="text-xs text-gray-600 dark:text-gray-400">Done{step.outcome ? `: ${step.outcome}` : ""}</span>
+              {step.at && (
+                <span className="ml-auto text-xs text-gray-600 dark:text-gray-400">
+                  {formatDateTime(step.at)}
+                  {step.durationMs !== undefined ? ` · ${formatDuration(step.durationMs)} since the step before` : ""}
+                </span>
+              )}
+            </div>
+            {step.summary && <p className="mt-0.5 text-sm text-gray-700 dark:text-gray-300">{step.summary}</p>}
+            {step.stage === "pr" && prUrl && (
+              <a href={prUrl} target="_blank" rel="noreferrer noopener" className="mt-1 inline-flex items-center gap-1 break-all text-sm font-medium text-brand-700 hover:underline dark:text-brand-400">
+                Open the pull request <ExternalLink className="h-3 w-3" aria-hidden />
+              </a>
+            )}
+          </li>
+        ))}
+      </ol>
+    </div>
   );
 }
