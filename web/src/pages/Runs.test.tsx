@@ -256,6 +256,65 @@ describe("Runs page", () => {
     expect(screen.getByRole("link", { name: /Open the pull request/ })).toHaveAttribute("href", "https://github.com/o/r/pull/9");
   });
 
+  it("puts the step log under the pipeline, newest first, with the step in progress on top (#279)", () => {
+    renderRuns();
+    act(() => mocks.cyclesCb!([cycle("inc-a_r0", { stage: "fix", summary: { triage: { decision: "act", rule: "model-act", reason: "A null guard is missing." } } })], false));
+    act(() => mocks.eventsCb!([event(1, "triage", "decision", "A null guard is missing.", 30_000)]));
+    const log = screen.getByRole("list", { name: "Step log" });
+    const entries = within(log).getAllByRole("listitem");
+    expect(entries).toHaveLength(2);
+    expect(entries[0]).toHaveTextContent("Draft a fix");
+    expect(entries[0]).toHaveTextContent("In progress");
+    expect(entries[1]).toHaveTextContent("Triage");
+    expect(entries[1]).toHaveTextContent("A null guard is missing.");
+    // Under the track and above the facts: it is read while the track moves.
+    const pipeline = screen.getByRole("region", { name: "Pipeline" });
+    expect(pipeline).toContainElement(log);
+    expect(log.compareDocumentPosition(screen.getByRole("region", { name: "Run facts" })) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("shows triage's suspected cause and whose words they are in its own entry, and the issue's link in the issue's", () => {
+    renderRuns();
+    const summary = {
+      triage: { decision: "notify", rule: "model-notify", reason: "The account lacks a role.", suspectedCause: "IAM on the function's account", model: "gemini-x" },
+      issue: { state: "opened", number: 30, url: "https://github.com/o/r/issues/30" },
+    };
+    act(() => mocks.cyclesCb!([cycle("inc-a_r0", { state: "waiting-human", path: "notify", leaseExpiresAt: null, summary })], false));
+    expect(screen.getByRole("link", { name: /Issue #30/ })).toHaveAttribute("href", "https://github.com/o/r/issues/30");
+    act(() => mocks.eventsCb!([event(1, "triage", "decision", "The account lacks a role.", 9000)]));
+    const log = screen.getByRole("list", { name: "Step log" });
+    expect(within(log).getByText(/Suspected cause:/).parentElement).toHaveTextContent("IAM on the function's account");
+    expect(within(log).getByText(/The model's reasoning/)).toHaveTextContent("gemini-x");
+    expect(within(log).queryByRole("link", { name: /Open the issue/ })).toBeNull();
+    act(() => mocks.eventsCb!([event(1, "triage", "decision", "The account lacks a role.", 9000), event(2, "issue", "opened", "Issue #30 filed", 8000)]));
+    expect(within(log).getByRole("link", { name: /Open the issue/ })).toHaveAttribute("href", "https://github.com/o/r/issues/30");
+    // Newest first: the issue above triage.
+    const entries = within(log).getAllByRole("listitem");
+    expect(entries[0]).toHaveTextContent("GitHub issue");
+    expect(entries[entries.length - 1]).toHaveTextContent("Triage");
+  });
+
+  it("says a rule decided when triage recorded no model, and nothing of the kind on a copy without triage's words", () => {
+    renderRuns();
+    act(() => mocks.cyclesCb!([cycle("inc-a_r0", { state: "done", path: "decline", leaseExpiresAt: null, summary: { triage: { decision: "decline", rule: "counter-check-zero", reason: "The recount found no errors." } } })], false));
+    act(() => mocks.eventsCb!([event(1, "triage", "decision", "The recount found no errors.", 9000)]));
+    expect(screen.getByText(/Decided by the rule/)).toHaveTextContent("Decided by the rule counter-check-zero, with no model call.");
+    // An older run: the rule says the model decided, its name was not recorded, and no rule is said to have decided.
+    act(() => mocks.cyclesCb!([cycle("inc-a_r0", { state: "done", path: "decline", leaseExpiresAt: null, summary: { triage: { decision: "decline", rule: "model-decline", reason: "Not a code defect." } } })], false));
+    expect(screen.getByText(/The model's reasoning/)).toHaveTextContent("The model's reasoning, as triage recorded it.");
+    expect(screen.queryByText(/Decided by the rule/)).toBeNull();
+    act(() => mocks.cyclesCb!([cycle("inc-a_r0", { state: "done", path: "decline", leaseExpiresAt: null, summary: { triage: { decision: "decline", rule: "model-decline", model: "gemini-x" } } })], false));
+    expect(screen.queryByText(/Decided by a rule|The model's reasoning|Suspected cause/)).toBeNull();
+  });
+
+  it("does not link an issue that was not opened, or whose URL isn't https", () => {
+    renderRuns();
+    act(() => mocks.cyclesCb!([cycle("inc-a_r0", { summary: { issue: { state: "dry-run" } } })], false));
+    expect(screen.queryByRole("link", { name: /Issue #/ })).toBeNull();
+    act(() => mocks.cyclesCb!([cycle("inc-a_r0", { summary: { issue: { state: "opened", number: 3, url: "javascript:alert(1)" } } })], false));
+    expect(screen.queryByRole("link", { name: /Issue #/ })).toBeNull();
+  });
+
   it("does not link a pull request URL that isn't https", () => {
     renderRuns();
     act(() => mocks.cyclesCb!([cycle("inc-a_r0", { summary: { pr: { url: "javascript:alert(1)", number: 9 } } })], false));
