@@ -260,6 +260,15 @@ describe("applySettings", () => {
     expect(applySettings(safe, {})).toMatchObject({ dryRun: true, reviewRequired: true, automationEnabled: true, modelCallBudget: 6 });
   });
 
+  it("replaces the class rules with the admin's list, frozen", () => {
+    const envRules = [{ id: "env-rule", match: { service: "a" }, maxLevel: "fix" as const }];
+    const admin = [{ id: "payments-human", match: { service: "payments" }, maxLevel: "log" as const }];
+    const config = applySettings(testConfig({ classRules: envRules }), { classRules: admin });
+    expect(config.classRules).toEqual(admin);
+    expect(Object.isFrozen(config.classRules[0]!.match)).toBe(true);
+    expect(applySettings(testConfig({ classRules: envRules }), {}).classRules).toEqual(envRules);
+  });
+
   it("overrides the merge switches, and never the target allowlist, which is the environment's alone (#9)", () => {
     const base = testConfig({ autoMerge: false, mergeFreeze: false, autoMergeTargets: ["acme/demo"] });
     expect(applySettings(base, { autoMerge: true, mergeFreeze: true })).toMatchObject({ autoMerge: true, mergeFreeze: true, autoMergeTargets: ["acme/demo"] });
@@ -463,6 +472,14 @@ describe("merge cases (the admin's list Gemini chooses from)", () => {
       settings: { mergeCases: [cases[0], { id: "firestore-undefined-field", description: "a Firestore write fails because a field is undefined" }] },
     });
     expect(validateSettings({ version: 1, mergeCases: [] })).toEqual({ ok: true, settings: { mergeCases: [] } });
+  });
+
+  it("accepts class rules, and refuses a bad list naming the field", () => {
+    const classRules = [{ id: "payments-human", match: { service: "payments" }, maxLevel: "log" }];
+    expect(validateSettings({ version: 1, classRules })).toEqual({ ok: true, settings: { classRules } });
+    const r = validateSettings({ version: 1, classRules: [{ ...classRules[0], maxLevel: "merge" }] });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.problems[0]).toMatch(/^classRules: /);
   });
 
   it.each([

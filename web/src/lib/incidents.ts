@@ -25,6 +25,7 @@ import {
   where,
   deleteField,
 } from "firebase/firestore";
+import { readCorrection, type IncidentCorrection } from "../../../src/triageRules";
 import { firestore } from "./firebase";
 import { webConfig } from "./config";
 import { dataSource } from "./dataSource";
@@ -88,6 +89,8 @@ export interface IncidentRow {
   monitoringCount?: number;
   /** The readings from the latest window that folded one in (#19). */
   lastMonitoring?: MonitoringReading[];
+  /** An operator's correction: how far Starfish should go with this incident, at most (src/triageRules.ts). */
+  correction?: IncidentCorrection;
 }
 
 /** One Cloud Monitoring reading as stored on an incident (StoredMonitoringObservation in src/types.ts). */
@@ -203,6 +206,7 @@ export function toRow(id: string, d: Record<string, unknown>, windowHours: numbe
     }),
     ...(typeof d.monitoringCount === "number" && Number.isFinite(d.monitoringCount) && d.monitoringCount >= 0 && { monitoringCount: d.monitoringCount }),
     ...(cleanReadings(d.lastMonitoring) && { lastMonitoring: cleanReadings(d.lastMonitoring) }),
+    ...(readCorrection(d) && { correction: readCorrection(d) }),
   };
 }
 

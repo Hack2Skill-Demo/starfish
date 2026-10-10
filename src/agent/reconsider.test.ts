@@ -42,6 +42,18 @@ describe("reconsiderTrigger", () => {
     expect(trigger(cycle, { ...baseIncident, retriageRequestedAt: at(10) })).toBeNull();
   });
 
+  it("an operator's correction above noise after the decision reopens it at once; one to noise, or before it, does not", () => {
+    const cycle = declined({}, { at: at(5) });
+    for (const level of ["log", "fix", "merge"]) {
+      expect(trigger(cycle, { ...baseIncident, correctedLevel: level, correctedBy: "u1", correctedAt: at(1) }), level).toBe("corrected");
+    }
+    expect(trigger(cycle, { ...baseIncident, correctedLevel: "noise", correctedBy: "u1", correctedAt: at(1) })).toBeNull();
+    expect(trigger(cycle, { ...baseIncident, correctedLevel: "fix", correctedBy: "u1", correctedAt: at(10) })).toBeNull();
+    expect(trigger(cycle, { ...baseIncident, correctedLevel: "page", correctedBy: "u1", correctedAt: at(1) })).toBeNull();
+    // Still never over a closed incident.
+    expect(trigger(cycle, { ...baseIncident, status: "ignored", correctedLevel: "fix", correctedBy: "u1", correctedAt: at(1) })).toBeNull();
+  });
+
   it("the automatic triggers wait for the cooldown after the decision", () => {
     const cycle = declined({}, { at: at(10) });
     expect(trigger(cycle, { ...baseIncident, occurrenceCount: 500 })).toBeNull();

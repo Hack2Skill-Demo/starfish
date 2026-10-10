@@ -56,6 +56,15 @@ describe("Settings", () => {
     expect(screen.getAllByText("Not connected yet")).toHaveLength(planned.length);
   });
 
+  it("says the rules and feedback engines are built, and that they only hold Starfish back", () => {
+    renderSettings();
+    const card = CONNECTIONS.find((c) => c.name === "Rules & feedback engines")!;
+    expect(card.state).toBe("built");
+    expect(screen.getByText("Built")).toBeInTheDocument();
+    expect(card.detail).toContain("only hold Starfish back");
+    expect(card.detail).toContain("not yet run on a real incident");
+  });
+
   it("says the token is configured, never connected, once the agent has reported one", async () => {
     readIntegrations.mockResolvedValue(report({ github: true }));
     renderSettings();
@@ -63,9 +72,9 @@ describe("Settings", () => {
     expect(screen.getByText(/A token is set; the agent reports only that it is set, not whether it works\./)).toBeInTheDocument();
     expect(screen.queryByText(/nothing has checked it/)).toBeNull();
     expect(screen.queryByText(/^Connected/)).toBeNull();
-    // Slack was reported with no webhook, and the rules card says nothing: both stay or turn neutral.
+    // Slack was reported with no webhook: neutral. The rules card is built and reads no report.
     expect(screen.getByText("No webhook set")).toBeInTheDocument();
-    expect(screen.getAllByText("Not connected yet")).toHaveLength(1);
+    expect(screen.queryByText("Not connected yet")).toBeNull();
   });
 
   it("says no token is set when the agent reported none", async () => {
@@ -94,7 +103,7 @@ describe("Settings", () => {
     renderSettings();
     await waitFor(() => expect(readIntegrations).toHaveBeenCalled());
     expect(screen.queryByText("Token configured")).toBeNull();
-    expect(screen.getAllByText("Not connected yet")).toHaveLength(3);
+    expect(screen.getAllByText("Not connected yet")).toHaveLength(2);
   });
 
   it("keeps 'not connected yet' when the report cannot be read", async () => {
@@ -105,7 +114,7 @@ describe("Settings", () => {
     await act(async () => {
       await new Promise((r) => setTimeout(r, 0));
     });
-    expect(screen.getAllByText("Not connected yet")).toHaveLength(3);
+    expect(screen.getAllByText("Not connected yet")).toHaveLength(2);
   });
 
   it("names the environment the settings resolved, and mounts the editor for an admin", () => {

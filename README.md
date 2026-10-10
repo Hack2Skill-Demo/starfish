@@ -54,6 +54,7 @@ Where it currently holds, and where it doesn't:
 | Services Starfish never ingests (its own) | ✅ config (`STARFISH_EXCLUDED_SERVICES`, default `starfish`), applied at query time and at parse time; environment-only on purpose, because it guards against a feedback loop and is not an operational preference. `scripts/deploy-gcp.sh` sets it on every job it deploys, unless `EXTRA_ENV_VARS` gives its own: `starfish`, the ingest job's name and the admin API's service name, whether or not that run deploys the admin API, and on the agent job also its own name and, with `cloud-run-job`, the verify job's (#32, #177) |
 | Log source resource types | ⚠️ config, but attribution reads only `function_name` / `service_name`, so only Cloud Functions and Cloud Run work |
 | Framework-noise suppression list | ✅ config, callable GET-probe noise by default |
+| Class rules: how far Starfish may go per kind of incident (the rules engine) | ✅ config (`STARFISH_CLASS_RULES`, empty by default), and an admin's list on the Settings page replaces it; an operator's correction lives on the incident, its history under `incidents/{id}/corrections`, a name `firestore.rules` fixes like the collections above |
 | Cloud Monitoring failure signal (#19) | ⚠️ environment only (`STARFISH_MONITORING_ENABLED`, default off; `STARFISH_MONITORING_RESOURCE_TYPES` picks among the two built-in metrics, `cloud_run_revision` and `cloud_function`; `STARFISH_MONITORING_MAX_SERIES`, default 500); another metric needs code. `scripts/deploy-gcp.sh STARFISH_MONITORING_ENABLED=true` sets it and grants `roles/monitoring.viewer` on the watched project. Never run against real Monitoring |
 | Phone escalation (#37): switch, recording, webhook origin, Twilio credentials, the on-call rota and policy | ⚠️ the deployment's switch and wiring are environment only (`STARFISH_PHONE_ESCALATION`, default off; `STARFISH_ONCALL_AUDIO_URL`; `STARFISH_TWILIO_WEBHOOK_URL`; `STARFISH_TWILIO_API_URL`; the collections `STARFISH_ONCALL_COLLECTION`, `STARFISH_ONCALL_PEOPLE_COLLECTION`, `STARFISH_ESCALATION_COLLECTION`); Twilio's account SID, auth token and from-number are secrets read on their own (`loadTwilioCredentials`), stored and mounted by `scripts/deploy-gcp.sh`. The people, their numbers and the policy (the admin's switch, the wait, quiet hours and time zone, the daily cap per person, what counts as critical) are edited by an admin in Settings -> On-call, in admin-only collections the rules name by their default names. The call order (primary, primary again after 2 minutes, secondary, support lead) is fixed in code. Built, tested against a fake Twilio and the emulator, never run against real Twilio |
 | Deployment: project, region, schedule, the watched and Gemini projects, the environment label | ✅ environment variables of `scripts/deploy-gcp.sh`; no file is edited. Run once, on the demo project (2026-10-05): the ingest job, its schedule, the database and rules deployed and a scheduled run succeeded (#6). The admin API (`DEPLOY_ADMIN_API=1`) was deployed once, on 2026-10-07; the agent job (`DEPLOY_AGENT=1`) has never been deployed. `.github/workflows/deploy.yml` runs the same script, by hand or (once a person turns it on) on a merge, with Workload Identity Federation and repository variables, no stored key; written and pinned by a test, **never run** (#75) |
@@ -146,6 +147,22 @@ an evidence comment posted first. Fast-revert is built with it: the same inciden
 minutes of a code merge opens and merges a revert. **Built for the demo target behind default-off
 switches, tested against fakes and the emulator, never run against real GitHub.** Rungs 1 to 3 are
 still not built, which is why every other target stays PR-only.
+
+People can always hold Starfish back, never push it further (`src/triageRules.ts`, #267):
+
+- **Rules engine.** An admin's class rules (Settings → Class rules, also `STARFISH_CLASS_RULES`) match an
+  incident's error type, error code, service or function and set the most Starfish may do with it: *noise*
+  declines it without asking the model, *log* turns Gemini's *act* into an issue for a person, *fix* opens
+  the pull request but never merges it.
+- **Feedback engine.** An operator corrects one incident from its page: "this should have gone no further
+  than X". The correction caps that incident the same way. It stops a merge still waiting for its checks.
+  A declined incident corrected to anything above noise goes back to triage. Every correction is kept as
+  history, and `pnpm feedback-corpus` turns the noise and log corrections into replay cases, so
+  `pnpm replay` can measure whether Gemini's own triage now agrees.
+
+The lowest cap wins, so an operator can't lift an admin's rule. Widening what merges stays the admin's
+merge cases and switches: Starfish never widens a class by itself, from a replay score or anything else.
+**Built, tested against fakes and the emulator; not yet run on a real incident.**
 Autonomy is earned in stages, not switched on:
 
 | Rung | Guardrail | Status |
@@ -497,6 +514,7 @@ pnpm public-view        # dry run: the guests' trimmed copies (#18) to write or 
 pnpm spike              # fix-quality spike (needs Vertex AI access)
 pnpm scoreboard         # scoreboard/RESULTS.md from scoreboard/results/*.json; says so and writes nothing with no runs
 pnpm replay --check-corpus  # is the replay corpus fit to run (no model); `pnpm replay` scores one run (needs Vertex AI access)
+pnpm feedback-corpus -- --out=<new dir>  # operators' noise/log corrections -> a replay corpus (reads the store, writes local files)
 ```
 
 ### Synthetic demo history

@@ -24,6 +24,7 @@ on:
       - '!web/**/*.test.ts'
       - '!web/**/*.test.tsx'
       - 'src/settingsSchema.ts'
+      - 'src/triageRules.ts'
       - 'src/oncallSchema.ts'
       - 'firebase.json'
       - 'scripts/deploy-web.sh'

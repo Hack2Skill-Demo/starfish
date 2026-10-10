@@ -13,6 +13,7 @@ import { GithubError, type CheckRun, type PullRequestState, type RevertRequest }
 import { stateDocId } from "../ingest/run.js";
 import type { NotifyRequest } from "../integrations/slack.js";
 import { testConfig } from "../testConfig.js";
+import type { LevelCap } from "../triageRules.js";
 import type { IncidentStatus } from "../types.js";
 import { runAutoMergeStep, type AutoMergeDeps, type MergeClient } from "./autoMerge.js";
 import { runFastRevertStep, watchSpan, type FastRevertDeps, type RevertClient } from "./fastRevert.js";
@@ -35,6 +36,8 @@ let cfg: ReturnType<typeof testConfig>;
 let clock: Date;
 let blocked: (string | null)[];
 let status: IncidentStatus | null;
+/** The rules engine's cap the merge step reads (null: none; an Error: the read fails). */
+let cap: LevelCap | null | Error;
 let told: NotifyRequest[];
 /** The merge case each read of the switches asked about (null: none). */
 let asked: (string | null)[];
@@ -54,6 +57,7 @@ beforeEach(() => {
   clock = new Date(t0);
   blocked = [null];
   status = "new";
+  cap = null;
   told = [];
   asked = [];
 });
@@ -158,6 +162,10 @@ function mergeDeps(client: MergeClient, over: Partial<AutoMergeDeps> = {}): Auto
       return blocked.length > 1 ? blocked.shift()! : blocked[0]!;
     },
     incidentStatus: async () => status,
+    incidentCap: async () => {
+      if (cap instanceof Error) throw cap;
+      return cap;
+    },
     notify: async (req) => {
       told.push(req);
       return { state: "sent", attempts: 1 };
@@ -346,6 +354,30 @@ describe("runAutoMergeStep: merges only what every switch and gate allows", () =
     await runAutoMergeStep(mergeDeps(gh.client));
     expect(gh.merges).toEqual([]);
     expect((await cycle("inc1_r0")).summary.merge.reason).toBe("no-required-checks");
+  });
+
+  it("never merges an incident an admin's rule or an operator's correction holds below merge, and tells a person", async () => {
+    await seed("a_r0");
+    cap = { level: "fix", by: "correction" };
+    const gh = fakeGithub();
+    await runAutoMergeStep(mergeDeps(gh.client));
+    expect(gh.merges).toEqual([]);
+    expect((await cycle("a_r0")).summary.merge).toMatchObject({ state: "skipped", reason: "capped:correction", escalation: "sent" });
+    cap = { level: "log", by: "rule", ruleId: "payments-human" };
+    await seed("b_r0");
+    await runAutoMergeStep(mergeDeps(gh.client));
+    expect(gh.merges).toEqual([]);
+    expect((await cycle("b_r0")).summary.merge).toMatchObject({ state: "skipped", reason: "capped:rule" });
+  });
+
+  it("leaves the candidate pending when the cap can't be read: never a merge on a guess", async () => {
+    await seed("a_r0");
+    cap = new Error("unavailable");
+    const gh = fakeGithub();
+    const out = await runAutoMergeStep(mergeDeps(gh.client));
+    expect(out.errors).toHaveLength(1);
+    expect(gh.merges).toEqual([]);
+    expect((await cycle("a_r0")).summary.merge.state).toBe("pending");
   });
 
   it("leaves a PR a person closed or merged, and an incident a person resolved, without telling anyone", async () => {

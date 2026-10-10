@@ -43,6 +43,7 @@ import { clipWellFormed, sanitize } from "../ingest/redact.js";
 import type { ErrorLogSample } from "../ingest/counterCheck.js";
 import { OPEN_INCIDENT_STATUSES, type Incident, type IncidentStatus } from "../types.js";
 import { INDEX_MERGE_CASE, MAX_MERGE_CASE_DESCRIPTION, type MergeCase } from "../settingsSchema.js";
+import { capHolds, capSource, levelCap, type ClassRule, type IncidentCorrection, type LevelCap } from "../triageRules.js";
 
 export type TriageDecision = "act" | "notify" | "decline" | "defer" | "skip" | "error";
 
@@ -56,7 +57,9 @@ export type TriageRule =
   | "model-decline"
   | "model-call-failed"
   | "model-output-invalid"
-  | "monitoring-only-no-cause";
+  | "monitoring-only-no-cause"
+  | "rule-cap"
+  | "correction-cap";
 
 export interface TriageResult {
   decision: TriageDecision;
@@ -70,6 +73,11 @@ export interface TriageResult {
    * model's decision to go as far as "log + fix + merge". Absent: a person merges whatever is fixed.
    */
   mergeCase?: string;
+  /**
+   * The rules engine's cap on the incident (src/triageRules.ts: an admin's class rule or an operator's correction), when
+   * one applied. The rule is `rule-cap` or `correction-cap` only when the cap changed the decision.
+   */
+  cap?: LevelCap;
 }
 
 /** How far Starfish goes with an incident, in the words the UI and the docs use. Null: nothing was decided yet. */
@@ -85,6 +93,8 @@ export function triageLevel(r: Pick<TriageResult, "decision" | "mergeCase">): Tr
 export interface TriageOptions {
   /** The merge cases an admin listed (config `mergeCases`). The index path's reserved case is never offered: no model decides it. */
   mergeCases?: readonly MergeCase[];
+  /** The admin's class rules (config `classRules`): with the subject's correction, the cap on how far triage may go. */
+  classRules?: readonly ClassRule[];
 }
 
 export interface TriageSubject {
@@ -92,6 +102,8 @@ export interface TriageSubject {
   /** The operator-owned status. Triage only ever looks at open incidents. */
   status: IncidentStatus;
   samples?: ErrorLogSample[];
+  /** An operator's correction of this incident (src/triageRules.ts). Never shown to the model: it only caps the result. */
+  correction?: IncidentCorrection;
 }
 
 /** The part of the model client triage needs; askJson satisfies it, a test stubs it. */
@@ -223,13 +235,14 @@ function counterCheckLine(i: Incident): string {
 
 const bound = (text: string, max = MAX_REASON_LEN) => clipWellFormed(text, max);
 
-function result(decision: TriageDecision, rule: TriageRule, reason: string, suspectedCause?: string, mergeCase?: string): TriageResult {
+function result(decision: TriageDecision, rule: TriageRule, reason: string, suspectedCause?: string, mergeCase?: string, cap?: LevelCap): TriageResult {
   return {
     decision,
     rule,
     reason: bound(reason),
     ...(suspectedCause ? { suspectedCause: bound(suspectedCause) } : {}),
     ...(mergeCase !== undefined && { mergeCase }),
+    ...(cap !== undefined && { cap }),
   };
 }
 
@@ -265,12 +278,22 @@ export async function triageIncident(subject: TriageSubject, ask: AskJson = askJ
     return result("skip", "status-not-open", `Incident is ${subject.status}; triage only looks at open incidents.`);
   }
 
+  // The rules engine (src/triageRules.ts): an admin's class rule or an operator's correction holds the incident back.
+  // Held to noise, the model is not asked at all.
+  const cap = levelCap(subject.incident, options.classRules ?? [], subject.correction) ?? undefined;
+  if (cap?.level === "noise") {
+    return result("decline", `${cap.by}-cap`, `Declined without asking the model: ${capSource(cap)} holds this incident to noise.`, undefined, undefined, cap);
+  }
+
   const check = subject.incident.logCounterCheck;
   if (!check || !Number.isFinite(check.count)) {
     return result(
       "defer",
       "counter-check-missing",
-      "The independent log counter-check is not available, so the evidence is missing (not zero). Try again later."
+      "The independent log counter-check is not available, so the evidence is missing (not zero). Try again later.",
+      undefined,
+      undefined,
+      cap
     );
   }
   const monitoringOnly = subject.incident.signalSource === "monitoring";
@@ -278,11 +301,15 @@ export async function triageIncident(subject: TriageSubject, ask: AskJson = askJ
     return result(
       "decline",
       "counter-check-zero",
-      `The log counter-check found no error entries for this function in ${sanitize(check.window, 20) ?? "its window"}, so there is nothing in the logs to fix.`
+      `The log counter-check found no error entries for this function in ${sanitize(check.window, 20) ?? "its window"}, so there is nothing in the logs to fix.`,
+      undefined,
+      undefined,
+      cap
     );
   }
 
-  const cases = offeredMergeCases(options.mergeCases);
+  // A cap is at most "fix", so a capped incident is never offered a merge case: a person merges whatever is fixed.
+  const cases = cap ? [] : offeredMergeCases(options.mergeCases);
   let raw: unknown;
   try {
     raw = await ask<unknown>(
@@ -292,22 +319,36 @@ export async function triageIncident(subject: TriageSubject, ask: AskJson = askJ
     );
   } catch (err) {
     // An error's message can quote the incident text it was given, so only its name is kept.
-    return result("error", "model-call-failed", `The model call failed (${err instanceof Error ? err.name : "unknown error"}).`);
+    return result("error", "model-call-failed", `The model call failed (${err instanceof Error ? err.name : "unknown error"}).`, undefined, undefined, cap);
   }
 
   const answer = parseModelAnswer(raw);
   if (!answer) {
-    return result("error", "model-output-invalid", "The model's answer was not in the expected shape, so nothing was acted on.");
+    return result("error", "model-output-invalid", "The model's answer was not in the expected shape, so nothing was acted on.", undefined, undefined, cap);
   }
   if (answer.decision === "act" && monitoringOnly && !hasCauseEvidence(subject.incident)) {
     return result(
       "notify",
       "monitoring-only-no-cause",
       `Cloud Monitoring counted failed invocations with no ERROR log behind them, so there is no cause evidence for a code fix: a human should look. The model's reasoning: ${answer.reasoning}`,
-      answer.suspectedCause
+      answer.suspectedCause,
+      undefined,
+      cap
     );
   }
   // Kept only on act, and only a case the admin listed: an unknown id, or one on notify or decline, is dropped.
   const mergeCase = answer.decision === "act" && cases.some((c) => c.id === answer.mergeCase) ? answer.mergeCase : undefined;
-  return result(answer.decision, `model-${answer.decision}`, answer.reasoning, answer.decision === "decline" ? undefined : answer.suspectedCause, mergeCase);
+  // Held to "log": a fix the model wanted becomes an issue a person works on. (Noise was handled before the model, and a
+  // cap of "fix" holds back only the merge, which was never offered.)
+  if (answer.decision === "act" && cap !== undefined && capHolds(cap, "fix")) {
+    return result(
+      "notify",
+      `${cap.by}-cap`,
+      `Gemini chose to fix this, but ${capSource(cap)} holds it to log: an issue, and a person fixes it. The model's reasoning: ${answer.reasoning}`,
+      answer.suspectedCause,
+      undefined,
+      cap
+    );
+  }
+  return result(answer.decision, `model-${answer.decision}`, answer.reasoning, answer.decision === "decline" ? undefined : answer.suspectedCause, mergeCase, cap);
 }

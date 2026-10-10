@@ -27,7 +27,7 @@ import { loadChildProcessBasics, loadConfig, loadGithubToken, loadSlackAlertsWeb
 import { RuntimeConfigLoader } from "./runtimeSettings.js";
 import { createAskJson } from "./vertex.js";
 import { redactPii } from "./ingest/redact.js";
-import { makeAutomationSwitch, makeMergeSwitch } from "./agent/automationSwitch.js";
+import { makeAutomationSwitch, makeCapReader, makeMergeSwitch } from "./agent/automationSwitch.js";
 import { runAutoMergeStep } from "./agent/autoMerge.js";
 import { runFastRevertStep } from "./agent/fastRevert.js";
 import { createGitCheckout, createLoader } from "./agent/assemble.js";
@@ -153,6 +153,8 @@ const automationEnabled = makeAutomationSwitch(settings, db);
 // The merge switches (#9), read fresh: the kill switch, dry run, the merge freeze, `autoMerge`, the target allowlist, and
 // with a merge case, that the admin still lists it.
 const mergeBlocked = makeMergeSwitch(settings, db);
+// The rules engine's cap on an incident, fresh (src/triageRules.ts): an admin's class rule or an operator's correction stops a merge.
+const incidentCap = makeCapReader(settings, db, cfg.incidentCollection);
 const incidentStatus = async (id: string): Promise<IncidentStatus | null> => {
   const snap = await db.collection(cfg.incidentCollection).doc(id).get();
   const status = snap.data()?.status;
@@ -255,7 +257,7 @@ try {
         `agent: fast-revert: ${r.considered} watched, ${r.cleared} cleared, ${r.uncovered} waiting for ingest to read through theirs, ${r.opened} revert(s) opened, ${r.reverted} reverted, ${r.escalated} escalated${r.paused ? " (automation off: paused)" : ""}`
       );
       for (const e of r.errors) console.error(`  ${e.cycleId}: fast-revert: ${e.message}`);
-      const m = await runAutoMergeStep({ ...stepDeps, incidentStatus });
+      const m = await runAutoMergeStep({ ...stepDeps, incidentStatus, incidentCap });
       console.log(`agent: auto-merge: ${m.considered} candidate(s), ${m.merged} merged, ${m.skipped} handed to a person, ${m.waiting} waiting${m.paused ? " (automation off: paused)" : ""}`);
       for (const e of m.errors) console.error(`  ${e.cycleId}: auto-merge: ${e.message}`);
     } catch (err) {

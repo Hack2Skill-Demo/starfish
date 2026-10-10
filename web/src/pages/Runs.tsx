@@ -318,6 +318,7 @@ function RunDetail({ cycle, incident, environment, now }: { cycle: CycleRow; inc
               <dd>
                 {decision.label}
                 {decision.mergeCase && <span className="ml-1 font-mono text-xs">({decision.mergeCase})</span>}
+                {decision.heldBy && <span className="block text-xs text-gray-600 dark:text-gray-400">{decision.heldBy}</span>}
               </dd>
             </>
           )}

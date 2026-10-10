@@ -1442,6 +1442,33 @@ describe("runCycle: auto-merge evidence (#9): Gemini names the merge case, the f
     expect(opened[0]!.autoMerge).toBeUndefined();
   });
 
+  it("held to fix by an operator's correction: never offered a case, nothing prepared for merging, the cap recorded", async () => {
+    const opened: PullRequestRequest[] = [];
+    const load: LoopDeps["load"] = async () => ({
+      subject: { incident: stackIncident, status: "new", correction: { level: "fix", by: "u1" } },
+      files: [{ path: SRC_FILE, content: "" }],
+      sourceDir: src,
+      baseRevision: "rev1",
+      repoFiles: [SRC_FILE],
+    });
+    await runCycle(mergeDeps(scripted({ triage: [actMerge], fix: [fixWithTest], review: [held] }), true, { load }, opened), key);
+    const s = (await cycleDoc()).summary;
+    expect(s.triage).toMatchObject({ decision: "act", level: "fix", mergeCase: null, cap: "fix", capBy: "correction", capRule: null });
+    expect(s.merge).toBeUndefined();
+    expect(opened[0]!.autoMerge).toBeUndefined();
+  });
+
+  it("held to log by an admin's class rule: Gemini's act becomes an issue and a person, no fix drafted", async () => {
+    cfgOver = { classRules: [{ id: "orders-human", match: { functionName: incident.functionName! }, maxLevel: "log" }] };
+    const model = scripted({ triage: [actMerge], fix: [fixWithTest], review: [held] });
+    const r = await runCycle(mergeDeps(model, true), key);
+    expect(r).toMatchObject({ kind: "finished" });
+    const s = (await cycleDoc()).summary;
+    expect(s.triage).toMatchObject({ decision: "notify", rule: "rule-cap", level: "log", cap: "log", capBy: "rule", capRule: "orders-human" });
+    expect(s.fix).toBeUndefined();
+    expect(s.pr).toBeUndefined();
+  });
+
   it("drops a case Gemini named that the admin does not list: the level falls back to log + fix", async () => {
     await runCycle(mergeDeps(scripted({ triage: [{ ...act, mergeCase: "anything-goes" }], fix: [fixWithTest], review: [held] }), true), key);
     const s = (await cycleDoc()).summary;

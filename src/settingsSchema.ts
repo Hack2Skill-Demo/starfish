@@ -4,6 +4,7 @@
  * the engine (which validates on read) and the operator UI (which validates
  * before it saves) run the same code and can't disagree about what is valid.
  */
+import { validateClassRules, type ClassRule } from "./triageRules.js";
 
 /** The settings an admin may override. Arrays and maps replace the default, never merge with it. */
 export interface RuntimeSettings {
@@ -32,6 +33,11 @@ export interface RuntimeSettings {
    * (the engine's default) means nothing merges.
    */
   mergeCases?: MergeCase[];
+  /**
+   * The rules engine (src/triageRules.ts): incidents matching a rule go no further than its level (noise, log or fix),
+   * whatever triage chose. Rules only hold Starfish back; an empty list (the engine's default) holds nothing back.
+   */
+  classRules?: ClassRule[];
   /** The most model calls one cycle may make. */
   modelCallBudget?: number;
   /** The Gemini model id the agent asks (triage, fix, review), e.g. gemini-3.1-pro-preview. */
@@ -113,6 +119,7 @@ const SETTINGS_KEYS = [
   "autoMerge",
   "mergeFreeze",
   "mergeCases",
+  "classRules",
   "modelCallBudget",
   "model",
   "location",
@@ -225,6 +232,12 @@ export function validateSettings(raw: unknown): Validation {
   if (raw.mergeCases !== undefined) {
     const checked = validateMergeCases(raw.mergeCases);
     if (checked.ok) settings.mergeCases = checked.cases;
+    else problems.push(checked.problem);
+  }
+
+  if (raw.classRules !== undefined) {
+    const checked = validateClassRules(raw.classRules);
+    if (checked.ok) settings.classRules = checked.rules;
     else problems.push(checked.problem);
   }
 

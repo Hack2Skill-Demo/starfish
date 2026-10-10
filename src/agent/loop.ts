@@ -84,6 +84,7 @@ import { join } from "node:path";
 import { assessMergeFloor, judgedTheVerifiedFiles, parsePatch, testOnlyPatch, type BlastRadius } from "./blastRadius.js";
 import { earlierMergeHolds, mergeRecordAtOpen } from "./autoMerge.js";
 import { INDEX_MERGE_CASE } from "../settingsSchema.js";
+import { capHolds, levelCap } from "../triageRules.js";
 import { sha256 } from "./reviewer.js";
 
 /** Everything about the incident the stages need, assembled by the caller (it owns the repo checkout). */
@@ -142,7 +143,7 @@ export interface IndexEvidence {
 
 export interface LoopDeps {
   db: Firestore;
-  config: Pick<StarfishConfig, "dryRun" | "reviewRequired" | "modelCallBudget" | "uiBaseUrl" | "model" | "incidentCollection" | "autoMergeExcludedPaths" | "mergeCases"> &
+  config: Pick<StarfishConfig, "dryRun" | "reviewRequired" | "modelCallBudget" | "uiBaseUrl" | "model" | "incidentCollection" | "autoMergeExcludedPaths" | "mergeCases" | "classRules"> &
     CycleConfig &
     VerifyConfig;
   /** This worker's identity, for the lease. */
@@ -247,6 +248,7 @@ export const MAX_REVISIONS = 1;
 
 const RECONSIDER_SUMMARY = {
   operator: "an operator asked for a retriage",
+  corrected: "an operator corrected the incident to a level above noise",
   burst: "the occurrences grew past the burst threshold since the decline",
   cause: "the incident's structural cause changed since the decline",
   reopened: "the incident was closed while it was worked on, and has been reopened",
@@ -589,7 +591,10 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
     }
 
     // ---- the index path (#11): Google's own error names the fix, so no model is asked anything ----------------
-    if (deps.indexHeal && isIndexIncident(loaded.subject.incident)) {
+    // The rules engine's cap (src/triageRules.ts): an admin's class rule or an operator's correction. Held to noise or log,
+    // the index path is not taken (triage declines or notifies); held to fix, its evidence PR is never merged.
+    const cap = levelCap(loaded.subject.incident, cfg.classRules, loaded.subject.correction);
+    if (deps.indexHeal && isIndexIncident(loaded.subject.incident) && !capHolds(cap, "fix")) {
       return await runIndexPath({
         db,
         cycleCollection: cfg.cycleCollection,
@@ -613,7 +618,7 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
         beat: keeper.beat,
         ...(!cfg.dryRun && deps.openPullRequest && { openPullRequest: deps.openPullRequest }),
         // The admin's reserved `missing-index` case, read fresh: listed, the evidence PR merges once its checks are green.
-        indexMergeAllowed: async () => (await autoMergeOn(INDEX_MERGE_CASE)) && (await mergeHeldBy()) === null,
+        indexMergeAllowed: async () => cap === null && (await autoMergeOn(INDEX_MERGE_CASE)) && (await mergeHeldBy()) === null,
       });
     }
 
@@ -632,7 +637,7 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
       }
       return deps.ask<T>(prompt, system, schema);
     };
-    const triage = await triageIncident(loaded.subject, countedAsk, { mergeCases: cfg.mergeCases });
+    const triage = await triageIncident(loaded.subject, countedAsk, { mergeCases: cfg.mergeCases, classRules: cfg.classRules });
     if (spendError !== undefined) throw spendError;
     // The merge case Gemini named (triage.ts): Starfish may merge only what it named.
     const chosenCase = triage.mergeCase;
@@ -641,7 +646,7 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
       stage: "triage",
       type: "decision",
       summary: triage.reason,
-      data: { decision: triage.decision, rule: triage.rule, ...(level !== null && { level }) },
+      data: { decision: triage.decision, rule: triage.rule, ...(level !== null && { level }), ...(triage.cap && { cap: triage.cap.level, capBy: triage.cap.by }) },
       record: {
         decision: triage.decision,
         rule: triage.rule,
@@ -650,8 +655,13 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
         // How far Starfish goes (noise, log, fix, merge), and the admin's merge case Gemini named for "merge".
         level,
         mergeCase: triage.mergeCase ?? null,
-        // The configured model, only when the decision was the model's: a gate (missing or zero recount) asked none.
-        ...(triage.rule.startsWith("model-") && { model: cfg.model }),
+        // The rules engine's cap, when one applied (src/triageRules.ts): its level, its source and the admin rule's id.
+        cap: triage.cap?.level ?? null,
+        capBy: triage.cap?.by ?? null,
+        capRule: triage.cap?.ruleId ?? null,
+        // The configured model, only when the decision was the model's: a gate (missing or zero recount, a cap of noise)
+        // asked none. A cap that turned the model's act into notify still asked it.
+        ...((triage.rule.startsWith("model-") || (triage.rule.endsWith("-cap") && triage.cap?.level !== "noise")) && { model: cfg.model }),
         ...counterCheckRecord(loaded.subject.incident.logCounterCheck),
       },
     });

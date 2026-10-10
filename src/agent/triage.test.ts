@@ -370,3 +370,72 @@ describe("triageIncident: how far to go, and the merge case (Gemini's executive 
     for (const d of ["skip", "defer", "error"] as const) expect(triageLevel({ decision: d })).toBeNull();
   });
 });
+
+describe("triageIncident: the rules engine's cap (an admin's class rule, an operator's correction)", () => {
+  const cases = [{ id: "missing-await", description: "a promise is used before it is awaited" }];
+  const rule = (maxLevel: "noise" | "log" | "fix") => [{ id: "mail-held", match: { service: "mail" }, maxLevel }];
+  const subject = { incident: incident(), status: "new" as const };
+
+  it("declines without asking the model when a rule holds the incident to noise", async () => {
+    const { ask, calls } = stub(act);
+    const r = await triageIncident(subject, ask, { classRules: rule("noise") });
+    expect(r).toMatchObject({ decision: "decline", rule: "rule-cap", cap: { level: "noise", by: "rule", ruleId: "mail-held" } });
+    expect(r.reason).toContain('the admin\'s rule "mail-held"');
+    expect(calls).toHaveLength(0);
+  });
+
+  it("declines on an operator's correction to noise, even with no counter-check", async () => {
+    const { ask, calls } = stub(act);
+    const r = await triageIncident({ ...subject, incident: incident({ logCounterCheck: undefined }), correction: { level: "noise", by: "u1" } }, ask);
+    expect(r).toMatchObject({ decision: "decline", rule: "correction-cap", cap: { level: "noise", by: "correction" } });
+    expect(calls).toHaveLength(0);
+  });
+
+  it("still skips an incident that is not open: a cap never brings one back", async () => {
+    const { ask } = stub(act);
+    expect(await triageIncident({ ...subject, status: "resolved" }, ask, { classRules: rule("noise") })).toMatchObject({ decision: "skip" });
+  });
+
+  it("turns the model's act into notify when held to log, keeping its reasoning and cause", async () => {
+    const { ask, calls } = stub({ ...act, mergeCase: "missing-await" });
+    const r = await triageIncident(subject, ask, { classRules: rule("log"), mergeCases: cases });
+    expect(r).toMatchObject({ decision: "notify", rule: "rule-cap", suspectedCause: act.suspectedCause, cap: { level: "log" } });
+    expect(r.reason).toContain(act.reasoning);
+    expect(r.mergeCase).toBeUndefined();
+    expect(triageLevel(r)).toBe("log");
+    // Never offered a merge case: a capped incident can't be merged, so the model is not asked about one.
+    expect(calls[0]!.system).toBe(TRIAGE_SYSTEM);
+  });
+
+  it("leaves a notify or decline below the cap as the model's", async () => {
+    const { ask } = stub({ decision: "notify", reasoning: "quota", suspectedCause: null });
+    expect(await triageIncident(subject, ask, { classRules: rule("log") })).toMatchObject({ decision: "notify", rule: "model-notify", cap: { level: "log" } });
+  });
+
+  it("held to fix: act stays act, but no merge case is offered or kept", async () => {
+    const { ask, calls } = stub({ ...act, mergeCase: "missing-await" });
+    const r = await triageIncident({ ...subject, correction: { level: "fix", by: "u1" } }, ask, { mergeCases: cases });
+    expect(r).toMatchObject({ decision: "act", rule: "model-act", cap: { level: "fix", by: "correction" } });
+    expect(r.mergeCase).toBeUndefined();
+    expect(triageLevel(r)).toBe("fix");
+    expect(calls[0]!.system).not.toContain("MERGE CASES");
+  });
+
+  it("asks exactly as before when no rule matches and the correction is merge", async () => {
+    const { ask, calls } = stub({ ...act, mergeCase: "missing-await" });
+    const r = await triageIncident({ ...subject, correction: { level: "merge", by: "u1" } }, ask, {
+      mergeCases: cases,
+      classRules: [{ id: "other", match: { service: "payments" }, maxLevel: "noise" }],
+    });
+    expect(r).toMatchObject({ decision: "act", mergeCase: "missing-await" });
+    expect(r.cap).toBeUndefined();
+    expect(calls[0]!.system).toContain("MERGE CASES");
+  });
+
+  it("never shows the model the correction or its note", async () => {
+    const { ask, calls } = stub(act);
+    await triageIncident({ ...subject, correction: { level: "fix", by: "operator-uid-1", note: "SECRET-NOTE" } }, ask);
+    expect(calls[0]!.prompt).not.toContain("SECRET-NOTE");
+    expect(calls[0]!.prompt).not.toContain("operator-uid-1");
+  });
+});

@@ -168,12 +168,22 @@ export const LEVEL_LABELS: Record<string, string> = {
 };
 
 /** Triage's decision of how far to go, and the admin's merge case Gemini named for a merge. */
-export function triageDecision(c: CycleRow): { label: string; mergeCase?: string } | undefined {
-  const triage = c.summary.triage as { level?: unknown; mergeCase?: unknown } | undefined;
+export function triageDecision(c: CycleRow): { label: string; mergeCase?: string; heldBy?: string } | undefined {
+  const triage = c.summary.triage as { level?: unknown; mergeCase?: unknown; cap?: unknown; capBy?: unknown; capRule?: unknown } | undefined;
   const level = triage?.level;
   if (typeof level !== "string" || !(level in LEVEL_LABELS)) return undefined;
   const mergeCase = level === "merge" && typeof triage?.mergeCase === "string" && triage.mergeCase !== "" ? triage.mergeCase : undefined;
-  return { label: LEVEL_LABELS[level]!, ...(mergeCase !== undefined && { mergeCase }) };
+  // The rules engine's cap (src/triageRules.ts), when one applied: who held Starfish back, and to what.
+  const cap = typeof triage?.cap === "string" && ["noise", "log", "fix"].includes(triage.cap) ? triage.cap : undefined;
+  const heldBy =
+    cap === undefined
+      ? undefined
+      : triage?.capBy === "rule"
+        ? `Held to ${cap} by the admin's class rule${typeof triage.capRule === "string" && triage.capRule !== "" ? ` ${triage.capRule}` : ""}`
+        : triage?.capBy === "correction"
+          ? `Held to ${cap} by an operator's correction`
+          : undefined;
+  return { label: LEVEL_LABELS[level]!, ...(mergeCase !== undefined && { mergeCase }), ...(heldBy !== undefined && { heldBy }) };
 }
 
 /** The rule that chose the path, as triage recorded it, when it did. */

@@ -6,6 +6,8 @@
  *
  *   operator   an operator asked for a retriage (`retriageRequestedAt` on the incident, later than the decision; an
  *              operator's write of it is allowed by firestore.rules, but no UI sends it yet);
+ *   corrected  an operator corrected the incident (src/triageRules.ts, `correctedAt` later than the decision) to a level
+ *              above noise: the person says the decline went too far. Like `operator`, it does not wait for the cooldown;
  *   burst      the incident's occurrences grew by at least `reconsiderBurstOccurrences` since the decision;
  *   cause      the incident's structural cause changed: an error code, name or HTTP status appeared or changed, or a
  *              detail or stack trace became available (ingest backfills these when an error recurs: an incident often
@@ -25,10 +27,11 @@ import { createHash } from "node:crypto";
 import type { StarfishConfig } from "../config.js";
 import type { Incident } from "../types.js";
 import { OPEN_INCIDENT_STATUSES } from "../types.js";
+import { correctedAtMillis } from "../triageRules.js";
 
 export type ReconsiderPolicy = Pick<StarfishConfig, "reconsiderCooldownMinutes" | "reconsiderMaxPerDay" | "reconsiderBurstOccurrences">;
 
-export type ReconsiderTrigger = "operator" | "burst" | "cause" | "reopened";
+export type ReconsiderTrigger = "operator" | "corrected" | "burst" | "cause" | "reopened";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 /** How many earlier decisions a cycle keeps (`history`); the run events keep everything. */
@@ -97,6 +100,9 @@ export function reconsiderTrigger(cycle: Record<string, unknown>, incident: Reco
 
   const requested = ms(incident.retriageRequestedAt);
   if (requested !== undefined && requested > decidedAt && requested <= now.getTime()) return "operator";
+  // A decline is "noise": a correction to anything above it, made after the decision, asks for another look.
+  const corrected = correctedAtMillis(incident);
+  if (corrected !== undefined && corrected > decidedAt && corrected <= now.getTime() && incident.correctedLevel !== "noise") return "corrected";
 
   if (now.getTime() - decidedAt < policy.reconsiderCooldownMinutes * 60_000) return null;
   // The incident is open (checked above), so the close that stopped the cycle was undone by a person.

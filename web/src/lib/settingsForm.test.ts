@@ -207,3 +207,36 @@ describe("merge cases", () => {
     expect(formFromStored(null).mergeCases).toEqual({ override: false, text: "" });
   });
 });
+
+describe("class rules (the rules engine)", () => {
+  const stored = {
+    version: 1,
+    classRules: [
+      { id: "payments-human", match: { service: "payments" }, maxLevel: "log", note: "money | a person fixes it" },
+      { id: "health-noise", match: { functionName: "healthCheck", errorType: "TimeoutError" }, maxLevel: "noise" },
+    ],
+  };
+
+  it("shows a stored list one rule per line, and reads it back the same", () => {
+    const form = formFromStored(stored as never);
+    expect(form.classRules).toEqual({
+      override: true,
+      text: "payments-human | service=payments | log | money | a person fixes it\nhealth-noise | functionName=healthCheck, errorType=TimeoutError | noise",
+    });
+    expect(settingsFromForm(withField({ classRules: form.classRules }))).toEqual({ ok: true, settings: { classRules: stored.classRules } });
+  });
+
+  it("an override with no line is an empty list; the default is none", () => {
+    expect(settingsFromForm(withField({ classRules: { override: true, text: " \n" } }))).toEqual({ ok: true, settings: { classRules: [] } });
+    expect(formFromStored(null).classRules).toEqual({ override: false, text: "" });
+  });
+
+  it("refuses a match that is not key=value, an unknown key, merge as a level, or no match", () => {
+    const bad = settingsFromForm(withField({ classRules: { override: true, text: "r1 | payments | log" } }));
+    expect(bad.ok).toBe(false);
+    if (!bad.ok) expect(bad.problems[0]).toContain('line 1 must match as "key=value, key=value"');
+    for (const text of ["r1 | message=x | log", "r1 | service=x | merge", "r1 | | log", "R1 | service=x | log"]) {
+      expect(settingsFromForm(withField({ classRules: { override: true, text } })).ok, text).toBe(false);
+    }
+  });
+});

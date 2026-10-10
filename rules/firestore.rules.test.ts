@@ -32,6 +32,7 @@ import {
 import { validateSettings } from "../src/runtimeSettings.js";
 import { readRecentChanges, saveSettings, settingsCollections } from "../web/src/lib/settingsWrite";
 import { addPerson, readOnCall, removePerson, savePolicy, updatePerson } from "../web/src/lib/onCallWrite";
+import { readCorrections, saveCorrection } from "../web/src/lib/correctionWrite";
 import { DEFAULT_POLICY } from "../src/oncallSchema.js";
 
 let env: RulesTestEnvironment;
@@ -227,6 +228,83 @@ describe("incidents: retriage requests (#8)", () => {
     await assertFails(retriage(as("stranger"), "stranger"));
     await assertFails(retriage(env.authenticatedContext("guest1", { firebase: { sign_in_provider: "anonymous" } }).firestore(), "guest1"));
     await assertFails(retriage(anon(), "x"));
+  });
+});
+
+describe("incidents: corrections (the feedback engine, src/triageRules.ts)", () => {
+  const correct = (uid: string, level: "noise" | "log" | "fix" | "merge" = "log", note = "") => saveCorrection(as(uid), "incidents", "i1", uid, level, note);
+  /** A hand-made batch, to try what the page's write never sends. */
+  const batch = async (uid: string, incident: Record<string, unknown>, entry: Record<string, unknown> | null, id = "corr-0001") => {
+    const db = as(uid);
+    const b = writeBatch(db);
+    b.update(doc(db, "incidents/i1"), { correctedLevel: "log", correctedBy: uid, correctedAt: serverTimestamp(), correctionId: id, ...incident });
+    if (entry) b.set(doc(db, `incidents/i1/corrections/${id}`), { level: "log", by: uid, at: serverTimestamp(), ...entry });
+    await b.commit();
+  };
+
+  it("an operator or an admin corrects an incident, with its history entry, and both read it back", async () => {
+    await assertSucceeds(correct("op1", "log", "a person fixes payments"));
+    await assertSucceeds(correct("admin1", "noise"));
+    const stored = (await getDoc(doc(as("op1"), "incidents/i1"))).data()!;
+    expect(stored).toMatchObject({ correctedLevel: "noise", correctedBy: "admin1" });
+    expect(stored.correctionNote).toBeUndefined(); // the earlier note went with the earlier correction
+    const history = await readCorrections(as("op1"), "incidents", "i1");
+    expect(history.map((h) => [h.level, h.by, h.note])).toEqual([
+      ["noise", "admin1", undefined],
+      ["log", "op1", "a person fixes payments"],
+    ]);
+  });
+
+  it("whatever the status, but never on a retired incident", async () => {
+    for (const status of ["resolved", "ignored"]) {
+      await seedStatus(status);
+      await assertSucceeds(correct("op1", "fix"));
+    }
+    await env.withSecurityRulesDisabled((ctx) =>
+      setDoc(doc(ctx.firestore(), "incidents/i1"), { functionName: "mailDrainer", status: "new", retired: true, updatedAt: Timestamp.now() })
+    );
+    await assertFails(correct("op1"));
+  });
+
+  it("never without its history entry, nor with one that disagrees or already exists", async () => {
+    await assertFails(batch("op1", {}, null));
+    await assertFails(batch("op1", {}, { level: "fix" }));
+    await assertFails(batch("op1", { correctionNote: "a" }, { note: "b" }));
+    await assertFails(batch("op1", {}, { by: "admin1" }));
+    await assertSucceeds(batch("op1", {}, {}));
+    await assertFails(batch("op1", {}, {})); // the same entry id again: history can't be rewritten
+  });
+
+  it("can't name someone else, a level that isn't one, a backdated time, or carry anything else", async () => {
+    await assertFails(batch("op1", { correctedBy: "admin1" }, {}, "corr-0002"));
+    await assertFails(batch("op1", { correctedLevel: "page" }, { level: "page" }, "corr-0003"));
+    await assertFails(batch("op1", { correctedAt: Timestamp.fromMillis(0) }, {}, "corr-0004"));
+    await assertFails(batch("op1", { status: "resolved" }, {}, "corr-0005"));
+    await assertFails(batch("op1", { triageState: "x" }, {}, "corr-0006"));
+    await assertFails(batch("op1", { correctionNote: "n".repeat(301) }, { note: "n".repeat(301) }, "corr-0007"));
+  });
+
+  it("history entries are immutable", async () => {
+    await assertSucceeds(batch("op1", {}, {}));
+    await assertFails(updateDoc(doc(as("op1"), "incidents/i1/corrections/corr-0001"), { level: "noise" }));
+    await assertFails(deleteDoc(doc(as("admin1"), "incidents/i1/corrections/corr-0001")));
+  });
+
+  it("guests, role-less users and strangers can't correct or read the history", async () => {
+    await assertSucceeds(batch("op1", {}, {}));
+    for (const uid of ["nobody", "stranger"]) {
+      await assertFails(correct(uid));
+      await assertFails(getDoc(doc(as(uid), "incidents/i1/corrections/corr-0001")));
+    }
+    const guest = env.authenticatedContext("guest1", { firebase: { sign_in_provider: "anonymous" } }).firestore();
+    await assertFails(saveCorrection(guest, "incidents", "i1", "guest1", "log", ""));
+    await assertFails(getDoc(doc(guest, "incidents/i1/corrections/corr-0001")));
+    await assertFails(getDoc(doc(anon(), "incidents/i1/corrections/corr-0001")));
+  });
+
+  it("the page refuses a note that is too long or spans lines before writing", async () => {
+    await expect(correct("op1", "log", "n".repeat(301))).rejects.toThrow("at most 300");
+    await expect(correct("op1", "log", "two\nlines")).rejects.toThrow("one line");
   });
 });
 

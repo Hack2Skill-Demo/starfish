@@ -55,7 +55,7 @@ describe("SettingsEditor", () => {
     expect(field("Environment label").value).toBe("prod");
     expect(field("Environment label").disabled).toBe(false);
     expect(field("Watched project").disabled).toBe(true);
-    expect(screen.getAllByText("Using the engine's default.")).toHaveLength(14);
+    expect(screen.getAllByText("Using the engine's default.")).toHaveLength(15);
     expect(screen.getByText("Revision 2")).toBeInTheDocument();
   });
 
