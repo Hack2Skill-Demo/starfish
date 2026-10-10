@@ -347,6 +347,13 @@ export interface Step {
   at?: Date;
   /** Time since the step before it ended (or the cycle began): an event marks an end, not a start. */
   durationMs?: number;
+  /**
+   * A running step only: when the step before it ended (or the cycle began). The engine records a step's end, never its
+   * start, so a timer counted from this reads "since the step before", not "since this step started".
+   */
+  since?: Date;
+  /** Recorded beside the loop's own stages (the issue, the alert, telling a person...): not on the run's track. */
+  side?: true;
   /** Position on the run's time axis, as fractions of the whole. */
   offset?: number;
   width?: number;
@@ -409,7 +416,12 @@ export function buildWaterfall(cycle: CycleRow, events: readonly EventRow[], now
   let previousEnd = startMs;
   const steps: Step[] = stages.map((stage, i) => {
     const evs = byStage.get(stage);
-    if (!evs) return { stage, title: titleOf(stage), status: i === runningIdx ? "running" : "not-reached" };
+    if (!evs) {
+      return i === runningIdx
+        ? { stage, title: titleOf(stage), status: "running", since: new Date(previousEnd) }
+        : { stage, title: titleOf(stage), status: "not-reached" };
+    }
+    const side = i >= known.length;
     const last = evs[evs.length - 1]!;
     const end = last.at.getTime();
     const from = Math.min(previousEnd, end);
@@ -421,6 +433,7 @@ export function buildWaterfall(cycle: CycleRow, events: readonly EventRow[], now
       ...(last.type && { outcome: last.type }),
       ...(last.summary && { summary: last.summary }),
       at: last.at,
+      ...(side && { side: true as const }),
       durationMs: end - from,
       offset: (from - startMs) / span,
       width: (end - from) / span,
@@ -428,6 +441,48 @@ export function buildWaterfall(cycle: CycleRow, events: readonly EventRow[], now
   });
 
   return { steps, notes, startMs, endMs };
+}
+
+/** "0:07", "1:05", "1:02:09": a running timer. */
+export function formatClock(ms: number): string {
+  const s = Number.isFinite(ms) ? Math.max(0, Math.floor(ms / 1000)) : 0;
+  const two = (n: number) => String(n).padStart(2, "0");
+  return s < 3600 ? `${Math.floor(s / 60)}:${two(s % 60)}` : `${Math.floor(s / 3600)}:${two(Math.floor(s / 60) % 60)}:${two(s % 60)}`;
+}
+
+/** One day of the run list, by when each run was last updated, in the viewer's local time. */
+export interface RunDay {
+  key: string;
+  /** "Today", "Yesterday", or the date ("Thursday, Oct 8"; with the year when it is not this one). */
+  label: string;
+  cycles: CycleRow[];
+}
+
+const dayKey = (d: Date): string => `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
+
+/** The list's runs under one heading per day, keeping the order given (the list is newest-update first). */
+export function groupByDay(cycles: readonly CycleRow[], nowMs: number): RunDay[] {
+  const today = new Date(nowMs);
+  const yesterday = new Date(today.getFullYear(), today.getMonth(), today.getDate() - 1);
+  const label = (d: Date): string => {
+    const key = dayKey(d);
+    if (key === dayKey(today)) return "Today";
+    if (key === dayKey(yesterday)) return "Yesterday";
+    return d.toLocaleDateString(undefined, {
+      weekday: "long",
+      month: "short",
+      day: "numeric",
+      ...(d.getFullYear() !== today.getFullYear() && { year: "numeric" as const }),
+    });
+  };
+  const days = new Map<string, RunDay>();
+  for (const c of cycles) {
+    const key = dayKey(c.updatedAt);
+    const day = days.get(key) ?? { key, label: label(c.updatedAt), cycles: [] };
+    day.cycles.push(c);
+    days.set(key, day);
+  }
+  return [...days.values()];
 }
 
 /** "850 ms", "12 s", "3 min 5 s". */
