@@ -40,8 +40,8 @@
 # roles/firebaseauth.viewer; on the watched project roles/logging.viewer and roles/monitoring.viewer; on the Gemini project
 # roles/aiplatform.user (a project that is more than one of these may be granted the roles of each). Service accounts: it may create and read them (a custom role), never set their IAM policy,
 # except on the agent's own account with cloud-run-job. Secrets and buckets: only Starfish's, by name, through conditions.
-# What is still project-wide: Cloud Run, Cloud Build, Artifact Registry, Scheduler, Firestore and the rules (the table in
-# docs/deploy.md). Anyone who can change a workflow on a branch the `deploy` environment allows can use it: limit the
+# What is still project-wide: Cloud Run, Cloud Build, Artifact Registry, Scheduler, Firestore and the rules, and Hosting (the
+# table in docs/deploy.md). Anyone who can change a workflow on a branch the `deploy` environment allows can use it: limit the
 # environment to `main` and, if you want a person in the loop, add required reviewers. Written and tested by a dry run;
 # never run against a real project.
 set -euo pipefail
@@ -186,6 +186,11 @@ for role in roles/serviceusage.serviceUsageAdmin "$DEPLOYER_ROLE" roles/datastor
             roles/run.admin roles/cloudbuild.builds.editor roles/artifactregistry.admin roles/cloudscheduler.admin; do
   bind "$PROJECT_ID" "$role"
 done
+# The Deploy web UI workflow (scripts/deploy-web.sh, #265): read the site, see its linked app, release a build to it. Hosting
+# takes no condition on a site's name, so this is every Hosting site of the project, the watched app's included when it
+# shares the project. Not the Firebase app roles: creating the site and registering its web app is a one-time step from a
+# terminal (docs/deploy.md), so the deployer neither lists nor registers web apps.
+bind "$PROJECT_ID" roles/firebasehosting.admin
 # Secrets: Starfish's own, by name, and no other (the watched app's, when it shares the project, stay out of reach): the
 # GitHub token, the Slack on-call and #ops-alerts webhooks (#169), and Twilio's three for the phone escalation (#37).
 # Secret Manager names a secret by the project NUMBER.

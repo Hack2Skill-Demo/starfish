@@ -12,10 +12,15 @@ const script = new URL("./deploy-web.sh", import.meta.url).pathname;
 // A pnpm first on PATH that logs every call and answers only the two reads a dry run may make, from canned replies
 // (`site`: the hosting:sites:get reply; `apps`: the apps:list reply; either absent = that read fails, as when the
 // shell is not signed in). Anything else it is asked to do fails, and shows up in `calls`.
-function deploy(env, { site, apps } = {}) {
+function deploy(env, { site, apps, siteError } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "pnpm-stub-"));
   const log = join(dir, "calls");
-  const reply = (name, body) => {
+  const reply = (name, body, error) => {
+    // `error`: what the CLI prints with --json when the read is refused, before it exits 1.
+    if (error !== undefined) {
+      writeFileSync(join(dir, `${name}.err`), error);
+      return `cat "${join(dir, `${name}.err`)}"; exit 1`;
+    }
     if (body === undefined) return "exit 1";
     writeFileSync(join(dir, name), typeof body === "string" ? body : JSON.stringify(body));
     // pnpm dlx may print progress before the CLI's JSON; the script must cope.
@@ -27,7 +32,7 @@ function deploy(env, { site, apps } = {}) {
 echo "$*" >> "${log}"
 case "$*" in
   "run build") env > "${join(dir, "build-env")}"; exit 0 ;;
-  *"hosting:sites:get"*) ${reply("site.json", site)} ;;
+  *"hosting:sites:get"*) ${reply("site.json", site, siteError)} ;;
   *"apps:list WEB"*) ${reply("apps.json", apps)} ;;
 esac
 exit 1
@@ -169,6 +174,24 @@ describe("scripts/deploy-web.sh", () => {
       expect(r.status).not.toBe(0);
       expect(r.out).toContain("default Hosting site");
       expect(r.out).not.toContain("curl -X PATCH");
+    });
+
+    // #265: the deployer had no Hosting role, the read was refused, and the script went on as if the site were missing.
+    it("outside a dry run, stops on a site read refused for any reason but a 404, before touching apps or sites", () => {
+      const refused = JSON.stringify({ status: "error", error: "HTTP Error: 403, The caller does not have permission" });
+      const r = deploy({ PROJECT_ID: "star-proj" }, { siteError: refused, apps: appsReply });
+      expect(r.status).not.toBe(0);
+      expect(r.out).toContain("could not read Hosting site star-proj-starfish, and the reply was not a 404");
+      expect(r.out).toContain("roles/firebasehosting.admin");
+      expect(r.calls.some((c) => /apps:list|apps:create|sites:create|deploy --only/.test(c))).toBe(false);
+    });
+
+    it("outside a dry run, a 404 is a missing site: it goes on to Starfish's web app", () => {
+      const missing = JSON.stringify({ status: "error", error: "HTTP Error: 404, Requested entity was not found." });
+      const r = deploy({ PROJECT_ID: "star-proj" }, { siteError: missing });
+      expect(r.status).not.toBe(0); // the stub refuses apps:list, as Actions' deployer does
+      expect(r.calls.some((c) => c.includes("apps:list WEB"))).toBe(true);
+      expect(r.out).toContain("create and link the site once from a terminal");
     });
 
     it("refuses a site reply it cannot parse rather than guessing", () => {

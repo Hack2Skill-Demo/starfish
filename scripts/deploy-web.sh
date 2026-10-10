@@ -90,7 +90,7 @@ starfish_app() {
     echo "  (could not list the project's web apps; planning as if none is named starfish)"
     APP_ID=""
   else
-    die "could not list the web apps of $PROJECT_ID (firebase login?)"
+    die "could not list the web apps of $PROJECT_ID: firebase login? From GitHub Actions the deployer neither lists nor registers web apps: create and link the site once from a terminal (docs/deploy.md), and Actions redeploys it from then on"
   fi
   if [ -n "$APP_ID" ]; then echo "  (web app starfish: $APP_ID)"; return; fi
   if [ "$DRY_RUN" = "1" ]; then
@@ -136,6 +136,10 @@ if site_json="$("${FIREBASE[@]}" hosting:sites:get "$HOSTING_SITE" --project "$P
   SITE_APP="$(printf '%s' "$site_json" | node -e "$PICK" 'r && r.appId')" || die "could not read hosting:sites:get $HOSTING_SITE"
 elif [ "$DRY_RUN" = "1" ]; then
   echo "  (could not read the site: missing, or this shell is not signed in; planning as if missing)"
+elif ! printf '%s' "${site_json:-}" | grep -Eqi '(^|[^0-9])404([^0-9]|$)|not found'; then
+  # Only a 404 means "no such site". Any other failed read (a 403 from an account with no Hosting role, #265) is not
+  # taken as missing: that would go on to create a site that exists, or to register a web app, and fail there instead.
+  die "could not read Hosting site $HOSTING_SITE, and the reply was not a 404: firebase login? From GitHub Actions the deployer needs roles/firebasehosting.admin (scripts/setup-github-deploy.sh, docs/deploy.md)"
 fi
 
 if [ "$SITE_STATE" = "exists" ] && [ -n "$SITE_APP" ]; then
