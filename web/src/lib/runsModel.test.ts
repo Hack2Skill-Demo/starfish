@@ -338,6 +338,18 @@ describe("the live track", () => {
     expect(first.steps[0]).toMatchObject({ stage: "triage", status: "running", since: new Date(T0) });
   });
 
+  it("still runs the step after the last one done when a side stage was recorded meanwhile", () => {
+    const w = buildWaterfall(cycle(), [ev("triage", "decision", 16_000), ev("issue", "dry-run", 20_000)], T0 + 30_000);
+    expect(w.steps.map((s) => [s.stage, s.status])).toEqual([
+      ["triage", "done"],
+      ["fix", "running"],
+      ["verify", "not-reached"],
+      ["review", "not-reached"],
+      ["pr", "not-reached"],
+      ["issue", "done"],
+    ]);
+  });
+
   it("formats a running timer", () => {
     expect(formatClock(7_400)).toBe("0:07");
     expect(formatClock(65_000)).toBe("1:05");
