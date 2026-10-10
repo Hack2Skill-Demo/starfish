@@ -117,6 +117,13 @@ export interface StarfishConfig {
    */
   patchExcludedPaths: string[];
   /**
+   * Where the agent looks for the file that exports a failing function when no stack frame names a repository file
+   * (#259; src/agent/sourceByName.ts): repo-relative directories, e.g. `functions/src`. Empty (the default): the whole
+   * checkout, minus `node_modules`, tests and `patchExcludedPaths`. A repository with more code files than the search
+   * reads (2,000) finds nothing by name until this narrows it.
+   */
+  functionsSourceRoots: string[];
+  /**
    * Firestore collection of agent cycles: one document per (incident, recurrence), holding the
    * lease that stops two workers acting on the same cycle, with the cycle's run events in a
    * subcollection (src/agent/cycle.ts).
@@ -539,6 +546,7 @@ export function loadConfig(): StarfishConfig {
       ...DEFAULT_PATCH_EXCLUDED_PATHS,
       ...(parseList(process.env.STARFISH_PATCH_EXCLUDED_PATHS, ",") ?? []),
     ],
+    functionsSourceRoots: validSourceRoots(parseList(process.env.STARFISH_FUNCTIONS_SOURCE_ROOTS, ",") ?? []),
     // Validated like the other numbers (#129): 0, a negative or "24h" made every first run idle while
     // the status line said ok.
     defaultLookbackHours: positiveNumber(process.env.STARFISH_LOOKBACK_HOURS, 24, "STARFISH_LOOKBACK_HOURS"),
@@ -774,6 +782,20 @@ function validIndexFilePath(raw: string | undefined): string {
   const path = (raw ?? "").trim() || "firestore.indexes.json";
   if (!INDEX_FILE_PATH_RE.test(path)) throw new Error(`STARFISH_INDEX_FILE must be a plain relative .json path, got "${raw}"`);
   return path;
+}
+
+/**
+ * `STARFISH_FUNCTIONS_SOURCE_ROOTS`: repo-relative directories, `/`-separated. A leading `./` and trailing `/` are dropped;
+ * an absolute path, a `..` segment or a backslash throws at startup, since a root outside the checkout means nothing.
+ */
+function validSourceRoots(entries: string[]): string[] {
+  return entries.map((entry) => {
+    const root = entry.replace(/^(?:\.\/)+/, "").replace(/\/+$/, "");
+    if (root === "" || root === "." || root.startsWith("/") || root.includes("\\") || root.split("/").some((s) => s === "" || s === "." || s === "..")) {
+      throw new Error(`STARFISH_FUNCTIONS_SOURCE_ROOTS entry "${entry}" must be a directory inside the repository, like functions/src`);
+    }
+    return root;
+  });
 }
 
 /** `owner/name` entries, unchanged; a typo throws at startup rather than naming a repository nobody meant. */

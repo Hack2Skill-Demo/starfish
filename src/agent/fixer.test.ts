@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { FIX_SCHEMA, MAX_FILE_CHARS, MAX_FIX_PATCH_BYTES, MAX_TOTAL_SOURCE_CHARS, proposeFix, renderForFix, type FixRequest } from "./fixer.js";
+import { FIX_SCHEMA, FOUND_BY_NAME_NOTE, MAX_FILE_CHARS, MAX_FIX_PATCH_BYTES, MAX_TOTAL_SOURCE_CHARS, proposeFix, renderForFix, type FixRequest } from "./fixer.js";
 import type { AskJson } from "./triage.js";
 import { SEEDED_SECRETS } from "../ingest/testSecrets.js";
 import type { Incident } from "../types.js";
@@ -191,6 +191,14 @@ describe("what the fixer shows the model", () => {
     const prompt = renderForFix(request({ files }));
     expect(prompt.split("x").length - 1).toBeLessThanOrEqual(MAX_TOTAL_SOURCE_CHARS);
     expect(prompt).not.toContain("--- f9.ts ---");
+  });
+
+  it("says when the source was found by the function's name, not a stack frame (#259)", () => {
+    expect(renderForFix(request({ sourceRule: "function-name" }))).toContain(FOUND_BY_NAME_NOTE);
+    expect(renderForFix(request({ sourceRule: "stack" }))).not.toContain(FOUND_BY_NAME_NOTE);
+    expect(renderForFix(request())).not.toContain(FOUND_BY_NAME_NOTE);
+    // With no file shown there is nothing for the note to describe.
+    expect(renderForFix(request({ sourceRule: "function-name", files: [] }))).not.toContain(FOUND_BY_NAME_NOTE);
   });
 
   it("shows nothing beyond the files it was given", () => {

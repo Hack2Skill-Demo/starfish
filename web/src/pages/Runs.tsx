@@ -13,6 +13,7 @@ import { Link, useSearchParams } from "react-router";
 import { Check, Copy, CornerDownRight, ExternalLink, FileText, RotateCcw, Square, Workflow } from "lucide-react";
 import PageMeta from "../components/PageMeta";
 import SettingsUnavailableNotice from "../components/SettingsUnavailableNotice";
+import StoreReadHint from "../components/StoreReadHint";
 import { EngineStatus } from "../components/EngineStatus";
 import { RunAgentButton } from "../components/AdminActions";
 import { Badge } from "../components/ui/Badge";
@@ -164,8 +165,7 @@ export default function Runs() {
 
       {failed ? (
         <p role="alert" className="text-sm text-error-700 dark:text-error-400">
-          Couldn&apos;t read the runs. Check that firestore.rules and firestore.indexes.json are deployed to the
-          Starfish database.
+          Couldn&apos;t read the runs. <StoreReadHint />
         </p>
       ) : cycles === null ? (
         <p className="text-sm text-gray-600 dark:text-gray-400">Loading runs…</p>

@@ -170,6 +170,34 @@ describe("Overview page", () => {
     expect(await screen.findByText("Couldn't read the incidents.")).toBeInTheDocument();
   });
 
+  // #262: a UI deployed ahead of its rules or indexes read "couldn't be read" on every tile, with nothing to say why.
+  it("says what to check when a read fails, the hint the Runs page gives, and nothing when every read works", async () => {
+    renderPage();
+    act(() => mocks.cyclesCb!([], false));
+    act(() => mocks.eventsCb!([]));
+    await waitFor(() => expect(tile("Open incidents")).toHaveTextContent("0"));
+    expect(screen.queryByTestId("read-failure-hint")).toBeNull();
+
+    act(() => mocks.eventsErr!(new Error("failed-precondition: the query requires an index")));
+    const hint = screen.getByTestId("read-failure-hint");
+    expect(hint).toHaveTextContent("Some of this page couldn't be read.");
+    expect(hint).toHaveTextContent("Check that firestore.rules and firestore.indexes.json are deployed to the Starfish database.");
+    expect(hint).toHaveTextContent("An index deployed in the last few minutes may still be building");
+    expect(screen.getAllByTestId("read-failure-hint")).toHaveLength(1);
+  });
+
+  it("gives the hint when the incidents can't be read", async () => {
+    mocks.listIncidents.mockRejectedValue(new Error("denied"));
+    renderPage();
+    expect(await screen.findByTestId("read-failure-hint")).toBeInTheDocument();
+  });
+
+  it("gives the hint when the runs can't be read", () => {
+    renderPage();
+    act(() => mocks.cyclesErr!(new Error("denied")));
+    expect(screen.getByTestId("read-failure-hint")).toBeInTheDocument();
+  });
+
   it("stops showing the last figures once a read fails, instead of passing them off as current (#195)", async () => {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     mocks.listIncidents.mockResolvedValue({ rows: [incident(), incident({ id: "i2", status: "recurred", recurrenceCount: 1 })], capped: false });

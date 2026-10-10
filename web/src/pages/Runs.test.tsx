@@ -116,6 +116,8 @@ describe("Runs page", () => {
     renderRuns();
     act(() => mocks.cyclesErr!(new Error("denied")));
     expect(screen.getByRole("alert")).toHaveTextContent("Couldn't read the runs");
+    expect(screen.getByRole("alert")).toHaveTextContent("Check that firestore.rules and firestore.indexes.json are deployed");
+    expect(screen.getByRole("alert")).toHaveTextContent("may still be building");
   });
 
   it("lists runs, opens the newest, and draws a partial run's missing steps as not reached", () => {

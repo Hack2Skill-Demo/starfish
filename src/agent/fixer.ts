@@ -39,6 +39,11 @@ export interface FixRequest {
   subject: TriageSubject;
   /** Only these files are shown to the model. The caller chose them; the fixer does not look for more. */
   files: SourceFile[];
+  /**
+   * How the caller found `files` (#259). `function-name`: no stack frame named a repository file, and the file shown is
+   * the one that exports the failing function; the model is told so, since the fault may lie in code that file calls.
+   */
+  sourceRule?: "stack" | "function-name" | "none";
   /** From one failed verify run, when this is the revision round. */
   feedback?: { previousPatchSha256: string; verifyOutput: string };
 }
@@ -87,6 +92,10 @@ If the source you were given is not enough to fix the problem confidently, say s
 return an empty "patch". Guessing is worse than declining. Never touch CI configuration, credentials,
 or the files that define how the project is tested or verified.`;
 
+/** Said before source found by the function's name rather than by a stack frame (#259). */
+export const FOUND_BY_NAME_NOTE =
+  "(No stack frame named a repository file. The file below was chosen because it exports the failing function by name; the fault may be in code it calls, which you were not shown.)";
+
 export const FIX_SCHEMA = {
   type: "object",
   properties: {
@@ -102,6 +111,7 @@ export const FIX_SCHEMA = {
 /** What the model is shown. Source gets shape-only redaction: `token = getToken()` is code, not a leak. */
 export function renderForFix(req: FixRequest): string {
   const parts = [renderForTriage(req.subject), "", "SOURCE CONTEXT"];
+  if (req.sourceRule === "function-name" && req.files.length > 0) parts.push(FOUND_BY_NAME_NOTE, "");
   let budget = MAX_TOTAL_SOURCE_CHARS;
   for (const file of req.files) {
     if (budget <= 0) break;

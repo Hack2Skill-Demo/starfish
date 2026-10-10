@@ -69,6 +69,9 @@ SMOKE_ACTOR_UID=<admin uid> scripts/smoke-gcp.sh
 
 # 5. The operator UI, on its own Hosting site (not the project's default one).
 scripts/deploy-web.sh                          # prints https://<project>-starfish.web.app
+# It publishes the UI only, after step 2 has published firestore.rules and the indexes: it stops when the database's live
+# rules are not this repository's, or cannot be read (needs `gcloud` signed in), and warns about an index still building
+# (#262; ALLOW_RULES_DRIFT=1 deploys anyway, with a warning). So after changing the rules, redeploy the engine first.
 # It links the site to the web app named starfish (registering it if missing), so the page's init.json has an appId.
 # An existing site with no app is linked with the Hosting REST API, which needs `gcloud` signed in; not yet run on a
 # real project. If the page says "init.json is missing appId": console → Project settings → Your apps → starfish →

@@ -222,7 +222,10 @@ src/
                    structural cause since the recorded decision, or an incident closed mid-cycle and reopened (#227);
                    cooldown + cap per 24 h; never over ignored/resolved.
                    cycle.ts reopens the same cycle in the lease transaction, so still one issue and one PR per recurrence
-  agent/assemble.ts  one incident's inputs: shallow clone at a pinned revision, counter-check, samples, files the trace names
+  agent/assemble.ts  one incident's inputs: shallow clone at a pinned revision, counter-check, samples, files the trace names;
+                   when no frame names a repository file, the one file exporting the function's name (#259,
+                   `agent/sourceByName.ts`, `STARFISH_FUNCTIONS_SOURCE_ROOTS`; ambiguous or capped = none), the rule kept
+                   as `summary.fix.source`; never a structural cause (`causeFrame` reads the stack alone)
   scoreboard/      the results format (strict parser), the metrics (ratios keep numerator and denominator; an error or timeout counts
                    against the agent; each path apart) and the Markdown table: `pnpm scoreboard`. `replay.ts`/`corpus.ts` (`pnpm replay`) run
                    the loop's own stages over a frozen corpus with hidden evaluators and write a results file; no real run recorded

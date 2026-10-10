@@ -14,6 +14,8 @@
 #                         ingest now" and "Retire". Unset or empty: both are hidden
 #   VITE_STARFISH_STALE_MINUTES  how long after the last run the engine line says "stopped". Unset or empty: 90
 #   DRY_RUN=1             print the commands instead of running them
+#   ALLOW_RULES_DRIFT=1   deploy even when the live Firestore rules of STARFISH_DATABASE_ID are not this repository's
+#                         firestore.rules, or cannot be read (#262). Default: refuse, and say to run the engine deploy first
 #   VITE_STARFISH_APPCHECK_SITE_KEY  optional: build the UI with Firebase App Check (#12; web/.env.example). This only
 #                         makes the UI send tokens; turning ENFORCEMENT on is a separate, project-wide console step
 #                         (docs/setup.md), deliberately not done here. A debug token (VITE_STARFISH_APPCHECK_DEBUG_TOKEN),
@@ -32,7 +34,15 @@
 # app named "starfish" (registered if there is none); an existing site linked to no app is linked to it (Hosting REST
 # sites.patch, which needs `gcloud`; not yet run on a real project); a site already linked is left as it is (#156).
 #
-# Needs: `firebase login` (or Application Default Credentials in CI), and pnpm. Does NOT turn on Anonymous
+# The UI reads what firestore.rules allows and what firestore.indexes.json indexes, and a guest reads the trimmed copies
+# the engine writes; this script deploys none of them (scripts/deploy-gcp.sh does). So before it builds, it compares the
+# live rules release of Starfish's database with the repository's rules file (Firebase Rules REST API) and refuses when
+# they differ or cannot be read, and warns about any composite index that is not READY yet (Firestore Admin REST API):
+# a UI ahead of its rules or still-building indexes shows "couldn't be read" on every read the rules or an index refuse
+# (#262). A dry run prints these reads. Dry-run and stub tested; never run against Google.
+#
+# Needs: `firebase login` (or Application Default Credentials in CI), `gcloud` signed in (for the rules check), and
+# pnpm. Does NOT turn on Anonymous
 # sign-in: that is project-wide, so it is a decision for a person (docs/setup.md).
 set -euo pipefail
 
@@ -41,6 +51,7 @@ HOSTING_SITE="${HOSTING_SITE:-${PROJECT_ID:+$PROJECT_ID-starfish}}"
 STARFISH_ENV="${STARFISH_ENV:-dev}"
 STARFISH_DATABASE_ID="${STARFISH_DATABASE_ID:-starfish}"
 DRY_RUN="${DRY_RUN:-0}"
+ALLOW_RULES_DRIFT="${ALLOW_RULES_DRIFT:-0}"
 UPTIME_CHECK="${UPTIME_CHECK:-0}"
 UPTIME_NOTIFICATION_CHANNELS="${UPTIME_NOTIFICATION_CHANNELS:-}"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -63,6 +74,8 @@ if [ "$UPTIME_CHECK" = "1" ] && [ -n "$UPTIME_NOTIFICATION_CHANNELS" ]; then
   done
 fi
 [ "$STARFISH_DATABASE_ID" != "(default)" ] || die "the UI must read Starfish's own database, not (default)"
+# It goes into the rules and index URLs below: a Firestore database id is lowercase letters, digits and hyphens.
+[[ "$STARFISH_DATABASE_ID" =~ ^[a-z][a-z0-9-]*$ ]] || die "STARFISH_DATABASE_ID must be lowercase letters, digits and hyphens, starting with a letter: $STARFISH_DATABASE_ID"
 case "$HOSTING_SITE" in
   *[!a-z0-9-]*|-*|*-) die "HOSTING_SITE must be lowercase letters, digits and hyphens, not starting or ending with one: $HOSTING_SITE" ;;
 esac
@@ -72,6 +85,113 @@ run() {
   if [ "$DRY_RUN" = "1" ]; then printf '+'; printf ' %q' "$@"; printf '\n'; else "$@"; fi
 }
 FIREBASE=(pnpm dlx firebase-tools@14)
+
+# #262: this deploy publishes the UI only. The rules and indexes it needs, and the guests' trimmed copies, come from the
+# engine deploy (scripts/deploy-gcp.sh) and the engine. A UI published ahead of them reads "couldn't be read" wherever the
+# live rules or a missing (or still-building) index refuse its query, which on a guest's Overview is every tile.
+RULES_FILE="$(node -e '
+  const config = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+  const entries = [].concat(config.firestore ?? []);
+  if (entries.length !== 1 || typeof entries[0].rules !== "string") process.exit(2);
+  console.log(entries[0].rules);
+' "$REPO_ROOT/firebase.json")" || die "firebase.json must hold exactly one firestore entry that names its rules file"
+RULES_API="https://firebaserules.googleapis.com/v1"
+RELEASE_URL="$RULES_API/projects/$PROJECT_ID/releases/cloud.firestore/$STARFISH_DATABASE_ID"
+INDEXES_URL="https://firestore.googleapis.com/v1/projects/$PROJECT_ID/databases/$STARFISH_DATABASE_ID/collectionGroups/-/indexes?pageSize=1000"
+ENGINE_DEPLOY_HINT="run the engine deploy first (scripts/deploy-gcp.sh, or Actions → Deploy engine), which publishes $RULES_FILE and firestore.indexes.json to that database"
+
+# Refuses with the reason, unless ALLOW_RULES_DRIFT=1, which only warns.
+rules_drift() {
+  if [ "$ALLOW_RULES_DRIFT" = "1" ]; then
+    echo "  WARNING: $1"
+    echo "  (ALLOW_RULES_DRIFT=1: deploying anyway; reads the live rules refuse will show \"couldn't be read\")"
+  else
+    die "$1. To fix it, $ENGINE_DEPLOY_HINT; or set ALLOW_RULES_DRIFT=1 to deploy the UI anyway"
+  fi
+}
+
+# GETs a Google API URL into a file, the access token on stdin (-H @-) so it is never in curl's argv. Prints the HTTP
+# status, or 000 when there was no response.
+api_get() { # api_get <url> <file>
+  local code
+  code="$(printf 'Authorization: Bearer %s\n' "$TOKEN" | curl -sS -o "$2" -w '%{http_code}' -H @- \
+    -H "x-goog-user-project: $PROJECT_ID" "$1" 2>/dev/null)" || true
+  printf '%s' "${code:-000}"
+}
+
+# The check's replies sit in a scratch directory, removed however the script ends (a refusal exits from inside it).
+CHECK_TMP=""
+trap '[ -z "$CHECK_TMP" ] || rm -rf "$CHECK_TMP"' EXIT
+
+check_live_rules() {
+  local tmp code ruleset same
+  TOKEN="$(gcloud auth print-access-token 2>/dev/null || gcloud auth application-default print-access-token 2>/dev/null)" \
+    || { rules_drift "could not read the live rules of database $STARFISH_DATABASE_ID: no access token from gcloud (gcloud auth login?)"; return; }
+  tmp="$(mktemp -d)"
+  CHECK_TMP="$tmp"  # removed on exit, a refusal included
+  code="$(api_get "$RELEASE_URL" "$tmp/release.json")"
+  case "$code" in
+    200) ;;
+    404) rules_drift "no Firestore rules are released for database $STARFISH_DATABASE_ID in $PROJECT_ID"; return ;;
+    *) rules_drift "could not read the live rules release of database $STARFISH_DATABASE_ID (HTTP $code from $RELEASE_URL; reading it needs firebaserules.releases.get)"; return ;;
+  esac
+  ruleset="$(node -e '
+    const r = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+    if (typeof r.rulesetName !== "string" || !/^projects\/[a-z0-9-]+\/rulesets\/[A-Za-z0-9-]+$/.test(r.rulesetName)) process.exit(2);
+    console.log(r.rulesetName);
+  ' "$tmp/release.json" 2>/dev/null)" \
+    || { rules_drift "the live rules release of database $STARFISH_DATABASE_ID names no ruleset this script can read"; return; }
+  code="$(api_get "$RULES_API/$ruleset" "$tmp/ruleset.json")"
+  [ "$code" = "200" ] \
+    || { rules_drift "could not read the live ruleset $ruleset (HTTP $code; reading it needs firebaserules.rulesets.get)"; return; }
+  # The same when the ruleset holds one file whose text is the repository's (line endings aside); anything else differs.
+  same="$(node -e '
+    const fs = require("fs");
+    const files = JSON.parse(fs.readFileSync(process.argv[1], "utf8"))?.source?.files;
+    const text = (s) => String(s).replace(/\r\n/g, "\n");
+    const local = text(fs.readFileSync(process.argv[2], "utf8"));
+    console.log(Array.isArray(files) && files.length === 1 && text(files[0].content) === local ? "same" : "differs");
+  ' "$tmp/ruleset.json" "$REPO_ROOT/$RULES_FILE" 2>/dev/null)" || same="unreadable"
+  case "$same" in
+    same) echo "  (the live rules of database $STARFISH_DATABASE_ID are $RULES_FILE: $ruleset)" ;;
+    differs) rules_drift "the live rules of database $STARFISH_DATABASE_ID ($ruleset) are not this repository's $RULES_FILE" ;;
+    *) rules_drift "could not compare the live ruleset $ruleset with $RULES_FILE" ;;
+  esac
+
+  # Indexes: a warning only. A new composite index takes minutes to build, and until it is READY the query it serves
+  # is refused, so the page reads "couldn't be read" for that long. Only the first page of indexes is read.
+  code="$(api_get "$INDEXES_URL" "$tmp/indexes.json")"
+  if [ "$code" != "200" ]; then
+    echo "  WARNING: could not read the indexes of database $STARFISH_DATABASE_ID (HTTP $code), so not whether any is still building"
+  else
+    node -e '
+      const indexes = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).indexes ?? [];
+      const building = indexes.filter((i) => i.state !== "READY");
+      for (const i of building) {
+        const group = String(i.name ?? "").split("/collectionGroups/")[1]?.split("/")[0] ?? "?";
+        const fields = (i.fields ?? []).map((f) => f.fieldPath).filter((f) => f !== "__name__").join(", ");
+        console.log(`  WARNING: index on ${group} (${fields}) is ${i.state ?? "in an unknown state"}: queries it serves are refused until it is READY`);
+      }
+      if (building.length === 0) console.log(`  (all ${indexes.length} composite indexes are READY)`);
+    ' "$tmp/indexes.json" 2>/dev/null \
+      || echo "  WARNING: could not read the indexes' reply, so not whether any is still building"
+  fi
+}
+
+step "Firestore rules and indexes of database $STARFISH_DATABASE_ID: what this UI reads must be deployed (#262)"
+if [ "$DRY_RUN" = "1" ]; then
+  echo "+ curl -H 'Authorization: Bearer <gcloud access token>' -H 'x-goog-user-project: $PROJECT_ID' $RELEASE_URL"
+  echo "+ curl -H 'Authorization: Bearer <gcloud access token>' -H 'x-goog-user-project: $PROJECT_ID' $RULES_API/<the release's rulesetName>"
+  if [ "$ALLOW_RULES_DRIFT" = "1" ]; then
+    echo "  (the ruleset's source is compared with $RULES_FILE; ALLOW_RULES_DRIFT=1: a difference, or a read that fails, only warns)"
+  else
+    echo "  (the ruleset's source is compared with $RULES_FILE; a difference, or a read that fails, stops the deploy here)"
+  fi
+  echo "+ curl -H 'Authorization: Bearer <gcloud access token>' -H 'x-goog-user-project: $PROJECT_ID' $INDEXES_URL"
+  echo "  (a warning for each composite index not READY yet)"
+else
+  check_live_rules
+fi
 
 step "Build the UI (environment label: $STARFISH_ENV)"
 run env "VITE_STARFISH_ENV=${VITE_STARFISH_ENV:-$STARFISH_ENV}" "VITE_STARFISH_DATABASE_ID=${VITE_STARFISH_DATABASE_ID:-$STARFISH_DATABASE_ID}" pnpm run build
@@ -239,3 +359,8 @@ fi
 
 step "Done"
 if [ "$DRY_RUN" = "1" ]; then echo "Dry run: nothing was changed."; else echo "Live at https://$HOSTING_SITE.web.app"; fi
+if [ "${VITE_STARFISH_ENV:-$STARFISH_ENV}" = "demo" ]; then
+  # A guest reads only the trimmed copies the engine writes (#18); records stored before it wrote them have none.
+  echo "Guests read the trimmed copies the engine writes. For records stored before it did, with GOOGLE_CLOUD_PROJECT=$PROJECT_ID"
+  echo "and STARFISH_DATABASE_ID=$STARFISH_DATABASE_ID: pnpm public-view counts them, pnpm public-view -- --apply --project=$PROJECT_ID writes them"
+fi

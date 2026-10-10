@@ -323,6 +323,18 @@ describe("scripts/deploy-gcp.sh", () => {
     expect(deploy({ ...dry, RUN_AFTER_DEPLOY: "1" }).out).toContain("gcloud run jobs execute starfish-ingest");
   });
 
+  // #262: after the rules and indexes, it says an index takes minutes to build and how to backfill the guests' copies;
+  // it prints the backfill and never runs it.
+  it("after the rules, prints the guests' copies backfill and that an index takes minutes, and runs neither", () => {
+    const r = deploy(dry);
+    const after = r.out.slice(r.out.indexOf("deploy --only firestore"));
+    expect(after).toContain("a new index can take minutes to build");
+    expect(after).toContain("pnpm public-view -- --apply --project=star-proj");
+    expect(after).toContain("STARFISH_DATABASE_ID=starfish");
+    expect(r.out).not.toMatch(/^\+ .*public-view/m);
+    expect(deploy({ ...dry, SKIP_FIRESTORE_RULES: "1" }).out).not.toContain("public-view");
+  });
+
   describe("the switches that let Starfish act on its own (#174)", () => {
     // --update-env-vars keeps a name it is not given: a switch taken out of a list must be set back to off, not left on.
     const switches = {

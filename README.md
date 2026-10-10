@@ -59,6 +59,7 @@ Where it currently holds, and where it doesn't:
 | Phone escalation (#37): switch, recording, webhook origin, Twilio credentials, the on-call rota and policy | ⚠️ the deployment's switch and wiring are environment only (`STARFISH_PHONE_ESCALATION`, default off; `STARFISH_ONCALL_AUDIO_URL`; `STARFISH_TWILIO_WEBHOOK_URL`; `STARFISH_TWILIO_API_URL`; the collections `STARFISH_ONCALL_COLLECTION`, `STARFISH_ONCALL_PEOPLE_COLLECTION`, `STARFISH_ESCALATION_COLLECTION`); Twilio's account SID, auth token and from-number are secrets read on their own (`loadTwilioCredentials`), stored and mounted by `scripts/deploy-gcp.sh`. The people, their numbers and the policy (the admin's switch, the wait, quiet hours and time zone, the daily cap per person, what counts as critical) are edited by an admin in Settings -> On-call, in admin-only collections the rules name by their default names. The call order (primary, primary again after 2 minutes, secondary, support lead) is fixed in code. Built, tested against a fake Twilio and the emulator, never run against real Twilio |
 | Deployment: project, region, schedule, the watched and Gemini projects, the environment label | ✅ environment variables of `scripts/deploy-gcp.sh`; no file is edited. Run once, on the demo project (2026-10-05): the ingest job, its schedule, the database and rules deployed and a scheduled run succeeded (#6). The admin API (`DEPLOY_ADMIN_API=1`) was deployed once, on 2026-10-07; the agent job (`DEPLOY_AGENT=1`) has never been deployed. `.github/workflows/deploy.yml` runs the same script, by hand or (once a person turns it on) on a merge, with Workload Identity Federation and repository variables, no stored key; written and pinned by a test, **never run** (#75) |
 | Incident store | ❌ assumes Firestore |
+| Where the fixer's source is looked for when no stack frame names a repository file (#259) | ⚠️ environment only (`STARFISH_FUNCTIONS_SOURCE_ROOTS`, default the whole checkout); the search's bounds (2,000 code files, 20M characters) are fixed in code |
 | Verify-gate command, timeout and excluded paths | ⚠️ environment only (`STARFISH_VERIFY_COMMAND`, `STARFISH_VERIFY_TIMEOUT_SECONDS`, `STARFISH_PATCH_EXCLUDED_PATHS`); `src/agent/verifyGate.ts` reads them; in the isolated deployment only the verify job runs it (written, never run) |
 
 The ❌ rows are tracked work, not accepted limitations.
@@ -391,6 +392,16 @@ that isn't a unified diff, one over the size limit, or one that *adds* credentia
 and redacts what it shows and what it returns. It applies and runs nothing; the verify gate
 judges. Tested with a stubbed model; whether Gemini actually writes patches a human would is
 still the spike's open question, not something these tests can say.
+
+Which source it is shown comes from the stack trace's frames, matched against the repository's own file
+list. A callable that fails through `logger.error` or an `HttpsError` logs only firebase-functions' own
+frames, so for those the loader falls back to the function's name (#259, `src/agent/sourceByName.ts`):
+`orders-createOrder` -> the one file that defines `export const createOrder` (or `export function`, a
+local `export { … }`, `exports.createOrder =`), under `STARFISH_FUNCTIONS_SOURCE_ROOTS` (default: the whole
+checkout). Several such files that the group does not tell apart, or a repository larger than the search
+reads (2,000 code files), show nothing rather than a guess. The run record says which rule found the source
+(`summary.fix.source`: `stack`, `function-name` or `none`), and a file found by name never counts as a
+structural cause for auto-merge. Built and unit-tested; not yet run on a real incident.
 
 The **adversarial reviewer** (`src/agent/reviewer.ts`) is the fourth, same status. It refuses to
 review a patch unless the verify gate's result says `passed` *and* carries the hash of that
