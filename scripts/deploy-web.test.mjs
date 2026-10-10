@@ -254,7 +254,9 @@ describe("scripts/deploy-web.sh", () => {
         expect(r.out, says).toContain(says);
         expect(r.out, says).toContain("run the engine deploy first");
       }
-    });
+      // Six runs of the script: about 5 s alone on a laptop, and twice that when the whole suite runs beside it, past
+      // vitest's 5 s default (the same squeeze as preflight-gcp.test.mjs's two-run case).
+    }, 30_000);
 
     it("ALLOW_RULES_DRIFT=1 deploys anyway, with a warning", () => {
       const r = deploy({ ...real, ALLOW_RULES_DRIFT: "1" }, { google: deployed({ rules: "something else" }) });
