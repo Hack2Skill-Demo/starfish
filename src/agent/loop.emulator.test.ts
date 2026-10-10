@@ -16,7 +16,7 @@ import type { AlertRequest, NotifyRequest } from "../integrations/slack.js";
 import type { IssueRequest } from "../integrations/githubPr.js";
 import { acquireLease } from "./cycle.js";
 import { findStrandedCycles, selectCandidates } from "./pass.js";
-import { FIX_SYSTEM } from "./fixer.js";
+import { FIX_SYSTEM, FOUND_BY_NAME_NOTE } from "./fixer.js";
 import { verifyPatch } from "./verifyGate.js";
 import { REVIEW_SYSTEM } from "./reviewer.js";
 import { TRIAGE_SYSTEM, type AskJson } from "./triage.js";
@@ -255,6 +255,30 @@ describe("runCycle: the run record on the cycle", () => {
     expect(doc.summary.review).toMatchObject({ verdict: "approve", attacks: 1, held: 1, broken: 0 });
     expect(doc.summary.pr).toMatchObject({ opened: true, number: 7, url: "https://example.test/pull/7" });
     expect(doc.summary.verify.patchSha256).toBe(doc.summary.pr.patchSha256);
+  });
+
+  it("says which rule found the source the fixer was shown, and tells the fixer when it was the function's name (#259)", async () => {
+    const model = scripted({ triage: [act], fix: [fixOf(GOOD_PATCH)], review: [held] });
+    const base = deps(model);
+    const loaded = await base.load("inc1");
+    await runCycle({ ...base, load: async () => ({ ...loaded!, source: { rule: "function-name", search: "found" } }) }, key);
+    expect((await cycleDoc()).summary.fix).toMatchObject({ source: "function-name", sourceFiles: 1, sourceSearch: "found" });
+    expect(model.calls.find((c) => c.stage === "fix")!.prompt).toContain(FOUND_BY_NAME_NOTE);
+  });
+
+  it("records a stack-found source without a search, and nothing when the loader does not say", async () => {
+    const model = scripted({ triage: [act], fix: [fixOf(GOOD_PATCH)], review: [held] });
+    const base = deps(model);
+    const loaded = await base.load("inc1");
+    await runCycle({ ...base, load: async () => ({ ...loaded!, source: { rule: "stack" } }) }, key);
+    const fix = (await cycleDoc()).summary.fix;
+    expect(fix).toMatchObject({ source: "stack", sourceFiles: 1 });
+    expect(fix.sourceSearch).toBeUndefined();
+    expect(model.calls.find((c) => c.stage === "fix")!.prompt).not.toContain(FOUND_BY_NAME_NOTE);
+
+    cfg = randomUUID().slice(0, 8);
+    await runCycle(deps(scripted({ triage: [act], fix: [fixOf(GOOD_PATCH)], review: [held] })), key);
+    expect((await cycleDoc()).summary.fix.source).toBeUndefined();
   });
 
   it.each([

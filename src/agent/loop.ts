@@ -86,12 +86,15 @@ import { earlierMergeHolds, mergeRecordAtOpen } from "./autoMerge.js";
 import { INDEX_MERGE_CASE } from "../settingsSchema.js";
 import { capHolds, levelCap } from "../triageRules.js";
 import { sha256 } from "./reviewer.js";
+import type { SourceProvenance } from "./sourceByName.js";
 
 /** Everything about the incident the stages need, assembled by the caller (it owns the repo checkout). */
 export interface LoopSubject {
   subject: TriageSubject;
   /** The files shown to the fixer and the reviewer. */
   files: SourceFile[];
+  /** Which rule found `files` (#259): recorded on the run record as `summary.fix.source`. Absent: not known. */
+  source?: SourceProvenance;
   /** A checkout of the target repo at `baseRevision`, never modified. */
   sourceDir: string;
   baseRevision: string;
@@ -713,7 +716,10 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
       stop = (await halted()) ?? (await overBudget(loaded));
       if (stop) return stop;
       await spendModelCall();
-      const fix = await proposeFix({ subject: loaded.subject, files: loaded.files, ...(feedback && { feedback }) }, deps.ask);
+      const fix = await proposeFix(
+        { subject: loaded.subject, files: loaded.files, ...(loaded.source && { sourceRule: loaded.source.rule }), ...(feedback && { feedback }) },
+        deps.ask
+      );
       await note({
         stage: "fix",
         type: fix.outcome,
@@ -726,6 +732,9 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
           testAdded: fix.testAdded ?? null,
           risk: fix.risk ?? null,
           revisions,
+          // Which rule found the source the fixer was shown (#259): a file found by the function's name is weaker evidence.
+          ...(loaded.source && { source: loaded.source.rule, sourceFiles: loaded.files.length }),
+          ...(loaded.source?.search && { sourceSearch: loaded.source.search }),
           ...numbered("alternative", fix.rejectedAlternatives ?? [], MAX_RECORDED_ALTERNATIVES),
         },
       });

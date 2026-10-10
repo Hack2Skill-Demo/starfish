@@ -84,7 +84,7 @@ describe("toIncident", () => {
 function fakeDb(docs: Record<string, Record<string, unknown>>) {
   return { collection: () => ({ doc: (id: string) => ({ get: async () => ({ exists: id in docs, data: () => docs[id] }) }) }) } as unknown as Firestore;
 }
-const config = { environment: "demo", incidentCollection: "incidents", patchExcludedPaths: [], logResourceTypes: ["cloud_function"], ignoredMessages: [], excludedServices: [] };
+const config = { environment: "demo", incidentCollection: "incidents", patchExcludedPaths: [], functionsSourceRoots: [] as string[], logResourceTypes: ["cloud_function"], ignoredMessages: [], excludedServices: [] };
 const logging = (entries: unknown[] = []) => ({ getEntries: vi.fn(async () => [entries, null] as [unknown[], object | null]) });
 const checkoutFn = (): CheckoutFn => createGitCheckout(cfgRepo(), { env: loadChildProcessBasics(), tmpDir: scratch() });
 
@@ -99,8 +99,44 @@ describe("createLoader", () => {
     expect(s!.subject.incident).toMatchObject({ id: "i1", functionName: "orders-create", logCounterCheck: { count: 2, window: "24h" } });
     // Too big, binary and symlinked files are left out; the plain one is read.
     expect(s!.files).toEqual([{ path: "src/orders.ts", content: "export const x = 1;\n" }]);
+    expect(s!.source).toEqual({ rule: "stack" });
     await loader.disposeAll();
     expect(readdirSync(scratch())).toEqual([]);
+  });
+
+  // #259: a callable that fails through logger.error / HttpsError logs only firebase-functions' own frames.
+  const FRAMEWORK_STACK =
+    "Error: boom\n    at entryFromArgs (/workspace/node_modules/firebase-functions/lib/esm/logger/index.mjs:130:19)\n" +
+    "    at Object.error (/workspace/node_modules/firebase-functions/lib/esm/logger/index.mjs:116:11)\n" +
+    "    at /workspace/node_modules/firebase-functions/lib/esm/common/providers/https.mjs:400:20\n" +
+    "    at cors (/workspace/node_modules/cors/lib/index.js:188:7)";
+
+  it("falls back to the file that exports the function when no stack frame names a repository file (#259)", async () => {
+    const loader = createLoader({ db: fakeDb({ i1: { ...incident, functionName: "orders-x", stackTrace: FRAMEWORK_STACK } }), config, logging: logging(), checkout: checkoutFn(), maxFileBytes: 1000 });
+    const s = await loader.load("i1");
+    expect(s!.files).toEqual([{ path: "src/orders.ts", content: "export const x = 1;\n" }]);
+    expect(s!.source).toEqual({ rule: "function-name", search: "found" });
+    await loader.disposeAll();
+  });
+
+  it("says why the function-name search found nothing, and shows nothing then", async () => {
+    for (const [functionName, search, roots] of [
+      ["orders-createOrder", "no-export", []],
+      ["orders/x", "no-name", []],
+      ["orders-x", "no-export", ["functions/src"]],
+    ] as const) {
+      const loader = createLoader({
+        db: fakeDb({ i1: { ...incident, functionName, stackTrace: FRAMEWORK_STACK } }),
+        config: { ...config, functionsSourceRoots: [...roots] },
+        logging: logging(),
+        checkout: checkoutFn(),
+        maxFileBytes: 1000,
+      });
+      const s = await loader.load("i1");
+      expect(s!.files).toEqual([]);
+      expect(s!.source).toEqual({ rule: "none", search });
+      await loader.disposeAll();
+    }
   });
 
   it("says the counter-check is missing, not zero, when Logging fails", async () => {
