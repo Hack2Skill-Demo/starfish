@@ -14,6 +14,7 @@ import { Check, Copy, CornerDownRight, ExternalLink, FileText, RotateCcw, Square
 import PageMeta from "../components/PageMeta";
 import SettingsUnavailableNotice from "../components/SettingsUnavailableNotice";
 import { EngineStatus } from "../components/EngineStatus";
+import { RunAgentButton } from "../components/AdminActions";
 import { Badge } from "../components/ui/Badge";
 import { SyntheticBadge } from "../components/SyntheticBadge";
 import { EmptyState } from "../components/ui/EmptyState";
@@ -148,7 +149,10 @@ export default function Runs() {
       {settingsUnavailable && <SettingsUnavailableNotice environment={environment} subject="runs" />}
       <div className="space-y-4">
         <div>
-          <h1 className="text-3xl font-bold tracking-tight text-gray-900 dark:text-white">Runs</h1>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <h1 className="text-3xl font-bold tracking-tight text-gray-900 dark:text-white">Runs</h1>
+            <RunAgentButton />
+          </div>
           <p className="mt-2 max-w-3xl text-base text-gray-600 dark:text-gray-400">
             Every incident the engine picks up becomes a run, one per recurrence: it triages the error, may draft a fix,
             verifies and reviews it, and opens a pull request, or hands it to a person. Updated live as the engine records

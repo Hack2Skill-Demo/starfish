@@ -57,16 +57,18 @@ export interface JobStarterConfig {
 /** The environment variable the runner reads its request from. */
 export const REQUEST_ENV = "STARFISH_VERIFY_REQUEST";
 
-const NAME_RE = /^[a-z][a-z0-9-]{0,62}$/;
-const REGION_RE = /^[a-z]+-[a-z]+[0-9]+$/;
+/** What a Cloud Run job name, a region and a project id look like: each goes into the URL that is called (agentJob.ts shares them). */
+export const JOB_NAME_RE = /^[a-z][a-z0-9-]{0,62}$/;
+export const REGION_RE = /^[a-z]+-[a-z]+[0-9]+$/;
+export const PROJECT_ID_RE = /^[a-z][a-z0-9-]{4,28}[a-z0-9]$/;
 
 export function createCloudRunJobStarter(
   cfg: JobStarterConfig,
   deps: { token?: () => Promise<string>; fetch?: typeof fetch } = {}
 ): JobStarter {
-  if (!NAME_RE.test(cfg.jobName)) throw new VerifyRunnerError("STARFISH_VERIFY_JOB is not a Cloud Run job name");
+  if (!JOB_NAME_RE.test(cfg.jobName)) throw new VerifyRunnerError("STARFISH_VERIFY_JOB is not a Cloud Run job name");
   if (!REGION_RE.test(cfg.region)) throw new VerifyRunnerError("the verify job's region is not a region name");
-  if (!/^[a-z][a-z0-9-]{4,28}[a-z0-9]$/.test(cfg.projectId)) throw new VerifyRunnerError("the project id is not a project id");
+  if (!PROJECT_ID_RE.test(cfg.projectId)) throw new VerifyRunnerError("the project id is not a project id");
   const doFetch = deps.fetch ?? fetch;
   const token = deps.token ?? (async () => (await applicationDefault().getAccessToken()).access_token);
   const url = `https://run.googleapis.com/v2/projects/${cfg.projectId}/locations/${cfg.region}/jobs/${cfg.jobName}:run`;

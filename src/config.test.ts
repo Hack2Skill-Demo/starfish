@@ -497,6 +497,18 @@ describe("loadConfig: where a missing index may be created", () => {
     expect(JSON.stringify(loadConfig())).not.toContain("hooks.slack.com");
   });
 
+  it("names no agent job by default, so the admin API has no \"run agent now\"; the region follows the jobs' (#276)", () => {
+    for (const k of ["STARFISH_AGENT_JOB", "STARFISH_AGENT_JOB_REGION", "GOOGLE_CLOUD_LOCATION"]) vi.stubEnv(k, "");
+    expect(loadConfig()).toMatchObject({ agentJobName: "", agentJobRegion: "us-central1" });
+    vi.stubEnv("STARFISH_AGENT_JOB", " starfish-agent ");
+    vi.stubEnv("GOOGLE_CLOUD_LOCATION", "europe-west1");
+    expect(loadConfig()).toMatchObject({ agentJobName: "starfish-agent", agentJobRegion: "europe-west1" });
+    vi.stubEnv("STARFISH_AGENT_JOB_REGION", "asia-southeast1");
+    expect(loadConfig().agentJobRegion).toBe("asia-southeast1");
+    vi.stubEnv("STARFISH_AGENT_JOB_REGION", "  ");
+    expect(loadConfig().agentJobRegion).toBe("europe-west1");
+  });
+
   it("listens on PORT when Cloud Run sets it, and refuses nonsense", () => {
     expect(loadConfig().adminApiPort).toBe(8080);
     vi.stubEnv("PORT", "9090");

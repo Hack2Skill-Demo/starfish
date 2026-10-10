@@ -260,6 +260,14 @@ export interface StarfishConfig {
   /** The port the admin API listens on. Cloud Run sets `PORT`. */
   adminApiPort: number;
   /**
+   * The Cloud Run job an admin's "Run agent now" starts (src/agent/trigger.ts, #276): the deployed agent job, the one
+   * its schedule starts. Empty by default: the admin API then has no such route. Read by the admin API only; its
+   * account needs `roles/run.invoker` on that job (scripts/deploy-gcp.sh sets both when it deploys the two together).
+   */
+  agentJobName: string;
+  /** Region of that job. Defaults to `GOOGLE_CLOUD_LOCATION`, as the verify job's does. */
+  agentJobRegion: string;
+  /**
    * Require a valid Firebase App Check token (`X-Firebase-AppCheck`) on the admin API's POST routes, on top of the ID
    * token (#12). Off by default: turn it on only once the operator UI is built with an App Check site key
    * (`VITE_STARFISH_APPCHECK_SITE_KEY`), or every admin call is refused with the same 401 as a bad ID token.
@@ -572,6 +580,8 @@ export function loadConfig(): StarfishConfig {
     fastRevertGraceMinutes: positiveNumber(process.env.STARFISH_FAST_REVERT_GRACE_MINUTES, 10, "STARFISH_FAST_REVERT_GRACE_MINUTES"),
     adminApiOrigins: validOrigins(parseList(process.env.STARFISH_ADMIN_API_ORIGINS, ",") ?? []),
     adminApiPort: positiveNumber(process.env.PORT, 8080, "PORT"),
+    agentJobName: (process.env.STARFISH_AGENT_JOB ?? "").trim(),
+    agentJobRegion: textOr(process.env.STARFISH_AGENT_JOB_REGION, textOr(process.env.GOOGLE_CLOUD_LOCATION, "us-central1")),
     adminApiRequireAppCheck: parseBoolean(process.env.STARFISH_ADMIN_API_APPCHECK, false, "STARFISH_ADMIN_API_APPCHECK"),
     uiBaseUrl: validOrigins(parseList(process.env.STARFISH_UI_URL, ",") ?? [], "STARFISH_UI_URL")[0] ?? "",
     phoneEscalation: parseBoolean(process.env.STARFISH_PHONE_ESCALATION, false, "STARFISH_PHONE_ESCALATION"),

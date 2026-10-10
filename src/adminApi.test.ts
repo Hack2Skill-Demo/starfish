@@ -194,6 +194,83 @@ describe("admin API: routes", () => {
   });
 });
 
+describe("admin API: run agent now (#276)", () => {
+  const withAgent = (over: Partial<AdminApiDeps> = {}) => {
+    const started: string[] = [];
+    const f = fakes({ runAgent: (uid) => (started.push(uid), Promise.resolve({ ok: true as const })), ...over });
+    return { ...f, started };
+  };
+
+  it("is a 404 where no agent job is named, before any token is looked at", async () => {
+    const { api, calls } = fakes();
+    expect((await api(post("/api/agent/run"))).status).toBe(404);
+    expect((await api({ method: "POST", path: "/api/agent/run" })).status).toBe(404);
+    expect(calls).toEqual([]);
+  });
+
+  it("starts one pass for the token's uid and answers 202: accepted, not finished", async () => {
+    const { api, started } = withAgent();
+    const r = await api(post("/api/agent/run"));
+    expect(r.status).toBe(202);
+    expect(r.body).toEqual({ ok: true, started: true });
+    expect(started).toEqual(["admin-1"]);
+  });
+
+  it("needs the same token as every other route, and POST", async () => {
+    const { api, started } = withAgent();
+    const none = await api({ method: "POST", path: "/api/agent/run" });
+    expect(none.status).toBe(401);
+    expect(JSON.stringify(none.body)).toBe('{"error":"sign in again"}');
+    expect((await api({ method: "GET", path: "/api/agent/run", authorization: `Bearer ${TOKEN}` })).status).toBe(405);
+    expect(started).toEqual([]);
+  });
+
+  it("requires the App Check token too, where that is on", async () => {
+    const { api, started } = withAgent({ verifyAppCheck: (t) => (t === "a".repeat(40) ? Promise.resolve() : Promise.reject(new Error("bad"))) });
+    expect((await api(post("/api/agent/run"))).status).toBe(401);
+    expect((await api(post("/api/agent/run", { appCheck: "a".repeat(40) }))).status).toBe(202);
+    expect(started).toEqual(["admin-1"]);
+  });
+
+  it("refuses a caller who is not an admin with a 403, and a malformed uid with a 400", async () => {
+    const { api: notAdmin } = withAgent({ runAgent: () => Promise.resolve({ ok: false, reason: "not-admin" }) });
+    const r = await notAdmin(post("/api/agent/run"));
+    expect(r.status).toBe(403);
+    expect(r.body).toEqual({ error: "admins only" });
+    const { api: badId } = withAgent({ runAgent: () => Promise.resolve({ ok: false, reason: "invalid-id" }) });
+    expect((await badId(post("/api/agent/run"))).status).toBe(400);
+  });
+
+  it("answers 502 with no detail when the job could not be started, and starts one at a time", async () => {
+    const { api: refused } = withAgent({ runAgent: () => Promise.reject(new Error("Cloud Run answered 403 for sa-key=hunter2")) });
+    const r = await refused(post("/api/agent/run"));
+    expect(r.status).toBe(502);
+    expect(r.body).toEqual({ error: "the agent job could not be started" });
+    // The lock is released after a failed start.
+    expect((await refused(post("/api/agent/run"))).status).toBe(502);
+
+    let release: () => void = () => {};
+    const gate = new Promise<void>((res) => (release = res));
+    const { api } = withAgent({ runAgent: () => gate.then(() => ({ ok: true as const })) });
+    const first = api(post("/api/agent/run"));
+    expect((await api(post("/api/agent/run"))).status).toBe(409);
+    release();
+    expect((await first).status).toBe(202);
+    expect((await api(post("/api/agent/run"))).status).toBe(202);
+  });
+
+  it("does not hold up an ingest run, nor the other way round", async () => {
+    let release: () => void = () => {};
+    const gate = new Promise<void>((res) => (release = res));
+    const { api, started } = withAgent({ runIngest: () => gate.then(() => ({ ok: true as const, summary: SUMMARY })) });
+    const ingest = api(post("/api/ingest/run"));
+    expect((await api(post("/api/agent/run"))).status).toBe(202);
+    release();
+    expect((await ingest).status).toBe(200);
+    expect(started).toEqual(["admin-1"]);
+  });
+});
+
 describe("admin API: CORS", () => {
   it("allows exactly the configured origins, answers a preflight without a token, and sets nothing for others", async () => {
     const { api } = fakes();

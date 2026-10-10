@@ -598,12 +598,24 @@ mounted, the two opt-in routes too, admin-only and audited the same way (`sendCo
 |---|---|
 | `POST /api/ingest/run` | one ingest run, the same `runIngest` a tick runs; the answer is the run's counts. One at a time per instance (a second is a 409) |
 | `POST /api/incidents/<id>/retire` with `{"reason": "..."}` | closes the incident for good and frees its fingerprint, so the demo's reset can replay a fault |
+| `POST /api/agent/run` | starts the deployed agent job once (#276) and answers 202 when Cloud Run accepted the start; it does not wait for the pass. Only where the deploy named the job (below); otherwise a 404. One start at a time per instance (a second is a 409); a start Cloud Run refuses is a 502 |
 | `POST /api/oncall/people/<id>/send-code` | texts a six-digit code to that person's pending number (#37); at most one a minute |
 | `POST /api/oncall/people/<id>/confirm` with `{"code": "123456"}` | marks the number confirmed when the code matches; five wrong tries end it |
 | `GET /api/health` | `{ok:true}`, no token: the probe to use on Cloud Run. `GET /healthz` answers the same elsewhere, but on a `run.app` URL Google's front end answers it with its own 404 before it reaches the service (#212) |
 
+**Run agent now (#276).** When one run deploys both (`DEPLOY_ADMIN_API=1 DEPLOY_AGENT=1`), the script tells the admin API the
+agent job's name (`STARFISH_AGENT_JOB`) and gives its account `roles/run.invoker` on that one job, the role the scheduler's
+account has there. The admin API then starts the same job a schedule tick starts, with no override, so the pass runs as the
+agent's own account with the agent's own switches (dry run, the kill switch, auto-merge), caps and leases: an admin's click
+is one tick, early, and gives Starfish no way to act that a tick does not. The admin API holds none of the agent's
+credentials. A run without `DEPLOY_AGENT=1` sets the name empty, and the route is gone again; the grant on the job, if an
+earlier run made it, is left in place and can be removed by hand. Starts are not rate-limited beyond one in flight per
+instance: each is a job execution, bounded by the agent's own daily caps. Tested with stubs and the emulator, and pinned
+in the dry-run plan; **never run against real Cloud Run**.
+
 The audit trail is `starfish_audit` (`STARFISH_AUDIT_COLLECTION`): admin-readable, engine-written. An ingest run or a retire an
-admin made is recorded before the run or in the retire's own transaction (a refused one is not). The opt-in routes record every
+admin made is recorded before the run or in the retire's own transaction (a refused one is not). An agent start is recorded
+before the start (`run-agent`), so one Cloud Run then refused is still on record. The opt-in routes record every
 attempt by an admin, refusals included (too soon, wrong code, too many tries, escalation off); a caller who is not an
 admin is refused and not recorded, so a guest cannot fill the audit collection: who, which person, the outcome
 and when, never the number or the code. A send-code's entry commits before the text is sent, and if it cannot be written nothing
@@ -626,7 +638,8 @@ services will refuse the deploy line. Its name is in the default `STARFISH_EXCLU
 and the script warns if it leaves the service out (on a run that deploys it). From GitHub Actions, set the repository variables
 `STARFISH_DEPLOY_ADMIN_API=1` and `STARFISH_ADMIN_API_ORIGINS`.
 
-**The buttons.** The web UI shows an admin "Run ingest now" on the Incidents page and "Retire" on an incident, only when the site is
+**The buttons.** The web UI shows an admin "Run ingest now" on the Incidents page, "Run agent now" on the Runs page (it says the
+pass started, never that it finished; on a deployment with no agent job named it says so) and "Retire" on an incident, only when the site is
 built with `VITE_STARFISH_ADMIN_API_URL=<the service URL>` (a bad or non-https value shows nothing). They send the signed-in admin's
 ID token; the server re-checks the role, so hiding them from others is a courtesy and not the gate. A finished run reports the
 engine's own counts, a failed one says it failed. Order: deploy the service with `ADMIN_API_ORIGINS` set to the site, read its URL

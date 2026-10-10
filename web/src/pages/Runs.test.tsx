@@ -24,6 +24,8 @@ const mocks = vi.hoisted(() => ({
 vi.mock("../lib/useSettings", () => ({ useEnvironment: () => mocks.env }));
 vi.mock("../lib/incidents", () => ({ getIncident: mocks.getIncident }));
 vi.mock("../components/EngineStatus", () => ({ EngineStatus: ({ environment }: { environment: string }) => <div data-testid="engine">{environment}</div> }));
+// The button decides for itself who sees it (AdminActions.test.tsx); here only that the page offers it.
+vi.mock("../components/AdminActions", () => ({ RunAgentButton: () => <button type="button">Run agent now</button> }));
 vi.mock("../lib/runs", async (orig) => ({
   ...(await orig<typeof import("../lib/runs")>()),
   subscribeCycles: (_env: string, ok: CyclesCb, err: (e: Error) => void, max: number) => {
@@ -91,6 +93,11 @@ describe("Runs page", () => {
     const notice = screen.getByText(/Couldn't read the runtime settings/);
     expect(notice).toHaveTextContent("runs are filtered");
     expect(notice).toHaveTextContent("build-label");
+  });
+
+  it("offers the agent's \"run now\" beside the heading (#276)", () => {
+    renderRuns();
+    expect(screen.getByRole("button", { name: "Run agent now" })).toBeInTheDocument();
   });
 
   it("shows no settings notice when the settings read succeeded", () => {

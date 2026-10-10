@@ -102,7 +102,11 @@
 #                        runs ingest now and retires an incident for a caller holding a Firebase ID token AND the admin
 #                        role. It reuses the ingest job's image (no second build) and runs as its OWN account (#146),
 #                        which holds what an ingest run needs (the watched project's logs, Starfish's database) and no secret
-#                        but Twilio's, when STARFISH_TWILIO_* are given (#37)
+#                        but Twilio's, when STARFISH_TWILIO_* are given (#37). With DEPLOY_AGENT=1 in the same run it can
+#                        also START the agent job for an admin ("Run agent now", #276): it is told the job's name
+#                        (STARFISH_AGENT_JOB) and its account gets roles/run.invoker on that one job, nothing the agent
+#                        holds. Without DEPLOY_AGENT=1 the name is set empty, so the route is gone again. Neither
+#                        list may set STARFISH_AGENT_JOB: the name and the grant are made together, here
 #   ADMIN_SA_NAME        the admin API's service account. Default starfish-admin-api
 #   ADMIN_API_ORIGINS    the operator UI's origin(s), comma-separated, allowed to call it from a browser, e.g.
 #                        https://my-site.web.app. Empty: no browser may (a server-side caller is not affected). Always set
@@ -213,6 +217,13 @@ esac
 for var in EXTRA_ENV_VARS AGENT_EXTRA_ENV_VARS; do
   case "@${!var}" in
     *@STARFISH_MONITORING_ENABLED=*) die "$var may not set STARFISH_MONITORING_ENABLED: set STARFISH_MONITORING_ENABLED=true for the script, which also grants the role it needs" ;;
+  esac
+done
+# "Run agent now" (#276) needs a grant on the agent job that this script makes only where it names the job to the admin
+# API: named elsewhere, an admin's click would be refused by Cloud Run, or reach a job nobody meant.
+for var in EXTRA_ENV_VARS AGENT_EXTRA_ENV_VARS; do
+  case "@${!var}" in
+    *@STARFISH_AGENT_JOB=*|*@STARFISH_AGENT_JOB_REGION=*) die "$var may not set STARFISH_AGENT_JOB or STARFISH_AGENT_JOB_REGION: DEPLOY_ADMIN_API=1 with DEPLOY_AGENT=1 names the job to the admin API and grants the role it needs" ;;
   esac
 done
 # Where Gemini is called: VERTEX_LOCATION in src/settingsSchema.ts. It becomes part of the API's host name.
@@ -455,6 +466,12 @@ if [ "$DEPLOY_ADMIN_API" = "1" ]; then
     *@STARFISH_ADMIN_API_ORIGINS=*) [ -z "$ADMIN_API_ORIGINS" ] || ADMIN_ENV="$ADMIN_ENV@STARFISH_ADMIN_API_ORIGINS=$ADMIN_API_ORIGINS" ;;
     *) ADMIN_ENV="$ADMIN_ENV@STARFISH_ADMIN_API_ORIGINS=$ADMIN_API_ORIGINS" ;;
   esac
+  # "Run agent now" (#276): the admin API starts the agent job this run deploys. Always set, empty included, so a run
+  # without DEPLOY_AGENT=1 takes the route away again instead of leaving an earlier name in place (the #233 lesson).
+  # Set here and nowhere else (the lists are refused above), so the name and the grant on the job can't disagree.
+  ADMIN_AGENT_JOB=""
+  [ "$DEPLOY_AGENT" != "1" ] || ADMIN_AGENT_JOB="$AGENT_JOB_NAME"
+  ADMIN_ENV="$ADMIN_ENV@STARFISH_AGENT_JOB=$ADMIN_AGENT_JOB"
   unique_names "the admin API" "$ADMIN_ENV"
 fi
 
@@ -845,6 +862,12 @@ if [ "$DEPLOY_ADMIN_API" = "1" ]; then
   fi
   bind "$PROJECT_ID" "$ADMIN_SA" roles/datastore.user \
     "resource.name == \"$DB_RESOURCE\" || resource.name.startsWith(\"$DB_RESOURCE/\")"
+  # "Run agent now" (#276): may start the agent job, as the scheduler's account may, and nothing else of it. The grant
+  # is on that one job; the pass still runs as the agent's own account, with the agent's own switches.
+  if [ "$DEPLOY_AGENT" = "1" ]; then
+    retry gcloud run jobs add-iam-policy-binding "$AGENT_JOB_NAME" --region="$REGION" --project="$PROJECT_ID" \
+      --member="serviceAccount:$ADMIN_SA" --role=roles/run.invoker --quiet --format=none
+  fi
   # --allow-unauthenticated: a browser must reach it, so Cloud Run's own IAM check cannot be the gate. An organisation
   # policy that forbids public services will refuse this line, and then the admin API cannot serve a browser.
   # Capped instances and a cheap token check are the only limits on a stranger who calls it.

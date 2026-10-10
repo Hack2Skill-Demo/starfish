@@ -3,6 +3,8 @@
  * `starfish-admin` runs (scripts/deploy-gcp.sh, DEPLOY_ADMIN_API=1; written and dry-run tested, never run). The rules
  * are in src/adminApi.ts; this wires them to Firebase Auth, the store and the ingest, and, when Twilio's credentials
  * are mounted, to the phone escalation's opt-in routes and Twilio's webhooks (#37; never run against real Twilio).
+ * When the deploy names the agent job (`STARFISH_AGENT_JOB`), also to "Run agent now" (#276): it starts that job
+ * through Cloud Run and holds none of the agent's credentials (never run against real Cloud Run).
  */
 import { randomUUID } from "node:crypto";
 import { initializeApp } from "firebase-admin/app";
@@ -13,6 +15,8 @@ import { loadConfig, loadTwilioCredentials } from "./config.js";
 import { RuntimeConfigLoader } from "./runtimeSettings.js";
 import { triggerIngest } from "./ingest/trigger.js";
 import { retireIncident } from "./ingest/retire.js";
+import { createAgentJobStarter } from "./agent/agentJob.js";
+import { triggerAgentPass } from "./agent/trigger.js";
 import { createAdminApi } from "./adminApi.js";
 import { startAdminApiServer } from "./adminApiServer.js";
 import { createTwilioClient } from "./oncall/twilio.js";
@@ -28,6 +32,11 @@ const loader = new RuntimeConfigLoader(config);
 const twilioCredentials = loadTwilioCredentials();
 const twilio = twilioCredentials && createTwilioClient({ credentials: twilioCredentials, apiUrl: config.twilioApiUrl });
 const owner = `admin-api-${randomUUID().slice(0, 8)}`;
+// "Run agent now" (#276): wired only when the deploy names the agent job; otherwise its route is a 404. A name that
+// is not a job name throws here, at startup, rather than on an admin's first click.
+const startAgentJob = config.agentJobName
+  ? createAgentJobStarter({ projectId: config.projectId, region: config.agentJobRegion, jobName: config.agentJobName })
+  : null;
 
 const handle = createAdminApi({
   // A signature and expiry check against Google's public keys, and `checkRevoked` (#141): one Auth lookup per call, so
@@ -45,6 +54,23 @@ const handle = createAdminApi({
   }),
   runIngest: (uid) => triggerIngest(db, config, loader, uid),
   retire: (id, uid, reason) => retireIncident(db, config, id, uid, reason, new Date()),
+  ...(startAgentJob && {
+    runAgent: (uid: string) =>
+      triggerAgentPass(
+        db,
+        config,
+        async () => {
+          try {
+            await startAgentJob();
+          } catch (e) {
+            // The message names an HTTP status and a hint, never a token (agentJob.ts). The caller gets only a 502.
+            console.log(JSON.stringify({ severity: "ERROR", message: "admin API could not start the agent job", reason: e instanceof Error ? e.message : "unknown" }));
+            throw e;
+          }
+        },
+        uid
+      ),
+  }),
   allowedOrigins: config.adminApiOrigins,
   ...(twilio &&
     twilioCredentials && {
@@ -72,6 +98,6 @@ const handle = createAdminApi({
 
 const server = startAdminApiServer(handle, config.adminApiPort);
 console.log(
-  `admin api on :${config.adminApiPort}, ${config.adminApiOrigins.length} browser origin(s) allowed, App Check ${config.adminApiRequireAppCheck ? "required" : "not required"}, Twilio ${twilio ? "wired" : "not configured"}`
+  `admin api on :${config.adminApiPort}, ${config.adminApiOrigins.length} browser origin(s) allowed, App Check ${config.adminApiRequireAppCheck ? "required" : "not required"}, Twilio ${twilio ? "wired" : "not configured"}, agent job ${startAgentJob ? config.agentJobName : "not named"}`
 );
 process.on("SIGTERM", () => server.close());
