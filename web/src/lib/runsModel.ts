@@ -316,6 +316,7 @@ export interface RunFilter {
 const STATE_FILTERS: Record<string, { label: string; test: (c: CycleRow) => boolean }> = {
   "waiting-human": { label: "Waiting for a human", test: (c) => c.state === "waiting-human" },
   running: { label: "In progress, or waiting for a worker", test: (c) => c.state === "running" },
+  declined: { label: "Declined", test: (c) => c.state === "declined" },
 };
 
 /**
@@ -382,7 +383,7 @@ const OPTIONAL_STAGE_TITLES: Record<string, string> = {
   escalation: "Phone the on-call",
 };
 
-const titleOf = (stage: string): string =>
+export const titleOf = (stage: string): string =>
   [...KNOWN_STAGES, ...INDEX_STAGES].find((s) => s.stage === stage)?.title ?? OPTIONAL_STAGE_TITLES[stage] ?? stage;
 
 /**
@@ -441,6 +442,72 @@ export function buildWaterfall(cycle: CycleRow, events: readonly EventRow[], now
   });
 
   return { steps, notes, startMs, endMs };
+}
+
+/**
+ * One sentence on where the run stands, from what the engine recorded: the step a worker is on, or the path the run
+ * ended on and the last step of the run's track that has an event. Never a step the engine did not record.
+ */
+export function runSummary(cycle: CycleRow, steps: readonly Step[], nowMs: number): string {
+  const status = runStatus(cycle, nowMs);
+  const running = steps.find((s) => s.status === "running");
+  if (running) return `Working on ${running.title.toLowerCase()} now.`;
+  if (cycle.state === "running") return "No worker holds this run right now; the next pass picks it up.";
+  const lastDone = [...steps].reverse().find((s) => s.status === "done" && !s.side);
+  // The step a path is named for needs no "after" (a pull request opened after the pull request step).
+  const ownStep = (cycle.path === "pr" && lastDone?.stage === "pr") || (cycle.path === "index" && lastDone?.stage === "index");
+  const after = lastDone && !ownStep ? ` after ${lastDone.title.toLowerCase()}${lastDone.outcome ? ` (${lastDone.outcome})` : ""}` : "";
+  return `${cycle.path ? PATH_LABELS[cycle.path] : status.label}${after}.`;
+}
+
+/** One mark per stage of a run's track, for the list's small strip. */
+export type TrackMark = "done" | "running" | "none";
+
+/**
+ * The list reads only the cycle document, not its events, so a stage is marked done only on direct evidence there: its
+ * run record (`summary.<stage>`) or its being the last stage that wrote an event. Never filled in from the stage order,
+ * so a stage that ran without a record shows as a gap. The stage after the last marked one runs only while a worker
+ * holds the cycle.
+ */
+export function trackMarks(c: CycleRow, nowMs: number): TrackMark[] {
+  const stages = (isIndexCycle(c) ? INDEX_STAGES : KNOWN_STAGES).map((s) => s.stage as string);
+  const marks: TrackMark[] = stages.map((stage) => (c.summary[stage] !== undefined || c.stage === stage ? "done" : "none"));
+  if (runStatus(c, nowMs).live) {
+    const next = marks.lastIndexOf("done") + 1;
+    if (next < marks.length) marks[next] = "running";
+  }
+  return marks;
+}
+
+/** One frame of a stack trace written into an error message: the function and where it is. */
+export interface TraceFrame {
+  fn: string;
+  at: string;
+  /** In a dependency (node_modules) or Node itself, not the app's own code. */
+  library: boolean;
+}
+
+const FRAME_RE = /^([^\s()]+(?: \[as [^\]]+\])?) \(([^)]*)\)?$/;
+const LOCATION_RE = /^(?:file:|node:|https?:|\/|[A-Za-z]:\\)\S*$/;
+
+/**
+ * An error message that carries its own stack trace ("Error: x failed at fn (file:///…) at …"), split into the message and
+ * its frames, for display only. Split only when every piece after the first reads as a frame; anything else is left whole.
+ */
+export function splitTrace(message: string): { headline: string; frames: TraceFrame[] } {
+  const parts = message.split(/\s+at\s+(?=\S)/);
+  const whole = { headline: message.replace(/^Error:\s*/, ""), frames: [] };
+  if (parts.length < 2) return whole;
+  const frames: TraceFrame[] = [];
+  for (const part of parts.slice(1)) {
+    const text = part.trim();
+    const m = FRAME_RE.exec(text);
+    const fn = m ? m[1]! : LOCATION_RE.test(text) ? "" : null;
+    if (fn === null) return whole;
+    const at = m ? m[2]! : text;
+    frames.push({ fn, at, library: /(^|\/)node_modules\//.test(at) || at.startsWith("node:") });
+  }
+  return { headline: parts[0]!.replace(/^Error:\s*/, ""), frames };
 }
 
 /** "0:07", "1:05", "1:02:09": a running timer. */

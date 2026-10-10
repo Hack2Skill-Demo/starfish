@@ -7,10 +7,10 @@
  * Where the agent job (`DEPLOY_AGENT=1`, #74) has not run, this page is empty until it does; it says so instead of looking
  * like a quiet day. On the demo project it runs hourly since 2026-10-07 (in dry run until 2026-10-10).
  */
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useQueries } from "@tanstack/react-query";
 import { Link, useSearchParams } from "react-router";
-import { Check, ExternalLink, Workflow } from "lucide-react";
+import { Check, Copy, CornerDownRight, ExternalLink, FileText, RotateCcw, Square, Workflow } from "lucide-react";
 import PageMeta from "../components/PageMeta";
 import SettingsUnavailableNotice from "../components/SettingsUnavailableNotice";
 import { EngineStatus } from "../components/EngineStatus";
@@ -33,6 +33,11 @@ import {
   progressText,
   runFilter,
   runStatus,
+  runSummary,
+  splitTrace,
+  titleOf,
+  trackMarks,
+  type TrackMark,
   safeUrl,
   triageDecision,
   triageRule,
@@ -138,16 +143,19 @@ export default function Runs() {
   });
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-6">
       <PageMeta title="Runs | Starfish" description="Watch the agent work through each incident, step by step" />
       {settingsUnavailable && <SettingsUnavailableNotice environment={environment} subject="runs" />}
-      <div>
-        <h1 className="text-xl font-semibold text-gray-900 dark:text-white">Runs</h1>
-        <p className="mt-1 text-sm text-gray-600 dark:text-gray-400">
-          One run per incident and recurrence, updated live as the engine records each step. A step the engine has
-          not recorded reads &quot;not reached&quot;.
-        </p>
-        <div className="mt-2">{ready && <EngineStatus environment={environment} />}</div>
+      <div className="space-y-4">
+        <div>
+          <h1 className="text-3xl font-bold tracking-tight text-gray-900 dark:text-white">Runs</h1>
+          <p className="mt-2 max-w-3xl text-base text-gray-600 dark:text-gray-400">
+            Every incident the engine picks up becomes a run, one per recurrence: it triages the error, may draft a fix,
+            verifies and reviews it, and opens a pull request, or hands it to a person. Updated live as the engine records
+            each step; a step it has not recorded reads &quot;not reached&quot;.
+          </p>
+        </div>
+        {ready && <EngineStatus environment={environment} variant="card" />}
       </div>
 
       {failed ? (
@@ -167,14 +175,29 @@ export default function Runs() {
         </div>
       ) : (
         <>
-          {filter && (
-            <p className="text-sm text-gray-700 dark:text-gray-300" data-testid="path-filter">
-              {filter.lead} <strong>{filter.label}</strong> ({visible?.length ?? 0}).{" "}
-              <Link to="/runs" className="font-medium text-brand-700 hover:underline dark:text-brand-400">
-                Show all runs
-              </Link>
-            </p>
-          )}
+          <RunTiles cycles={cycles} params={params} capped={capped} shown={shown} />
+          <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
+            <h2 className="text-base font-semibold text-gray-900 dark:text-white">
+              {filter ? (
+                <span data-testid="path-filter">
+                  {filter.label} · {visible?.length ?? 0}
+                </span>
+              ) : (
+                `All runs · ${cycles.length}`
+              )}
+            </h2>
+            <span className="text-sm text-gray-600 dark:text-gray-400">
+              Newest first
+              {filter && (
+                <>
+                  {" · "}
+                  <Link to="/runs" className="font-medium text-brand-700 hover:underline dark:text-brand-400">
+                    Show all runs
+                  </Link>
+                </>
+              )}
+            </span>
+          </div>
           {visible && visible.length === 0 ? (
             <p className="text-sm text-gray-600 dark:text-gray-400">No recorded run matches this filter.</p>
           ) : (
@@ -191,7 +214,7 @@ export default function Runs() {
                 onSelect={select}
               />
               {selected ? (
-                <RunDetail cycle={selected} incident={incidents.get(selected.incidentId)} environment={environment} now={now} />
+                <RunDetail key={selected.id} cycle={selected} incident={incidents.get(selected.incidentId)} environment={environment} now={now} />
               ) : (
                 selectedId !== null && <LinkedRunMissing answer={linkedAnswer} />
               )}
@@ -237,6 +260,12 @@ function StatusBadge({ status }: { status: RunStatus }) {
   );
 }
 
+const MARK: Record<TrackMark, string> = {
+  done: "bg-brand-600 dark:bg-brand-400",
+  running: "bg-info-500 motion-safe:animate-pulse dark:bg-info-400",
+  none: "bg-gray-200 dark:bg-gray-700",
+};
+
 function RunList({
   cycles,
   incidents,
@@ -280,7 +309,7 @@ function RunList({
                     type="button"
                     aria-current={current ? "true" : undefined}
                     onClick={() => onSelect(c.id)}
-                    className={`w-full rounded-lg border p-3 text-left ${
+                    className={`w-full rounded-xl border p-4 text-left ${
                       current
                         ? "border-brand-500 bg-brand-50 dark:border-brand-400 dark:bg-brand-500/10"
                         : "border-gray-200 bg-white hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-800 dark:hover:bg-gray-700"
@@ -296,14 +325,25 @@ function RunList({
                       </span>
                     </div>
                     {incident && (
-                      <p className="mt-1 truncate text-xs text-gray-600 dark:text-gray-400" title={`${incident.errorType}: ${incident.errorMessage}`}>
-                        {incident.errorType}{incident.errorMessage ? `: ${incident.errorMessage}` : ""}
+                      <p className="mt-1.5 truncate text-xs text-gray-600 dark:text-gray-400" title={`${incident.errorType}: ${incident.errorMessage}`}>
+                        <span className="font-mono text-gray-900 dark:text-gray-100">{incident.errorType}</span>
+                        {incident.errorMessage ? ` · ${splitTrace(incident.errorMessage).headline}` : ""}
                       </p>
                     )}
-                    <div className="mt-1 flex flex-wrap gap-x-3 text-xs text-gray-600 dark:text-gray-400">
-                      {c.recurrence > 0 && <span>recurrence {c.recurrence}</span>}
-                      <span>{formatRelativeTime(c.updatedAt)}</span>
+                    <div className="mt-3 flex items-center gap-3">
+                      <span className="flex min-w-0 flex-1 gap-1" aria-hidden>
+                        {trackMarks(c, now).map((m, i) => (
+                          <span key={i} className={`h-1.5 flex-1 rounded-full ${MARK[m]}`} />
+                        ))}
+                      </span>
+                      <span className="shrink-0 text-xs text-gray-600 dark:text-gray-400">{formatRelativeTime(c.updatedAt)}</span>
                     </div>
+                    {((c.stage && c.stage !== "cycle") || c.recurrence > 0) && (
+                      <div className="mt-1.5 flex flex-wrap gap-x-3 text-xs text-gray-600 dark:text-gray-400">
+                        {c.stage && c.stage !== "cycle" && <span>Last step: {titleOf(c.stage)}</span>}
+                        {c.recurrence > 0 && <span>recurrence {c.recurrence}</span>}
+                      </div>
+                    )}
                   </button>
                 </li>
               );
@@ -343,147 +383,290 @@ function RunDetail({ cycle, incident, environment, now }: { cycle: CycleRow; inc
   }, [cycle.id, environment]);
 
   const status = runStatus(cycle, now);
-  // While a worker holds the run, its timer and time bar move every second; otherwise the page's own tick is enough.
-  const tick = useNow(status.live ? 1000 : TICK_MS);
+  // A replay plays the events the engine recorded back at their recorded pace (faster for a long run), as if a worker
+  // held the run. It is labelled a replay everywhere it shows, and it draws nothing the events do not hold.
+  const [replay, setReplay] = useState<{ startMs: number; speed: number } | null>(null);
+  // While a worker holds the run, or it replays, the timer and time bar move every second; otherwise the page's tick.
+  const tick = useNow(status.live || replay ? 1000 : TICK_MS);
   const clock = Math.max(now, tick);
+  const startMs = cycle.createdAt.getTime();
+  const lastMs = events && events.length > 0 ? Math.max(...events.map((e) => e.at.getTime())) : startMs;
+  const spanMs = lastMs - startMs;
+  const replayAt = replay ? startMs + Math.max(0, clock - replay.startMs) * replay.speed : null;
+  const replaying = replay !== null && replayAt !== null && replayAt < lastMs;
+  const canReplay = !status.live && events !== null && spanMs > 0;
+  const toggleReplay = () =>
+    setReplay(replaying ? null : { startMs: Date.now(), speed: spanMs > 90_000 ? Math.ceil(spanMs / 60_000) : 1 });
+  const asLive: CycleRow | null =
+    replaying && replayAt !== null ? { ...cycle, state: "running", leaseExpiresAt: new Date(replayAt + 60_000), updatedAt: new Date(replayAt) } : null;
+  const trackClock = asLive && replayAt !== null ? replayAt : clock;
   const rule = triageRule(cycle);
   const decision = triageDecision(cycle);
   const prUrl = safeUrl(cycle.summary.pr?.url);
   const prNow = prStateView(cycle, now);
   const indexNow = indexRuntimeView(cycle);
-  const water = useMemo(() => (events ? buildWaterfall(cycle, events, clock) : null), [cycle, events, clock]);
+  const water = useMemo(() => {
+    if (!events) return null;
+    if (asLive && replayAt !== null) return buildWaterfall(asLive, events.filter((e) => e.at.getTime() <= replayAt), replayAt);
+    return buildWaterfall(cycle, events, clock);
+  }, [cycle, events, clock, asLive, replayAt]);
+
+  const speed = replay?.speed ?? 1;
+  const shownStatus = asLive ? { label: speed > 1 ? `Replaying · ${speed}×` : "Replaying", tone: "info" as const, live: true } : status;
+  const summary = !water
+    ? status.label
+    : asLive && replayAt !== null
+      ? `Replaying the recorded run${speed > 1 ? ` at ${speed}× speed` : ""}. ${runSummary(asLive, water.steps, replayAt)}`
+      : runSummary(cycle, water.steps, clock);
+  const trace = incident?.errorMessage ? splitTrace(incident.errorMessage) : null;
+  // A run that ended with a person: drawn as a branch off the last step of its track that has an event.
+  const handoff = !asLive && !status.live && cycle.state !== "running" && (cycle.path === "human" || cycle.path === "notify") ? PATH_LABELS[cycle.path] : undefined;
 
   return (
-    <section aria-label="Run detail" className="space-y-4 rounded-lg border border-gray-200 bg-white p-4 dark:border-gray-700 dark:bg-gray-800">
-      <header className="space-y-1">
-        <div className="flex flex-wrap items-center gap-2">
-          <h2 className={`min-w-0 break-words text-sm font-semibold text-gray-900 dark:text-white ${incident ? "" : "font-mono"}`}>
-            {incident?.functionName ?? cycle.incidentId}
-          </h2>
-          <StatusBadge status={status} />
-          {cycle.synthetic && <SyntheticBadge />}
+    <section aria-label="Run detail" className="space-y-6 rounded-xl border border-gray-200 bg-white p-5 sm:p-6 dark:border-gray-700 dark:bg-gray-800">
+      <header className="flex flex-wrap items-start gap-4">
+        <div className="min-w-0 flex-1 basis-80 space-y-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <h2 className={`min-w-0 break-words text-2xl font-bold tracking-tight text-gray-900 dark:text-white ${incident ? "" : "font-mono"}`}>
+              {incident?.functionName ?? cycle.incidentId}
+            </h2>
+            <StatusBadge status={shownStatus} />
+            {cycle.synthetic && <SyntheticBadge />}
+          </div>
+          <p className="text-base text-gray-700 dark:text-gray-300" data-testid="run-summary">{summary}</p>
         </div>
-        {cycle.trimmed && (
-          <p className="text-xs text-gray-600 dark:text-gray-400" data-testid="trimmed-note">
-            Public view: a trimmed copy of the run. The model&apos;s own words and each step&apos;s details are left out of it.
-          </p>
-        )}
-        {incident && (
-          <p className="break-words text-sm text-gray-600 dark:text-gray-400">
-            {incident.errorType}{incident.errorMessage ? `: ${incident.errorMessage}` : ""}
-          </p>
-        )}
-        <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-sm text-gray-700 dark:text-gray-300">
-          {incident && (
-            <>
-              <dt className="text-gray-600 dark:text-gray-400">Incident ID</dt>
-              <dd className="break-all font-mono text-xs">{cycle.incidentId}</dd>
-            </>
+        <div className="flex flex-wrap gap-2">
+          {canReplay && (
+            <button
+              type="button"
+              onClick={toggleReplay}
+              className="inline-flex min-h-11 items-center gap-2 rounded-lg border border-gray-200 px-4 text-sm font-medium text-gray-900 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-100 dark:hover:bg-gray-700"
+            >
+              {replaying ? <Square className="h-4 w-4" aria-hidden /> : <RotateCcw className="h-4 w-4" aria-hidden />}
+              {replaying ? "Stop replay" : "Replay this run"}
+            </button>
           )}
-          {cycle.path && (
-            <>
-              <dt className="text-gray-600 dark:text-gray-400">Path</dt>
-              <dd>{PATH_LABELS[cycle.path]}</dd>
-            </>
+          <Link
+            to={`/incidents/${encodeURIComponent(cycle.incidentId)}`}
+            className="inline-flex min-h-11 items-center gap-2 rounded-lg border border-gray-200 px-4 text-sm font-medium text-gray-900 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-100 dark:hover:bg-gray-700"
+          >
+            <FileText className="h-4 w-4" aria-hidden />
+            Evidence for this incident
+          </Link>
+          {prUrl && (
+            <a
+              href={prUrl}
+              target="_blank"
+              rel="noreferrer noopener"
+              className="inline-flex min-h-11 items-center gap-2 rounded-lg border border-gray-200 px-4 text-sm font-medium text-gray-900 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-100 dark:hover:bg-gray-700"
+            >
+              Pull request #{String(cycle.summary.pr?.number ?? "")} <ExternalLink className="h-3.5 w-3.5" aria-hidden />
+            </a>
           )}
-          {decision && (
-            <>
-              <dt className="text-gray-600 dark:text-gray-400">Decision</dt>
-              <dd>
+        </div>
+      </header>
+
+      <section aria-label="Pipeline" className="space-y-4">
+        <div className="flex flex-wrap items-baseline justify-between gap-2">
+          <h3 className={SECTION_TITLE}>Pipeline</h3>
+          {water && <span className="text-sm text-gray-600 dark:text-gray-400">{progressText(water.steps)}</span>}
+        </div>
+        {failed ? (
+          <p role="alert" className="text-sm text-error-700 dark:text-error-400">
+            Couldn&apos;t read this run&apos;s events.
+          </p>
+        ) : !water ? (
+          <p className="text-sm text-gray-600 dark:text-gray-400">Loading steps…</p>
+        ) : (
+          <>
+            <StepTrack steps={water.steps.filter((s) => !s.side)} clock={trackClock} handoff={handoff} />
+            <SideSteps steps={water.steps.filter((s) => s.side)} />
+            <TimeBar
+              water={water}
+              live={status.live || asLive !== null}
+              clock={trackClock}
+              label={asLive && replayAt !== null ? `Replaying · ${formatClock(replayAt - startMs)} of ${formatClock(spanMs)}` : undefined}
+            />
+          </>
+        )}
+      </section>
+
+      <div className="flex flex-wrap gap-6">
+        {incident && trace && <WhatFailed errorType={incident.errorType} raw={incident.errorMessage} trace={trace} />}
+        <section aria-label="Run facts" className="min-w-0 flex-[2_1_16rem] space-y-3">
+          <h3 className={SECTION_TITLE}>Run facts</h3>
+          <dl className="divide-y divide-gray-200 overflow-hidden rounded-lg border border-gray-200 text-sm dark:divide-gray-700 dark:border-gray-700">
+            <Fact label="Incident ID">
+              <span className="flex items-center justify-end gap-2">
+                <span className="break-all font-mono text-xs">{cycle.incidentId}</span>
+                <CopyButton text={cycle.incidentId} />
+              </span>
+            </Fact>
+            {cycle.path && <Fact label="Path">{PATH_LABELS[cycle.path]}</Fact>}
+            {decision && (
+              <Fact label="Decision">
                 {decision.label}
                 {decision.mergeCase && <span className="ml-1 font-mono text-xs">({decision.mergeCase})</span>}
                 {decision.heldBy && <span className="block text-xs text-gray-600 dark:text-gray-400">{decision.heldBy}</span>}
-              </dd>
-            </>
-          )}
-          {rule && (
-            <>
-              <dt className="text-gray-600 dark:text-gray-400">Triage rule</dt>
-              <dd className="font-mono text-xs">{rule}</dd>
-            </>
-          )}
-          {cycle.outcome && (
-            <>
-              <dt className="text-gray-600 dark:text-gray-400">Outcome</dt>
-              <dd>{cycle.outcome}</dd>
-            </>
-          )}
-          {indexNow && (
-            <>
-              <dt className="text-gray-600 dark:text-gray-400">Index at runtime</dt>
-              <dd>
+              </Fact>
+            )}
+            {rule && (
+              <Fact label="Triage rule">
+                <span className="font-mono text-xs">{rule}</span>
+              </Fact>
+            )}
+            {cycle.outcome && (
+              <Fact label="Outcome">
+                <span className="font-mono text-xs">{cycle.outcome}</span>
+              </Fact>
+            )}
+            {indexNow && (
+              <Fact label="Index at runtime">
                 <Badge tone={indexNow.tone}>{indexNow.text}</Badge>
-                {indexNow.until && <span className="ml-2 text-xs text-gray-600 dark:text-gray-400">until {indexNow.until.toISOString()}</span>}
-              </dd>
-            </>
-          )}
-          {prNow && (
-            <>
-              <dt className="text-gray-600 dark:text-gray-400">Pull request now</dt>
-              <dd>
+                {indexNow.until && <span className="block text-xs text-gray-600 dark:text-gray-400">until {indexNow.until.toISOString()}</span>}
+              </Fact>
+            )}
+            {prNow && (
+              <Fact label="Pull request now">
                 <Badge tone={prNow.tone}>{prNow.text}</Badge>
                 {prNow.checkedAt && (
-                  <span className="ml-2 text-xs text-gray-600 dark:text-gray-400">read from GitHub {formatRelativeTime(prNow.checkedAt, "never", now)}</span>
+                  <span className="block text-xs text-gray-600 dark:text-gray-400">read from GitHub {formatRelativeTime(prNow.checkedAt, "never", now)}</span>
                 )}
-              </dd>
-            </>
-          )}
-          {water && (
-            <>
-              <dt className="text-gray-600 dark:text-gray-400">Progress</dt>
-              <dd>{progressText(water.steps)}</dd>
-            </>
-          )}
-          <dt className="text-gray-600 dark:text-gray-400">Started</dt>
-          <dd>
-            {formatDateTime(cycle.createdAt)}, attempt {cycle.attempts}
-          </dd>
-        </dl>
-        <Link
-          to={`/incidents/${encodeURIComponent(cycle.incidentId)}`}
-          className="mr-4 inline-flex items-center gap-1 text-sm font-medium text-brand-700 hover:underline dark:text-brand-400"
-        >
-          Evidence for this incident
-        </Link>
-        {prUrl && (
-          <a
-            href={prUrl}
-            target="_blank"
-            rel="noreferrer noopener"
-            className="inline-flex items-center gap-1 text-sm font-medium text-brand-700 hover:underline dark:text-brand-400"
-          >
-            Pull request #{String(cycle.summary.pr?.number ?? "")} <ExternalLink className="h-3 w-3" aria-hidden />
-          </a>
-        )}
-      </header>
+              </Fact>
+            )}
+            <Fact label="Started">{formatDateTime(cycle.createdAt)}</Fact>
+            <Fact label="Attempt">{cycle.attempts}</Fact>
+          </dl>
+        </section>
+      </div>
 
-      {failed ? (
-        <p role="alert" className="text-sm text-error-700 dark:text-error-400">
-          Couldn&apos;t read this run&apos;s events.
+      {water && <StepLog steps={water.steps.filter((s) => s.status === "done")} prUrl={prUrl} />}
+      {water && water.notes.length > 0 && (
+        <div>
+          <h3 className={SECTION_TITLE}>Cycle notes</h3>
+          <ul className="mt-2 space-y-1 text-sm text-gray-700 dark:text-gray-300">
+            {water.notes.map((n) => (
+              <li key={n.id}>
+                <span className="text-xs text-gray-600 dark:text-gray-400">{formatDateTime(n.at)}</span> {n.summary}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {cycle.trimmed && (
+        <p className="border-t border-gray-200 pt-4 text-xs text-gray-600 dark:border-gray-700 dark:text-gray-400" data-testid="trimmed-note">
+          Public view: a trimmed copy of the run. The model&apos;s own words and each step&apos;s details are left out of it.
         </p>
-      ) : !water ? (
-        <p className="text-sm text-gray-600 dark:text-gray-400">Loading steps…</p>
-      ) : (
-        <>
-          <StepTrack steps={water.steps.filter((s) => !s.side)} clock={clock} />
-          <SideSteps steps={water.steps.filter((s) => s.side)} />
-          <TimeBar water={water} live={status.live} clock={clock} />
-          <StepLog steps={water.steps.filter((s) => s.status === "done")} prUrl={prUrl} />
-          {water.notes.length > 0 && (
-            <div>
-              <h3 className="text-sm font-medium text-gray-900 dark:text-white">Cycle notes</h3>
-              <ul className="mt-1 space-y-1 text-sm text-gray-700 dark:text-gray-300">
-                {water.notes.map((n) => (
-                  <li key={n.id}>
-                    <span className="text-xs text-gray-600 dark:text-gray-400">{formatDateTime(n.at)}</span> {n.summary}
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
-        </>
       )}
     </section>
+  );
+}
+
+const SECTION_TITLE = "text-xs font-semibold uppercase tracking-wide text-gray-600 dark:text-gray-400";
+
+function Fact({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <div className="flex items-start justify-between gap-4 px-4 py-2.5">
+      <dt className="shrink-0 text-gray-600 dark:text-gray-400">{label}</dt>
+      <dd className="min-w-0 text-right font-medium text-gray-900 dark:text-gray-100">{children}</dd>
+    </div>
+  );
+}
+
+function CopyButton({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+  const copy = () => {
+    // Best effort: a browser that refuses the clipboard just leaves the label as it was.
+    navigator.clipboard?.writeText(text).then(() => setCopied(true), () => undefined);
+  };
+  return (
+    <button
+      type="button"
+      onClick={copy}
+      aria-label={copied ? "Copied" : "Copy the incident ID"}
+      className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-gray-600 hover:bg-gray-100 hover:text-gray-900 dark:text-gray-400 dark:hover:bg-gray-700 dark:hover:text-gray-100"
+    >
+      {copied ? <Check className="h-4 w-4" aria-hidden /> : <Copy className="h-4 w-4" aria-hidden />}
+    </button>
+  );
+}
+
+/** The incident's error: its message, and the stack frames written into it one per line, with the raw text on request. */
+function WhatFailed({ errorType, raw, trace }: { errorType: string; raw: string; trace: ReturnType<typeof splitTrace> }) {
+  const [showRaw, setShowRaw] = useState(false);
+  const libraryOnly = trace.frames.length > 0 && trace.frames.every((f) => f.library);
+  return (
+    <section aria-label="What failed" className="min-w-0 flex-[3_1_22rem] space-y-3">
+      <h3 className={SECTION_TITLE}>What failed</h3>
+      <div className="overflow-hidden rounded-lg border border-gray-200 dark:border-gray-700">
+        <div className="space-y-1.5 border-b border-gray-200 p-4 dark:border-gray-700">
+          <p className="font-mono text-xs font-medium text-brand-700 dark:text-brand-400">{errorType}</p>
+          <p className="break-words font-mono text-sm text-gray-900 dark:text-gray-100">{trace.headline}</p>
+        </div>
+        {trace.frames.length > 0 && (
+          <ol aria-label="Stack frames" className="bg-gray-50 py-1.5 dark:bg-gray-900/40">
+            {trace.frames.map((f, i) => (
+              <li key={i} className="px-4 py-1.5">
+                <div className="flex flex-wrap items-baseline gap-2">
+                  <span className="font-mono text-xs text-gray-600 dark:text-gray-400">at</span>
+                  {f.fn && <span className="font-mono text-sm text-gray-900 dark:text-gray-100">{f.fn}</span>}
+                  {f.library && <Badge>library</Badge>}
+                </div>
+                <p className="break-all pl-5 font-mono text-xs text-gray-600 dark:text-gray-400">{f.at}</p>
+              </li>
+            ))}
+          </ol>
+        )}
+        {showRaw && (
+          <pre className="whitespace-pre-wrap break-all border-t border-gray-200 px-4 py-3 font-mono text-xs text-gray-700 dark:border-gray-700 dark:text-gray-300">{raw}</pre>
+        )}
+        <div className="flex flex-wrap items-center gap-2 border-t border-gray-200 px-4 py-1 dark:border-gray-700">
+          {libraryOnly && <p className="flex-1 basis-48 text-xs text-gray-600 dark:text-gray-400">Every frame is in a dependency; none points at the app&apos;s own code.</p>}
+          <button
+            type="button"
+            onClick={() => setShowRaw((v) => !v)}
+            aria-expanded={showRaw}
+            className="ml-auto min-h-11 text-sm font-medium text-brand-700 hover:underline dark:text-brand-400"
+          >
+            {showRaw ? "Hide the raw message" : "Show the raw message"}
+          </button>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+/** Counts of the listed runs by how they stand, each a link to the list narrowed to them (the same URLs Overview uses). */
+function RunTiles({ cycles, params, capped, shown }: { cycles: CycleRow[]; params: URLSearchParams; capped: boolean; shown: number }) {
+  const count = (test: (c: CycleRow) => boolean) => cycles.filter(test).length;
+  const active = params.get("heal") ? "" : params.get("state") ? `state=${params.get("state")}` : params.get("path") ? `path=${params.get("path")}` : "all";
+  const tiles = [
+    { key: "state=waiting-human", label: "Waiting for a human", n: count((c) => c.state === "waiting-human"), tone: "text-warning-700 dark:text-warning-400" },
+    { key: "state=running", label: "In progress", n: count((c) => c.state === "running"), tone: "text-info-800 dark:text-info-400" },
+    { key: "state=declined", label: "Declined", n: count((c) => c.state === "declined"), tone: "" },
+    { key: "path=pr", label: "Pull request opened", n: count((c) => c.path === "pr"), tone: "" },
+    { key: "all", label: "All runs", n: cycles.length, tone: "" },
+  ];
+  return (
+    <nav aria-label="Run counts" className="space-y-2">
+      <ul className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
+        {tiles.map((t) => (
+          <li key={t.key}>
+            <Link
+              to={t.key === "all" || t.key === active ? "/runs" : `/runs?${t.key}`}
+              aria-current={t.key === active ? "true" : undefined}
+              className={`flex min-h-11 flex-col gap-0.5 rounded-xl border bg-white px-4 py-3 hover:border-gray-400 dark:bg-gray-800 dark:hover:border-gray-500 ${
+                t.key === active ? "border-gray-900 ring-1 ring-gray-900 dark:border-gray-100 dark:ring-gray-100" : "border-gray-200 dark:border-gray-700"
+              }`}
+            >
+              <span className={`text-2xl font-bold tabular-nums ${t.tone || "text-gray-900 dark:text-white"}`}>{t.n}</span>
+              <span className="text-sm text-gray-600 dark:text-gray-400">{t.label}</span>
+            </Link>
+          </li>
+        ))}
+      </ul>
+      {capped && <p className="text-xs text-gray-600 dark:text-gray-400">Counts cover the {shown} most recently updated runs.</p>}
+    </nav>
   );
 }
 
@@ -521,7 +704,8 @@ const RAIL: Record<StepStatus, string> = {
 };
 
 /** The loop's stages in order. Only a step a worker is on right now spins; a step with no event is "not reached". */
-function StepTrack({ steps, clock }: { steps: Step[]; clock: number }) {
+function StepTrack({ steps, clock, handoff }: { steps: Step[]; clock: number; handoff?: string }) {
+  const lastDone = steps.map((s) => s.status).lastIndexOf("done");
   return (
     <div className="overflow-x-auto pb-1">
       <ol aria-label="Steps" className="flex min-w-[34rem]">
@@ -542,6 +726,12 @@ function StepTrack({ steps, clock }: { steps: Step[]; clock: number }) {
               >
                 {stepLine(step, clock)}
               </span>
+              {handoff && i === lastDone && (
+                <span className="mr-3 mt-1.5 inline-flex items-center gap-1.5 self-start rounded-lg bg-warning-50 px-2.5 py-1.5 text-xs font-semibold text-warning-700 dark:bg-warning-500/15 dark:text-warning-400">
+                  <CornerDownRight className="h-3.5 w-3.5" aria-hidden />
+                  {handoff}
+                </span>
+              )}
             </li>
           );
         })}
@@ -578,8 +768,8 @@ const SEGMENT_COLORS = [
 ];
 
 /** Where the run's time went: one segment per recorded step, and the running one growing while a worker holds it. */
-function TimeBar({ water, live, clock }: { water: Waterfall; live: boolean; clock: number }) {
-  const done = water.steps.filter((s) => s.status === "done" && s.width !== undefined && s.durationMs !== undefined);
+function TimeBar({ water, live, clock, label }: { water: Waterfall; live: boolean; clock: number; label?: string }) {
+  const done = water.steps.filter((s) => s.status === "done" && !s.side && s.width !== undefined && s.durationMs !== undefined);
   const running = water.steps.find((s) => s.status === "running");
   if (done.length === 0 && !running) return null;
   const span = water.endMs - water.startMs;
@@ -588,7 +778,7 @@ function TimeBar({ water, live, clock }: { water: Waterfall; live: boolean; cloc
   return (
     <div className="space-y-2 rounded-lg bg-gray-50 p-3 dark:bg-gray-900/40">
       <p className="text-xs font-medium tabular-nums text-gray-900 dark:text-white">
-        {live ? `Running for ${formatDuration(clock - water.startMs)}` : `${formatDuration(span)} from start to the last update`}
+        {label ?? (live ? `Running for ${formatDuration(clock - water.startMs)}` : `${formatDuration(span)} from start to the last update`)}
       </p>
       <div role="img" aria-label={`Time per step: ${parts.join(", ")}`} className="flex h-2.5 gap-0.5 overflow-hidden rounded-full bg-gray-200 dark:bg-gray-700">
         {done.map((s, i) => (
@@ -621,7 +811,7 @@ function StepLog({ steps, prUrl }: { steps: Step[]; prUrl?: string }) {
   if (steps.length === 0) return null;
   return (
     <div>
-      <h3 className="text-sm font-medium text-gray-900 dark:text-white">Step log</h3>
+      <h3 className={SECTION_TITLE}>Step log</h3>
       <ol aria-label="Step log" className="mt-1 divide-y divide-gray-100 dark:divide-gray-700">
         {steps.map((step) => (
           <li key={step.stage} className="py-2">
