@@ -881,6 +881,31 @@ describe("ingest run records", () => {
     await assertFails(getDoc(doc(guest(), "starfish_runs/integrations")));
   });
 
+  it("the agent's last pass reads like the last run: operators, and a guest on the demo only; nobody writes it (#274)", async () => {
+    await env.withSecurityRulesDisabled((ctx) =>
+      setDoc(doc(ctx.firestore(), "starfish_runs/agent_last_run"), { environment: "demo", outcome: "ok", considered: 1 })
+    );
+    await assertSucceeds(getDoc(doc(as("op1"), "starfish_runs/agent_last_run")));
+    await assertSucceeds(getDoc(doc(as("admin1"), "starfish_runs/agent_last_run")));
+    await assertSucceeds(getDoc(doc(guest(), "starfish_runs/agent_last_run")));
+    await assertFails(getDoc(doc(anon(), "starfish_runs/agent_last_run")));
+    await assertFails(getDoc(doc(as("nobody"), "starfish_runs/agent_last_run")));
+    for (const db of [as("admin1"), as("op1"), guest()]) {
+      await assertFails(setDoc(doc(db, "starfish_runs/agent_last_run"), { environment: "demo", outcome: "ok" }));
+      await assertFails(updateDoc(doc(db, "starfish_runs/agent_last_run"), { outcome: "failed" }));
+      await assertFails(deleteDoc(doc(db, "starfish_runs/agent_last_run")));
+    }
+    await env.withSecurityRulesDisabled((ctx) =>
+      setDoc(doc(ctx.firestore(), "starfish_runs/agent_last_run"), { environment: "prod", outcome: "ok" })
+    );
+    await assertFails(getDoc(doc(guest(), "starfish_runs/agent_last_run")));
+    // Never recorded: a guest is told it is missing, not refused (#142).
+    await env.withSecurityRulesDisabled((ctx) => deleteDoc(doc(ctx.firestore(), "starfish_runs/agent_last_run")));
+    const snap = await assertSucceeds(getDoc(doc(guest(), "starfish_runs/agent_last_run")));
+    expect(snap.exists()).toBe(false);
+    await assertFails(getDoc(doc(anon(), "starfish_runs/agent_last_run")));
+  });
+
   it("a guest reads a last run that was never recorded as missing, not as a refusal (#142)", async () => {
     await env.withSecurityRulesDisabled((ctx) => deleteDoc(doc(ctx.firestore(), "starfish_runs/last_run")));
     const snap = await assertSucceeds(getDoc(doc(guest(), "starfish_runs/last_run")));

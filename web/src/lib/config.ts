@@ -103,7 +103,8 @@ export interface WebConfig {
    */
   settingsCollection: string;
   /**
-   * Ingest run records: {runCollection}/last_run is what the engine writes after each run.
+   * Run records: {runCollection}/last_run is what the ingest writes after each run, and
+   * {runCollection}/agent_last_run what the agent writes after each pass (#274).
    * Must match the engine's STARFISH_RUN_COLLECTION and firestore.rules.
    */
   runCollection: string;

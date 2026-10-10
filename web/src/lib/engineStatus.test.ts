@@ -10,8 +10,9 @@ vi.mock("firebase/firestore", () => ({
   },
 }));
 
-import { judgeRun, nextRunAt, readLastRun, type LastRun } from "./engineStatus";
-import { judgeRun as cliJudge, parseRunRecord } from "../../../src/status";
+import { judgeAgentRun, judgeRun, nextRunAt, readAgentLastRun, readLastRun, type AgentRunRecord, type LastRun } from "./engineStatus";
+import { judgeAgentRun as cliJudgeAgent, judgeRun as cliJudge, parseRunRecord } from "../../../src/status";
+import { parseAgentRunRecord } from "../../../src/agentRunRecord";
 
 const NOW = Date.parse("2026-10-04T12:00:00.000Z");
 const ts = (ms: number) => ({ toDate: () => new Date(ms) });
@@ -167,5 +168,98 @@ describe("agreement with pnpm status", () => {
     mocks.data = data;
     const ui = judgeRun(await readLastRun({} as Firestore, "r"), env, NOW, 90).state;
     expect(cliJudge(parseRunRecord(data), env, new Date(NOW), 90)).toBe(ui);
+  });
+});
+
+// The agent pass's own record (#274), written by src/agent/lastRun.ts.
+describe("the agent's last pass", () => {
+  const storedPass = (over: Record<string, unknown> = {}) => ({
+    environment: "demo",
+    outcome: "ok",
+    startedAt: ts(NOW - 14 * 60_000),
+    finishedAt: ts(NOW - 10 * 60_000),
+    dryRun: true,
+    considered: 2,
+    ran: 1,
+    cycleErrors: 0,
+    aborted: false,
+    gaveUp: 0,
+    scanCapped: false,
+    failedSteps: [],
+    problems: [],
+    intervalMinutes: 60,
+    ...over,
+  });
+  const pass = (over: Partial<AgentRunRecord> = {}): AgentRunRecord => ({
+    environment: "demo",
+    outcome: "ok",
+    finishedAt: new Date(NOW - 10 * 60_000),
+    considered: 0,
+    ran: 0,
+    cycleErrors: 0,
+    aborted: false,
+    gaveUp: 0,
+    scanCapped: false,
+    failedSteps: [],
+    problems: [],
+    ...over,
+  });
+
+  beforeEach(() => {
+    mocks.data = undefined;
+  });
+
+  it("reads {runCollection}/agent_last_run, and is null when no pass was recorded", async () => {
+    expect(await readAgentLastRun({} as Firestore, "my_runs")).toBeNull();
+    expect(mocks.path).toEqual(["my_runs", "agent_last_run"]);
+    mocks.data = storedPass();
+    expect(await readAgentLastRun({} as Firestore, "my_runs")).toMatchObject({
+      outcome: "ok",
+      dryRun: true,
+      considered: 2,
+      ran: 1,
+      intervalMinutes: 60,
+      startedAt: new Date(NOW - 14 * 60_000),
+    });
+  });
+
+  it("is null for a record it cannot use, rather than guessing", async () => {
+    mocks.data = storedPass({ outcome: "idle" });
+    expect(await readAgentLastRun({} as Firestore, "r")).toBeNull();
+    mocks.data = storedPass({ finishedAt: undefined });
+    expect(await readAgentLastRun({} as Firestore, "r")).toBeNull();
+  });
+
+  it("is judged like the ingest's run, a capped candidate scan being its 'capped'", () => {
+    const judge = (r: AgentRunRecord | null, env = "demo") => judgeAgentRun(r, env, NOW, 90).state;
+    expect(judge(null)).toBe("never");
+    expect(judge(pass())).toBe("ok");
+    expect(judge(pass({ outcome: "failed", failedSteps: ["cycles"] }))).toBe("failed");
+    expect(judge(pass({ finishedAt: new Date(NOW - 91 * 60_000) }))).toBe("stale");
+    expect(judge(pass({ scanCapped: true }))).toBe("capped");
+    expect(judge(pass({ environment: "prod" }))).toBe("never");
+    expect(judgeAgentRun(pass({ environment: "prod" }), "demo", NOW, 90).run).toBeNull();
+    const refusal = pass({ environment: "dev", outcome: "failed", error: "settings-unusable" });
+    expect(judgeAgentRun(refusal, "demo", NOW, 90)).toEqual({ state: "failed", run: refusal });
+  });
+
+  it("says when the next pass is expected from its start and interval", () => {
+    expect(nextRunAt(pass({ startedAt: new Date(NOW - 14 * 60_000), intervalMinutes: 60 }))?.getTime()).toBe(NOW + 46 * 60_000);
+    expect(nextRunAt(pass({ startedAt: new Date(NOW) }))).toBeNull();
+  });
+
+  // `pnpm status` and this page judge the same stored record the same way.
+  it.each([
+    ["ok", storedPass(), "demo"],
+    ["failed", storedPass({ outcome: "failed", failedSteps: ["escalation"] }), "demo"],
+    ["stale", storedPass({ finishedAt: ts(NOW - 91 * 60_000) }), "demo"],
+    ["capped", storedPass({ scanCapped: true }), "demo"],
+    ["another environment", storedPass(), "prod"],
+    ["a settings refusal for another environment", storedPass({ outcome: "failed", error: "settings-unusable", environment: "dev" }), "demo"],
+    ["no record at all", undefined, "demo"],
+  ] as [string, Record<string, unknown> | undefined, string][])("agrees with pnpm status: %s", async (_name, data, env) => {
+    mocks.data = data;
+    const ui = judgeAgentRun(await readAgentLastRun({} as Firestore, "r"), env, NOW, 90).state;
+    expect(cliJudgeAgent(parseAgentRunRecord(data), env, new Date(NOW), 90)).toBe(ui);
   });
 });

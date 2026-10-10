@@ -245,6 +245,10 @@ src/
   agent/integrations.ts  at the start of each `pnpm agent` pass: which credentials the agent job holds (GitHub token, the two Slack
                    webhooks, Twilio) as booleans in `{runCollection}/integrations`, for the Settings page; never a value, best effort,
                    and "set" is not "works" (nothing calls the service). The browser can't read the secrets, so this is the only way it knows
+  agent/lastRun.ts  at the end of each `pnpm agent` pass (#274): its outcome in `{runCollection}/agent_last_run` (ok/failed, the
+                   failed steps by label, counts, dry run, skip reason, the interval from `STARFISH_AGENT_SCHEDULE`); failed exactly
+                   when the job exits non-zero, a throw recorded by code/name then rethrown; best effort, never a message.
+                   `src/agentRunRecord.ts` is its pure shape and parser, shared with the UI. Built and unit-tested; not yet written by a deployed pass
   agent/automationSwitch.ts  the kill switch: reads the runtime settings fresh each time the loop asks; fails closed
   agent/reviewer.ts  stage 4: attacks the verified patch; verdict computed from outcomes in code, bound
                    to the patch hash the gate tested. Run by `pnpm agent` (deployed; not yet reached on a real incident)
@@ -259,7 +263,8 @@ src/
                    without the number or the code, #172), one 401, bounded body, CORS allowlist, one ingest at a time. `adminApiServer.ts` is its HTTP
                    shell, `adminApiCli.ts` the Cloud Run service (`DEPLOY_ADMIN_API=1`): deployed once to the demo project (2026-10-07), "Run ingest now" run from the UI; Retire and the Twilio routes not yet tried
   operators.ts     grant a person an operator record (the first admin; `pnpm grant-operator --project <id>`, which refuses if the shell's project differs and reads the store before creating an account); the closed collection can't be written from the UI
-  status.ts        judges the engine's last_run record (`pnpm status`): the same verdicts as the UI's engine line
+  status.ts        judges the engine's last_run record (`pnpm status`): the same verdicts as the UI's engine line; also prints the
+                   agent's `agent_last_run` (#274), information only (never the exit code)
   (repo root)      Dockerfile = the engine image the Cloud Run job runs; scripts/deploy-gcp.sh deploys it
                    (job, Scheduler, Secret Manager, IAM, Firestore rules). Written and tested by a dry run; ingest part run once on the demo project (2026-10-05), agent part not
   indexheal/createIndexUrl.ts  create-index URL → strict spec, default-deny target guard, index-file dedup (#11).
@@ -347,7 +352,7 @@ React 19, Vite, Tailwind 4, react-router, TanStack Query; Starfish's own theme i
   SDK or the console.
 - **Guests (rules and UI built):** an anonymous Firebase Auth session never reads a stored incident, cycle or event
   (#18). It may *read* their trimmed copies (`starfish_public_incidents`, `starfish_public_cycles`,
-  `starfish_public_events`, written by the engine only, `src/publicView.ts`), `last_run` and
+  `starfish_public_events`, written by the engine only, `src/publicView.ts`), `last_run`, `agent_last_run` and
   `starfish_runs/integrations` (which credentials the agent job holds: booleans and a time, never a value), each only
   whose `environment` is `demo` (a get of a missing one reads as missing), and the operator copy of the settings, and
   nothing else; it never writes. The UI switches in ONE place, `web/src/lib/dataSource.ts` (an anonymous session reads
@@ -371,10 +376,14 @@ React 19, Vite, Tailwind 4, react-router, TanStack Query; Starfish's own theme i
   rules and indexes. Never deploy `firestore.rules` to the watched app's database: a rules
   file governs a whole database and would replace the app's own rules.
 - **Admin controls:** an admin sees "Run ingest now" (Incidents), "Run agent now" (Runs, #276: it reports that the pass started, never what it did) and "Retire" (an incident) when the build has `VITE_STARFISH_ADMIN_API_URL`; they call the admin API with the ID token (`web/src/lib/adminApi.ts`, `components/AdminActions.tsx`). Hiding them is not the gate: the API re-checks the role. Built and unit-tested; "Run ingest now" has run once against the deployed service (2026-10-07), Retire and "Run agent now" have not.
-- **Engine status:** Overview, Incidents and Runs show a line from `{runCollection}/last_run` (`web/src/lib/engineStatus.ts`):
-  failed, stopped (older than `VITE_STARFISH_STALE_MINUTES`), capped, or never recorded. Read errors say nothing. When the
-  job knows its schedule (`STARFISH_INGEST_SCHEDULE`, set by the deploy and cadence scripts) it records the interval, and the
-  line says when the next run is expected.
+- **Engine status:** Overview and Incidents show the ingest's line from `{runCollection}/last_run` (`web/src/lib/engineStatus.ts`,
+  `components/EngineStatus.tsx`): failed, stopped (older than `VITE_STARFISH_STALE_MINUTES`), capped, or never recorded. Read
+  errors say nothing. When the job knows its schedule (`STARFISH_INGEST_SCHEDULE`, set by the deploy and cadence scripts) it
+  records the interval, and the line says when the next run is expected. Overview (a line) and Runs (a card) show the agent's
+  own status from `{runCollection}/agent_last_run` (#274, `components/AgentStatus.tsx`), judged the same way ("capped" = the
+  candidate scan hit its cap), with the next pass from `STARFISH_AGENT_SCHEDULE` (set by the deploy script from
+  `AGENT_SCHEDULE`; the cadence script does not change the agent's tick) and "No agent pass recorded yet" until one is.
+  Built and unit-tested.
 - **Config:** `web/src/lib/config.ts` is the only reader of `import.meta.env`. The Firebase
   project comes from Hosting's `/__/firebase/init.json` at startup (`VITE_FIREBASE_*` only for
   local dev); the rest from `web/.env` (`web/.env.example`).

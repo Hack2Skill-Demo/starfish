@@ -17,6 +17,7 @@ const mocks = vi.hoisted(() => ({
 }));
 vi.mock("../lib/useSettings", () => ({ useEnvironment: () => mocks.env }));
 vi.mock("../components/EngineStatus", () => ({ EngineStatus: ({ environment }: { environment: string }) => <div data-testid="engine">{environment}</div> }));
+vi.mock("../components/AgentStatus", () => ({ AgentStatus: ({ environment }: { environment: string }) => <div data-testid="agent">{environment}</div> }));
 vi.mock("../lib/incidents", async (orig) => ({ ...(await orig<typeof import("../lib/incidents")>()), listIncidents: mocks.listIncidents }));
 vi.mock("../lib/runs", async (orig) => ({
   ...(await orig<typeof import("../lib/runs")>()),
@@ -83,7 +84,9 @@ describe("Overview page", () => {
     expect(screen.getByTestId("headline")).toHaveTextContent("No agent runs are recorded for this environment.");
     expect(await screen.findByText(/No logged errors in the last 24 hours/)).toBeInTheDocument();
     expect(screen.getByText(/Nothing has run the agent loop/)).toBeInTheDocument();
+    // Both lines, side by side: the ingest's and the agent's (#274).
     expect(screen.getByTestId("engine")).toHaveTextContent("demo");
+    expect(screen.getByTestId("agent")).toHaveTextContent("demo");
   });
 
   it("counts what is waiting on a human, running, open and regressed from stored records", async () => {

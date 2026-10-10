@@ -22,6 +22,7 @@ import SettingsUnavailableNotice from "../components/SettingsUnavailableNotice";
 import StoreReadHint from "../components/StoreReadHint";
 import { Badge } from "../components/ui/Badge";
 import { HourlyBars } from "../components/HourlyBars";
+import { AgentStatus } from "../components/AgentStatus";
 import { EngineStatus } from "../components/EngineStatus";
 import { formatRelativeTime } from "../lib/formatters";
 import { listIncidents } from "../lib/incidents";
@@ -116,7 +117,12 @@ export default function Overview() {
         <p className="mt-1 text-lg text-gray-900 dark:text-gray-100" data-testid="headline">
           {cyclesFailed ? "The agent's runs couldn't be read." : counts ? headline(counts) : "Loading…"}
         </p>
-        <div className="mt-2">{ready && <EngineStatus environment={environment} />}</div>
+        {ready && (
+          <div className="mt-2 space-y-1">
+            <EngineStatus environment={environment} />
+            <AgentStatus environment={environment} />
+          </div>
+        )}
       </div>
 
       {(cyclesFailed || incidents.isError || activityFailed) && (

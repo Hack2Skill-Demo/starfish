@@ -1,7 +1,8 @@
 /**
  * `pnpm status [--stale-minutes N] [--min-incidents N] [--min-entries N]`: is the deployed engine alive?
  * Prints what the engine last recorded and how many incidents it holds, and exits 0 only when the last
- * run is ok and recent and the minimums hold (src/status.ts). Both minimums default to 0: a quiet project
+ * run is ok and recent and the minimums hold (src/status.ts). It also prints the agent pass's last record (#274), which
+ * never changes the exit code. Both minimums default to 0: a quiet project
  * is a correct answer. --min-entries is about the last run (log entries it processed), --min-incidents
  * about the store.
  * Needs credentials for the project (`gcloud auth application-default login`), or the emulator. When the store cannot
@@ -15,8 +16,9 @@ import { initializeApp } from "firebase-admin/app";
 import { getFirestore } from "firebase-admin/firestore";
 import { loadConfig } from "./config.js";
 import { LAST_RUN_DOC } from "./ingest/run.js";
+import { AGENT_LAST_RUN_DOC, parseAgentRunRecord } from "./agentRunRecord.js";
 import { RuntimeConfigLoader } from "./runtimeSettings.js";
-import { describeReadFailure, describeStatus, parseRunRecord, unmetMinimums } from "./status.js";
+import { describeAgentStatus, describeReadFailure, describeStatus, parseRunRecord, unmetMinimums } from "./status.js";
 import { INCIDENT_STATUSES } from "./types.js";
 
 const { values } = parseArgs({
@@ -52,9 +54,13 @@ const config = resolved.config;
 // The settings loader never throws: a failed read becomes "settings unusable". When the very next read fails too, the
 // cause is the sign-in or the permission, not the settings, so that is what is said, once, with no stack trace.
 let runSnap: Awaited<ReturnType<ReturnType<typeof db.doc>["get"]>>;
+let agentSnap: typeof runSnap;
 const counts: Record<string, number> = {};
 try {
-  runSnap = await db.collection(config.runCollection).doc(LAST_RUN_DOC).get();
+  [runSnap, agentSnap] = await Promise.all([
+    db.collection(config.runCollection).doc(LAST_RUN_DOC).get(),
+    db.collection(config.runCollection).doc(AGENT_LAST_RUN_DOC).get(),
+  ]);
 
   // One aggregate count per status: bounded however many incidents there are. A retired incident is in no list in the UI
   // (src/ingest/retire.ts), so it is taken out of the count here too: two aggregates per status, total minus retired.
@@ -79,6 +85,10 @@ const report = describeStatus({
 });
 console.log(`project ${config.projectId}, database ${config.databaseId}`);
 for (const line of report.lines) console.log(line);
+// The agent pass (#274): information only. The agent job is optional, so it never decides the exit code.
+for (const line of describeAgentStatus({ run: parseAgentRunRecord(agentSnap.data()), now: new Date(), staleMinutes, environment: config.environment })) {
+  console.log(line);
+}
 const unmet = unmetMinimums({ run, environment: config.environment, counts }, { incidents: minIncidents, entries: minEntries });
 for (const line of unmet) console.log(line);
 process.exit(report.state === "ok" && unmet.length === 0 ? 0 : 1);
