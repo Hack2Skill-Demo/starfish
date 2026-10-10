@@ -14,7 +14,7 @@ import { Check, Copy, CornerDownRight, ExternalLink, FileText, RotateCcw, Square
 import PageMeta from "../components/PageMeta";
 import SettingsUnavailableNotice from "../components/SettingsUnavailableNotice";
 import StoreReadHint from "../components/StoreReadHint";
-import { EngineStatus } from "../components/EngineStatus";
+import { AgentStatus } from "../components/AgentStatus";
 import { RunAgentButton } from "../components/AdminActions";
 import { Badge } from "../components/ui/Badge";
 import { SyntheticBadge } from "../components/SyntheticBadge";
@@ -160,7 +160,8 @@ export default function Runs() {
             each step; a step it has not recorded reads &quot;not reached&quot;.
           </p>
         </div>
-        {ready && <EngineStatus environment={environment} variant="card" />}
+        {/* The agent's own status (#274): this page is about agent runs, not the ingest's. */}
+        {ready && <AgentStatus environment={environment} variant="card" />}
       </div>
 
       {failed ? (

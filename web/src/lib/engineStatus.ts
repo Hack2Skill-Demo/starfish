@@ -1,12 +1,17 @@
 /**
- * What the engine says about its own last run (`{runCollection}/last_run`, written by
- * src/ingest/run.ts) and how the UI judges it.
+ * What the engine says about its own last runs and how the UI judges them: the ingest's (`{runCollection}/last_run`,
+ * written by src/ingest/run.ts) and the agent pass's (`{runCollection}/agent_last_run`, src/agent/lastRun.ts, #274).
+ * Both are judged by the same rules (`judgeRun`), so "running", "not running" and "failed" mean the same on each line.
  *
- * Only firebase/firestore and the pure settings schema are imported, so the reader can be exercised without the web config.
- * The record holds counts and labels, never log text, because guests may read it.
+ * Only firebase/firestore and pure engine modules are imported, so the reader can be exercised without the web config.
+ * The records hold counts and labels, never log text, because guests may read them (directly: they are not trimmed
+ * copies, so dataSource.ts plays no part).
  */
 import { doc, getDoc, type Firestore } from "firebase/firestore";
 import { SETTINGS_UNUSABLE } from "../../../src/settingsSchema";
+import { AGENT_LAST_RUN_DOC, parseAgentRunRecord, type AgentRunRecord } from "../../../src/agentRunRecord";
+
+export { AGENT_LAST_RUN_DOC, type AgentRunRecord };
 
 export const LAST_RUN_DOC = "last_run";
 
@@ -60,9 +65,16 @@ export async function readLastRun(db: Firestore, runCollection: string): Promise
   };
 }
 
+/** The agent's last pass (#274), or null when none has been recorded (or the record is unusable). */
+export async function readAgentLastRun(db: Firestore, runCollection: string): Promise<AgentRunRecord | null> {
+  const snap = await getDoc(doc(db, runCollection, AGENT_LAST_RUN_DOC));
+  return snap.exists() ? parseAgentRunRecord(snap.data()) : null;
+}
+
 /**
- * When the next run is expected: the last run's start plus the schedule's interval (#38). `null` when the engine
- * did not say how often it runs. An estimate: the scheduler fires on the clock, not exactly an interval after a start.
+ * When the next run (or pass) is expected: the last one's start plus the schedule's interval (#38, #274). `null` when
+ * the engine did not say how often it runs. An estimate: the scheduler fires on the clock, not exactly an interval
+ * after a start.
  */
 export function nextRunAt(run: Pick<LastRun, "startedAt" | "intervalMinutes"> | null): Date | null {
   if (!run?.startedAt || run.intervalMinutes === undefined) return null;
@@ -71,10 +83,13 @@ export function nextRunAt(run: Pick<LastRun, "startedAt" | "intervalMinutes"> | 
 
 export type EngineState = "ok" | "failed" | "stale" | "capped" | "never";
 
-export interface EngineHealth {
+export interface EngineHealth<T = LastRun> {
   state: EngineState;
-  run: LastRun | null;
+  run: T | null;
 }
+
+/** What `judgeRun` reads of a record: the ingest's and the agent's both have it. */
+type JudgedRecord = Pick<LastRun, "environment" | "finishedAt" | "capped" | "error"> & { outcome: string };
 
 /**
  * Worst first: a failed last run, then a stopped engine, then a read that hit the cap, then healthy.
@@ -82,7 +97,7 @@ export interface EngineHealth {
  * refused to start because the runtime settings could not be used (#223): it records the env default's environment,
  * since the one an admin chose could not be read, so it is failed whatever environment it names, as in `pnpm status`.
  */
-export function judgeRun(run: LastRun | null, environment: string, nowMs: number, staleAfterMinutes: number): EngineHealth {
+export function judgeRun<T extends JudgedRecord>(run: T | null, environment: string, nowMs: number, staleAfterMinutes: number): EngineHealth<T> {
   if (!run) return { state: "never", run: null };
   if (run.outcome === "failed" && run.error === SETTINGS_UNUSABLE) return { state: "failed", run };
   if (run.environment !== environment) return { state: "never", run: null };
@@ -90,4 +105,13 @@ export function judgeRun(run: LastRun | null, environment: string, nowMs: number
   if (nowMs - run.finishedAt.getTime() > staleAfterMinutes * 60_000) return { state: "stale", run };
   if (run.capped) return { state: "capped", run };
   return { state: "ok", run };
+}
+
+/**
+ * The agent's last pass judged like the ingest's run (#274): a candidate scan that read its cap is the agent's
+ * "capped". `pnpm status` (src/status.ts `judgeAgentRun`) judges it the same way.
+ */
+export function judgeAgentRun(run: AgentRunRecord | null, environment: string, nowMs: number, staleAfterMinutes: number): EngineHealth<AgentRunRecord> {
+  const { state, run: judged } = judgeRun(run && { ...run, capped: run.scanCapped }, environment, nowMs, staleAfterMinutes);
+  return { state, run: judged && run };
 }

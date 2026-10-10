@@ -731,6 +731,10 @@ describe("scripts/deploy-gcp.sh: the agent and its isolated verify job (#74), VE
     const r = deploy({ ...agent, AGENT_SCHEDULE: "*/10 * * * *", AGENT_BASE_BRANCH: "develop", AGENT_EXTRA_ENV_VARS: "STARFISH_MAX_CYCLES_PER_PASS=1" });
     expect(r.out).toContain("gcloud scheduler jobs create http starfish-agent-tick");
     expect(r.out).toContain("--schedule=*/10 * * * *");
+    // The agent job is told its own schedule, so the UI can say when the next pass is expected (#274); the ingest job is not.
+    expect(line(r.out, "gcloud run jobs deploy starfish-agent")).toContain("@STARFISH_AGENT_SCHEDULE=*/10 * * * *");
+    expect(line(r.out, "gcloud run jobs deploy starfish-ingest")).toContain("STARFISH_INGEST_SCHEDULE=");
+    expect(line(r.out, "gcloud run jobs deploy starfish-ingest")).not.toContain("STARFISH_AGENT_SCHEDULE");
     expect(r.out).toContain("STARFISH_GITHUB_BASE_BRANCH=develop");
     expect(r.out).toContain("STARFISH_MAX_CYCLES_PER_PASS=1");
     expect(grants(r.out, sa("starfish-scheduler"))).toEqual(["roles/run.invoker", "roles/run.invoker"]);

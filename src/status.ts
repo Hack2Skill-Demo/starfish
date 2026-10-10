@@ -2,12 +2,14 @@
  * Is the deployed engine alive? Reads what the engine itself wrote (`{runCollection}/last_run`,
  * src/ingest/run.ts) and judges it, the same way the Incidents page does (web/src/lib/engineStatus.ts),
  * so a person on a terminal and a person in the UI are told the same thing. The judgment is a pure
- * function; the reads are in statusCli.ts.
+ * function; the reads are in statusCli.ts. It also reports the agent pass's own record (`agent_last_run`, #274), judged
+ * the same way, as information only: the agent job is optional, so its state never decides the exit code.
  *
  * It is the check to run after a first deploy: `gcloud run jobs execute ... --wait`, then `pnpm status`.
  * A record is evidence the job ran, wrote to the store and finished; it is not evidence the project
  * had errors to find, so "ok" with zero incidents on a quiet project is a correct answer.
  */
+import type { AgentRunRecord } from "./agentRunRecord.js";
 import { SETTINGS_UNUSABLE } from "./settingsSchema.js";
 import { OPEN_INCIDENT_STATUSES } from "./types.js";
 
@@ -61,7 +63,7 @@ export function parseRunRecord(data: Record<string, unknown> | undefined): RunRe
  * environment, because the one an admin chose could not be read, so it is this deployment's failure whatever
  * environment it names. The UI's judge (web/src/lib/engineStatus.ts) reads it the same way.
  */
-export function isSettingsRefusal(run: Pick<RunRecord, "outcome" | "error">): boolean {
+export function isSettingsRefusal(run: { outcome: string; error?: string }): boolean {
   return run.outcome === "failed" && run.error === SETTINGS_UNUSABLE;
 }
 
@@ -70,7 +72,12 @@ export function isSettingsRefusal(run: Pick<RunRecord, "outcome" | "error">): bo
  * environment (the label was changed): it is not this environment's run. Except a refusal on unusable settings,
  * which is failed whatever environment it names (`isSettingsRefusal`).
  */
-export function judgeRun(run: RunRecord | null, environment: string, now: Date, staleMinutes: number): EngineState {
+export function judgeRun(
+  run: Pick<RunRecord, "environment" | "finishedAt" | "capped" | "error"> & { outcome: string } | null,
+  environment: string,
+  now: Date,
+  staleMinutes: number
+): EngineState {
   if (run === null) return "never";
   if (isSettingsRefusal(run)) return "failed";
   if (run.environment !== environment) return "never";
@@ -78,6 +85,38 @@ export function judgeRun(run: RunRecord | null, environment: string, now: Date, 
   if (now.getTime() - run.finishedAt.getTime() > staleMinutes * 60_000) return "stale";
   if (run.capped) return "capped";
   return "ok";
+}
+
+/**
+ * The agent pass's record judged like the ingest's (#274): a scan that read its cap is the agent's "capped". The UI's
+ * agent line (web/src/lib/engineStatus.ts `judgeAgentRun`) judges it the same way.
+ */
+export function judgeAgentRun(run: AgentRunRecord | null, environment: string, now: Date, staleMinutes: number): EngineState {
+  return judgeRun(run && { ...run, capped: run.scanCapped }, environment, now, staleMinutes);
+}
+
+/** What `pnpm status` says about the agent pass: information only, never part of the exit code. */
+export function describeAgentStatus(input: { run: AgentRunRecord | null; now: Date; staleMinutes: number; environment: string }): string[] {
+  const { run, now, staleMinutes, environment } = input;
+  if (run === null) return ["agent: no pass recorded (the agent job is not deployed, has not run, or could not write the store)"];
+  if (run.environment !== environment && !isSettingsRefusal(run)) {
+    return [`agent: no pass recorded for "${environment}" (the last pass recorded was for "${run.environment}")`];
+  }
+  const state = judgeAgentRun(run, environment, now, staleMinutes);
+  const minutes = Math.max(0, Math.round((now.getTime() - run.finishedAt.getTime()) / 60_000));
+  const lines = [
+    `agent: ${state}. Last pass ${run.outcome}${run.dryRun === true ? " (dry run)" : ""}, finished ${minutes} min ago: ` +
+      `${run.considered} candidate(s), ${run.ran} cycle(s) run, ${run.cycleErrors} threw`,
+  ];
+  if (state === "stale") lines.push(`  no pass has finished for more than ${staleMinutes} min (is the schedule slower than that?)`);
+  if (run.skipped === "automation-disabled") lines.push("  automation was off (or the switch could not be read): no cycle started");
+  if (run.skipped === "daily-cap") lines.push(`  the daily cycle cap${run.daily ? ` of ${run.daily.cap}` : ""} was reached: no cycle started`);
+  if (run.scanCapped) lines.push("  the candidate scan read its cap: older open incidents wait for a later pass");
+  if (run.aborted) lines.push("  the pass stopped early: cycles kept throwing");
+  if (run.failedSteps.length > 0) lines.push(`  failed: ${run.failedSteps.join(", ")}`);
+  if (run.error !== undefined) lines.push(`  failed with: ${run.error}`);
+  if (run.problems.length > 0) lines.push(`  runtime settings not used: ${run.problems.join("; ")}`);
+  return lines;
 }
 
 /** The incident total across every status, for "did the run find what I planted". */

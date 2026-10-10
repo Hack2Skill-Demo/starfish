@@ -380,8 +380,15 @@ export interface StarfishConfig {
    */
   ingestSchedule?: string;
   /**
-   * Firestore collection for the ingest run state: `state` (the checkpoint and the window in
-   * flight; engine-only) and `last_run` (the outcome of the latest run, which the UI shows).
+   * The Cloud Scheduler cron that starts the agent pass (set by scripts/deploy-gcp.sh from AGENT_SCHEDULE). Like
+   * `ingestSchedule`, only told to the UI, through the agent's last-run record (#274); the agent does not schedule
+   * itself. Unset: the UI says nothing about the next pass.
+   */
+  agentSchedule?: string;
+  /**
+   * Firestore collection for the run records: `state` (the ingest's checkpoint and the window in
+   * flight; engine-only), `last_run` (the outcome of the latest ingest run, which the UI shows) and
+   * `agent_last_run` (the outcome of the latest agent pass, #274).
    */
   runCollection: string;
   /** Cloud Logging `resource.type` values whose ERROR entries count as incidents. */
@@ -552,6 +559,7 @@ export function loadConfig(): StarfishConfig {
     defaultLookbackHours: positiveNumber(process.env.STARFISH_LOOKBACK_HOURS, 24, "STARFISH_LOOKBACK_HOURS"),
     ingestLagMinutes: positiveNumber(process.env.STARFISH_INGEST_LAG_MINUTES, 5, "STARFISH_INGEST_LAG_MINUTES"),
     ...(process.env.STARFISH_INGEST_SCHEDULE?.trim() ? { ingestSchedule: process.env.STARFISH_INGEST_SCHEDULE.trim() } : {}),
+    ...(process.env.STARFISH_AGENT_SCHEDULE?.trim() ? { agentSchedule: process.env.STARFISH_AGENT_SCHEDULE.trim() } : {}),
     ingestMaxWindowHours: positiveNumber(
       process.env.STARFISH_INGEST_MAX_WINDOW_HOURS,
       6,

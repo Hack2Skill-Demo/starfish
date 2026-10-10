@@ -172,7 +172,9 @@ prints says to run `gcloud auth application-default login`) or an account that m
 
 Then look at `starfish_runs/last_run` in the `starfish` database (it is what the Incidents page
 shows as "engine status") and at the incidents collection. A failed run exits 1; a missing run shows
-in the UI as stopped, past `VITE_STARFISH_STALE_MINUTES`.
+in the UI as stopped, past `VITE_STARFISH_STALE_MINUTES`. With the agent deployed, each pass writes
+`starfish_runs/agent_last_run` at its end (#274): the agent's line on Overview and Runs, and the `agent:` lines `pnpm status`
+prints (information only: they never change its exit code).
 
 ### The guests' trimmed copies (#18)
 
@@ -346,7 +348,7 @@ defaults when empty.
 | `STARFISH_DEPLOY_AGENT`, `STARFISH_AGENT_REPO` | `DEPLOY_AGENT`, `AGENT_REPO` | set `1` and `owner/name` to deploy the agent too ([below](#the-agent-and-where-its-tests-run-74)); default off |
 | `STARFISH_VERIFY_ISOLATION`, `STARFISH_VERIFY_CHECKS`, `STARFISH_VERIFY_COMMAND` | `VERIFY_ISOLATION`, `VERIFY_CHECKS`, `VERIFY_COMMAND` | `github-actions` (default) with the check names that must pass, or `cloud-run-job` with a command |
 | `STARFISH_VERIFY_CHECK_APP` | `VERIFY_CHECK_APP` | the slug of the GitHub App whose check runs count (#229); default the engine's, `github-actions`. Always set on the agent job, so emptying it restores the default |
-| `STARFISH_VERIFY_TIMEOUT_SECONDS`, `STARFISH_VERIFY_BUCKET`, `STARFISH_AGENT_BASE_BRANCH`, `STARFISH_AGENT_SCHEDULE`, `STARFISH_AGENT_EXTRA_ENV_VARS` | `VERIFY_TIMEOUT_SECONDS`, `VERIFY_BUCKET`, `AGENT_BASE_BRANCH`, `AGENT_SCHEDULE`, `AGENT_EXTRA_ENV_VARS` | default 600, `<project>-starfish-verify`, `main`, `30 * * * *`. The base branch is always set on the agent job, so emptying it restores `main` (#233) |
+| `STARFISH_VERIFY_TIMEOUT_SECONDS`, `STARFISH_VERIFY_BUCKET`, `STARFISH_AGENT_BASE_BRANCH`, `STARFISH_AGENT_SCHEDULE`, `STARFISH_AGENT_EXTRA_ENV_VARS` | `VERIFY_TIMEOUT_SECONDS`, `VERIFY_BUCKET`, `AGENT_BASE_BRANCH`, `AGENT_SCHEDULE`, `AGENT_EXTRA_ENV_VARS` | default 600, `<project>-starfish-verify`, `main`, `30 * * * *`. The base branch is always set on the agent job, so emptying it restores `main` (#233). The schedule is also set on the agent job as `STARFISH_AGENT_SCHEDULE`, so the UI's agent line can say when the next pass is expected (#274) |
 | `STARFISH_DEPLOY_ADMIN_API`, `STARFISH_ADMIN_API_ORIGINS` | `DEPLOY_ADMIN_API`, `ADMIN_API_ORIGINS` | set `1` and the site's origin to deploy the admin API too ([below](#the-admin-api-run-ingest-now-and-retire-an-incident-63-65)); default off. Its service name is kept out of ingest either way (#177) |
 
 `BUDGET_USD` and `BILLING_ACCOUNT` are not wired: a budget lives on the billing account, which the deployer
@@ -432,7 +434,7 @@ fix is the console: Project settings → Your apps → the `starfish` web app �
 `STARFISH_WEB_HOSTING_SITE` (default `<project>-starfish`, its own site so the watched app's keeps the default), and
 optionally `STARFISH_WEB_APPCHECK_SITE_KEY` (App Check, below; unset = off), `STARFISH_WEB_ADMIN_API_URL` (the admin API's
 URL, built in as `VITE_STARFISH_ADMIN_API_URL`: without it an admin sees no "Run ingest now" or "Retire", #230; [below](#the-admin-api-run-ingest-now-and-retire-an-incident-63-65))
-and `STARFISH_WEB_STALE_MINUTES` (`VITE_STARFISH_STALE_MINUTES`, when the engine line calls a run stopped; unset = 90).
+and `STARFISH_WEB_STALE_MINUTES` (`VITE_STARFISH_STALE_MINUTES`, when the ingest's and the agent's status lines call a run or pass stopped; unset = 90).
 Anonymous sign-in is **not** turned on by the workflow: it is project-wide (see `setup.md`). Input: `dry_run`.
 
 ### App Check and the uptime check (#12)

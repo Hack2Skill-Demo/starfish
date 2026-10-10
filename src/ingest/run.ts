@@ -451,7 +451,7 @@ function toDate(value: unknown): Date | undefined {
 }
 
 /** An error's code or name: enough to diagnose, and never its message, which can echo data. */
-function errorLabel(err: unknown): string {
+export function errorLabel(err: unknown): string {
   if (err instanceof AggregateError) return `AggregateError (${err.errors.length} failed)`;
   const code = (err as { code?: unknown } | null)?.code;
   if (typeof code === "string" || typeof code === "number") return String(code);

@@ -95,7 +95,8 @@
 #   AGENT_BASE_BRANCH    the branch the agent checks out. Default: the engine's own default (main). Always set on the agent
 #                        job (STARFISH_GITHUB_BASE_BRANCH), empty included, so clearing it restores the default (#233),
 #                        unless EXTRA_ENV_VARS or AGENT_EXTRA_ENV_VARS sets that name itself
-#   AGENT_SCHEDULE       cron for the agent tick. Default "30 * * * *" (hourly, after the ingest tick)
+#   AGENT_SCHEDULE       cron for the agent tick. Default "30 * * * *" (hourly, after the ingest tick). Also set on the
+#                        agent job as STARFISH_AGENT_SCHEDULE, so the UI can say when the next pass is expected (#274)
 #   AGENT_EXTRA_ENV_VARS more settings for the agent job, "@"-separated like EXTRA_ENV_VARS. The only place to turn the
 #                        agent's dry run off (STARFISH_DRY_RUN=false); neither list may set STARFISH_VERIFY_* (#147)
 #   DEPLOY_ADMIN_API=1   also deploy the admin API (#63, #65): a Cloud Run SERVICE, public on the network on purpose, that
@@ -418,6 +419,8 @@ if [ "$DEPLOY_AGENT" = "1" ]; then
   AGENT_ENV="GOOGLE_CLOUD_PROJECT=$PROJECT_ID@STARFISH_WATCHED_PROJECT_ID=$WATCHED_PROJECT_ID@STARFISH_VERTEX_PROJECT_ID=$VERTEX_PROJECT_ID"
   AGENT_ENV="$AGENT_ENV@GOOGLE_CLOUD_LOCATION=$REGION@STARFISH_ENV=$STARFISH_ENV@STARFISH_DATABASE_ID=$STARFISH_DATABASE_ID"
   AGENT_ENV="$AGENT_ENV@STARFISH_GITHUB_REPO=$AGENT_REPO@STARFISH_VERTEX_LOCATION=$VERTEX_LOCATION"
+  # The agent is told its own schedule only so the UI can say when the next pass is expected (#274), like the ingest.
+  AGENT_ENV="$AGENT_ENV@STARFISH_AGENT_SCHEDULE=$AGENT_SCHEDULE"
   # Always set, empty included (none: the repair is not wired), so a target taken out of INDEX_TARGETS leaves the job.
   AGENT_ENV="$AGENT_ENV@STARFISH_INDEX_ALLOWED_TARGETS=$INDEX_TARGETS"
   # Always set, empty included (the engine's default, main), so a branch taken out of AGENT_BASE_BRANCH does not stay on
