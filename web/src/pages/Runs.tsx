@@ -5,7 +5,7 @@
  * progress", and nothing is drawn for a stage the loop has no code for (merge, deploy, recovery).
  *
  * Where the agent job (`DEPLOY_AGENT=1`, #74) has not run, this page is empty until it does; it says so instead of looking
- * like a quiet day. On the demo project it runs hourly, in dry run, since 2026-10-07.
+ * like a quiet day. On the demo project it runs hourly since 2026-10-07 (in dry run until 2026-10-10).
  */
 import { useEffect, useMemo, useState } from "react";
 import { useQueries } from "@tanstack/react-query";
