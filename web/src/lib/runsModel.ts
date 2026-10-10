@@ -411,7 +411,9 @@ export function buildWaterfall(cycle: CycleRow, events: readonly EventRow[], now
   const span = endMs - startMs;
 
   // Only the step right after the last one that happened can be in flight, and only while a worker holds the cycle.
-  const lastDone = stages.reduce((acc, stage, i) => (byStage.has(stage) ? i : acc), -1);
+  // Counted over the track's own stages only: a side stage (the issue, the alert) is listed after them, so counting it
+  // would put "the step after" past the end and leave a live run with no running step.
+  const lastDone = known.reduce((acc, stage, i) => (byStage.has(stage) ? i : acc), -1);
   const runningIdx = status.live && cycle.state === "running" && lastDone + 1 < known.length ? lastDone + 1 : -1;
 
   let previousEnd = startMs;
