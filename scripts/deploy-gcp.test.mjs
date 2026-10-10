@@ -318,7 +318,8 @@ describe("scripts/deploy-gcp.sh", () => {
     it("leaves a switch a list sets to that list, set once, and still defaults the others", () => {
       const r = deploy({
         ...dry, ...agentEnv, ...adminEnv,
-        EXTRA_ENV_VARS: "STARFISH_INDEX_AUTO_APPLY=true@STARFISH_INDEX_ALLOWED_TARGETS=projects/a/databases/b",
+        EXTRA_ENV_VARS: "STARFISH_INDEX_AUTO_APPLY=true",
+        INDEX_TARGETS: "app-proj/(default)",
         AGENT_EXTRA_ENV_VARS: "STARFISH_AUTO_MERGE=true@STARFISH_AUTO_MERGE_TARGETS=o/r@STARFISH_PHONE_ESCALATION=true",
       });
       expect(r.status).toBe(0);
@@ -328,6 +329,7 @@ describe("scripts/deploy-gcp.sh", () => {
       expect(agent.values.STARFISH_AUTO_MERGE_TARGETS).toBe("o/r");
       expect(agent.values.STARFISH_PHONE_ESCALATION).toBe("true");
       expect(agent.values.STARFISH_INDEX_AUTO_APPLY).toBe("true");
+      expect(agent.values.STARFISH_INDEX_ALLOWED_TARGETS).toBe("app-proj/(default)");
       expect(agent.values.STARFISH_REVIEW_REQUIRED).toBe("true");
       // AGENT_EXTRA_ENV_VARS reaches the agent alone: the ingest job and the admin API keep auto-merge and phoning off.
       for (const job of [jobs[0], jobs[2]]) {
@@ -351,6 +353,73 @@ describe("scripts/deploy-gcp.sh", () => {
       const header = readFileSync(script, "utf8").split("\nset -euo pipefail")[0];
       for (const name of Object.keys(switches)) expect(header).toContain(name);
       expect(header).toContain("--update-env-vars, which keeps a name it is not given");
+    });
+  });
+
+  describe("VERTEX_LOCATION: where Gemini is called, apart from the jobs' region", () => {
+    const agent = { DEPLOY_AGENT: "1", AGENT_REPO: "o/r", VERIFY_CHECKS: "verify" };
+    const line = (out, job) => out.split("\n").find((l) => l.includes(job)) ?? "";
+
+    it("sets STARFISH_VERTEX_LOCATION on every job, and keeps the jobs in REGION", () => {
+      const r = deploy({ ...dry, ...agent, DEPLOY_ADMIN_API: "1", VERTEX_LOCATION: "global" });
+      expect(r.status).toBe(0);
+      for (const job of ["gcloud run jobs deploy starfish-ingest", "gcloud run jobs deploy starfish-agent", "gcloud run deploy starfish-admin"]) {
+        expect(line(r.out, job), job).toContain("@STARFISH_VERTEX_LOCATION=global");
+        expect(line(r.out, job), job).toContain("@GOOGLE_CLOUD_LOCATION=us-central1");
+      }
+    });
+
+    it("sets it empty by default, so clearing it restores the engine's default", () => {
+      const r = deploy({ ...dry, ...agent });
+      expect(line(r.out, "gcloud run jobs deploy starfish-agent")).toContain("@STARFISH_VERTEX_LOCATION=@");
+    });
+
+    it.each([["a location that is not one", { VERTEX_LOCATION: "us-central1.evil.example" }], ["an extra list setting it", { EXTRA_ENV_VARS: "STARFISH_VERTEX_LOCATION=global" }]])(
+      "refuses %s",
+      (_name, over) => {
+        const r = deploy({ ...dry, ...agent, ...over });
+        expect(r.status).not.toBe(0);
+        expect(r.gcloudCalled).toBe(false);
+      }
+    );
+  });
+
+  describe("INDEX_TARGETS: the missing-index repair's databases, and only the grants it needs there (#11)", () => {
+    const agent = { DEPLOY_AGENT: "1", AGENT_REPO: "o/r", VERIFY_CHECKS: "verify" };
+    const grants = (out) => out.split("\n").filter((l) => /--role=roles\/datastore\.(indexAdmin|viewer)/.test(l));
+
+    it("grants nothing and wires no target by default", () => {
+      const r = deploy({ ...dry, ...agent });
+      expect(grants(r.out)).toEqual([]);
+      expect(r.out).toContain("@STARFISH_INDEX_ALLOWED_TARGETS=@");
+    });
+
+    it("grants the agent indexAdmin and viewer on each target, conditioned to that database, and lists it for the engine", () => {
+      const r = deploy({ ...dry, ...agent, WATCHED_PROJECT_ID: "app-proj", INDEX_TARGETS: "app-proj/(default),app-proj/analytics" });
+      expect(r.status).toBe(0);
+      const g = grants(r.out);
+      expect(g).toHaveLength(4);
+      for (const l of g) {
+        expect(l).toContain("add-iam-policy-binding app-proj --member=serviceAccount:starfish-agent@star-proj.iam.gserviceaccount.com");
+        expect(l).toMatch(/--condition=expression=resource\.name == "projects\/app-proj\/databases\/(\(default\)|analytics)" \|\| resource\.name\.startsWith\("projects\/app-proj\/databases\/(\(default\)|analytics)\/"\)/);
+      }
+      const agentLine = r.out.split("\n").find((l) => l.includes("gcloud run jobs deploy starfish-agent")) ?? "";
+      expect(agentLine).toContain("@STARFISH_INDEX_ALLOWED_TARGETS=app-proj/(default),app-proj/analytics");
+      // The ingest job never repairs anything.
+      const ingest = r.out.split("\n").find((l) => l.includes("gcloud run jobs deploy starfish-ingest")) ?? "";
+      expect(ingest).toContain("@STARFISH_INDEX_ALLOWED_TARGETS=@");
+    });
+
+    it.each([
+      ["Starfish's own database", { ...agent, INDEX_TARGETS: "star-proj/starfish" }],
+      ["an entry that is not project/database", { ...agent, INDEX_TARGETS: "app-proj" }],
+      ["a condition-breaking name", { ...agent, INDEX_TARGETS: 'app-proj/x")||true' }],
+      ["targets without the agent", { INDEX_TARGETS: "app-proj/(default)" }],
+      ["an extra list naming targets", { ...agent, AGENT_EXTRA_ENV_VARS: "STARFISH_INDEX_ALLOWED_TARGETS=app-proj/(default)" }],
+    ])("refuses %s", (_name, over) => {
+      const r = deploy({ ...dry, ...over });
+      expect(r.status).not.toBe(0);
+      expect(r.gcloudCalled).toBe(false);
     });
   });
 

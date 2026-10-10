@@ -23,6 +23,15 @@
 #                        now" is the same run) at least that, so a stalled read is recorded as a failed run before the
 #                        process is killed. Set here, never in EXTRA_ENV_VARS, so the budget and the timeouts can't
 #                        disagree. At most 3480: a Cloud Run request may last no longer than an hour
+#   VERTEX_LOCATION      where Gemini is called (STARFISH_VERTEX_LOCATION): a region, or global, which some models need.
+#                        Default: REGION. Apart from REGION, which must be a real region for Cloud Run, so a redeploy never
+#                        moves Gemini. Always set on every job, empty included, so clearing it restores the default
+#   INDEX_TARGETS        with DEPLOY_AGENT=1: the databases the missing-index repair (#11) may create an index in,
+#                        "project/database" comma-separated (STARFISH_INDEX_ALLOWED_TARGETS), e.g. my-app/(default). On EACH
+#                        it grants the agent's account roles/datastore.indexAdmin (create the one index) and
+#                        roles/datastore.viewer (replay the failing query, read-only, limit one), both conditioned to that
+#                        database and nothing else. Creating indexes is still its own switch: STARFISH_INDEX_AUTO_APPLY=true
+#                        in AGENT_EXTRA_ENV_VARS. Taking a target out does not remove a grant made earlier
 #   EXTRA_ENV_VARS       more engine settings for the job, "@"-separated: "STARFISH_MODEL=x@STARFISH_LOOKBACK_HOURS=6"
 #                        (see .env.example for every name; "@" so a value can hold commas). Each name once: a name the
 #                        script already sets, or one set twice, is refused. Added to the agent's and the admin API's too.
@@ -145,6 +154,8 @@ RUN_AFTER_DEPLOY="${RUN_AFTER_DEPLOY:-0}"
 BUILD_SERVICE_ACCOUNT="${BUILD_SERVICE_ACCOUNT:-}"
 DRY_RUN="${DRY_RUN:-0}"
 STARFISH_MONITORING_ENABLED="${STARFISH_MONITORING_ENABLED:-false}"
+VERTEX_LOCATION="${VERTEX_LOCATION:-}"
+INDEX_TARGETS="${INDEX_TARGETS:-}"
 
 JOB_NAME="${JOB_NAME:-starfish-ingest}"
 ENGINE_SA_NAME="${ENGINE_SA_NAME:-starfish-engine}"
@@ -202,6 +213,29 @@ esac
 for var in EXTRA_ENV_VARS AGENT_EXTRA_ENV_VARS; do
   case "@${!var}" in
     *@STARFISH_MONITORING_ENABLED=*) die "$var may not set STARFISH_MONITORING_ENABLED: set STARFISH_MONITORING_ENABLED=true for the script, which also grants the role it needs" ;;
+  esac
+done
+# Where Gemini is called: VERTEX_LOCATION in src/settingsSchema.ts. It becomes part of the API's host name.
+if [ -n "$VERTEX_LOCATION" ] && ! [[ "$VERTEX_LOCATION" =~ ^(global|[a-z]{2,20}-[a-z]{2,20}[0-9]{1,2})$ ]]; then
+  die "VERTEX_LOCATION must be a GCP region such as us-central1, or global: $VERTEX_LOCATION"
+fi
+# Index repair's targets: PROJECT_RE and DATABASE_RE in src/indexheal/createIndexUrl.ts. Each one is granted below, so
+# the list is set only here: one an extra list set would be a target the agent was never given the right to repair.
+INDEX_TARGET_LIST=()
+if [ -n "$INDEX_TARGETS" ]; then
+  [ "$DEPLOY_AGENT" = "1" ] || die "INDEX_TARGETS needs DEPLOY_AGENT=1: only the agent repairs indexes"
+  IFS=',' read -r -a INDEX_TARGET_PARTS <<< "$INDEX_TARGETS"
+  for target in "${INDEX_TARGET_PARTS[@]}"; do
+    [[ "$target" =~ ^[a-z][a-z0-9-]{4,28}[a-z0-9]/(\(default\)|[a-z][a-z0-9-]{0,61}[a-z0-9])$ ]] ||
+      die "INDEX_TARGETS is a comma-separated list of project/database, e.g. my-app/(default): $target"
+    [ "$target" != "$PROJECT_ID/$STARFISH_DATABASE_ID" ] || die "INDEX_TARGETS may not name Starfish's own database: $target"
+    INDEX_TARGET_LIST+=("$target")
+  done
+fi
+for var in EXTRA_ENV_VARS AGENT_EXTRA_ENV_VARS; do
+  case "@${!var}" in
+    *@STARFISH_VERTEX_LOCATION=*) die "$var may not set STARFISH_VERTEX_LOCATION: set VERTEX_LOCATION for the script" ;;
+    *@STARFISH_INDEX_ALLOWED_TARGETS=*) die "$var may not set STARFISH_INDEX_ALLOWED_TARGETS: set INDEX_TARGETS for the script, which also grants the agent what the repair needs on each target and nothing more" ;;
   esac
 done
 # The run budget (#221): the timeouts of whatever runs the ingest are derived from it below, so it is set only here.
@@ -336,6 +370,8 @@ ENV_VARS="$ENV_VARS@STARFISH_INGEST_RUN_BUDGET_SECONDS=$INGEST_RUN_BUDGET_SECOND
 # Always set, false included, so a redeploy with it off turns off a job deployed with it on (--update-env-vars keeps
 # a name it is not given).
 ENV_VARS="$ENV_VARS@STARFISH_MONITORING_ENABLED=$STARFISH_MONITORING_ENABLED"
+# Always set, empty included (the engine then uses GOOGLE_CLOUD_LOCATION), so clearing VERTEX_LOCATION restores it.
+ENV_VARS="$ENV_VARS@STARFISH_VERTEX_LOCATION=$VERTEX_LOCATION"
 ENV_VARS="$ENV_VARS$(safety_defaults "$EXTRA_ENV_VARS")"
 # The admin API's service name is never ingested either: its errors would otherwise become incidents. Always, not only
 # when this run deploys it (#177): a run without DEPLOY_ADMIN_API=1 would otherwise rewrite the list without it while
@@ -370,7 +406,9 @@ unique_names "the ingest job" "$ENV_VARS"
 if [ "$DEPLOY_AGENT" = "1" ]; then
   AGENT_ENV="GOOGLE_CLOUD_PROJECT=$PROJECT_ID@STARFISH_WATCHED_PROJECT_ID=$WATCHED_PROJECT_ID@STARFISH_VERTEX_PROJECT_ID=$VERTEX_PROJECT_ID"
   AGENT_ENV="$AGENT_ENV@GOOGLE_CLOUD_LOCATION=$REGION@STARFISH_ENV=$STARFISH_ENV@STARFISH_DATABASE_ID=$STARFISH_DATABASE_ID"
-  AGENT_ENV="$AGENT_ENV@STARFISH_GITHUB_REPO=$AGENT_REPO"
+  AGENT_ENV="$AGENT_ENV@STARFISH_GITHUB_REPO=$AGENT_REPO@STARFISH_VERTEX_LOCATION=$VERTEX_LOCATION"
+  # Always set, empty included (none: the repair is not wired), so a target taken out of INDEX_TARGETS leaves the job.
+  AGENT_ENV="$AGENT_ENV@STARFISH_INDEX_ALLOWED_TARGETS=$INDEX_TARGETS"
   # Always set, empty included (the engine's default, main), so a branch taken out of AGENT_BASE_BRANCH does not stay on
   # the job (#233: --update-env-vars keeps a name it is not given). A list that sets the name itself is left to do so.
   case "@$EXTRA_ENV_VARS@$AGENT_EXTRA_ENV_VARS" in
@@ -406,7 +444,7 @@ if [ "$DEPLOY_AGENT" = "1" ]; then
     *@STARFISH_DRY_RUN=*) ;;
     *) AGENT_ENV="$AGENT_ENV@STARFISH_DRY_RUN=true" ;;
   esac
-  AGENT_ENV="$AGENT_ENV$(safety_defaults "$EXTRA_ENV_VARS@$AGENT_EXTRA_ENV_VARS")"
+  AGENT_ENV="$AGENT_ENV$(safety_defaults "$EXTRA_ENV_VARS@$AGENT_EXTRA_ENV_VARS@STARFISH_INDEX_ALLOWED_TARGETS=")"
   unique_names "the agent job" "$AGENT_ENV"
 fi
 if [ "$DEPLOY_ADMIN_API" = "1" ]; then
@@ -687,6 +725,14 @@ if [ "$DEPLOY_AGENT" = "1" ]; then
   bind "$PROJECT_ID" "$AGENT_SA" roles/datastore.user \
     "resource.name == \"$DB_RESOURCE\" || resource.name.startsWith(\"$DB_RESOURCE/\")"
   bind "$VERTEX_PROJECT_ID" "$AGENT_SA" roles/aiplatform.user
+  # The missing-index repair (#11), only on the databases INDEX_TARGETS names: create the one index the error asks for,
+  # and read that database for the probe that replays the failing query. Conditioned to each database, never wider.
+  for target in ${INDEX_TARGET_LIST[@]+"${INDEX_TARGET_LIST[@]}"}; do
+    target_db="projects/${target%%/*}/databases/${target#*/}"
+    for role in roles/datastore.indexAdmin roles/datastore.viewer; do
+      bind "${target%%/*}" "$AGENT_SA" "$role" "resource.name == \"$target_db\" || resource.name.startsWith(\"$target_db/\")"
+    done
+  done
   retry gcloud secrets add-iam-policy-binding "$GITHUB_SECRET" --project="$PROJECT_ID" \
     --member="serviceAccount:$AGENT_SA" --role=roles/secretmanager.secretAccessor --quiet --format=none
   # Each Slack webhook (#17) has its OWN secret, read by the agent's account alone (the ingest job never posts anywhere):

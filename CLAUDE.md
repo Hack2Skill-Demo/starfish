@@ -49,7 +49,7 @@ pnpm spike            # the Gemini fix-quality spike (needs .env + Vertex access
 pnpm ingest           # one ingest run: next window(s) of the watched project's logs → the store
 PROJECT_ID=<p> scripts/deploy-gcp.sh   # Cloud Run job + Scheduler + Secret Manager; DRY_RUN=1 prints the plan (docs/deploy.md)
 # The whole setup, in order (docs/setup.md): scripts/preflight-gcp.sh → deploy-gcp.sh → pnpm grant-operator →
-# scripts/smoke-gcp.sh → scripts/deploy-web.sh. pnpm status: is the deployed engine alive? Run once on the demo project (2026-10-05), the smoke test included, except the agent job.
+# scripts/smoke-gcp.sh → scripts/deploy-web.sh. pnpm status: is the deployed engine alive? Run once on the demo project (2026-10-05), the smoke test included; the agent job was deployed there on 2026-10-07 and runs hourly in dry run.
 scripts/setup-github-deploy.sh   # one-time: lets GitHub Actions deploy with no key (WIF); deploy-on-merge is then a repo variable (docs/deploy.md); never run
 scripts/ingest-cadence.sh status|recording|restore|now   # the ingest's tick for recording the demo, and a run now (#65); DRY_RUN=1 prints
 pnpm scoreboard       # scoreboard/RESULTS.md from recorded runs (#10; format in scoreboard/FORMAT.md; no run recorded yet)
@@ -161,11 +161,11 @@ src/
   agent/triage.ts  stage 1 of the agent loop (#8): act/notify/decline for one incident, and how far to go
                    (`triageLevel`: noise, log, fix, merge): on act the model may name one of the admin's merge cases
                    (`mergeCases`; `missing-index` never offered), kept only if listed. Deterministic gates before the
-                   model, local validation after it; run by `pnpm agent` (deployable, never run)
+                   model, local validation after it; run by `pnpm agent` (deployed to the demo project, dry run: ran on real incidents 2026-10-08)
   agent/fixer.ts   stage 2: minimal patch or honest decline from a stubbed-testable model call;
-                   fails closed, redacts both ways. Run by `pnpm agent` (deployable, never run)
+                   fails closed, redacts both ways. Run by `pnpm agent` (deployed, dry run: ran 2026-10-08 and declined, #259)
   agent/cycle.ts   cycle per (incident, recurrence), transactional lease with fencing, append-only run events
-                   (redacted), the cycle's run record (summary.<stage>, path) and its model-call and revision counts (#182); infrastructure errors throw, logical refusals are returned. Run by `pnpm agent` (deployable, never run)
+                   (redacted), the cycle's run record (summary.<stage>, path) and its model-call and revision counts (#182); infrastructure errors throw, logical refusals are returned. Run by `pnpm agent` (deployed to the demo project, dry run)
   agent/loop.ts    one cycle: lease -> triage -> fix -> verify -> review -> PR (interface); rechecks status +
                    kill switch, one shared revision, call budget, dry run by default. Run by `pnpm agent`. Where
                    triage named a merge case auto-merge may apply to, it also runs the safety floor and the "fails
@@ -236,9 +236,9 @@ src/
                    and "set" is not "works" (nothing calls the service). The browser can't read the secrets, so this is the only way it knows
   agent/automationSwitch.ts  the kill switch: reads the runtime settings fresh each time the loop asks; fails closed
   agent/reviewer.ts  stage 4: attacks the verified patch; verdict computed from outcomes in code, bound
-                   to the patch hash the gate tested. Run by `pnpm agent` (deployable, never run)
+                   to the patch hash the gate tested. Run by `pnpm agent` (deployed; not yet reached on a real incident)
   agent/verifyGate.ts  stage 3: apply a patch in a scratch copy, judge the tree that results, run the
-                   configured command with a scrubbed env. Not a sandbox; run by `pnpm agent` (deployable, never run)
+                   configured command with a scrubbed env. Not a sandbox; run by `pnpm agent` (deployed; not yet reached on a real incident)
   adminApi.ts      the admin API's rules (#63, #65): a Firebase ID token -> uid, admin from the operator record on every call, `POST /api/ingest/run`
                    and `POST /api/incidents/<id>/retire` (with Twilio, the on-call opt-in `send-code`/`confirm`, every admin's attempt audited
                    without the number or the code, #172), one 401, bounded body, CORS allowlist, one ingest at a time. `adminApiServer.ts` is its HTTP
@@ -271,7 +271,7 @@ src/
                    back (`readPullRequest`: refuses one not from starfish/<cycle> in the repo, or not into the configured base). For #9 only: squash-merges
                    one of its PRs at an exact head (`mergePullRequest`), comments on it, and opens the revert of its own
                    merge commit on starfish/revert-<cycle> (`openRevertPullRequest`). Never run against real
-                   GitHub; run by `pnpm agent` (deployable, never run)
+                   GitHub; run by `pnpm agent` (deployed; in dry run it files and opens nothing)
   oncall/escalation.ts  phone escalation (#37): an urgent cycle (triage notify/act, waiting for a person) whose Slack message
                    went unacknowledged for the policy's wait -> primary, primary again after 2 min, secondary, support lead.
                    One sequence per cycle, each call claimed in a transaction (claimer, per-person daily cap) before it is

@@ -178,6 +178,25 @@ describe("scripts/setup-github-deploy.sh", () => {
     ]);
   });
 
+  it("with INDEX_TARGETS, lets the deployer grant the repair's two roles on each target's project and nowhere else, as the deploy binds them", () => {
+    const layout = { WATCHED_PROJECT_ID: "app-proj", VERTEX_PROJECT_ID: "ai-proj", INDEX_TARGETS: "app-proj/(default),other-proj/(default)" };
+    const deploy = spawnSync("bash", [new URL("./deploy-gcp.sh", import.meta.url).pathname], {
+      env: { PATH: "/usr/bin:/bin", ...dry, ...layout, DEPLOY_AGENT: "1", AGENT_REPO: "acme/shop", VERIFY_CHECKS: "verify" },
+      encoding: "utf8",
+    });
+    expect(deploy.status, deploy.stderr).toBe(0);
+    const limits = grantable(setup({ ...dry, ...layout }).out);
+    expect(limits.get("app-proj")).toEqual(["roles/datastore.indexAdmin", "roles/datastore.viewer", "roles/logging.viewer", "roles/monitoring.viewer"]);
+    expect(limits.get("other-proj")).toEqual(["roles/datastore.indexAdmin", "roles/datastore.viewer"]);
+    expect(limits.get("ai-proj")).toEqual(["roles/aiplatform.user"]);
+    for (const m of deploy.stdout.replace(/\\/g, "").matchAll(/projects add-iam-policy-binding (\S+) --member=\S+ --role=(roles\/datastore\.(?:indexAdmin|viewer))/g)) {
+      expect(limits.get(m[1]), m[1]).toContain(m[2]);
+    }
+    // Without targets, nothing of it: the watched project is never given a database role (#213).
+    expect(grantable(setup({ ...dry, WATCHED_PROJECT_ID: "app-proj" }).out).get("app-proj")).toEqual(["roles/logging.viewer", "roles/monitoring.viewer"]);
+    expect(setup({ ...dry, INDEX_TARGETS: "app-proj" }).status).not.toBe(0);
+  });
+
   it("takes off an earlier, wider projectIamAdmin binding before it binds the new one (#228)", () => {
     const lines = setup({ ...dry, WATCHED_PROJECT_ID: "app-proj" }).out.split("\n");
     for (const project of ["star-proj", "app-proj"]) {

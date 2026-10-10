@@ -8,8 +8,7 @@
  *
  * "Healed on its own" counts only missing-index runs the engine recorded as healed after their quiet window
  * (src/indexheal/observe.ts); a merge or a READY index is not a heal. Not here: anything about merges or
- * deploys. The agent job has never run on a real project, so on a real deployment the run counts are zero
- * until it does, and the page says so.
+ * deploys. Where the agent job has not run, the run counts are zero until it does, and the page says so.
  *
  * The key figures keep their denominators ("3 of 12", never a bare percentage) and read "–" when there is
  * nothing to divide by. They are counts and medians of stored records, not accuracy: no run has been scored

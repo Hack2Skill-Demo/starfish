@@ -13,6 +13,10 @@
 #                        `gh api repos/OWNER/NAME --jq .id`, or the top-level "id" of https://api.github.com/repos/OWNER/NAME
 #   WATCHED_PROJECT_ID   Default PROJECT_ID. VERTEX_PROJECT_ID likewise. Where one differs from PROJECT_ID the deployer may
 #                        enable APIs there, and grant there only the roles deploy-gcp.sh binds there (#228)
+#   INDEX_TARGETS        deploy-gcp.sh's: the databases the missing-index repair may create an index in ("project/database",
+#                        comma-separated). On each one's project the deployer may also grant roles/datastore.indexAdmin and
+#                        roles/datastore.viewer, which deploy-gcp.sh binds to the agent conditioned to that database. Set it
+#                        here as there; changing it means running this again
 #   ENVIRONMENT          the GitHub environment the jobs run in. Default deploy (the workflows are fixed to it)
 #   POOL, PROVIDER       Default github, github-deploy
 #   DEPLOYER_NAME        Default starfish-deployer
@@ -42,6 +46,7 @@ PROJECT_ID="${PROJECT_ID:-}"
 REPO="${REPO:-}"
 WATCHED_PROJECT_ID="${WATCHED_PROJECT_ID:-$PROJECT_ID}"
 VERTEX_PROJECT_ID="${VERTEX_PROJECT_ID:-$PROJECT_ID}"
+INDEX_TARGETS="${INDEX_TARGETS:-}"
 ENVIRONMENT="${ENVIRONMENT:-deploy}"
 POOL="${POOL:-github}"
 PROVIDER="${PROVIDER:-github-deploy}"
@@ -80,6 +85,16 @@ for var in ENGINE_SA_NAME SCHEDULER_SA_NAME AGENT_SA_NAME VERIFIER_SA_NAME ADMIN
 done
 case "$DEPLOYER_ROLE_ID$SA_IAM_ROLE_ID" in *[!A-Za-z0-9_.]*) die "DEPLOYER_ROLE_ID and SA_IAM_ROLE_ID may hold only letters, digits, _ ." ;; esac
 case "$VERIFY_ISOLATION" in github-actions|cloud-run-job) ;; *) die "VERIFY_ISOLATION must be github-actions or cloud-run-job: $VERIFY_ISOLATION" ;; esac
+# The projects of INDEX_TARGETS, as deploy-gcp.sh validates each entry (PROJECT_RE and DATABASE_RE, createIndexUrl.ts).
+INDEX_PROJECTS=" "
+if [ -n "$INDEX_TARGETS" ]; then
+  IFS=',' read -r -a INDEX_TARGET_PARTS <<< "$INDEX_TARGETS"
+  for target in "${INDEX_TARGET_PARTS[@]}"; do
+    [[ "$target" =~ ^[a-z][a-z0-9-]{4,28}[a-z0-9]/(\(default\)|[a-z][a-z0-9-]{0,61}[a-z0-9])$ ]] ||
+      die "INDEX_TARGETS is a comma-separated list of project/database, e.g. my-app/(default): $target"
+    case "$INDEX_PROJECTS" in *" ${target%%/*} "*) ;; *) INDEX_PROJECTS="$INDEX_PROJECTS${target%%/*} " ;; esac
+  done
+fi
 
 step() { printf '\n== %s\n' "$*"; }
 run() {
@@ -186,11 +201,16 @@ bind "$PROJECT_ID" roles/storage.admin "$BUCKETS"
 STARFISH_GRANTS="roles/run.builder roles/datastore.user roles/firebaseauth.viewer"
 WATCHED_GRANTS="roles/logging.viewer roles/monitoring.viewer"
 VERTEX_GRANTS="roles/aiplatform.user"
+# On a project of INDEX_TARGETS: the missing-index repair's two roles, which deploy-gcp.sh binds to the agent conditioned to
+# the target database. This condition can limit the ROLE the deployer grants, not that IAM condition: the deployer could
+# grant either role without it. Listing a target is choosing that.
+INDEX_GRANTS="roles/datastore.indexAdmin roles/datastore.viewer"
 grantable_on() { # grantable_on <project>: the condition that limits granting there to deploy-gcp.sh's roles there
   local roles="" role list=""
   [ "$1" != "$PROJECT_ID" ] || roles="$roles $STARFISH_GRANTS"
   [ "$1" != "$WATCHED_PROJECT_ID" ] || roles="$roles $WATCHED_GRANTS"
   [ "$1" != "$VERTEX_PROJECT_ID" ] || roles="$roles $VERTEX_GRANTS"
+  case "$INDEX_PROJECTS" in *" $1 "*) roles="$roles $INDEX_GRANTS" ;; esac
   for role in $roles; do list="${list:+$list,}'$role'"; done
   echo "api.getAttribute('iam.googleapis.com/modifiedGrantsByRole', []).hasOnly([$list])"
 }
@@ -208,7 +228,8 @@ limit_grants() { # limit_grants <project>
 }
 limit_grants "$PROJECT_ID"
 SEEN=" $PROJECT_ID "
-for other in "$WATCHED_PROJECT_ID" "$VERTEX_PROJECT_ID"; do
+# shellcheck disable=SC2086 # INDEX_PROJECTS is a space-separated list of validated project ids
+for other in "$WATCHED_PROJECT_ID" "$VERTEX_PROJECT_ID" $INDEX_PROJECTS; do
   case "$SEEN" in *" $other "*) continue ;; esac
   SEEN="$SEEN$other "
   bind "$other" roles/serviceusage.serviceUsageAdmin

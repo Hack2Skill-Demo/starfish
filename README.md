@@ -169,8 +169,8 @@ demo runs.
 - **Live runs:** a first version is built: the **Runs** page lists the agent's cycles and draws
   each one's steps (triage, fix, verify, review, pull request) from the events the engine records,
   live. A step with no event reads "not reached", and a run with no worker holding it is not shown
-  as in progress. **The agent job that would fill it is deployable (`DEPLOY_AGENT=1`) and has never run, so on a real
-  deployment the page is empty** unless the synthetic demo history (`pnpm seed-demo`, badged "Synthetic") was written; it is exercised against the emulator with seeded data. The header shows the path, the
+  as in progress. **The agent job that fills it runs on the demo project, hourly, in dry run** (deployed 2026-10-07; its first
+  runs, on 2026-10-08, stopped at the fix stage, #259); on a deployment without it the page is empty unless the synthetic demo history (`pnpm seed-demo`, badged "Synthetic") was written; it is exercised against the emulator with seeded data. The header shows the path, the
   triage rule, progress (steps recorded) and the engine's last run. The GitHub-issue and Slack steps appear when a run
   recorded them. A missing-index run shows its own steps (the index, then its evidence pull request) and where the
   index stands at runtime (watching, healed, recurred). The phone escalation's calls (#37) appear as one step when a
@@ -211,7 +211,7 @@ through them, open [`docs/design/html/index.html`](docs/design/html/index.html) 
 
 What each service does here, and how far it has got. "Written" means the code or script exists and
 is tested; "deployed" means it has run in a real project: the ingest half and the web UI, once, on the demo project
-(2026-10-05, #6), and the admin API once, on 2026-10-07. The agent job has never run.
+(2026-10-05, #6), the admin API once, on 2026-10-07, and the agent job, on 2026-10-07, which runs hourly in dry run.
 
 | Service | Used for | Status |
 |---|---|---|
@@ -345,7 +345,7 @@ that isn't open, defers when the counter-check is missing (missing is not zero),
 counter-check of zero without asking the model (except a Monitoring-only incident, whose zero is
 expected; and that one is turned from act to notify when it carries no cause evidence), validates the model's answer locally and
 fails closed, and redacts and bounds both what the model is shown and what it returns. It is
-tested with a stubbed model; the agent job (`pnpm agent`, deployable with `DEPLOY_AGENT=1`, never run) runs it and takes the counter-check itself,
+tested with a stubbed model; the agent job (`pnpm agent`, deployed with `DEPLOY_AGENT=1` to the demo project, in dry run) runs it and takes the counter-check itself,
 and it is not on Google's Agent Development Kit yet.
 
 The **verify gate** (`src/agent/verifyGate.ts`) is also built as a function and tested for real
@@ -360,7 +360,7 @@ output tied to the SHA-256 of the exact patch. **It is not a sandbox:** the comm
 process's user with the machine's network and filesystem, so it belongs on a disposable runner
 that holds no credentials, which is infrastructure that does not exist yet (#8).
 
-The **fixer** (`src/agent/fixer.ts`) is the third stage as a contract, run by the agent job (never run): given an
+The **fixer** (`src/agent/fixer.ts`) is the third stage as a contract, run by the agent job (in dry run on the demo project; its first fixes declined for want of source, #259): given an
 incident and the source files the caller chose to show it, it returns a unified diff with its
 root cause, risk and rejected alternatives, or honestly declines (an empty patch means "I lack
 the context", an outcome and not an error). It fails closed on a malformed answer, a patch
@@ -377,7 +377,7 @@ blocks, any flag approves with flags), and a review with no attacks is an error 
 "found nothing".
 
 The state those stages need in order to run more than once safely exists too, and is also
-run by the agent job, never run (`src/agent/cycle.ts`, tested on the emulator): one **cycle** per incident and
+run by the agent job, in dry run on the demo project (`src/agent/cycle.ts`, tested on the emulator): one **cycle** per incident and
 recurrence (so a regression gets a fresh fix and a retry cannot open a second PR for the same
 one), a **lease** taken in a transaction (one worker at a time; a crashed worker's lease runs
 out and another resumes, up to a configured number of starts; the lease can never be extended
@@ -472,7 +472,7 @@ src/
   scoreboard/        the results format and aggregation behind `pnpm scoreboard`, and the replay harness behind `pnpm replay`
                      (tested with a stub model only; no run recorded yet: see scoreboard/FORMAT.md)
   ingest/            logs -> classified, deduped incidents + counter-check
-  agent/             triage, fixer, verify gate, reviewer, cycle state and the loop: run by the agent job (`pnpm agent`), deployable and never run
+  agent/             triage, fixer, verify gate, reviewer, cycle state and the loop: run by the agent job (`pnpm agent`), deployed to the demo project in dry run
 web/                 operator UI: sign-in, incidents, settings
 firestore.rules      what the UI may read and change (tested on the emulator)
 fixtures/incidents/   spike fixtures (synthetic; see docs/spike.md)

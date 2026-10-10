@@ -5,8 +5,8 @@ the few steps only a person with the console can do.
 
 > **Status: run once, on the demo project (2026-10-05); most of it worked.** The preflight, the ingest deploy (job, Scheduler,
 > database and rules), `grant-operator` and the web deploy ran against `hack2skill-demo`, after two fixes the first run found (the
-> build account's role, #103; `grant-operator` following the shell's project, #104). The smoke test then passed: a planted error was read into the store and retired. **The agent job has
-> never been deployed, the admin API was deployed once on 2026-10-07 ("Run ingest now" worked from the UI; Retire has not been tried), and the GitHub Actions deploy workflows have never run.** Every script below is tested against stubs of `gcloud` and `firebase`
+> build account's role, #103; `grant-operator` following the shell's project, #104). The smoke test then passed: a planted error was read into the store and retired. **The agent job was
+> deployed on 2026-10-07 and runs hourly in dry run (triage and fix drafting have run; verify, review and a PR have not), the admin API was deployed once on 2026-10-07 ("Run ingest now" worked from the UI; Retire has not been tried), and the GitHub Actions deploy workflows have never run.** Every script below is tested against stubs of `gcloud` and `firebase`
 > (so the plan, the order and the refusals are pinned; the web deploy is tested against a stub of `pnpm`), and the two CLIs (`grant-operator`, `status`)
 > were run end to end against the Firebase emulators. Expect
 > to fix one or two things on the first pass of the parts that have not run; [`deploy.md`](deploy.md) lists the likely ones.
@@ -117,7 +117,7 @@ Be honest with yourself about this list before the demo:
 
 Everything here is in the issues; the order that gets to the headline demo fastest is #5 (something to break),
 #74 (the loop as a job: its verify isolation is decided, `github-actions` for the demo, and built; the agent job deploys
-with `DEPLOY_AGENT=1` and has never run), then #11 (the index heal: the gated executor is built and tested against
+with `DEPLOY_AGENT=1`, and runs on the demo project in dry run), then #11 (the index heal: the gated executor is built and tested against
 fakes and the emulator, never run against Google).
 
 ## If a step fails

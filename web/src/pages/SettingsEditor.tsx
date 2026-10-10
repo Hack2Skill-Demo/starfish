@@ -69,7 +69,7 @@ const FIELDS: Record<
     multiline: false,
     kind: "switch",
     placeholder: "",
-    hint: "On: the agent loop drafts, verifies and reviews fixes and opens nothing. Off: a verified, reviewed patch may become a pull request. The engine's default is on. The job that runs it has never run on a real project.",
+    hint: "On: the agent loop drafts, verifies and reviews fixes and opens nothing. Off: a verified, reviewed patch may become a pull request. The engine's default is on. The agent job runs on the demo project, in dry run so far.",
   },
   reviewRequired: {
     label: "Review required",
@@ -83,7 +83,7 @@ const FIELDS: Record<
     multiline: false,
     kind: "switch",
     placeholder: "",
-    hint: "The kill switch. Off: the agent loop stops at its next step and opens nothing, whatever the other switches say. The engine's default is on. The job that runs it has never run on a real project.",
+    hint: "The kill switch. Off: the agent loop stops at its next step and opens nothing, whatever the other switches say. The engine's default is on. The agent job runs on the demo project, in dry run so far.",
   },
   autoMerge: {
     label: "Auto-merge",
@@ -116,7 +116,7 @@ const FIELDS: Record<
     label: "Gemini model",
     multiline: false,
     placeholder: "gemini-3.1-pro-preview",
-    hint: "The Vertex AI model id the agent loop asks for triage, fix drafting and review. It must be available in the region below. The job that runs it has never run on a real project.",
+    hint: "The Vertex AI model id the agent loop asks for triage, fix drafting and review. It must be available in the region below. The agent job runs on the demo project, in dry run so far.",
   },
   location: {
     label: "Vertex AI region",
