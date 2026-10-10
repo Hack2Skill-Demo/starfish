@@ -919,6 +919,99 @@ function baseProblems(src: FileDiff, hunk: Hunk, first: number, last: number, ba
   return out;
 }
 
+// ---- The merge floor -------------------------------------------------------------------------------------------
+
+/**
+ * The SAFETY FLOOR every merge Starfish makes must clear (docs/design/auto-merge-policy.md). Gemini decides that an
+ * incident is one of the admin's merge cases (triage.ts); this decides that the patch it led to is one Starfish may
+ * merge at all. It is gate 1 without gate 1's shape rules. Pure; never throws. A patch clears it only when ALL holds:
+ *   - the diff is understood exactly as git applies it (gate 1's parsing, `a/`/`b/` paths and `\ No newline` markers)
+ *     and has no control character;
+ *   - exactly one production file changes, an existing JavaScript/TypeScript file, and the base revision's content of it
+ *     is there and holds every hunk's lines where the hunk says;
+ *   - every other file is a NEW test file made only of added lines (gate 1's rule): an existing test is never changed,
+ *     so a patch cannot turn the required checks green by weakening the test that judges it;
+ *   - no path, no changed line, and no statement of the function around any hunk (every statement naming one, as for a
+ *     null guard) hits the hard-exclude list: auth and access control, security rules, money, secrets, schema,
+ *     dependencies and imports, CI and deploy config, shared packages, and the deployment's own exclusions.
+ * What it does NOT ask, unlike gate 1: one of three fix classes, one hunk, a size or span limit, three lines of context.
+ * Those were Starfish deciding WHAT KIND of change may merge; that call is now Gemini's, within the cases an admin lists.
+ */
+export function assessMergeFloor(patch: string, cfg: BlastRadiusConfig): BlastRadius {
+  const problems = new Set<string>();
+  const done = (extra: Partial<BlastRadius> = {}): BlastRadius => ({ allowed: problems.size === 0, testFiles: [], problems: [...problems], ...extra });
+  if (hasControlCharacter(patch)) problems.add("control-characters");
+  const files = parsePatch(patch);
+  if (files === null) {
+    problems.add("diff-not-understood");
+    return done();
+  }
+
+  const sources: FileDiff[] = [];
+  const tests: FileDiff[] = [];
+  for (const f of files) {
+    for (const u of f.unusual) problems.add(u);
+    if (f.newPath === null) {
+      problems.add(f.oldPath === null ? "no-file-headers" : "file-deleted");
+      continue;
+    }
+    for (const path of new Set([f.oldPath, f.newPath].filter((p): p is string => p !== null))) {
+      for (const c of excludedPathCategories(path)) problems.add(`excluded:${c}`);
+      if (isExcludedPath(path, cfg.excludedPaths)) problems.add("excluded:configured");
+    }
+    (isTestPath(f.newPath) ? tests : sources).push(f);
+  }
+  if (tests.length > MAX_TEST_FILES) problems.add("too-many-test-files");
+  for (const t of tests) for (const p of testFileProblems(t)) problems.add(p);
+  const testFiles = tests.map((t) => t.newPath!);
+
+  if (sources.length !== 1) {
+    problems.add(sources.length === 0 ? "no-source-change" : "more-than-one-file");
+    return done({ testFiles });
+  }
+  const src = sources[0]!;
+  const sourceFile = src.newPath!;
+  if (src.oldPath === null) problems.add("new-source-file");
+  if (!CODE_EXT.test(sourceFile)) problems.add("not-javascript-or-typescript");
+  const changed = src.hunks.flatMap((h) => h.lines.filter((l) => l.kind !== " "));
+  if (changed.length === 0) problems.add("no-source-change");
+  for (const l of changed) for (const c of excludedLineCategories(l.text)) problems.add(`excluded:${c}`);
+  for (const p of floorBaseProblems(src, cfg.baseFiles)) problems.add(p);
+  return done({ sourceFile, testFiles });
+}
+
+/**
+ * The source file's base content against every hunk (gate 1's `baseProblems`, for any number of hunks and without the
+ * context rule): it must be there and hold each hunk's lines where the hunk says, a `\ No newline` marker only at the
+ * file's end, and no function a hunk touches may decide anything about access control, money or secrets.
+ */
+function floorBaseProblems(src: FileDiff, baseFiles: ReadonlyMap<string, string> | undefined): string[] {
+  const raw = src.oldPath === null ? undefined : baseFiles?.get(src.oldPath);
+  if (raw === undefined) return ["base-not-available"];
+  if (hasControlCharacter(raw)) return ["control-characters"];
+  const base = raw.replace(/\r\n/g, "\n").split("\n");
+  if (base.at(-1) === "") base.pop();
+  const whole = base.join("\n");
+  const out = new Set<string>();
+  const lastHunk = src.hunks.at(-1);
+  for (const hunk of src.hunks) {
+    const start = hunk.oldStart - 1;
+    const old = hunk.lines.filter((l) => l.kind !== "+");
+    if (start < 0 || start + old.length > base.length || old.some((l, k) => l.text !== base[start + k])) return ["base-mismatch"];
+    const noEol = hunk.noNewlineAtEnd;
+    const atEnd = start + hunk.oldCount === base.length;
+    if (noEol && (hunk !== lastHunk || !atEnd || (noEol.old && raw.endsWith("\n")))) out.add("no-newline-marker");
+    const changedAt = hunk.lines.flatMap((l, i) => (l.kind === " " ? [] : [i]));
+    if (changedAt.length === 0) continue;
+    for (const l of hunk.lines) if (l.kind === " ") for (const c of decisionCategories(l.text, true)) out.add(`excluded:${c}`);
+    const oldIndex = (i: number) => start + hunk.lines.slice(0, i).filter((l) => l.kind !== "+").length;
+    const lo = Math.max(0, oldIndex(changedAt[0]!) - 1);
+    const hi = Math.min(base.length - 1, oldIndex(changedAt.at(-1)! + 1));
+    for (const c of decisionsIn(enclosingText(whole, lo, hi), true)) out.add(`excluded:${c}`);
+  }
+  return [...out];
+}
+
 /**
  * Whether gate 1 judged exactly the files the verify gate saw the patch change (`VerifyResult.changedFiles`, what
  * `git apply` really wrote): no more and no fewer (#200). Gate 1 reads headers; this ties them to the tree.

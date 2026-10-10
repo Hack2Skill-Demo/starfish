@@ -150,7 +150,8 @@ if (indexHeal) {
 
 const owner = `agent-${hostname()}-${process.pid}-${randomUUID().slice(0, 8)}`;
 const automationEnabled = makeAutomationSwitch(settings, db);
-// The merge switches (#9), read fresh: the kill switch, dry run, the merge freeze, `autoMerge`, the target allowlist.
+// The merge switches (#9), read fresh: the kill switch, dry run, the merge freeze, `autoMerge`, the target allowlist, and
+// with a merge case, that the admin still lists it.
 const mergeBlocked = makeMergeSwitch(settings, db);
 const incidentStatus = async (id: string): Promise<IncidentStatus | null> => {
   const snap = await db.collection(cfg.incidentCollection).doc(id).get();
@@ -168,8 +169,8 @@ const deps = {
   load: loader.load,
   incidentStatus,
   automationEnabled,
-  // Auto-merge evidence is prepared only while the merge switches allow it (#9); the loop itself never merges.
-  autoMergeAllowed: async () => (await mergeBlocked()) === null,
+  // Auto-merge evidence is prepared only where Gemini named a merge case the switches allow (#9); the loop never merges.
+  autoMergeAllowed: async (mergeCase?: string) => (await mergeBlocked(mergeCase)) === null,
   reconsider: cfg,
   ...(indexHeal && { indexHeal }),
   ...(remoteVerify && { verify: remoteVerify }),

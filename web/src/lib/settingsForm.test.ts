@@ -180,3 +180,30 @@ describe("settingsFromForm", () => {
     expect(settingsFromForm(formFromStored({ version: 1, ...stored }))).toEqual({ ok: true, settings: stored });
   });
 });
+
+describe("merge cases", () => {
+  it("shows a stored list as one \"id: description\" per line, and reads it back the same", () => {
+    const stored = { version: 1, mergeCases: [{ id: "missing-index", description: "a composite index is missing: the query fails" }] };
+    const form = formFromStored(stored as never);
+    expect(form.mergeCases).toEqual({ override: true, text: "missing-index: a composite index is missing: the query fails" });
+    expect(settingsFromForm(withField({ mergeCases: form.mergeCases }))).toEqual({
+      ok: true,
+      settings: { mergeCases: [{ id: "missing-index", description: "a composite index is missing: the query fails" }] },
+    });
+  });
+
+  it("an override with no line is an empty list: nothing merges", () => {
+    expect(settingsFromForm(withField({ mergeCases: { override: true, text: "  \n" } }))).toEqual({ ok: true, settings: { mergeCases: [] } });
+  });
+
+  it("refuses a line without a description, and an id the engine would refuse", () => {
+    const noColon = settingsFromForm(withField({ mergeCases: { override: true, text: "missing-index" } }));
+    expect(noColon.ok).toBe(false);
+    if (!noColon.ok) expect(noColon.problems[0]).toContain('line 1 must be "id: description"');
+    expect(settingsFromForm(withField({ mergeCases: { override: true, text: "Not An Id: d" } })).ok).toBe(false);
+  });
+
+  it("is on the engine default (none) unless overridden", () => {
+    expect(formFromStored(null).mergeCases).toEqual({ override: false, text: "" });
+  });
+});

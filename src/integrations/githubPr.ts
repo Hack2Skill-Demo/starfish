@@ -1,6 +1,7 @@
 /**
  * The pull-request step (#17): turn a verified, reviewed patch into ONE pull request in ONE repository,
- * and stop there. It never merges, never deploys, never pushes to the base branch.
+ * and stop there. Opening one never merges, never deploys, never pushes to the base branch (merging is the separate
+ * auto-merge step, `mergePullRequest`, for the admin's merge cases only).
  *
  *   check the target -> reconcile (is there already a PR for this cycle?) -> build the commit in a scratch
  *   clone -> push `starfish/<cycleId>` -> create the PR
@@ -129,7 +130,7 @@ export interface IssueRequest {
 /** What the pull request and the issue say about merging: the truth for this repository (#9). */
 const MERGE_LINE = {
   off: "It does not merge or deploy: a person decides.",
-  on: "Auto-merge is on for this repository: Starfish merges the fix itself only if every gate passes, and posts the evidence on the pull request first; otherwise a person decides. It never deploys.",
+  on: "Auto-merge is on for this repository: Gemini judged this incident one of the merge cases an admin listed, so Starfish merges the fix itself if the change stays inside the safety floor and every required check is green, and posts the evidence on the pull request first; otherwise a person decides. A merge is a release: this repository's own CI/CD ships it.",
 } as const;
 
 /** The label every Starfish issue carries, so they can be listed together and reconciled by cycle. */
@@ -1013,7 +1014,7 @@ export function createGithubClient(cfg: GithubPrConfig, deps: GithubPrDeps): Git
       "",
       `Run: \`${code(req.cycleId, 128)}\``,
       "",
-      "Opened by Starfish's fast-revert. It merges this once the required checks pass. Starfish never reverts a revert, and it does not deploy: the repository's own CI/CD does.",
+      "Opened by Starfish's fast-revert. It merges this once the required checks pass. Starfish never reverts a revert. Merging it is a release: the repository's own CI/CD ships it.",
       "",
     ].join("\n");
     const created = await call("POST", `/repos/${cfg.githubRepo}/pulls`, { title, head: branch, base: cfg.githubBaseBranch, body, maintainer_can_modify: false });

@@ -558,6 +558,7 @@ describe("loadConfig: auto-merge and fast-revert (#9)", () => {
     "STARFISH_MERGE_CHECK_WAIT_MINUTES",
     "STARFISH_FAST_REVERT_MINUTES",
     "STARFISH_FAST_REVERT_GRACE_MINUTES",
+    "STARFISH_MERGE_CASES",
   ];
   beforeEach(() => {
     vi.stubEnv("GOOGLE_CLOUD_PROJECT", "home-project");
@@ -575,8 +576,24 @@ describe("loadConfig: auto-merge and fast-revert (#9)", () => {
       mergeCheckWaitMinutes: 120,
       fastRevertMinutes: 60,
       fastRevertGraceMinutes: 10,
+      mergeCases: [],
     });
   });
+
+  it("reads the merge cases from a JSON list", () => {
+    vi.stubEnv("STARFISH_MERGE_CASES", JSON.stringify([{ id: "missing-index", description: "a composite index is missing" }]));
+    expect(loadConfig().mergeCases).toEqual([{ id: "missing-index", description: "a composite index is missing" }]);
+    vi.stubEnv("STARFISH_MERGE_CASES", "  ");
+    expect(loadConfig().mergeCases).toEqual([]);
+  });
+
+  it.each(["[{", "{}", JSON.stringify([{ id: "Bad Id", description: "d" }]), JSON.stringify([{ id: "ok-id", description: "" }])])(
+    "refuses STARFISH_MERGE_CASES=%s at startup rather than guess",
+    (value) => {
+      vi.stubEnv("STARFISH_MERGE_CASES", value);
+      expect(() => loadConfig()).toThrow("STARFISH_MERGE_CASES");
+    }
+  );
 
   it("reads every value", () => {
     vi.stubEnv("STARFISH_AUTO_MERGE", "true");

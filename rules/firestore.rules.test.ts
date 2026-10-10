@@ -460,6 +460,8 @@ describe("runtime settings", () => {
       ["an auto-merge switch that isn't a boolean", { autoMerge: "true" }],
       ["a merge freeze that isn't a boolean", { mergeFreeze: 1 }],
       ["a merge target list, which only the environment may set", { autoMergeTargets: ["acme/prod"] }],
+      ["merge cases that aren't a list", { mergeCases: { id: "missing-index", description: "d" } }],
+      ["more than 20 merge cases", { mergeCases: Array.from({ length: 21 }, (_, i) => ({ id: `case-${i}`, description: "d" })) }],
       ["a model call budget of zero", { modelCallBudget: 0 }],
       ["a model call budget above fifty", { modelCallBudget: 51 }],
       ["a fractional model call budget", { modelCallBudget: 2.5 }],
@@ -506,6 +508,13 @@ describe("runtime settings", () => {
     it("accepts the merge switches, and the engine agrees (#9)", async () => {
       await assertSucceeds(save("admin1", { ...settings, autoMerge: true, mergeFreeze: false }));
       expect(validateSettings(await stored())).toMatchObject({ ok: true, settings: { autoMerge: true, mergeFreeze: false } });
+    });
+
+    it("accepts the admin's merge cases, and the engine agrees", async () => {
+      const mergeCases = [{ id: "missing-index", description: "a Firestore query fails because a composite index is missing" }];
+      await assertSucceeds(save("admin1", { ...settings, mergeCases }));
+      expect(validateSettings(await stored())).toMatchObject({ ok: true, settings: { mergeCases } });
+      await assertSucceeds(save("admin1", { ...settings, mergeCases: [] }));
     });
 
     it("accepts a model and region, and the engine agrees (#7)", async () => {

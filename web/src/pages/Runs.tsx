@@ -32,6 +32,7 @@ import {
   runFilter,
   runStatus,
   safeUrl,
+  triageDecision,
   triageRule,
   type CycleRow,
   type EventRow,
@@ -272,6 +273,7 @@ function RunDetail({ cycle, incident, environment, now }: { cycle: CycleRow; inc
 
   const status = runStatus(cycle, now);
   const rule = triageRule(cycle);
+  const decision = triageDecision(cycle);
   const prUrl = safeUrl(cycle.summary.pr?.url);
   const prNow = prStateView(cycle, now);
   const indexNow = indexRuntimeView(cycle);
@@ -308,6 +310,15 @@ function RunDetail({ cycle, incident, environment, now }: { cycle: CycleRow; inc
             <>
               <dt className="text-gray-600 dark:text-gray-400">Path</dt>
               <dd>{PATH_LABELS[cycle.path]}</dd>
+            </>
+          )}
+          {decision && (
+            <>
+              <dt className="text-gray-600 dark:text-gray-400">Decision</dt>
+              <dd>
+                {decision.label}
+                {decision.mergeCase && <span className="ml-1 font-mono text-xs">({decision.mergeCase})</span>}
+              </dd>
             </>
           )}
           {rule && (

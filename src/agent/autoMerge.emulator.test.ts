@@ -36,6 +36,8 @@ let clock: Date;
 let blocked: (string | null)[];
 let status: IncidentStatus | null;
 let told: NotifyRequest[];
+/** The merge case each read of the switches asked about (null: none). */
+let asked: (string | null)[];
 beforeEach(() => {
   const run = randomUUID().slice(0, 8);
   cfg = testConfig({
@@ -53,6 +55,7 @@ beforeEach(() => {
   blocked = [null];
   status = "new";
   told = [];
+  asked = [];
 });
 
 function proven(over: Record<string, Record<string, unknown>> = {}): Record<string, Record<string, unknown>> {
@@ -68,8 +71,9 @@ function proven(over: Record<string, Record<string, unknown>> = {}): Record<stri
       number: 7,
       patchSha256: P,
       headSha: HEAD,
-      gate1: "pass",
-      fixClass: "firestore-undefined-field",
+      kind: "code",
+      mergeCase: "firestore-undefined-field",
+      floor: "pass",
       sourceFile: "functions/src/orders/createOrder.ts",
       causeFrame: true,
       pendingSince: t0.toISOString(),
@@ -149,7 +153,10 @@ function mergeDeps(client: MergeClient, over: Partial<AutoMergeDeps> = {}): Auto
     client,
     now: () => clock,
     owner: "worker-a",
-    blockedBy: async () => (blocked.length > 1 ? blocked.shift()! : blocked[0]!),
+    blockedBy: async (mergeCase?: string) => {
+      asked.push(mergeCase ?? null);
+      return blocked.length > 1 ? blocked.shift()! : blocked[0]!;
+    },
     incidentStatus: async () => status,
     notify: async (req) => {
       told.push(req);
@@ -194,6 +201,53 @@ describe("runAutoMergeStep: merges only what every switch and gate allows", () =
     }
   );
 
+  it("asks the switches about the candidate's own merge case, so a case an admin removed stops its merge", async () => {
+    await seed("inc1_r0");
+    const gh = fakeGithub();
+    await runAutoMergeStep(mergeDeps(gh.client));
+    expect(asked).toContain("firestore-undefined-field");
+    blocked = ["case-not-listed"];
+    await seed("inc2_r0");
+    await runAutoMergeStep(mergeDeps(gh.client));
+    expect((await cycle("inc2_r0")).summary.merge).toMatchObject({ state: "skipped", reason: "switch:case-not-listed", escalation: "sent" });
+  });
+
+  it("merges on Gemini's case, the floor and green checks even when the old certainty gate would not have held (reported instead)", async () => {
+    await seed("inc1_r0", proven({ review: { flagged: 1 }, before: { status: "unavailable", rule: "no-test-in-patch" } }));
+    const gh = fakeGithub();
+    expect(await runAutoMergeStep(mergeDeps(gh.client))).toMatchObject({ merged: 1 });
+    expect(gh.merges).toEqual([{ id: "inc1_r0", number: 7, sha: HEAD }]);
+  });
+
+  it("merges a missing-index evidence PR on green checks, and starts no revert watch (a revert would not remove the index)", async () => {
+    await seed(
+      "inc3_r0",
+      {
+        index: { state: "ready", probe: "passed" },
+        pr: { opened: true, number: 9, url: "https://github.com/acme/demo-shop/pull/9", patchSha256: P },
+        merge: { state: "pending", kind: "index", mergeCase: "missing-index", number: 9, patchSha256: P, headSha: HEAD, floor: "pass", sourceFile: "firestore.indexes.json", baseRevision: "1".repeat(40), pendingSince: t0.toISOString() },
+      },
+      { path: "index", outcome: "index-pr-opened" }
+    );
+    const gh = fakeGithub();
+    expect(await runAutoMergeStep(mergeDeps(gh.client))).toMatchObject({ merged: 1 });
+    expect(asked).toContain("missing-index");
+    const s = (await cycle("inc3_r0")).summary;
+    expect(s.merge).toMatchObject({ state: "merged", mergeSha: MERGED });
+    expect(s.revert).toMatchObject({ state: "clear", reason: "index-not-reverted" });
+  });
+
+  it("never merges an index evidence PR whose index file changed on the base branch since", async () => {
+    await seed("inc3_r0", {
+      pr: { opened: true, number: 9, url: "u", patchSha256: P },
+      merge: { state: "pending", kind: "index", mergeCase: "missing-index", number: 9, patchSha256: P, headSha: HEAD, floor: "pass", sourceFile: "firestore.indexes.json", baseRevision: "1".repeat(40), pendingSince: t0.toISOString() },
+    });
+    const gh = fakeGithub({ changed: ["firestore.indexes.json"] });
+    await runAutoMergeStep(mergeDeps(gh.client));
+    expect(gh.merges).toEqual([]);
+    expect((await cycle("inc3_r0")).summary.merge).toMatchObject({ state: "skipped", reason: "base-changed-same-file" });
+  });
+
   it("pauses while automation is off: nothing read, nothing decided", async () => {
     blocked = ["automation-disabled"];
     await seed("inc1_r0");
@@ -220,10 +274,10 @@ describe("runAutoMergeStep: merges only what every switch and gate allows", () =
   });
 
   it.each([
-    ["the counter-check counted nothing", { triage: { counterCount: 0 } }, "gate2:counter-check"],
-    ["the test did not fail before the fix", { before: { status: "passed", rule: "command-passed" } }, "gate2:fails-before"],
-    ["the review flagged something", { review: { flagged: 1 } }, "gate2:review-approve"],
-    ["gate 1 did not pass", { merge: { gate1: "fail" } }, "gate1:not-recorded"],
+    ["the change is outside the safety floor", { merge: { floor: "fail" } }, "floor:not-recorded"],
+    ["no merge case was decided", { merge: { mergeCase: null } }, "no-merge-case"],
+    // A record from before merge cases (#9's gate 1) names none: never merged on a guess.
+    ["a record from before merge cases", { merge: { mergeCase: null, gate1: "pass" } }, "no-merge-case"],
   ])("never merges on almost: %s", async (_name, over, reason) => {
     await seed("inc1_r0", proven(over as Record<string, Record<string, unknown>>));
     const gh = fakeGithub();

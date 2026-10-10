@@ -243,6 +243,13 @@ describe("toPublicCycle", () => {
     for (const k of ["owner", "modelCalls", "revisions", "startDays", "decision", "history", "releasedBecause"]) expect(copy).not.toHaveProperty(k);
   });
 
+  it("keeps how far triage went and the admin's merge case (engine tokens), never the model's reason", () => {
+    const copy = toPublicCycle(storedCycle({ summary: { triage: { decision: "act", rule: "model-act", level: "merge", mergeCase: "missing-await", reason: "the model's words" } } }), pub)!;
+    expect((copy.summary as Record<string, Record<string, unknown>>).triage).toEqual({ decision: "act", rule: "model-act", level: "merge", mergeCase: "missing-await" });
+    const none = toPublicCycle(storedCycle({ summary: { triage: { decision: "act", rule: "model-act", level: "fix", mergeCase: null } } }), pub)!;
+    expect((none.summary as Record<string, Record<string, unknown>>).triage).toEqual({ decision: "act", rule: "model-act", level: "fix", mergeCase: null });
+  });
+
   it("keeps a stage that recorded only what may not be shown, so it still reads as recorded", () => {
     const copy = toPublicCycle(storedCycle({ summary: { fix: { rootCause: "words only" } } }), pub)!;
     expect(copy.summary).toEqual({ fix: {} });

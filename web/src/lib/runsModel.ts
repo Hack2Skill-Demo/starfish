@@ -159,6 +159,23 @@ export const PATH_LABELS: Record<CyclePath, string> = {
   index: "Missing index: READY, evidence recorded",
 };
 
+/** How far Starfish goes with the incident (triage.ts `triageLevel`), in words, when triage recorded it. */
+export const LEVEL_LABELS: Record<string, string> = {
+  noise: "Noise: recorded, nothing filed",
+  log: "Log: an issue and an alert; a person fixes it",
+  fix: "Log + fix: a verified pull request; a person merges",
+  merge: "Log + fix + merge: Starfish merges it on green checks",
+};
+
+/** Triage's decision of how far to go, and the admin's merge case Gemini named for a merge. */
+export function triageDecision(c: CycleRow): { label: string; mergeCase?: string } | undefined {
+  const triage = c.summary.triage as { level?: unknown; mergeCase?: unknown } | undefined;
+  const level = triage?.level;
+  if (typeof level !== "string" || !(level in LEVEL_LABELS)) return undefined;
+  const mergeCase = level === "merge" && typeof triage?.mergeCase === "string" && triage.mergeCase !== "" ? triage.mergeCase : undefined;
+  return { label: LEVEL_LABELS[level]!, ...(mergeCase !== undefined && { mergeCase }) };
+}
+
 /** The rule that chose the path, as triage recorded it, when it did. */
 export function triageRule(c: CycleRow): string | undefined {
   const rule = c.summary.triage?.rule;

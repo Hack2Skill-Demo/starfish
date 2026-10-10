@@ -11,6 +11,7 @@
 import { parseAllowedTargets } from "./indexheal/createIndexUrl.js";
 import { INDEX_FILE_PATH_RE } from "./indexheal/indexFilePatch.js";
 import { parseIndexProbes, type IndexProbeSpec } from "./indexheal/probe.js";
+import { validateMergeCases, type MergeCase } from "./settingsSchema.js";
 
 export interface StarfishConfig {
   /** GCP project Starfish runs in: its Firestore store and its Vertex AI calls. */
@@ -206,8 +207,9 @@ export interface StarfishConfig {
   /**
    * Auto-merge (#9, src/agent/autoMerge.ts) for THIS deployment's target (`githubRepo`): an admin's switch, off by
    * default and editable on the Settings page. Even on, a pull request is merged only when the target is listed in
-   * `autoMergeTargets`, `dryRun` is off, the automation switch is on, `mergeFreeze` is off, the daily cap allows it and
-   * both gates pass. It never turns on index creation (`indexAutoApply`), and Starfish never deploys.
+   * `autoMergeTargets`, `dryRun` is off, the automation switch is on, `mergeFreeze` is off, Gemini named one of
+   * `mergeCases`, the safety floor and the required checks pass, and the daily cap allows it. It never turns on index
+   * creation (`indexAutoApply`). Starfish runs no deploy itself, but a merge is a release: the target's CI/CD ships it.
    */
   autoMerge: boolean;
   /** The global off switch for merging: true stops every automatic merge and revert, whatever `autoMerge` says. */
@@ -219,6 +221,13 @@ export interface StarfishConfig {
   autoMergeTargets: string[];
   /** Paths auto-merge never touches, on top of the built-in hard-exclude list and `patchExcludedPaths`. */
   autoMergeExcludedPaths: string[];
+  /**
+   * The kinds of incident Starfish may merge a fix for by itself (docs/design/auto-merge-policy.md): Gemini's triage
+   * names one of them, or the fix waits for a person. `missing-index` (`INDEX_MERGE_CASE`) is the index path's, which asks
+   * no model. Empty by default: nothing merges. An admin's Settings list replaces this one. Every switch above still
+   * applies, and so does the safety floor (blastRadius.ts `assessMergeFloor`) and green required checks.
+   */
+  mergeCases: MergeCase[];
   /** The most pull requests Starfish merges per UTC day in this environment (reverts not counted). */
   maxMergesPerDay: number;
   /** How long an auto-merge candidate may wait for its required checks before it is handed to a person. */
@@ -544,6 +553,7 @@ export function loadConfig(): StarfishConfig {
     mergeFreeze: parseBoolean(process.env.STARFISH_MERGE_FREEZE, false, "STARFISH_MERGE_FREEZE"),
     autoMergeTargets: validRepos(parseList(process.env.STARFISH_AUTO_MERGE_TARGETS, ",") ?? []),
     autoMergeExcludedPaths: parseList(process.env.STARFISH_AUTO_MERGE_EXCLUDED_PATHS, ",") ?? [],
+    mergeCases: parseMergeCases(process.env.STARFISH_MERGE_CASES),
     maxMergesPerDay: positiveNumber(process.env.STARFISH_MAX_MERGES_PER_DAY, 3, "STARFISH_MAX_MERGES_PER_DAY"),
     mergeCheckWaitMinutes: positiveNumber(process.env.STARFISH_MERGE_CHECK_WAIT_MINUTES, 120, "STARFISH_MERGE_CHECK_WAIT_MINUTES"),
     fastRevertMinutes: positiveNumber(process.env.STARFISH_FAST_REVERT_MINUTES, 60, "STARFISH_FAST_REVERT_MINUTES"),
@@ -752,6 +762,24 @@ function validRepos(entries: string[]): string[] {
     }
   }
   return entries;
+}
+
+/**
+ * `STARFISH_MERGE_CASES`: a JSON list of `{ "id": …, "description": … }` (settingsSchema.ts `validateMergeCases`). Unset
+ * or blank: none, so nothing merges. Anything else that does not validate throws at startup: a typo must not quietly
+ * become "nothing merges" or, worse, a case nobody meant.
+ */
+function parseMergeCases(raw: string | undefined): MergeCase[] {
+  if (raw === undefined || raw.trim() === "") return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new Error("STARFISH_MERGE_CASES must be a JSON list of { id, description }");
+  }
+  const checked = validateMergeCases(parsed);
+  if (!checked.ok) throw new Error(`STARFISH_MERGE_CASES: ${checked.problem}`);
+  return checked.cases;
 }
 
 /** Environment labels as the settings schema allows them (ENVIRONMENT in src/settingsSchema.ts); a typo is refused at startup. */
