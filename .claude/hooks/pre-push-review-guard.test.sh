@@ -23,7 +23,8 @@ make_repo() {
 }
 marker_of() { git -C "$1" rev-parse --absolute-git-dir | sed 's#$#/starfish-review-ok#'; }
 fresh()  { touch "$(marker_of "$1")"; }
-stale()  { touch -d '2000-01-01' "$(marker_of "$1")"; }
+# `-t [[CC]YY]MMDDhhmm` is the one form GNU and BSD (macOS) touch both accept (#277).
+stale()  { touch -t 200001010000 "$(marker_of "$1")"; }
 none()   { rm -f "$(marker_of "$1")"; }
 
 # run_case <allow|deny> <cwd> <command> <description>
