@@ -4,8 +4,10 @@
 starts on a cron, under its own service account, with the image built from the `Dockerfile`.
 
 > **Status: the ingest part has run once, on the demo project (2026-10-05)**, from a terminal: the ingest job and its
-> schedule, followed by the smoke test (`scripts/smoke-gcp.sh`). The agent job
-> (`DEPLOY_AGENT=1`) and the verify job have **never been deployed**. The admin API (`DEPLOY_ADMIN_API=1`) was deployed once
+> schedule, followed by the smoke test (`scripts/smoke-gcp.sh`). The agent job (`DEPLOY_AGENT=1`, `github-actions`
+> isolation) was deployed there from a terminal on 2026-10-07 and runs hourly **in dry run**: on 2026-10-08 it triaged three
+> incidents with Gemini and its fix stage declined each (#259); verify, review and a pull request have not been reached on a
+> real incident. The `cloud-run-job` verify job has never been deployed. The admin API (`DEPLOY_ADMIN_API=1`) was deployed once
 > on 2026-10-07 (see its section), and the GitHub Actions workflows below have **never run**. The script's whole plan is pinned by `scripts/deploy-gcp.test.mjs`
 > (a dry run), and CI builds the image.
 
@@ -116,8 +118,8 @@ Twilio and the Firestore emulator; **never run against real Twilio**.
 
 `loadGithubToken()` (`src/config.ts`) reads that variable, and the pull-request opener
 (`src/integrations/githubPr.ts`) is its only user. The opener is tested against a local git remote
-and a fake GitHub API, **not against real GitHub**, and the only job that calls it (the agent job, never
-deployed) is a dry run, so the secret is still plumbing. The deploy script sets `STARFISH_GITHUB_REPO` (from `AGENT_REPO`) on the
+and a fake GitHub API, **not against real GitHub**, and the only job that calls it (the agent job, deployed
+2026-10-07) runs in dry run, so the token has cloned the repository but opened nothing. The deploy script sets `STARFISH_GITHUB_REPO` (from `AGENT_REPO`) on the
 agent job only; without it the opener cannot be built.
 
 **The incident's issue (#17).** For every incident the agent acts on or escalates (not a declined one) it files one GitHub issue in
@@ -324,6 +326,8 @@ defaults when empty.
 | `STARFISH_SCHEDULE`, `STARFISH_SCHEDULE_TIME_ZONE` | `SCHEDULE`, `SCHEDULE_TIME_ZONE` | default hourly, UTC |
 | `STARFISH_EXTRA_ENV_VARS` | `EXTRA_ENV_VARS` | `A=1@B=2` |
 | `STARFISH_MONITORING_ENABLED` | `STARFISH_MONITORING_ENABLED` | `true` turns on the Cloud Monitoring signal (#19) and grants `roles/monitoring.viewer` on the watched project; default off |
+| `STARFISH_VERTEX_LOCATION` | `VERTEX_LOCATION` | where Gemini is called (`STARFISH_VERTEX_LOCATION` on every job): a region, or `global` for a model served only there; default the region. Apart from `STARFISH_REGION`, which Cloud Run needs to be a real region |
+| `STARFISH_INDEX_TARGETS` | `INDEX_TARGETS` | with the agent: the databases the missing-index repair may create an index in, `project/database` comma-separated (`STARFISH_INDEX_ALLOWED_TARGETS`). Grants the agent `roles/datastore.indexAdmin` and `roles/datastore.viewer` on each, conditioned to that database. Creating still needs `STARFISH_INDEX_AUTO_APPLY=true` in `STARFISH_AGENT_EXTRA_ENV_VARS`. Run `setup-github-deploy.sh` again with the same `INDEX_TARGETS` first, so the deployer may grant them |
 | `STARFISH_DEPLOY_AGENT`, `STARFISH_AGENT_REPO` | `DEPLOY_AGENT`, `AGENT_REPO` | set `1` and `owner/name` to deploy the agent too ([below](#the-agent-and-where-its-tests-run-74)); default off |
 | `STARFISH_VERIFY_ISOLATION`, `STARFISH_VERIFY_CHECKS`, `STARFISH_VERIFY_COMMAND` | `VERIFY_ISOLATION`, `VERIFY_CHECKS`, `VERIFY_COMMAND` | `github-actions` (default) with the check names that must pass, or `cloud-run-job` with a command |
 | `STARFISH_VERIFY_CHECK_APP` | `VERIFY_CHECK_APP` | the slug of the GitHub App whose check runs count (#229); default the engine's, `github-actions`. Always set on the agent job, so emptying it restores the default |
@@ -556,8 +560,8 @@ back to the fixer once. A verify job that cannot be started, writes no result be
 limit plus 300 s), or writes something that is not a result **throws**: the cycle's lease expires and it is
 resumed, counted against its attempts. A forged or mismatched result is refused.
 
-**What is still not true.** Nothing here has opened a pull request; the agent is a dry run and has never run
-against real GitHub, Cloud Logging or Gemini from this job. The verify job's image is this repository's engine image (Node,
+**What is still not true.** Nothing here has opened a pull request: the agent runs in dry run. It has read Cloud Logging
+and asked Gemini on the demo project (2026-10-08), but no patch of its own has yet reached verify. The verify job's image is this repository's engine image (Node,
 pnpm, git): a target repository that needs another toolchain needs another image. The Deploy engine workflow's
 deployer needs more for this (the verify bucket, the agent account's own IAM policy): run `setup-github-deploy.sh` with
 `VERIFY_ISOLATION=cloud-run-job`; see the table above.
@@ -667,7 +671,8 @@ The ingest path ran once on a real project (the demo project, 2026-10-05); the s
 - **An alert when ingestion stops.** The UI shows it; nothing pages anyone (an item on #6).
 - **The admin API has run once, not fully.** It was deployed to the demo project on 2026-10-07 and "Run ingest now" worked from the UI
   ([above](#the-admin-api-run-ingest-now-and-retire-an-incident-63-65)); Retire has not been tried against it. The UI's two buttons appear only once the site is built with the service's URL. Without it, for recording a demo, see [the cadence script](#recording-the-demo-a-shorter-tick-and-a-run-now-65).
-- **The agent has never run on a real project.** The agent job deploys with `DEPLOY_AGENT=1`, verified by the target's
+- **The agent has run only in dry run.** Deployed to the demo project on 2026-10-07; triage and fix drafting have run on real
+  incidents, verify, review and a pull request have not. The agent job deploys with `DEPLOY_AGENT=1`, verified by the target's
   CI or by a separate credential-less job ([above](#the-agent-and-where-its-tests-run-74)); `in-process` verification is
   not a sandbox and is for a machine with nothing to protect.
 - **Cost.** Cloud Run jobs, Scheduler (three free jobs) and Secret Manager (a few free versions) sit

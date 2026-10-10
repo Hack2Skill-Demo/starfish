@@ -29,7 +29,11 @@ export interface StarfishConfig {
    * the Vertex AI API enabled and the caller's `roles/aiplatform.user`.
    */
   vertexProjectId: string;
-  /** Vertex AI region. */
+  /**
+   * The Vertex AI location Gemini is called in: a region, or `global`. `STARFISH_VERTEX_LOCATION` when set, else
+   * `GOOGLE_CLOUD_LOCATION`. Apart from the region the jobs run in, because a model may be served only from `global`
+   * while Cloud Run needs a real region: one variable for both made a redeploy move Gemini to the jobs' region.
+   */
   location: string;
   /** Gemini model used for triage, fix drafting and adversarial review. */
   model: string;
@@ -490,7 +494,7 @@ export function loadConfig(): StarfishConfig {
     watchedProjectId: process.env.STARFISH_WATCHED_PROJECT_ID || projectId,
     vertexProjectId: process.env.STARFISH_VERTEX_PROJECT_ID || projectId,
     // Set-but-blank is unset (#189): an empty environment label or collection name is never what was meant.
-    location: textOr(process.env.GOOGLE_CLOUD_LOCATION, "us-central1"),
+    location: textOr(process.env.STARFISH_VERTEX_LOCATION, textOr(process.env.GOOGLE_CLOUD_LOCATION, "us-central1")),
     model: textOr(process.env.STARFISH_MODEL, "gemini-3.1-pro-preview"),
     environment: textOr(process.env.STARFISH_ENV, "dev"),
     settingsCollection: textOr(process.env.STARFISH_SETTINGS_COLLECTION, "starfish_settings"),

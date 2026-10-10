@@ -4,8 +4,8 @@
  * here is inferred. A step with no event is "not reached", a cycle with no worker on it is not "in
  * progress", and nothing is drawn for a stage the loop has no code for (merge, deploy, recovery).
  *
- * Today the agent job (`DEPLOY_AGENT=1`, #74) has never run on a real project, so on a real deployment this page is empty until
- * that exists; it says so instead of looking like a quiet day.
+ * Where the agent job (`DEPLOY_AGENT=1`, #74) has not run, this page is empty until it does; it says so instead of looking
+ * like a quiet day. On the demo project it runs hourly, in dry run, since 2026-10-07.
  */
 import { useEffect, useMemo, useState } from "react";
 import { useQueries } from "@tanstack/react-query";

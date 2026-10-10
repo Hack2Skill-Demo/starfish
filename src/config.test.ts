@@ -7,6 +7,7 @@ const KEYS = [
   "STARFISH_WATCHED_PROJECT_ID",
   "STARFISH_VERTEX_PROJECT_ID",
   "GOOGLE_CLOUD_LOCATION",
+  "STARFISH_VERTEX_LOCATION",
   "STARFISH_ENV",
 ];
 
@@ -40,6 +41,15 @@ describe("loadConfig: the projects", () => {
     vi.stubEnv("STARFISH_WATCHED_PROJECT_ID", "");
     vi.stubEnv("STARFISH_VERTEX_PROJECT_ID", "");
     expect(loadConfig()).toMatchObject({ watchedProjectId: "home-project", vertexProjectId: "home-project" });
+  });
+
+  it("calls Gemini where STARFISH_VERTEX_LOCATION says, apart from the jobs' region", () => {
+    vi.stubEnv("GOOGLE_CLOUD_LOCATION", "us-central1");
+    expect(loadConfig().location).toBe("us-central1");
+    vi.stubEnv("STARFISH_VERTEX_LOCATION", "global");
+    expect(loadConfig().location).toBe("global");
+    vi.stubEnv("STARFISH_VERTEX_LOCATION", " ");
+    expect(loadConfig().location).toBe("us-central1");
   });
 
   it("a blank region, model, environment or collection name means unset, not an empty string (#189)", () => {
