@@ -185,7 +185,11 @@ person's, once, on a deployment that already holds demo records; **neither has b
    in one step, and the indexes include three new composite ones, `environment` + `lastOccurredAt` on
    `starfish_public_incidents`, `environment` + `updatedAt` on `starfish_public_cycles` and `environment` + `at` on
    `starfish_public_events`. Until they finish building, a guest's Incidents, Runs and Overview pages say they could not
-   read the data (Firestore refuses the query); operators are unaffected.
+   read the data (Firestore refuses the query); operators are unaffected. The Overview and Runs pages then say to check
+   that the rules and indexes are deployed and that an index may still be building (#262). Deploy these **before** the
+   web UI: `scripts/deploy-web.sh` publishes the UI only, and stops when the live rules are not the repository's
+   ([below](#deploy-the-web-ui-from-github-actions-92)). After the rules step the engine deploy prints the backfill
+   command of step 2; it never runs it.
 2. **Copy what is already stored**: `pnpm public-view` counts what it would write and remove, and
    `pnpm public-view -- --apply --project=<id>` writes the copies (and removes any whose record is gone, retired or
    private). Until then a guest sees only what the engine has written or touched since the deploy: new incidents, and the
@@ -383,6 +387,28 @@ the engine's (above); the script's own reads in a dry run fail open, so they che
 > any refused site read that is not a 404 instead of guessing. **Run `setup-github-deploy.sh` again** for the grant to exist; the
 > workflow has not run since. Whether the Firebase CLI accepts the federated credentials for the release itself is still **not
 > verified**. The fallback is `firebase login` and `scripts/deploy-web.sh` from a terminal (run once on the demo project, 2026-10-05).
+
+**The rules come first (#262).** The web deploy publishes the UI and nothing else: `firestore.rules` and
+`firestore.indexes.json` are published by the engine deploy (`scripts/deploy-gcp.sh`, or Deploy engine), and the guests'
+trimmed copies are written by the engine or `pnpm public-view -- --apply`. A UI published ahead of them reads "couldn't be
+read" wherever the live rules or an index refuse its query; on the demo project, a web-only redeploy showed that on every
+guest tile of the Overview. So before it builds, `scripts/deploy-web.sh` reads the live rules release of the Starfish
+database with the Firebase Rules REST API (`projects/<p>/releases/cloud.firestore/<database>`, then that release's
+ruleset; token from `gcloud auth print-access-token`, sent on curl's stdin) and compares its source with the rules file
+`firebase.json` names. It **stops** when they differ, when no rules are released, and when it cannot read them (no token,
+no permission, no network), and says to run the engine deploy first. `ALLOW_RULES_DRIFT=1` deploys anyway with a
+warning; the workflow never passes it, so a run from Actions cannot skip the check: run Deploy engine, then Deploy web
+UI. It then lists the database's composite indexes with the Firestore Admin REST API and **warns** (never stops) about
+each one not `READY`: a new index takes minutes to build, and the queries it serves fail until it has. On the `demo`
+label it ends by printing the guests' copies backfill (`pnpm public-view -- --apply --project=<p>`), which it does not run.
+A dry run prints these reads and makes none of them. The deployer's `roles/firebaserules.admin` and `roles/datastore.owner`
+(`scripts/setup-github-deploy.sh`) cover the two reads. With deploy-on-merge on, a merge that changes both the rules and
+the UI starts both workflows at once, and Deploy web UI may stop because Deploy engine has not published the rules yet:
+run it again once Deploy engine has finished. **Tested against stubs and in dry runs only; never run against Google.** The release name
+`cloud.firestore/<database>` is the one `firebase deploy --only firestore` releases a named database's rules to (read in
+firebase-tools 14.27's source, `deploy/firestore/release.js`), not yet seen on a real project: if a real run disagrees,
+the check stops every web deploy with "no Firestore rules are released", and `ALLOW_RULES_DRIFT=1` from a terminal is the
+way through until it is fixed.
 
 **What the deployer needs on top of the engine's list** (`setup-github-deploy.sh` grants it; not yet a verified minimum):
 Firebase Hosting Admin (`roles/firebasehosting.admin`) to read the site and release to it. Nothing on the project's Firebase

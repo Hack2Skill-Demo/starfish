@@ -609,6 +609,12 @@ if [ "$SKIP_FIRESTORE_RULES" != "1" ]; then
   fi
   run pnpm dlx firebase-tools@14 deploy --only firestore --project "$PROJECT_ID" --config "$FIREBASE_CONFIG"
   [ "$DRY_RUN" = "1" ] || rm -f "$FIREBASE_CONFIG"
+  # #262: printed, never run here. A new composite index takes minutes to build, and the queries it serves are refused
+  # until it is READY. Guests read only the trimmed copies the engine writes (#18): records stored before the engine
+  # wrote them get theirs from a backfill, which a person runs (it writes to the store).
+  echo "  (a new index can take minutes to build: until it is READY, the UI reads the queries it serves as \"couldn't be read\")"
+  echo "  (guests' trimmed copies of records stored before the engine wrote them: with GOOGLE_CLOUD_PROJECT=$PROJECT_ID and"
+  echo "   STARFISH_DATABASE_ID=$STARFISH_DATABASE_ID, pnpm public-view counts them and pnpm public-view -- --apply --project=$PROJECT_ID writes them)"
 fi
 
 step "Secret Manager: $GITHUB_SECRET (the agent's credential: only its account may read it, granted with DEPLOY_AGENT)"
