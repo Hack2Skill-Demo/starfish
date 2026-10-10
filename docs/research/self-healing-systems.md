@@ -123,29 +123,31 @@ Industry practice in 2026:
 
 ## Where Starfish sits
 
-Starfish has built the Monitor half of the loop. The Analyze, Plan and Execute half is
-designed but not built (see the README's Status section and
-[the auto-merge policy](../design/auto-merge-policy.md)).
+Starfish has built the whole loop. The Monitor half runs on the demo project. Of the Analyze, Plan and
+Execute half, the agent job (triage, fixer, verify gate, reviewer, PR) is deployed there and has run on
+real incidents since 2026-10-08; no fix has reached the verify gate yet. Auto-merge, fast-revert
+and the missing-index heal are built behind default-off switches and have never run against real GitHub or
+Google (see the README's Status section and [the auto-merge policy](../design/auto-merge-policy.md)).
 
 | Piece | Status |
 | --- | --- |
-| Ingest: Cloud Logging, classification, fingerprint dedup, counter-check | Built |
-| Operator UI: incidents and settings | Built |
+| Ingest: Cloud Logging, classification, fingerprint dedup, counter-check | Built; runs on the demo project |
+| Operator UI: incidents, runs, evidence and settings | Built; deployed to the demo project |
 | Gemini fix-quality spike harness | Built, not yet run against Vertex |
-| Triage, fixer, deterministic verify gate, adversarial reviewer, PR | Not built |
-| Scoped auto-merge, missing-index heal, fast-revert | Designed only |
+| Triage, fixer, deterministic verify gate, adversarial reviewer, PR | Built; the agent job is deployed to the demo project and runs on real incidents. Triage and the fixer have run there; the verify gate, the reviewer and a real PR have not been reached yet |
+| Scoped auto-merge, missing-index heal, fast-revert | Built behind default-off switches; tested against fakes and the emulator, never run against real GitHub or Google |
 | Feedback engine: a human reclassification becomes a rule override and a replay test | Built (#267): an operator's correction caps the incident and becomes a replay case; not yet run on a real incident |
 
 How the literature maps onto the design:
 
 | Lesson | Starfish's answer | Gap |
 | --- | --- | --- |
-| Tests are not correctness | Adversarial reviewer; reproduce-before-fix in the auto-merge certainty gate | Not built; no differential or generated tests planned |
-| Re-observe after acting | Fast-revert: same fingerprint recurring within N minutes of the fix going live | Not built |
+| Tests are not correctness | Adversarial reviewer; a "fails before the fix" run reported in the auto-merge evidence | Built, not yet reached on a real incident; "fails before" is reported, not required; no differential or generated tests planned |
+| Re-observe after acting | Fast-revert: the same incident seen again within N minutes of the merge | Built, never run against real GitHub; the window starts at the merge, since deploy completion is not observable |
 | Cheapest safe action first | Class table: decline, notify, draft PR, auto-merge | No revert-first strategy like SapFix's |
-| Validate by execution | Deterministic verify gate; index heal re-runs the failing query | Not built |
+| Validate by execution | Deterministic verify gate; index heal re-runs the failing query | Both built; neither has run on a real incident or against Google yet |
 | Learn from history | Feedback engine and replay scoring | Corrections only hold Starfish back; no class widens from a replay score by itself, and no retrieval of similar past incidents yet (cf. RCACopilot) |
-| Scope by blast radius | Two-gate auto-merge; security rules always human | Matches the literature; not built |
+| Scope by blast radius | Safety floor and the admin's merge cases; security rules always human | Matches the literature; built for the demo target only, never run against real GitHub |
 
 The missing-index heal fits the literature best. Google's error message specifies the fix, so
 no model writes it, which removes the overfitting problem for that class entirely.

@@ -6,7 +6,7 @@
  * them; the agent states at the start of each pass whether each is set (`lib/integrations.ts`), and
  * the page then says "configured" and when it was reported. Until the agent has reported, it says
  * "not connected yet". Gemini runs through the engine's own config (src/config.ts), which this page
- * describes but can't read from the browser. The rules and feedback engines are described here; their controls are the
+ * describes but can't read from the browser; once the agent has reported, its card says when the last pass started. The rules and feedback engines are described here; their controls are the
  * Class rules setting (admins) and the correction on an incident's page (operators).
  */
 import { useQuery } from "@tanstack/react-query";
@@ -28,8 +28,8 @@ interface Connection {
   name: string;
   icon: LucideIcon;
   state: ConnectionState;
-  /** Which of the agent's reports this connection reads, if any. */
-  reported?: "github" | "slack";
+  /** Which of the agent's reports this connection reads, if any. "agent": only that a pass started. */
+  reported?: "agent" | "github" | "slack";
   purpose: string;
   detail: string;
 }
@@ -39,8 +39,9 @@ export const CONNECTIONS: Connection[] = [
     name: "Gemini (Vertex AI)",
     icon: Bot,
     state: "engine",
+    reported: "agent",
     purpose:
-      "The model Starfish uses for triage, fix drafting and adversarial review. Those stages are built as the agent job (pnpm agent), which is deployable but has never run; the scheduled ingest does not call Gemini.",
+      "The model Starfish uses for triage, fix drafting and adversarial review. Those stages run in the agent job (pnpm agent); the scheduled ingest does not call Gemini.",
     detail:
       "The Vertex project, model and region default to STARFISH_VERTEX_PROJECT_ID (else GOOGLE_CLOUD_PROJECT), STARFISH_MODEL and GOOGLE_CLOUD_LOCATION; an admin can override all three under Runtime settings, and the agent job reads them at the start of each pass.",
   },
@@ -84,6 +85,13 @@ type Badged = { tone: "success" | "neutral"; label: string };
 export function reportedState(c: Connection, report: Integrations | null): { badge: Badged; note: string } | null {
   if (!report || !c.reported) return null;
   const when = `Reported by the agent ${formatRelativeTime(report.checkedAt)}.`;
+  if (c.reported === "agent") {
+    // The report is written at the start of a pass: it says a pass started, not that Gemini answered.
+    return {
+      badge: STATE_BADGE[c.state],
+      note: `The agent job last started a pass ${formatRelativeTime(report.checkedAt)}; this page can't see whether it called Gemini.`,
+    };
+  }
   if (c.reported === "github") {
     return report.github
       ? { badge: { tone: "success", label: "Token configured" }, note: `${when} A token is set; the agent reports only that it is set, not whether it works.` }

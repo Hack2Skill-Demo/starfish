@@ -77,6 +77,15 @@ describe("Settings", () => {
     expect(screen.queryByText("Not connected yet")).toBeNull();
   });
 
+  it("never says the agent job has not run, and says when it last started a pass once it has reported (#266)", async () => {
+    const gemini = CONNECTIONS.find((c) => c.name === "Gemini (Vertex AI)")!;
+    expect(gemini.purpose).not.toMatch(/never run/);
+    readIntegrations.mockResolvedValue(report());
+    renderSettings();
+    expect(await screen.findByText(/The agent job last started a pass .*; this page can't see whether it called Gemini\./)).toBeInTheDocument();
+    expect(screen.getByText("Configured on the engine")).toBeInTheDocument();
+  });
+
   it("says no token is set when the agent reported none", async () => {
     readIntegrations.mockResolvedValue(report());
     renderSettings();

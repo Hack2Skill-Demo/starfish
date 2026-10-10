@@ -94,12 +94,13 @@ and exits non-zero. Dry-run tested, and run once against the demo project (2026-
 Be honest with yourself about this list before the demo:
 
 - **No incidents unless something errors.** An engine that finds nothing on a quiet project is working. The
-  demo needs a source of real errors: the demo app with its faults (#5), which is not built.
-- **The loop is written as a job and has never run.** `DEPLOY_AGENT=1` deploys the agent, whose patches are judged by the
+  demo needs a source of real errors: the demo app with its faults (#5).
+- **The loop runs as a job, and has not yet fixed anything.** `DEPLOY_AGENT=1` deploys the agent, whose patches are judged by the
   target repository's own CI on a pushed `starfish/<cycle>` branch (or, heavier, by a separate credential-less job); see
   [`deploy.md`](deploy.md#the-agent-and-where-its-tests-run-74), including the workflow the target needs. It is a dry run
-  and opens no pull request, but it pushes branches; nothing has run against real GitHub. So today's deployed Starfish
-  *finds and shows* incidents; it does not yet *fix* any.
+  by default and then opens no pull request, but it pushes branches. On the demo project it has run on real incidents
+  since 2026-10-08 and filed incident issues, but no fix has reached the verify gate: today's deployed Starfish
+  *finds, triages and shows* incidents; it has not yet *fixed* any.
 - **No Slack, no phone call, no issue filed** (#17, #37). The pull-request opener exists
   (`src/integrations/githubPr.ts`, tested against a local git remote and a fake GitHub API, **never against real
   GitHub**) and the mounted GitHub token has that one reader, but nothing that runs deployed calls it.
