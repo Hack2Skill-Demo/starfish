@@ -148,3 +148,22 @@ export function describeStatus(input: {
 
   return { state, lines };
 }
+
+/**
+ * What to tell a person when the store could not be read at all, in one line and with no stack trace: the engine may
+ * be perfectly healthy, and a crash here reads as if it were not. Credentials that expired or are missing get the
+ * command that renews them (Google Workspace asks for a new sign-in on a schedule: `invalid_grant` / `invalid_rapt`);
+ * a missing permission says which; anything else keeps the error's name and its first line, bounded. Never the stack.
+ */
+export function describeReadFailure(err: unknown): string {
+  const text = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+  const code = (err as { code?: unknown } | null)?.code;
+  if (/invalid_grant|invalid_rapt|invalid_client|reauth|Getting metadata from plugin failed|Could not load the default credentials|Could not refresh access token|UNAUTHENTICATED/i.test(text) || code === 16) {
+    return "could not sign in to Google Cloud: the credentials on this machine have expired or are missing. Run `gcloud auth application-default login`, then try again. The engine itself was not checked.";
+  }
+  if (/PERMISSION_DENIED/i.test(text) || code === 7) {
+    return "signed in, but this account may not read Starfish's database (PERMISSION_DENIED): check the project and that the account can read it. The engine itself was not checked.";
+  }
+  const first = text.split("\n")[0]!.slice(0, 200);
+  return `could not read Starfish's store (${first}). The engine itself was not checked.`;
+}

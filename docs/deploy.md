@@ -159,6 +159,10 @@ pnpm status                                    # is the engine alive? (needs GOO
 gcloud run jobs executions list --job=starfish-ingest --region=us-central1 --project=my-project
 ```
 
+`pnpm status` exits 0 when the engine is ok, 1 when it is not, and 2 when the store could not be read at all, which says
+nothing about the engine: expired or missing credentials (Google Workspace asks for a new sign-in on a schedule; the line it
+prints says to run `gcloud auth application-default login`) or an account that may not read the database.
+
 `scripts/preflight-gcp.sh` is the read-only check to run *before* the deploy.
 
 Then look at `starfish_runs/last_run` in the `starfish` database (it is what the Incidents page

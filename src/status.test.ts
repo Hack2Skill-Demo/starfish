@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { describeStatus, judgeRun, parseRunRecord, totalIncidents, unmetMinimums, type RunRecord } from "./status.js";
+import { describeReadFailure, describeStatus, judgeRun, parseRunRecord, totalIncidents, unmetMinimums, type RunRecord } from "./status.js";
 import { SETTINGS_UNUSABLE } from "./settingsSchema.js";
 
 const NOW = new Date("2026-10-10T12:00:00Z");
@@ -168,5 +168,45 @@ describe("describeStatus", () => {
     expect(text).toContain(`failed with: ${SETTINGS_UNUSABLE}`);
     expect(text).toContain("the runtime settings could not be used");
     expect(text).toContain("runtime settings not used: settings read failed: 14");
+  });
+});
+
+describe("describeReadFailure: the store could not be read at all", () => {
+  // The error `pnpm status` crashed on: Google Workspace asking for a new sign-in.
+  const rapt = Object.assign(
+    new Error('400 undefined: Getting metadata from plugin failed with error: {"error":"invalid_grant","error_description":"reauth related error (invalid_rapt)","error_subtype":"invalid_rapt"}'),
+    { code: 400 }
+  );
+
+  it("tells a person with expired credentials how to renew them, and that the engine was not checked", () => {
+    const line = describeReadFailure(rapt);
+    expect(line).toContain("gcloud auth application-default login");
+    expect(line).toContain("The engine itself was not checked");
+    expect(line).not.toContain("invalid_rapt"); // the remedy, not the raw error
+  });
+
+  it.each([
+    new Error("Could not load the default credentials. Browse to https://cloud.google.com/docs/authentication"),
+    Object.assign(new Error("16 UNAUTHENTICATED: Request had invalid authentication credentials."), { code: 16 }),
+    new Error("Could not refresh access token: invalid_grant"),
+    Object.assign(new Error("401 undefined: Getting metadata from plugin failed with error: invalid_client"), { code: 401 }),
+  ])("treats %s as a sign-in problem", (err) => {
+    expect(describeReadFailure(err)).toContain("gcloud auth application-default login");
+  });
+
+  it("says a permission is missing when that is what failed", () => {
+    const line = describeReadFailure(Object.assign(new Error("7 PERMISSION_DENIED: Missing or insufficient permissions."), { code: 7 }));
+    expect(line).toContain("may not read Starfish's database");
+    expect(line).not.toContain("gcloud auth application-default login");
+  });
+
+  it("keeps anything else to its first line, bounded, and never a stack", () => {
+    const err = new Error(`14 UNAVAILABLE: no healthy upstream\n${"x".repeat(900)}`);
+    err.stack = "Error: boom\n    at secret/path.ts:1:1";
+    const line = describeReadFailure(err);
+    expect(line).toContain("14 UNAVAILABLE: no healthy upstream");
+    expect(line).not.toContain("secret/path.ts");
+    expect(line.length).toBeLessThan(320);
+    expect(describeReadFailure("plain string")).toContain("plain string");
   });
 });
