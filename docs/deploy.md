@@ -5,10 +5,13 @@ starts on a cron, under its own service account, with the image built from the `
 
 > **Status: the ingest part has run once, on the demo project (2026-10-05)**, from a terminal: the ingest job and its
 > schedule, followed by the smoke test (`scripts/smoke-gcp.sh`). The agent job (`DEPLOY_AGENT=1`, `github-actions`
-> isolation) was deployed there from a terminal on 2026-10-07 and runs hourly **in dry run**: on 2026-10-08 it triaged three
+> isolation) was deployed there from a terminal on 2026-10-07 and ran hourly in dry run: on 2026-10-08 it triaged three
 > incidents with Gemini and its fix stage declined each (#259); verify, review and a pull request have not been reached on a
 > real incident. The `cloud-run-job` verify job has never been deployed. The admin API (`DEPLOY_ADMIN_API=1`) was deployed once
-> on 2026-10-07 (see its section), and the GitHub Actions workflows below have **never run**. The script's whole plan is pinned by `scripts/deploy-gcp.test.mjs`
+> on 2026-10-07 (see its section), and the Deploy engine workflow first ran on 2026-10-10 (a dry run, then the real deploy, after `setup-github-deploy.sh`): it
+> redeployed ingest, the agent and the admin API, and since then the agent runs with **dry run off, auto-merge on for the demo target
+> and the missing-index repair on**. No incident has gone through it since, so nothing has been opened, merged or repaired yet. The
+> Deploy web UI workflow has never run. The script's whole plan is pinned by `scripts/deploy-gcp.test.mjs`
 > (a dry run), and CI builds the image.
 
 ## Run it
