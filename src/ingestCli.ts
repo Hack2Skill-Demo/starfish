@@ -26,6 +26,10 @@ import { RuntimeConfigLoader } from "./runtimeSettings.js";
 import { runIngest } from "./ingest/run.js";
 import { syncRecentPublicView } from "./publicViewStore.js";
 
+// #275: Cloud Run executions spend ~2 minutes before any work. Static imports are loaded before this line runs, so its
+// time minus the uptime is when node started: set against the execution's creation time, it says whether the wait is
+// before the process (Cloud Run) or in loading modules (the image).
+console.log(`ingest starting: modules loaded, process up ${process.uptime().toFixed(1)}s`);
 const config = loadConfig();
 initializeApp({ projectId: config.projectId });
 const db = getFirestore(config.databaseId);

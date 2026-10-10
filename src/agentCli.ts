@@ -62,6 +62,10 @@ import { createTwilioClient } from "./oncall/twilio.js";
 import { syncRecentPublicView } from "./publicViewStore.js";
 
 const startedAt = new Date();
+// #275: Cloud Run executions spend ~2 minutes before any work. Static imports are loaded before this line runs, so its
+// time minus the uptime is when node started: set against the execution's creation time, it says whether the wait is
+// before the process (Cloud Run) or in loading modules (the image).
+console.log(`agent starting: modules loaded, process up ${process.uptime().toFixed(1)}s`);
 const base = loadConfig();
 const token = loadGithubToken();
 const slackOnCall = loadSlackOnCallWebhook();
