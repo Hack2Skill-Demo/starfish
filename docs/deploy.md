@@ -11,7 +11,9 @@ starts on a cron, under its own service account, with the image built from the `
 > on 2026-10-07 (see its section), and the Deploy engine workflow first ran on 2026-10-10 (a dry run, then the real deploy, after `setup-github-deploy.sh`): it
 > redeployed ingest, the agent and the admin API, and since then the agent runs with **dry run off, auto-merge on for the demo target
 > and the missing-index repair on**. No incident has gone through it since, so nothing has been opened, merged or repaired yet. The
-> Deploy web UI workflow has never run. The script's whole plan is pinned by `scripts/deploy-gcp.test.mjs`
+> Deploy web UI workflow has run twice on merges (2026-10-10) and failed both times before publishing anything: the deployer had
+> no Hosting role (#265). `setup-github-deploy.sh` now grants it; it has to be run again on the project before the workflow can
+> work, and that has not happened yet. The script's whole plan is pinned by `scripts/deploy-gcp.test.mjs`
 > (a dry run), and CI builds the image.
 
 ## Run it
@@ -283,6 +285,7 @@ set them for `setup-github-deploy.sh` as you set them for the deploy.
 | create the secrets, grant the agent access, add a version | `secretmanager.secrets.create` (in `starfishDeployer`), and `roles/secretmanager.admin` **conditioned to `starfish-github-token`, `starfish-slack-oncall`, `starfish-slack-alerts` and the three `starfish-twilio-*` secrets by name**: the watched app's secrets, when it shares the project, stay out of reach |
 | build from source and deploy the jobs, bind the scheduler to them | `roles/run.admin`, `roles/cloudbuild.builds.editor`, `roles/artifactregistry.admin`; `storage.buckets.create` and `storage.buckets.list` (in `starfishDeployer`), and `roles/storage.admin` **conditioned to the source bucket** (`run-sources-<project>-*`, or the older `<project>_cloudbuild`) and, with `cloud-run-job`, the verify bucket |
 | create or update the schedule | `roles/cloudscheduler.admin` |
+| the Deploy web UI workflow: read the Hosting site, see its linked web app, release a build to it (#265) | `roles/firebasehosting.admin`, project-wide (Hosting takes no condition on a site's name, so this reaches every Hosting site of the project, the watched app's when it shares the project). No Firebase app role: the deployer neither lists nor registers web apps |
 
 `gcloud run jobs deploy --source` also acts as the project's build service account; if the first run is denied
 there, see "The build is denied" below.
@@ -373,17 +376,19 @@ chose for the engine). Unlike the engine deploy it runs `pnpm install --frozen-l
 Its `dry_run` prints the plan, the build included, without running it, and makes the same two read-only sign-in calls as
 the engine's (above); the script's own reads in a dry run fail open, so they check nothing.
 
-> **Status: written and pinned by a test (`scripts/deploy-workflow.test.mjs`), never run. The script itself ran once
-> from a terminal, on the demo project (2026-10-05).** Whether the Firebase CLI accepts the federated credentials the auth step
-> writes (Application Default Credentials) is **not verified**; that is the first thing a run will show. If it
-> does not, the fallback is still `firebase login` and `scripts/deploy-web.sh` from a terminal.
+> **Status: pinned by a test (`scripts/deploy-workflow.test.mjs`); run twice, by deploy-on-merge on 2026-10-10, and both runs
+> failed before publishing anything (#265).** The sign-in worked and the build ran; then the deployer, which had no Hosting
+> role, could not read the site, and the script took the refused read for a missing site and tried to list the project's web
+> apps, which it may not either. Now `setup-github-deploy.sh` grants `roles/firebasehosting.admin`, and `deploy-web.sh` stops on
+> any refused site read that is not a 404 instead of guessing. **Run `setup-github-deploy.sh` again** for the grant to exist; the
+> workflow has not run since. Whether the Firebase CLI accepts the federated credentials for the release itself is still **not
+> verified**. The fallback is `firebase login` and `scripts/deploy-web.sh` from a terminal (run once on the demo project, 2026-10-05).
 
-**What the deployer needs on top of the engine's list** (a starting set, not a verified minimum; the first run
-will name what is missing): Firebase Hosting Admin (`roles/firebasehosting.admin`) to create the site and release
-to it (and to link an existing site to the web app, below), and a role holding `firebase.apps.create` for the
-one-time web-app registration (the script registers a web app named `starfish` when the project has none by that
-name). Keep both off the engine's runtime identity. Linking an existing site also uses `gcloud`, which the workflow sets
-up with the federated credentials (never run); if that call fails, link the site once from a terminal or the console.
+**What the deployer needs on top of the engine's list** (`setup-github-deploy.sh` grants it; not yet a verified minimum):
+Firebase Hosting Admin (`roles/firebasehosting.admin`) to read the site and release to it. Nothing on the project's Firebase
+apps: **creating the site and registering the `starfish` web app is a one-time step from a terminal** (`firebase login`, then
+`scripts/deploy-web.sh`), and Actions redeploys that linked site from then on. Run from Actions against a missing or unlinked
+site, the script stops and says so. Keep the Hosting role off the engine's runtime identity.
 
 **The site must be linked to a web app (#156).** On a Hosting site that is not the project's default one,
 `/__/firebase/init.json` carries the config of the web app linked to that site; with none linked it has no `appId`
@@ -627,7 +632,7 @@ ID token; the server re-checks the role, so hiding them from others is a courtes
 engine's own counts, a failed one says it failed. Order: deploy the service with `ADMIN_API_ORIGINS` set to the site, read its URL
 (`gcloud run services describe starfish-admin --project <p> --region <r> --format='value(status.url)'`), then redeploy the site
 with that URL: `VITE_STARFISH_ADMIN_API_URL=<url> PROJECT_ID=<p> scripts/deploy-web.sh`, or, from GitHub Actions, set the
-repository variable `STARFISH_WEB_ADMIN_API_URL` to it and run Deploy web UI (#230; that workflow has never run). Emptying
+repository variable `STARFISH_WEB_ADMIN_API_URL` to it and run Deploy web UI (#230; that workflow has not yet published anything, #265). Emptying
 `ADMIN_API_ORIGINS` and redeploying takes every browser origin away again: the script always sets it, empty included (#233).
 
 > **Status: written; tested with stubs for every rule and over a real local HTTP server; the deploy plan is pinned by a dry
@@ -675,7 +680,8 @@ The ingest path ran once on a real project (the demo project, 2026-10-05); the s
 ## Not covered
 
 - **The web UI** deploys to Hosting with `scripts/deploy-web.sh`, from a terminal (run once, on the demo project,
-  2026-10-05) or from the Deploy web UI workflow above (never run).
+  2026-10-05) or from the Deploy web UI workflow above (its two runs failed before publishing, #265; it needs
+  `setup-github-deploy.sh` run again).
 - **An alert when ingestion stops.** The UI shows it; nothing pages anyone (an item on #6).
 - **The admin API has run once, not fully.** It was deployed to the demo project on 2026-10-07 and "Run ingest now" worked from the UI
   ([above](#the-admin-api-run-ingest-now-and-retire-an-incident-63-65)); Retire has not been tried against it. The UI's two buttons appear only once the site is built with the service's URL. Without it, for recording a demo, see [the cadence script](#recording-the-demo-a-shorter-tick-and-a-run-now-65).

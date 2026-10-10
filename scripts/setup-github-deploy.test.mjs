@@ -61,6 +61,12 @@ describe("scripts/setup-github-deploy.sh", () => {
     expect(setup({ ...dry, REPO_ID: "" }).out).toContain("assertion.repository_id == '<id of acme/starfish>'");
   });
 
+  it("lets the deployer release the web UI to Hosting, and nothing on the project's Firebase apps (#265)", () => {
+    const project = setup(dry).out.split("\n").filter((l) => l.includes("projects add-iam-policy-binding star-proj"));
+    expect(project.map(roleOf)).toContain("roles/firebasehosting.admin");
+    expect(project.map(roleOf).filter((r) => /^roles\/firebase\.|firebaseapp/.test(r ?? ""))).toEqual([]);
+  });
+
   it("makes no key and grants no basic role", () => {
     const r = setup(dry);
     expect(r.out).not.toMatch(/keys create|--key-file|credentials_json/);
