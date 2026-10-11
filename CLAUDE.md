@@ -248,7 +248,9 @@ src/
   agent/lastRun.ts  at the end of each `pnpm agent` pass (#274): its outcome in `{runCollection}/agent_last_run` (ok/failed, the
                    failed steps by label, counts, dry run, skip reason, the interval from `STARFISH_AGENT_SCHEDULE`); failed exactly
                    when the job exits non-zero, a throw recorded by code/name then rethrown; best effort, never a message.
-                   `src/agentRunRecord.ts` is its pure shape and parser, shared with the UI. Built and unit-tested; not yet written by a deployed pass
+                   `src/agentRunRecord.ts` is its pure shape and parser, shared with the UI. As a pass starts it stamps
+                   `runningSince` on the record (`recordAgentPassStarted`), which the end-of-pass write drops: the UI's
+                   "pass in progress". Built, unit- and emulator-tested; not yet written by a deployed pass
   agent/automationSwitch.ts  the kill switch: reads the runtime settings fresh each time the loop asks; fails closed
   agent/reviewer.ts  stage 4: attacks the verified patch; verdict computed from outcomes in code, bound
                    to the patch hash the gate tested. Run by `pnpm agent` (deployed; not yet reached on a real incident)
@@ -384,7 +386,10 @@ React 19, Vite, Tailwind 4, react-router, TanStack Query; Starfish's own theme i
   own status from `{runCollection}/agent_last_run` (#274, `components/AgentStatus.tsx`), judged the same way ("capped" = the
   candidate scan hit its cap), with the next pass from `STARFISH_AGENT_SCHEDULE` (set by the deploy script from
   `AGENT_SCHEDULE`; the cadence script does not change the agent's tick) and "No agent pass recorded yet" until one is.
-  Built and unit-tested.
+  Between records it says what the agent is doing (`agentActivity`): a pass in progress (its `runningSince` mark, with a
+  sliding bar and the seconds since it started), one that started longer ago than the stale threshold and never ended,
+  or one due that has not started; it re-reads the record every 5 s while one is in progress or due (15 minutes at most
+  for a due one), else every minute. Built and unit-tested.
 - **Config:** `web/src/lib/config.ts` is the only reader of `import.meta.env`. The Firebase
   project comes from Hosting's `/__/firebase/init.json` at startup (`VITE_FIREBASE_*` only for
   local dev); the rest from `web/.env` (`web/.env.example`).

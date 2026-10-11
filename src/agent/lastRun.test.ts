@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Firestore } from "firebase-admin/firestore";
-import { AGENT_LAST_RUN_DOC, agentLastRunFields, agentPassFailed, newAgentPassReport, noteFailedStep, notePassSummary, recordAgentLastRun } from "./lastRun.js";
-import { parseAgentRunRecord } from "../agentRunRecord.js";
+import { AGENT_LAST_RUN_DOC, agentLastRunFields, agentPassFailed, newAgentPassReport, noteFailedStep, notePassSummary, recordAgentLastRun, recordAgentPassStarted } from "./lastRun.js";
+import { parseAgentPassInProgress, parseAgentRunRecord } from "../agentRunRecord.js";
 
 function fakeDb(fail = false) {
   const writes: { collection: string; id: string; data: Record<string, unknown> }[] = [];
@@ -130,6 +130,39 @@ describe("the agent's last-run record (#274)", () => {
   it("never throws: a failed write is reported as false", async () => {
     const { db } = fakeDb(true);
     expect(await recordAgentLastRun(db, { runCollection: "runs_x" }, newAgentPassReport(STARTED, "demo"), FINISHED)).toBe(false);
+  });
+});
+
+describe("recordAgentPassStarted", () => {
+  it("never throws, and creates nothing when the update failed for any reason but a missing record", async () => {
+    let creates = 0;
+    const db = {
+      collection: () => ({
+        doc: () => ({
+          update: async () => {
+            throw Object.assign(new Error("permission denied"), { code: 7 });
+          },
+          create: async () => void creates++,
+        }),
+      }),
+    } as unknown as Firestore;
+    expect(await recordAgentPassStarted(db, { runCollection: "runs_x" }, "demo", STARTED)).toBe(false);
+    expect(creates).toBe(0);
+  });
+});
+
+describe("parseAgentPassInProgress", () => {
+  const ts = (d: Date) => ({ toDate: () => d });
+  const since = new Date("2026-10-10T16:30:00.000Z");
+  it("reads a start mark newer than the last finish, or on a record that has none", () => {
+    expect(parseAgentPassInProgress({ environment: "demo", runningSince: ts(since), finishedAt: ts(new Date(since.getTime() - 3_600_000)) })).toEqual({ environment: "demo", since });
+    expect(parseAgentPassInProgress({ environment: "demo", runningSince: ts(since) })).toEqual({ environment: "demo", since });
+  });
+  it("is null with no mark, an unusable one, or one the last finish is not older than", () => {
+    expect(parseAgentPassInProgress(undefined)).toBeNull();
+    expect(parseAgentPassInProgress({ environment: "demo" })).toBeNull();
+    expect(parseAgentPassInProgress({ runningSince: "2026-10-10" })).toBeNull();
+    expect(parseAgentPassInProgress({ runningSince: ts(since), finishedAt: ts(since) })).toBeNull();
   });
 });
 

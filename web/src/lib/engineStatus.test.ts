@@ -10,7 +10,7 @@ vi.mock("firebase/firestore", () => ({
   },
 }));
 
-import { judgeAgentRun, judgeRun, nextRunAt, readAgentLastRun, readLastRun, type AgentRunRecord, type LastRun } from "./engineStatus";
+import { agentActivity, judgeAgentRun, judgeRun, nextRunAt, readAgentPass, readLastRun, type AgentRunRecord, type LastRun } from "./engineStatus";
 import { judgeAgentRun as cliJudgeAgent, judgeRun as cliJudge, parseRunRecord } from "../../../src/status";
 import { parseAgentRunRecord } from "../../../src/agentRunRecord";
 
@@ -210,10 +210,10 @@ describe("the agent's last pass", () => {
   });
 
   it("reads {runCollection}/agent_last_run, and is null when no pass was recorded", async () => {
-    expect(await readAgentLastRun({} as Firestore, "my_runs")).toBeNull();
+    expect((await readAgentPass({} as Firestore, "my_runs")).run).toBeNull();
     expect(mocks.path).toEqual(["my_runs", "agent_last_run"]);
     mocks.data = storedPass();
-    expect(await readAgentLastRun({} as Firestore, "my_runs")).toMatchObject({
+    expect((await readAgentPass({} as Firestore, "my_runs")).run).toMatchObject({
       outcome: "ok",
       dryRun: true,
       considered: 2,
@@ -225,9 +225,9 @@ describe("the agent's last pass", () => {
 
   it("is null for a record it cannot use, rather than guessing", async () => {
     mocks.data = storedPass({ outcome: "idle" });
-    expect(await readAgentLastRun({} as Firestore, "r")).toBeNull();
+    expect((await readAgentPass({} as Firestore, "r")).run).toBeNull();
     mocks.data = storedPass({ finishedAt: undefined });
-    expect(await readAgentLastRun({} as Firestore, "r")).toBeNull();
+    expect((await readAgentPass({} as Firestore, "r")).run).toBeNull();
   });
 
   it("is judged like the ingest's run, a capped candidate scan being its 'capped'", () => {
@@ -241,6 +241,31 @@ describe("the agent's last pass", () => {
     expect(judgeAgentRun(pass({ environment: "prod" }), "demo", NOW, 90).run).toBeNull();
     const refusal = pass({ environment: "dev", outcome: "failed", error: "settings-unusable" });
     expect(judgeAgentRun(refusal, "demo", NOW, 90)).toEqual({ state: "failed", run: refusal });
+  });
+
+  it("reads a pass in progress from its start mark, a first pass's included", async () => {
+    mocks.data = storedPass({ runningSince: ts(NOW - 30_000) });
+    expect(await readAgentPass({} as Firestore, "r")).toMatchObject({ run: { outcome: "ok" }, inProgress: { environment: "demo", since: new Date(NOW - 30_000) } });
+    mocks.data = { environment: "demo", runningSince: ts(NOW - 30_000) };
+    expect(await readAgentPass({} as Firestore, "r")).toEqual({ run: null, inProgress: { environment: "demo", since: new Date(NOW - 30_000) } });
+    mocks.data = storedPass();
+    expect((await readAgentPass({} as Firestore, "r")).inProgress).toBeNull();
+  });
+
+  it("says what the agent is doing now: running, overrun, due or idle", () => {
+    const activity = (p: { run: AgentRunRecord | null; inProgress: { environment: string; since: Date } | null }, env = "demo") =>
+      agentActivity(p, judgeAgentRun(p.run, env, NOW, 90), env, NOW, 90);
+    const hourly = pass({ startedAt: new Date(NOW - 14 * 60_000), intervalMinutes: 60 });
+    const late = pass({ startedAt: new Date(NOW - 61 * 60_000), finishedAt: new Date(NOW - 60 * 60_000), intervalMinutes: 60 });
+    expect(activity({ run: hourly, inProgress: null })).toEqual({ kind: "idle" });
+    expect(activity({ run: late, inProgress: null })).toEqual({ kind: "due", dueAt: new Date(NOW - 60_000) });
+    expect(activity({ run: late, inProgress: { environment: "demo", since: new Date(NOW - 20_000) } })).toEqual({ kind: "running", since: new Date(NOW - 20_000) });
+    expect(activity({ run: null, inProgress: { environment: "demo", since: new Date(NOW - 20_000) } })).toEqual({ kind: "running", since: new Date(NOW - 20_000) });
+    expect(activity({ run: late, inProgress: { environment: "demo", since: new Date(NOW - 91 * 60_000) } })).toEqual({ kind: "overrun", since: new Date(NOW - 91 * 60_000) });
+    // Another environment's mark is not this one's pass; a failed or unscheduled pass promises no next one.
+    expect(activity({ run: late, inProgress: { environment: "prod", since: new Date(NOW - 20_000) } })).toEqual({ kind: "due", dueAt: new Date(NOW - 60_000) });
+    expect(activity({ run: { ...late, outcome: "failed", failedSteps: ["cycles"] }, inProgress: null })).toEqual({ kind: "idle" });
+    expect(activity({ run: pass({ startedAt: new Date(NOW - 61 * 60_000) }), inProgress: null })).toEqual({ kind: "idle" });
   });
 
   it("says when the next pass is expected from its start and interval", () => {
@@ -259,7 +284,7 @@ describe("the agent's last pass", () => {
     ["no record at all", undefined, "demo"],
   ] as [string, Record<string, unknown> | undefined, string][])("agrees with pnpm status: %s", async (_name, data, env) => {
     mocks.data = data;
-    const ui = judgeAgentRun(await readAgentLastRun({} as Firestore, "r"), env, NOW, 90).state;
+    const ui = judgeAgentRun((await readAgentPass({} as Firestore, "r")).run, env, NOW, 90).state;
     expect(cliJudgeAgent(parseAgentRunRecord(data), env, new Date(NOW), 90)).toBe(ui);
   });
 });

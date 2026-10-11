@@ -1,7 +1,8 @@
 /**
  * The card both status lines can take (the ingest's, EngineStatus, and the agent's, AgentStatus, #274): a dot and label
  * for the judged state, when the next one is expected, a bar for how far through its interval it is when the record
- * gave one, and the record's own facts as children. It says only what it is given.
+ * gave one, and the record's own facts as children. It says only what it is given. While something is under way (an agent
+ * pass that has started, #274), `right` says so in place of the next one and `busy` slides a bar of unknown length.
  */
 import type { ReactNode } from "react";
 import type { EngineState } from "../lib/engineStatus";
@@ -30,6 +31,8 @@ export function StatusCard({
   startedAt,
   noun,
   testId,
+  right,
+  busy = false,
   children,
 }: {
   state: EngineState;
@@ -41,6 +44,10 @@ export function StatusCard({
   /** What the next one is called: "run", "pass". */
   noun: string;
   testId: string;
+  /** Said at the right in place of when the next one is expected. */
+  right?: ReactNode;
+  /** Work under way: a sliding bar in place of the bar to the next one. */
+  busy?: boolean;
   children?: ReactNode;
 }) {
   const nowMs = Date.now();
@@ -55,7 +62,9 @@ export function StatusCard({
           <span className={`relative inline-flex h-2.5 w-2.5 rounded-full ${DOT[state]}`} />
         </span>
         <span className={`font-semibold ${LABEL_TEXT[state]}`}>{label}</span>
-        {next && (
+        {right !== undefined ? (
+          <span className="ml-auto text-gray-600 dark:text-gray-400">{right}</span>
+        ) : next && (
           <span className="ml-auto text-gray-600 dark:text-gray-400">
             Next {noun} expected{" "}
             <strong className="font-semibold text-gray-900 dark:text-white">
@@ -64,7 +73,11 @@ export function StatusCard({
           </span>
         )}
       </div>
-      {through !== null && (
+      {busy ? (
+        <div role="img" aria-label={`A ${noun} is under way`} className="relative h-1.5 overflow-hidden rounded-full bg-gray-200 dark:bg-gray-700">
+          <div className="absolute inset-y-0 left-0 w-1/3 rounded-full bg-success-600 motion-safe:animate-indeterminate dark:bg-success-400" />
+        </div>
+      ) : through !== null && (
         <div
           role="img"
           aria-label={`${Math.round(through * 100)}% of the way to the next ${noun}`}
