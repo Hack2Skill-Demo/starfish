@@ -36,6 +36,7 @@ import {
   runFilter,
   runStatus,
   runSummary,
+  failureView,
   splitTrace,
   titleOf,
   trackMarks,
@@ -429,7 +430,7 @@ function RunDetail({ cycle, incident, environment, now }: { cycle: CycleRow; inc
     : asLive && replayAt !== null
       ? `Replaying the recorded run${speed > 1 ? ` at ${speed}× speed` : ""}. ${runSummary(asLive, water.steps, replayAt)}`
       : runSummary(cycle, water.steps, clock);
-  const trace = incident?.errorMessage ? splitTrace(incident.errorMessage) : null;
+  const failure = incident?.errorMessage ? failureView(incident.errorMessage, incident.errorDetail) : null;
   // A run that ended with a person: drawn as a branch off the last step of its track that has an event.
   const handoff = !asLive && !status.live && cycle.state !== "running" && (cycle.path === "human" || cycle.path === "notify") ? PATH_LABELS[cycle.path] : undefined;
 
@@ -527,7 +528,7 @@ function RunDetail({ cycle, incident, environment, now }: { cycle: CycleRow; inc
       </section>
 
       <div className="flex flex-wrap gap-6">
-        {incident && trace && <WhatFailed errorType={incident.errorType} raw={incident.errorMessage} trace={trace} />}
+        {incident && failure && <WhatFailed errorType={incident.errorType} failure={failure} />}
         <section aria-label="Run facts" className="min-w-0 flex-[2_1_16rem] space-y-3">
           <h3 className={SECTION_TITLE}>Run facts</h3>
           <dl className="divide-y divide-gray-200 overflow-hidden rounded-lg border border-gray-200 text-sm dark:divide-gray-700 dark:border-gray-700">
@@ -626,20 +627,26 @@ function CopyButton({ text }: { text: string }) {
 }
 
 /** The incident's error: its message, and the stack frames written into it one per line, with the raw text on request. */
-function WhatFailed({ errorType, raw, trace }: { errorType: string; raw: string; trace: ReturnType<typeof splitTrace> }) {
+function WhatFailed({ errorType, failure }: { errorType: string; failure: ReturnType<typeof failureView> }) {
   const [showRaw, setShowRaw] = useState(false);
-  const libraryOnly = trace.frames.length > 0 && trace.frames.every((f) => f.library);
+  const libraryOnly = failure.frames.length > 0 && failure.frames.every((f) => f.library);
   return (
     <section aria-label="What failed" className="min-w-0 flex-[3_1_22rem] space-y-3">
       <h3 className={SECTION_TITLE}>What failed</h3>
       <div className="overflow-hidden rounded-lg border border-gray-200 dark:border-gray-700">
         <div className="space-y-1.5 border-b border-gray-200 p-4 dark:border-gray-700">
           <p className="font-mono text-xs font-medium text-brand-700 dark:text-brand-400">{errorType}</p>
-          <p className="break-words font-mono text-sm text-gray-900 dark:text-gray-100">{trace.headline}</p>
+          <p className="break-words font-mono text-sm text-gray-900 dark:text-gray-100">{failure.headline}</p>
+          {/* The cause the engine stored beside the title (#289): the title alone can say nothing ("Checkout failed"). */}
+          {failure.cause && (
+            <p className="break-words text-sm text-gray-700 dark:text-gray-300">
+              <span className="font-medium text-gray-900 dark:text-gray-100">Cause:</span> <span className="font-mono">{failure.cause}</span>
+            </p>
+          )}
         </div>
-        {trace.frames.length > 0 && (
+        {failure.frames.length > 0 && (
           <ol aria-label="Stack frames" className="bg-gray-50 py-1.5 dark:bg-gray-900/40">
-            {trace.frames.map((f, i) => (
+            {failure.frames.map((f, i) => (
               <li key={i} className="px-4 py-1.5">
                 <div className="flex flex-wrap items-baseline gap-2">
                   <span className="font-mono text-xs text-gray-600 dark:text-gray-400">at</span>
@@ -651,20 +658,25 @@ function WhatFailed({ errorType, raw, trace }: { errorType: string; raw: string;
             ))}
           </ol>
         )}
-        {showRaw && (
-          <pre className="whitespace-pre-wrap break-all border-t border-gray-200 px-4 py-3 font-mono text-xs text-gray-700 dark:border-gray-700 dark:text-gray-300">{raw}</pre>
+        {showRaw && failure.hasMore && (
+          <pre className="whitespace-pre-wrap break-all border-t border-gray-200 px-4 py-3 font-mono text-xs text-gray-700 dark:border-gray-700 dark:text-gray-300">{failure.raw}</pre>
         )}
-        <div className="flex flex-wrap items-center gap-2 border-t border-gray-200 px-4 py-1 dark:border-gray-700">
-          {libraryOnly && <p className="flex-1 basis-48 text-xs text-gray-600 dark:text-gray-400">Every frame is in a dependency; none points at the app&apos;s own code.</p>}
-          <button
-            type="button"
-            onClick={() => setShowRaw((v) => !v)}
-            aria-expanded={showRaw}
-            className="ml-auto min-h-11 text-sm font-medium text-brand-700 hover:underline dark:text-brand-400"
-          >
-            {showRaw ? "Hide the raw message" : "Show the raw message"}
-          </button>
-        </div>
+        {/* Offered only when the raw text holds more than the panel shows: a toggle that opens to the title again says nothing. */}
+        {(libraryOnly || failure.hasMore) && (
+          <div className="flex flex-wrap items-center gap-2 border-t border-gray-200 px-4 py-1 dark:border-gray-700">
+            {libraryOnly && <p className="flex-1 basis-48 py-2 text-xs text-gray-600 dark:text-gray-400">Every frame is in a dependency; none points at the app&apos;s own code.</p>}
+            {failure.hasMore && (
+              <button
+                type="button"
+                onClick={() => setShowRaw((v) => !v)}
+                aria-expanded={showRaw}
+                className="ml-auto min-h-11 text-sm font-medium text-brand-700 hover:underline dark:text-brand-400"
+              >
+                {showRaw ? "Hide the raw message" : "Show the raw message"}
+              </button>
+            )}
+          </div>
+        )}
       </div>
     </section>
   );

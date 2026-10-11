@@ -611,14 +611,38 @@ export function splitTrace(message: string): { headline: string; frames: TraceFr
   if (parts.length < 2) return whole;
   const frames: TraceFrame[] = [];
   for (const part of parts.slice(1)) {
-    const text = part.trim();
+    // "at async fn (file)", "at new Thing (file)", "at async /path:1:2": the keyword is kept with the function's name (#289).
+    const [, prefix = "", text = ""] = /^((?:async|new) )?(.*)$/s.exec(part.trim()) ?? [];
     const m = FRAME_RE.exec(text);
-    const fn = m ? m[1]! : LOCATION_RE.test(text) ? "" : null;
+    const fn = m ? `${prefix}${m[1]!}` : LOCATION_RE.test(text) ? prefix.trim() : null;
     if (fn === null) return whole;
     const at = m ? m[2]! : text;
     frames.push({ fn, at, library: /(^|\/)node_modules\//.test(at) || at.startsWith("node:") });
   }
   return { headline: parts[0]!.replace(/^Error:\s*/, ""), frames };
+}
+
+/**
+ * What the "What failed" panel shows (#289): the incident's title, and its cause when the engine stored one apart from
+ * it. Ingest keeps `jsonPayload.error` out of the title on purpose (the title keys the fingerprint; the error is the
+ * cause), so a shop that logs "Checkout failed" with the real error beside it has a title that says nothing and a
+ * detail that says everything. The frames are the title's own when it carries a trace, otherwise the detail's.
+ * `hasMore`: the raw text holds something the panel does not already show, so a toggle for it is worth offering. A
+ * guest's trimmed copy has no detail, and then this is the title alone.
+ */
+export function failureView(errorMessage: string, errorDetail?: string): { headline: string; cause?: string; frames: TraceFrame[]; raw: string; hasMore: boolean } {
+  const title = splitTrace(errorMessage);
+  const detailText = errorDetail?.trim() ? errorDetail : undefined;
+  const detail = detailText !== undefined ? splitTrace(detailText) : undefined;
+  const cause = detail && detail.headline.trim() !== "" && detail.headline.trim() !== title.headline.trim() ? detail.headline.trim() : undefined;
+  const raw = detailText !== undefined && detailText.trim() !== errorMessage.trim() ? `${errorMessage}\n\n${detailText}` : errorMessage;
+  return {
+    headline: title.headline,
+    ...(cause !== undefined && { cause }),
+    frames: title.frames.length > 0 ? title.frames : (detail?.frames ?? []),
+    raw,
+    hasMore: raw.trim() !== title.headline.trim(),
+  };
 }
 
 /** "0:07", "1:05", "1:02:09": a running timer. */
