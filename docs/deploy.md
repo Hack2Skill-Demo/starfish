@@ -15,6 +15,15 @@ starts on a cron, under its own service account, with the image built from the `
 > no Hosting role (#265). `setup-github-deploy.sh` now grants it; it has to be run again on the project before the workflow can
 > work, and that has not happened yet. The script's whole plan is pinned by `scripts/deploy-gcp.test.mjs`
 > (a dry run), and CI builds the image.
+>
+> **Hardening since then, written and tested with stubs, not run (#299, #300, #301, #307, #308):** the Workload Identity
+> provider also requires a run on `main`; `setup-github-deploy.sh` and `preflight-gcp.sh` refuse a build account that is
+> Editor or Owner of the project; Dependabot waits seven days and never auto-merges an Actions bump; the Firebase CLI is
+> pinned to one release; Hosting sends security headers; the ingest's account loses its Gemini role; and the schedules are
+> checked. **On the demo project a person still has to:** run `scripts/setup-github-deploy.sh` again (it updates the
+> provider's condition; it stops first if the Compute Engine default account is Editor there, see
+> [The build account](#the-build-account-300)), add required reviewers to the `deploy` environment (deploy-on-merge is on
+> there), redeploy the engine (Deploy engine, which also takes the ingest's Gemini role back) and the web UI (for the headers).
 
 ## Run it
 
@@ -29,7 +38,8 @@ PROJECT_ID=my-project scripts/deploy-gcp.sh             # does it
 Everything deployment-specific is an environment variable (the header of the script lists them
 all): `PROJECT_ID`, `REGION`, `WATCHED_PROJECT_ID`, `VERTEX_PROJECT_ID`, `STARFISH_ENV`,
 `SCHEDULE`, `EXTRA_ENV_VARS` for any other engine setting in `.env.example`. A demo wants
-`SCHEDULE='*/5 * * * *'`; the default is hourly. It is idempotent: run it again to ship a new
+`SCHEDULE='*/5 * * * *'`; the default is hourly. `SCHEDULE` and `AGENT_SCHEDULE` must be five-field crons of cron characters
+(digits, `*`, `/`, `,`, `-`), checked before anything changes as `ingest-cadence.sh` checks its own (#308). It is idempotent: run it again to ship a new
 image or change the schedule. Each name may appear once in a job's settings: an `EXTRA_ENV_VARS` entry that repeats a name the
 script sets (or one set twice) is refused before anything changes, so a setting is never silently replaced (#147).
 
@@ -62,15 +72,24 @@ Gemini projects when those are different. `gcloud auth login` first.
 | Service account `starfish-engine` | the identity the job runs as |
 | `roles/logging.viewer` on the **watched** project | read its logs |
 | `roles/datastore.user` on Starfish's project, **conditioned to the `starfish` database** | read and write the store and nothing else in the project (the watched app's `(default)` database stays out of reach when the project is shared) |
-| `roles/aiplatform.user` on the **Gemini** project | call Gemini |
+| **No** Gemini role | the ingest makes no model call (#308). An earlier version granted `roles/aiplatform.user` on the Gemini project; a redeploy removes it. The agent's account holds that role (below) |
 | Firestore database `starfish` (`STARFISH_DATABASE_ID`), then `firestore.rules` and indexes **to that database** | Starfish's own database. `(default)` is refused: its rules would replace the watched app's. `firebase.json` names `starfish`; the script deploys from a temporary copy that names the configured id instead (#148), so a custom id needs no file edited |
 | Secret `starfish-github-token`, readable **by the agent's account only** (with `DEPLOY_AGENT=1`) | see below. The engine's account gets no access, and an access an earlier version granted it is removed |
 | Cloud Run job `starfish-ingest`, **no secret mounted** | one ingest run per execution; exits 1 when the run failed |
 | Service account `starfish-scheduler`, `roles/run.invoker` **on that job only** | the scheduler can start the job and do nothing else |
 | Scheduler job `starfish-ingest-tick` | the cron |
 
-The three engine roles are separate bindings on separate projects, so watching one project,
+The engine's two roles and the agent's Gemini role are separate bindings on separate projects, so watching one project,
 storing in another and running Gemini in a third needs no code and no wider access.
+
+**Limiting what Gemini can spend: a consumer quota override (#308, not scripted, not tried).** The budget alert below only
+emails. To put a ceiling on the rate of model calls, lower the Vertex AI quota of the Gemini project yourself: console → IAM &
+Admin → **Quotas & System Limits**, filter on the service "Vertex AI API" and the region (`VERTEX_LOCATION`, else `REGION`),
+find the generate-content requests-per-minute quota for your model, and **Edit quota** to a lower value. That is a consumer
+override: it can only lower what Google allows, and Vertex AI refuses the agent's calls past it. From a terminal, `gcloud alpha services quota list --service=aiplatform.googleapis.com
+--consumer=projects/<gemini project>` names the metrics, and `gcloud alpha services quota update` sets one. Some Gemini models
+are served under a shared quota with no per-project request limit to lower; if your model has none, the agent's own caps
+(`STARFISH_MODEL_CALL_BUDGET`, `STARFISH_MAX_CYCLES_PER_DAY`) and the budget alert are the limits.
 
 ## Secret Manager
 
@@ -219,8 +238,9 @@ there is **no service-account key** and **no GitHub secret**. The script is neve
 `GITHUB_TOKEN`; it reads `STARFISH_GITHUB_TOKEN`, which the workflow leaves unset, so the existing
 `starfish-github-token` version and its mount are left as they are (set it once from a terminal, see above).
 
-> **Status: written and pinned by a test (`scripts/deploy-workflow.test.mjs`), never run.** Nothing below
-> has been exercised against a real project or a real runner. The role list is a starting set derived from
+> **Status: pinned by a test (`scripts/deploy-workflow.test.mjs`); run on the demo project since 2026-10-10** (a dry run,
+> then the real deploy, after `setup-github-deploy.sh`; see the status at the top). The branch condition, the build-account
+> check and the budget variables (#299, #300, #308) have not run there yet. The role list is a starting set derived from
 > the commands the script runs, not a verified minimum: the first run will probably name a missing
 > permission, and the fix is to add that role here and in the table, not to widen it to Owner.
 
@@ -230,19 +250,33 @@ there is **no service-account key** and **no GitHub secret**. The script is neve
   `main` that changes what the engine runs (`src/` outside tests, the Dockerfile, the lockfile, the rules, the
   deploy script), but only when the repository variable `STARFISH_DEPLOY_ON_MERGE` is `true`; unset, a merge
   changes nothing. Each run spends a Cloud Build. With it on, whoever can merge to `main` changes what is
-  running: add required reviewers to the `deploy` environment to keep a person in that loop. The web UI
-  workflow works the same way for `web/`.
+  running, and so does Dependabot: its npm patch and minor bumps auto-merge on green
+  (`.github/workflows/dependabot-automerge.yml`) and change `package.json` and the lockfile. **Turn deploy-on-merge on only
+  with required reviewers on the `deploy` environment** (#301): the merge stays automatic, the deploy waits for a person.
+  The web UI workflow works the same way for `web/`.
 - **Approval: a GitHub environment named `deploy`.** The job runs in it, and the Workload Identity provider
-  below accepts only tokens minted for that environment, so its protection rules are the real gate. Add
-  **required reviewers** for a manual approval, and **limit deployment branches to `main`**: without that,
-  anyone who can push a branch can edit `deploy.yml` there and dispatch it.
+  below accepts only tokens minted for that environment **and for a run on `main`** (#299), so its protection rules are
+  the real gate. Add **required reviewers** for a manual approval (required with deploy-on-merge, above), and **limit
+  deployment branches to `main`**. Before #299 the branch rule was the only thing stopping someone who can push a branch from
+  editing `deploy.yml` there and dispatching it; the provider now refuses that run's token itself (`assertion.ref`), so a
+  missing or widened branch rule no longer hands out credentials.
+- **What may merge without a person (#301).** Dependabot proposes a release only once it is seven days old (`cooldown` in
+  `.github/dependabot.yml`, every ecosystem); only npm patch and minor bumps auto-merge, judged by the pull request's
+  author (`dependabot[bot]`), not by whoever triggered the run; GitHub Actions bumps always wait for a person, since an
+  action runs inside these workflows with their tokens. The Firebase CLI the deploy scripts run with `pnpm dlx` is pinned to
+  one release (`firebase-tools@14.27.0`, in `deploy-gcp.sh` and `deploy-web.sh`), not to a major that moves under them.
+  Written and pinned by tests (`scripts/deploy-workflow.test.mjs`); Dependabot's reading of `cooldown` has not been seen yet.
 
 ### One-time setup
 
 **One command, from Cloud Shell, as an owner of the project:**
 `PROJECT_ID=my-project REPO=owner/name scripts/setup-github-deploy.sh` (`DRY_RUN=1` prints the plan). It does
 everything in the block below except the GitHub side, which it prints for you: the `deploy` environment and the
-repository variables. Dry-run tested; never run against a real project. The block below is the same thing by hand.
+repository variables. Run once on the demo project (2026-10-10). Since then it also requires a run on `DEPLOY_BRANCH`
+(default `main`) in the provider's condition (#299) and refuses a build account that is Editor or Owner (#300); both are
+tested with stubs, not run. **A provider made before #299 keeps its old condition until the script is run again**: a
+re-run updates the existing provider (`update-oidc`) with the new mapping and condition. The block below is the same
+thing by hand.
 
 Run these as someone with rights to create a pool and a service account on the project. `OWNER/REPO` is this
 repository; `PROJECT_ID` is the project Starfish deploys into.
@@ -255,16 +289,18 @@ export REPO_ID=$(gh api "repos/$REPO" --jq .id)   # the repository's numeric id
 
 # 1. A pool and a GitHub provider. The attribute condition is not optional: without it, any GitHub
 #    repository could present a token to this provider. This one accepts only this repository's jobs
-#    that run in the `deploy` environment, by the repository's id: a name can be renamed and then
-#    registered again by someone else, an id cannot (#145).
+#    that run in the `deploy` environment on the main branch, by the repository's id: a name can be
+#    renamed and then registered again by someone else, an id cannot (#145). The ref is checked on the
+#    token, not only by the environment's branch rule in GitHub (#299). For an existing provider, the
+#    same flags with `update-oidc` instead of `create-oidc` replace its mapping and condition.
 gcloud services enable iamcredentials.googleapis.com sts.googleapis.com --project="$PROJECT_ID"
 gcloud iam workload-identity-pools create github --project="$PROJECT_ID" --location=global \
   --display-name="GitHub Actions"
 gcloud iam workload-identity-pools providers create-oidc github-deploy --project="$PROJECT_ID" \
   --location=global --workload-identity-pool=github \
   --issuer-uri="https://token.actions.githubusercontent.com" \
-  --attribute-mapping="google.subject=assertion.sub,attribute.repository_id=assertion.repository_id,attribute.repository=assertion.repository,attribute.environment=assertion.environment" \
-  --attribute-condition="assertion.repository_id == '$REPO_ID' && assertion.environment == 'deploy'"
+  --attribute-mapping="google.subject=assertion.sub,attribute.repository_id=assertion.repository_id,attribute.repository=assertion.repository,attribute.environment=assertion.environment,attribute.ref=assertion.ref" \
+  --attribute-condition="assertion.repository_id == '$REPO_ID' && assertion.environment == 'deploy' && assertion.ref == 'refs/heads/main' && assertion.ref_type == 'branch'"
 
 # 2. The deploy identity: its own service account, separate from starfish-engine (which only runs the
 #    job) and starfish-scheduler (which only starts it). Only this repository's pool members may use it.
@@ -282,8 +318,8 @@ gh variable set GCP_DEPLOY_SERVICE_ACCOUNT --body "starfish-deployer@$PROJECT_ID
 gh variable set STARFISH_GCP_PROJECT_ID --body "$PROJECT_ID"
 ```
 
-Then create the `deploy` environment (Settings → Environments), with reviewers and the `main`-only
-deployment branch rule above.
+Then create the `deploy` environment (Settings → Environments), with reviewers (required once deploy-on-merge is on) and
+the `main`-only deployment branch rule above.
 
 **What the deployer needs, by what the script does.** All on `PROJECT_ID` unless noted. The account names, secret names and
 verify bucket follow the same variables as `deploy-gcp.sh` (`ENGINE_SA_NAME`, `AGENT_SA_NAME`, `GITHUB_SECRET`, `VERIFY_BUCKET`, ...):
@@ -294,7 +330,7 @@ set them for `setup-github-deploy.sh` as you set them for the deploy.
 | enable APIs | `roles/serviceusage.serviceUsageAdmin` (on the Gemini and watched projects too, when they differ) |
 | create and read the service accounts | custom role `starfishDeployer`: `iam.serviceAccounts.create`, `iam.serviceAccounts.get` (and the two creates below). **Not** `roles/iam.serviceAccountAdmin`, which would let it set the IAM policy of every account in the project (#145) |
 | run a job, the admin API and a scheduler call *as* those accounts | `roles/iam.serviceAccountUser`, on `starfish-engine`, `starfish-scheduler`, `starfish-agent`, `starfish-verifier` and `starfish-admin-api` only, not project-wide |
-| build the images from source | `roles/iam.serviceAccountUser` on the account Cloud Run builds as (`BUILD_SERVICE_ACCOUNT`, else the Compute Engine default account): Cloud Build refuses a caller that may not act as it. What that account may do, the deployer can do through a build, so it should hold `roles/run.builder` and nothing more |
+| build the images from source | `roles/iam.serviceAccountUser` on the account Cloud Run builds as (`BUILD_SERVICE_ACCOUNT`, else the Compute Engine default account): Cloud Build refuses a caller that may not act as it. What that account may do, the deployer can do through a build, so it should hold `roles/run.builder` and nothing more; the script refuses to run while it holds `roles/editor` or `roles/owner` ([The build account](#the-build-account-300)) |
 | with `cloud-run-job`: let the agent's account sign URLs as itself | custom role `starfishServiceAccountIam` (`get`, `getIamPolicy`, `setIamPolicy`) on **`starfish-agent` only**; the deployer already acts as that account, so this reaches no new one |
 | bind the engine's, agent's and admin API's roles | `roles/resourcemanager.projectIamAdmin`, on `PROJECT_ID`, the watched project and the Gemini project, each conditioned to the roles the script binds on **that** project (see the warning below) |
 | create the `starfish` database, deploy rules and indexes | `roles/datastore.owner`, `roles/firebaserules.admin` |
@@ -314,7 +350,7 @@ there, see "The build is denied" below.
 > |---|---|
 > | `PROJECT_ID` | `roles/run.builder` (the build account), `roles/datastore.user` (the engine's, the agent's and the admin API's, conditioned to Starfish's database), `roles/firebaseauth.viewer` (the admin API's account only) |
 > | the watched project | `roles/logging.viewer` (the engine, the agent, the admin API), `roles/monitoring.viewer` (the engine and the admin API, only with `STARFISH_MONITORING_ENABLED=true`, #176) |
-> | the Gemini project | `roles/aiplatform.user` (the engine, the agent) |
+> | the Gemini project | `roles/aiplatform.user` (the agent; and taking back the engine's, which an earlier deploy granted, #308) |
 >
 > A project that is more than one of these (by default all three are `PROJECT_ID`) gets one binding with the roles of each.
 > So on a watched project of its own, the app's production, the deployer can hand out reading its logs and metrics and
@@ -328,12 +364,37 @@ there, see "The build is denied" below.
 > **The condition only governs the project's own policy.** A grant on a service account, a secret, a bucket or a Cloud Run job
 > goes on that resource's policy, where it does not apply. That is why the deployer gets no project-wide
 > `roles/iam.serviceAccountAdmin`, `roles/secretmanager.admin` or `roles/storage.admin` (#145): with them it could make itself a
-> token creator on any account (the Compute default account is often Editor) or read every secret and bucket. **Still
-> project-wide**: `roles/run.admin` (every Cloud Run service and job in the project, including the watched app's when it shares the
-> project, and their IAM policies), `roles/artifactregistry.admin`, `roles/cloudbuild.builds.editor`, `roles/datastore.owner` (every
-> database, the app's `(default)` too) and `roles/cloudscheduler.admin`. Treat the deployer as highly privileged, which is the
-> reason for the `deploy` environment's gate. Whether Cloud Storage and Secret Manager accept these name conditions for every call
-> the deploy makes has **not been tried**; the first run will say if a permission is missing.
+> token creator on any account or read every secret and bucket. **But the deployer does act as one account it did not
+> make: the build account** (`BUILD_SERVICE_ACCOUNT`, else the Compute Engine default account), because a build from source
+> needs that. With `roles/run.admin` and `roles/cloudbuild.builds.editor` it can run a build, or a Cloud Run job, as that
+> account and so use every role that account holds. On many projects the Compute Engine default account still holds
+> `roles/editor`, which would make the deployer an Editor of the project. So `setup-github-deploy.sh` refuses to run, and
+> `preflight-gcp.sh` fails, while that account holds `roles/editor` or `roles/owner` on the project (#300; see
+> [The build account](#the-build-account-300)). Neither sees a role granted on a folder or the organisation, nor a narrower role
+> that is still more than a build needs: keep the account to `roles/run.builder`. **Still project-wide**: `roles/run.admin`
+> (every Cloud Run service and job in the project, including the watched app's when it shares the project, and their IAM
+> policies), `roles/artifactregistry.admin`, `roles/cloudbuild.builds.editor`, `roles/datastore.owner` (every database, the
+> app's `(default)` too) and `roles/cloudscheduler.admin`. Treat the deployer as highly privileged, which is the reason for the
+> `deploy` environment's gate. Whether Cloud Storage and Secret Manager accept these name conditions for every call the deploy
+> makes has **not been tried**; the first run will say if a permission is missing.
+
+#### The build account (#300)
+
+`gcloud run jobs deploy --source` builds the image as the project's Cloud Build service account: the Compute Engine
+default account (`<project-number>-compute@developer.gserviceaccount.com`) unless someone changed Cloud Build's default
+(Cloud Build → Settings). `deploy-gcp.sh` grants that account `roles/run.builder`; `BUILD_SERVICE_ACCOUNT` only tells the
+scripts which account that is, it does not make the build use another (`gcloud run jobs deploy` has no flag for it). If
+the check stops you:
+
+- **Take the role away**, when nothing else in the project needs it:
+  `gcloud projects remove-iam-policy-binding <project> --member=serviceAccount:<number>-compute@developer.gserviceaccount.com --role=roles/editor --all`.
+  Check first: Cloud Functions (2nd gen), Cloud Run services and Compute Engine VMs run as this account by default, and in a
+  project shared with the watched app they may be the app's.
+- **Or use an account made for building**: create it, give it `roles/run.builder`, make it Cloud Build's default service
+  account for the project (Cloud Build → Settings), and set `BUILD_SERVICE_ACCOUNT` to it for `setup-github-deploy.sh`,
+  `preflight-gcp.sh` and `deploy-gcp.sh` alike.
+
+Then run the script again. Tested against a stub of `gcloud`; not yet run on a real project, the demo project included.
 
 ### Repository variables
 
@@ -360,9 +421,19 @@ defaults when empty.
 | `STARFISH_VERIFY_CHECK_APP` | `VERIFY_CHECK_APP` | the slug of the GitHub App whose check runs count (#229); default the engine's, `github-actions`. Always set on the agent job, so emptying it restores the default |
 | `STARFISH_VERIFY_TIMEOUT_SECONDS`, `STARFISH_VERIFY_BUCKET`, `STARFISH_AGENT_BASE_BRANCH`, `STARFISH_AGENT_SCHEDULE`, `STARFISH_AGENT_EXTRA_ENV_VARS` | `VERIFY_TIMEOUT_SECONDS`, `VERIFY_BUCKET`, `AGENT_BASE_BRANCH`, `AGENT_SCHEDULE`, `AGENT_EXTRA_ENV_VARS` | default 600, `<project>-starfish-verify`, `main`, `30 * * * *`. The base branch is always set on the agent job, so emptying it restores `main` (#233). The schedule is also set on the agent job as `STARFISH_AGENT_SCHEDULE`, so the UI's agent line can say when the next pass is expected (#274) |
 | `STARFISH_DEPLOY_ADMIN_API`, `STARFISH_ADMIN_API_ORIGINS` | `DEPLOY_ADMIN_API`, `ADMIN_API_ORIGINS` | set `1` and the site's origin to deploy the admin API too ([below](#the-admin-api-run-ingest-now-and-retire-an-incident-63-65)); default off. Its service name is kept out of ingest either way (#177) |
+| `STARFISH_BUDGET_USD`, `STARFISH_BILLING_ACCOUNT` | `BUDGET_USD`, `BILLING_ACCOUNT` | optional budget alert (#308); empty = no budget step. Needs `roles/billing.costsManager` for the deployer on the billing account, which you grant ([below](#repository-variables)) |
 
-`BUDGET_USD` and `BILLING_ACCOUNT` are not wired: a budget lives on the billing account, which the deployer
-has no role on. Create the budget once from a terminal (`docs/setup.md`).
+**The budget alert from Actions (#308): optional, and it needs a role the setup does not grant.** `STARFISH_BUDGET_USD` and
+`STARFISH_BILLING_ACCOUNT` reach the script as `BUDGET_USD` and `BILLING_ACCOUNT`; both empty (the default), the budget step
+is skipped, as from a terminal. A budget lives on the **billing account**, and `setup-github-deploy.sh` gives the deployer no
+role there, on purpose: a billing account usually pays for more than this project. To create the budget from Actions, grant
+it yourself, as a billing administrator:
+`gcloud billing accounts add-iam-policy-binding <billing account> --member=serviceAccount:starfish-deployer@<project>.iam.gserviceaccount.com --role=roles/billing.costsManager`
+(budgets and cost reports of that billing account, every project on it). Without it, setting the variables stops the deploy
+at the budget step, before the jobs are deployed (the script cannot list budgets, so it tries to create one, and that is
+refused). Or leave them empty and create the budget once from a terminal (`docs/setup.md`), which is what we recommend. The
+budget is created once (looked up by its name, `starfish-<project>`), and is an alert, not a cap. Wired and pinned by a test;
+never run from Actions.
 
 The workflow's inputs are `dry_run` (print the plan, change nothing), `run_after_deploy`, and
 `skip_firestore_rules`. The last exists because `firebase-tools` signing in through Workload Identity is the
@@ -427,6 +498,18 @@ Firebase Hosting Admin (`roles/firebasehosting.admin`) to read the site and rele
 apps: **creating the site and registering the `starfish` web app is a one-time step from a terminal** (`firebase login`, then
 `scripts/deploy-web.sh`), and Actions redeploys that linked site from then on. Run from Actions against a missing or unlinked
 site, the script stops and says so. Keep the Hosting role off the engine's runtime identity.
+
+**Security headers (#307).** `firebase.json` has Hosting send, on every path: `Content-Security-Policy: frame-ancestors
+'none'; object-src 'none'; base-uri 'self'` (no page may frame the UI, no plugins, no `<base>` pointing elsewhere),
+`X-Frame-Options: DENY` (the same for older browsers), `X-Content-Type-Options: nosniff` and `Referrer-Policy:
+strict-origin-when-cross-origin`. The cache rules for `/index.html` and `/assets/**` still apply beside them: Hosting applies
+every rule whose source matches, and no header is set by two. There is deliberately no `script-src`, `connect-src` or
+`default-src`: Firebase Auth, App Check and Firestore reach several Google hosts from the page, and a list that missed one
+would break sign-in. Pinned by `scripts/deploy-web.test.mjs`; not yet deployed. Whether Hosting adds these headers to its
+reserved `/__/` paths (Firebase Auth's `/__/auth/iframe` among them) has not been checked: the UI signs in with email and
+password or anonymously, and its auth domain (from `/__/firebase/init.json`) is normally `<project>.firebaseapp.com`, the
+project's default site, not Starfish's own, so the headers should not reach that frame; a deployment that points the auth domain at Starfish's site should check sign-in
+on Safari and mobile, where the SDK loads that frame early.
 
 **The site must be linked to a web app (#156).** On a Hosting site that is not the project's default one,
 `/__/firebase/init.json` carries the config of the web app linked to that site; with none linked it has no `appId`

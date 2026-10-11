@@ -1,7 +1,7 @@
 // scripts/setup-github-deploy.sh changes who may deploy into a real project, so these pin what a dry run promises:
 // it refuses bad input, trusts exactly one repository in one environment, makes no key, and grants nothing broad.
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdtempSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -47,10 +47,13 @@ describe("scripts/setup-github-deploy.sh", () => {
     ]) expect(r.out).toContain(part);
   });
 
-  it("trusts one repository, by its id and not its reusable name, in one environment, and nobody else (#145)", () => {
+  it("trusts one repository, by its id and not its reusable name, in one environment, on one branch, and nobody else (#145, #299)", () => {
     const r = setup(dry);
-    expect(r.out).toContain("--attribute-condition=assertion.repository_id == '123456' && assertion.environment == 'deploy'");
+    expect(r.out).toContain(
+      "--attribute-condition=assertion.repository_id == '123456' && assertion.environment == 'deploy' && assertion.ref == 'refs/heads/main' && assertion.ref_type == 'branch'",
+    );
     expect(r.out).toContain("attribute.repository_id=assertion.repository_id");
+    expect(r.out).toContain("attribute.ref=assertion.ref");
     expect(r.out).toContain("workloadIdentityPools/github/attribute.repository_id/123456");
     expect(r.out).not.toContain("assertion.repository ==");
     expect(r.out).not.toMatch(/attribute\.repository\/|attribute\.repository_owner/);
@@ -59,6 +62,20 @@ describe("scripts/setup-github-deploy.sh", () => {
     for (const bad of ["12a", "1 2", "'1'"]) expect(setup({ ...dry, REPO_ID: bad }).status, bad).not.toBe(0);
     // A dry run with no id shows where it goes (a real run looks it up with gh, and stops if it cannot).
     expect(setup({ ...dry, REPO_ID: "" }).out).toContain("assertion.repository_id == '<id of acme/starfish>'");
+  });
+
+  it("checks the branch on the token itself: DEPLOY_BRANCH, and nothing that could leave the quotes (#299)", () => {
+    const r = setup({ ...dry, DEPLOY_BRANCH: "release/v2" });
+    expect(r.status).toBe(0);
+    expect(r.out).toContain("assertion.ref == 'refs/heads/release/v2' && assertion.ref_type == 'branch'");
+    expect(r.out).toMatch(/add:\s+release\/v2\./);
+    for (const bad of ["", "main' || true || '", "a b", "../main", "-main", "main/", "/main", "a//b", "a;b"]) {
+      const b = setup({ ...dry, DEPLOY_BRANCH: bad });
+      // An empty value is the default, main.
+      if (bad === "") { expect(b.out).toContain("refs/heads/main"); continue; }
+      expect(b.status, bad).not.toBe(0);
+      expect(b.out, bad).toContain("DEPLOY_BRANCH must be a branch name");
+    }
   });
 
   it("lets the deployer release the web UI to Hosting, and nothing on the project's Firebase apps (#265)", () => {
@@ -70,7 +87,8 @@ describe("scripts/setup-github-deploy.sh", () => {
   it("makes no key and grants no basic role", () => {
     const r = setup(dry);
     expect(r.out).not.toMatch(/keys create|--key-file|credentials_json/);
-    expect(r.out).not.toMatch(/roles\/(owner|editor|viewer)\b/);
+    // The one line that names a basic role is the check that the build account holds none (#300).
+    expect(r.out.split("\n").filter((l) => !l.startsWith("+ (check)")).join("\n")).not.toMatch(/roles\/(owner|editor|viewer)\b/);
     expect(r.out).not.toContain("roles/iam.serviceAccountTokenCreator");
   });
 
@@ -259,5 +277,95 @@ describe("scripts/setup-github-deploy.sh", () => {
       expect(r.out).toContain(name);
     }
     expect(r.out).toContain('"deploy". Under "Deployment branches"');
+    // #301: with deploy-on-merge a merge is a deploy (Dependabot's included), so reviewers are required, not optional.
+    expect(r.out).toContain("Required reviewers: REQUIRED if you turn deploy-on-merge on");
+    expect(r.out).not.toContain("leave it empty for a fully automatic one");
+  });
+
+  it("says in a dry run that it checks the build account before anything else", () => {
+    const r = setup(dry);
+    const check = r.out.indexOf("+ (check) gcloud projects get-iam-policy star-proj: <project-number>-compute@developer.gserviceaccount.com must hold neither roles/editor nor roles/owner");
+    expect(check).toBeGreaterThan(-1);
+    expect(check).toBeLessThan(r.out.indexOf("gcloud services enable"));
+    expect(setup({ ...dry, BUILD_SERVICE_ACCOUNT: "builder@star-proj.iam.gserviceaccount.com" }).out)
+      .toContain("+ (check) gcloud projects get-iam-policy star-proj: builder@star-proj.iam.gserviceaccount.com must hold");
+  });
+});
+
+// A real run (no DRY_RUN) against a gcloud that answers from STUB_* variables and logs every call: what the script
+// does on a project that already has a provider, and on one whose build account is an Editor.
+function live(env = {}) {
+  const dir = mkdtempSync(join(tmpdir(), "wif-live-"));
+  const log = join(dir, "gcloud.log");
+  writeFileSync(join(dir, "gcloud"), `#!/bin/sh
+echo "$*" >> "${log}"
+case "$*" in
+  "projects describe "*) echo 424242 ;;
+  "projects get-iam-policy "*) [ "$STUB_POLICY_FAIL" = "1" ] && exit 1; printf '%s\\n' "$STUB_POLICY" ;;
+  "iam workload-identity-pools providers describe "*) [ "$STUB_PROVIDER" = "1" ] || exit 1 ;;
+esac
+exit 0
+`);
+  writeFileSync(join(dir, "gh"), `#!/bin/sh\necho "gh $*" >> "${log}"\nexit 1\n`);
+  chmodSync(join(dir, "gcloud"), 0o755);
+  chmodSync(join(dir, "gh"), 0o755);
+  const r = spawnSync("bash", [script], {
+    env: {
+      PATH: `${dir}:/usr/bin:/bin`, PROJECT_ID: "star-proj", REPO: "acme/starfish", REPO_ID: "123456",
+      STUB_POLICY: "roles/owner,user:me@example.com\nroles/run.builder,serviceAccount:424242-compute@developer.gserviceaccount.com",
+      ...env,
+    },
+    encoding: "utf8",
+  });
+  const calls = readFileSync(log, { flag: "a+" }).toString().trim().split("\n").filter(Boolean);
+  return { ...r, out: `${r.stdout}${r.stderr}`, calls };
+}
+
+describe("scripts/setup-github-deploy.sh, run against a stub of gcloud", () => {
+  const changes = (calls) => calls.filter((c) => /\b(create|create-oidc|update|update-oidc|add-iam-policy-binding|remove-iam-policy-binding|enable)\b/.test(c));
+
+  it("updates an existing provider to the branch condition, instead of leaving the old one (#299)", () => {
+    const r = live({ STUB_PROVIDER: "1" });
+    expect(r.status, r.out).toBe(0);
+    const update = r.calls.filter((c) => c.startsWith("iam workload-identity-pools providers update-oidc github-deploy"));
+    expect(update).toHaveLength(1);
+    expect(update[0]).toContain("--attribute-condition=assertion.repository_id == '123456' && assertion.environment == 'deploy' && assertion.ref == 'refs/heads/main' && assertion.ref_type == 'branch'");
+    expect(update[0]).toContain("attribute.ref=assertion.ref");
+    expect(r.calls.some((c) => c.includes("providers create-oidc"))).toBe(false);
+    // A project with no provider yet gets one with the same condition.
+    const fresh = live();
+    expect(fresh.calls.find((c) => c.includes("providers create-oidc github-deploy"))).toContain("assertion.ref == 'refs/heads/main'");
+  });
+
+  it("refuses, before it changes anything, while the build account is Editor or Owner of the project (#300)", () => {
+    const compute = "serviceAccount:424242-compute@developer.gserviceaccount.com";
+    for (const role of ["roles/editor", "roles/owner"]) {
+      const r = live({ STUB_POLICY: `roles/owner,user:me@example.com\n${role},${compute}` });
+      expect(r.status, role).not.toBe(0);
+      expect(r.out, role).toContain(`424242-compute@developer.gserviceaccount.com, the account Cloud Run builds images as, holds ${role} on star-proj`);
+      expect(r.out, role).toContain(`gcloud projects remove-iam-policy-binding star-proj --member=${compute} --role=${role} --all`);
+      expect(r.out, role).toContain("BUILD_SERVICE_ACCOUNT");
+      expect(changes(r.calls), role).toEqual([]);
+    }
+    // A named build account is the one checked.
+    const named = live({ BUILD_SERVICE_ACCOUNT: "builder@star-proj.iam.gserviceaccount.com", STUB_POLICY: `roles/editor,${compute}\nroles/owner,serviceAccount:builder@star-proj.iam.gserviceaccount.com` });
+    expect(named.status).not.toBe(0);
+    expect(named.out).toContain("builder@star-proj.iam.gserviceaccount.com, the account Cloud Run builds images as, holds roles/owner");
+    expect(changes(named.calls)).toEqual([]);
+  });
+
+  it("goes ahead when only some other account is Editor, and refuses when the policy cannot be read (#300)", () => {
+    const compute = "serviceAccount:424242-compute@developer.gserviceaccount.com";
+    const other = live({ BUILD_SERVICE_ACCOUNT: "builder@star-proj.iam.gserviceaccount.com", STUB_POLICY: `roles/editor,${compute}\nroles/run.builder,serviceAccount:builder@star-proj.iam.gserviceaccount.com` });
+    expect(other.status, other.out).toBe(0);
+    expect(other.calls.some((c) => c.startsWith("iam service-accounts add-iam-policy-binding builder@star-proj.iam.gserviceaccount.com"))).toBe(true);
+    // A deleted account's leftover binding is not the account.
+    expect(live({ STUB_POLICY: `roles/editor,deleted:${compute}?uid=1\nroles/owner,user:me@example.com` }).status).toBe(0);
+    for (const unreadable of [{ STUB_POLICY_FAIL: "1" }, { STUB_POLICY: "" }]) {
+      const r = live(unreadable);
+      expect(r.status, JSON.stringify(unreadable)).not.toBe(0);
+      expect(r.out).toContain("cannot read the IAM policy of star-proj");
+      expect(changes(r.calls)).toEqual([]);
+    }
   });
 });

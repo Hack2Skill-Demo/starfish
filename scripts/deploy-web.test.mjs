@@ -108,7 +108,7 @@ const deployed = ({ rules = repoRules, indexes = [index("starfish_cycles", "READ
   indexes: { status: 200, body: { indexes } },
 });
 
-const READS = /^dlx firebase-tools@14 (hosting:sites:get|apps:list) /;
+const READS = /^dlx firebase-tools@14\.27\.0 (hosting:sites:get|apps:list) /;
 const onlyReads = (calls) => calls.every((c) => READS.test(c));
 
 const ok = (result) => ({ status: "success", result });
@@ -441,5 +441,31 @@ describe("scripts/deploy-web.sh", () => {
         expect(r.out).toContain("UPTIME_NOTIFICATION_CHANNELS takes");
       }
     });
+  });
+});
+
+// #307: what Hosting serves with every page of the UI. Read from firebase.json, the file the deploy publishes with.
+describe("firebase.json hosting headers", () => {
+  const hosting = JSON.parse(readFileSync(new URL("../firebase.json", import.meta.url), "utf8")).hosting;
+  const rule = (source) => hosting.headers.find((h) => h.source === source);
+  const value = (source, key) => rule(source)?.headers.find((h) => h.key === key)?.value;
+
+  it("sends the security headers on every path", () => {
+    expect(value("**", "X-Frame-Options")).toBe("DENY");
+    expect(value("**", "X-Content-Type-Options")).toBe("nosniff");
+    expect(value("**", "Referrer-Policy")).toBe("strict-origin-when-cross-origin");
+    const csp = value("**", "Content-Security-Policy") ?? "";
+    for (const directive of ["frame-ancestors 'none'", "object-src 'none'", "base-uri 'self'"]) expect(csp).toContain(directive);
+    // No script, connect or default source list: Firebase Auth, App Check and Firestore reach Google's hosts from the page,
+    // and a list that missed one would break sign-in with nothing in the build to show it.
+    expect(csp).not.toMatch(/\b(default-src|script-src|connect-src|frame-src)\b/);
+  });
+
+  it("keeps the caching rules, which Hosting applies beside the ** rule", () => {
+    expect(value("/index.html", "Cache-Control")).toBe("no-cache");
+    expect(value("/assets/**", "Cache-Control")).toBe("public, max-age=31536000, immutable");
+    // No header is set twice for one path, so which rule wins never matters.
+    const keys = (source) => rule(source).headers.map((h) => h.key);
+    for (const source of ["/index.html", "/assets/**"]) for (const key of keys(source)) expect(keys("**")).not.toContain(key);
   });
 });

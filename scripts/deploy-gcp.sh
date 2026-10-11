@@ -16,7 +16,7 @@
 #   STARFISH_DATABASE_ID Starfish's named Firestore database. Default starfish; "(default)" is refused. The rules and
 #                        indexes go to this database: firebase.json's own "database" is replaced in a temporary copy (#148)
 #   FIRESTORE_LOCATION   where the database is created if it does not exist. Default REGION
-#   SCHEDULE             cron for the ingest tick. Default "0 * * * *" (hourly); "*/5 * * * *" for a demo
+#   SCHEDULE             cron for the ingest tick, five fields. Default "0 * * * *" (hourly); "*/5 * * * *" for a demo
 #   SCHEDULE_TIME_ZONE   Default Etc/UTC
 #   INGEST_RUN_BUDGET_SECONDS  how long one ingest run may work (STARFISH_INGEST_RUN_BUDGET_SECONDS, #221). Default 480.
 #                        The job's task timeout is this plus 120 s, and the admin API's request timeout (its "Run ingest
@@ -67,7 +67,9 @@
 #                        there. Always set here, never in EXTRA_ENV_VARS, so the setting and the role can't disagree.
 #                        Turning it off again stops the reads; it does not remove a role granted earlier
 #   BUDGET_USD           if set (with BILLING_ACCOUNT), create a budget that EMAILS billing admins at 50% and
-#                        90% of this monthly amount for PROJECT_ID. An alert, not a cap: nothing stops spending
+#                        90% of this monthly amount for PROJECT_ID. An alert, not a cap: nothing stops spending.
+#                        Whoever runs this needs a role on the billing account (roles/billing.costsManager): the
+#                        Actions deployer gets none from setup-github-deploy.sh (docs/deploy.md)
 #   BILLING_ACCOUNT      the billing account id (0123AB-456CDE-789FGH), needed with BUDGET_USD
 #   DEPLOY_AGENT=1       also deploy the AGENT (#74): triage -> fix -> verify -> review for open incidents, as a dry run.
 #                        A Cloud Run job and Scheduler job for the agent, under its own service account. The agent
@@ -95,7 +97,7 @@
 #   AGENT_BASE_BRANCH    the branch the agent checks out. Default: the engine's own default (main). Always set on the agent
 #                        job (STARFISH_GITHUB_BASE_BRANCH), empty included, so clearing it restores the default (#233),
 #                        unless EXTRA_ENV_VARS or AGENT_EXTRA_ENV_VARS sets that name itself
-#   AGENT_SCHEDULE       cron for the agent tick. Default "30 * * * *" (hourly, after the ingest tick). Also set on the
+#   AGENT_SCHEDULE       cron for the agent tick, five fields. Default "30 * * * *" (hourly, after the ingest tick). Also set on the
 #                        agent job as STARFISH_AGENT_SCHEDULE, so the UI can say when the next pass is expected (#274)
 #   AGENT_EXTRA_ENV_VARS more settings for the agent job, "@"-separated like EXTRA_ENV_VARS. The only place to turn the
 #                        agent's dry run off (STARFISH_DRY_RUN=false); neither list may set STARFISH_VERIFY_* (#147)
@@ -178,10 +180,24 @@ AGENT_SCHEDULER_JOB_NAME="${AGENT_SCHEDULER_JOB_NAME:-$AGENT_JOB_NAME-tick}"
 VERIFY_JOB_NAME="${VERIFY_JOB_NAME:-starfish-verify}"
 VERIFIER_SA_NAME="${VERIFIER_SA_NAME:-starfish-verifier}"
 ADMIN_SA_NAME="${ADMIN_SA_NAME:-starfish-admin-api}"
+# The Firebase CLI that deploys the rules runs with the deploy's credentials, so it is pinned to one release (#301), not a
+# major that moves under the deploy. Bump it on purpose, here and in scripts/deploy-web.sh together.
+FIREBASE_TOOLS="firebase-tools@14.27.0"
 
 die() { echo "deploy-gcp: $*" >&2; exit 1; }
 
 [ -n "$PROJECT_ID" ] || die "PROJECT_ID is required"
+# A cron is five fields of cron characters (as scripts/ingest-cadence.sh checks, #308): it goes into a command line and,
+# as STARFISH_INGEST_SCHEDULE / STARFISH_AGENT_SCHEDULE, into an "@"-separated list, so a bad one must fail here, before
+# anything changes, not in Cloud Scheduler halfway through.
+valid_cron() {
+  case "$1" in *[!0-9*/,\ -]*) return 1 ;; esac
+  local fields
+  read -r -a fields <<< "$1"   # not `set -- $1`: an unquoted * would expand to file names
+  [ "${#fields[@]}" -eq 5 ]
+}
+valid_cron "$SCHEDULE" || die "SCHEDULE must be a five-field cron such as '0 * * * *': $SCHEDULE"
+valid_cron "$AGENT_SCHEDULE" || die "AGENT_SCHEDULE must be a five-field cron such as '30 * * * *': $AGENT_SCHEDULE"
 # Twilio (#37): all three or none, each of its shape (loadTwilioCredentials in src/config.ts). Refused by name, never echoed.
 TWILIO_GIVEN=0
 TWILIO_SET=0
@@ -583,7 +599,15 @@ fi
 DB_RESOURCE="projects/$PROJECT_ID/databases/$STARFISH_DATABASE_ID"
 bind "$PROJECT_ID" "$ENGINE_SA" roles/datastore.user \
   "resource.name == \"$DB_RESOURCE\" || resource.name.startsWith(\"$DB_RESOURCE/\")"
-bind "$VERTEX_PROJECT_ID" "$ENGINE_SA" roles/aiplatform.user   # call Gemini
+# No Gemini role (#308): the ingest makes no model call. An earlier version of this script granted it roles/aiplatform.user
+# on the Gemini project, and bindings are additive, so a redeploy takes it back. Where it was never granted there is
+# nothing to remove, which is not an error. The agent's own grant is made below, after this.
+if [ "$DRY_RUN" = "1" ]; then
+  echo "+ (if an earlier deploy granted it) gcloud projects remove-iam-policy-binding $VERTEX_PROJECT_ID: roles/aiplatform.user of $ENGINE_SA"
+else
+  gcloud projects remove-iam-policy-binding "$VERTEX_PROJECT_ID" --member="serviceAccount:$ENGINE_SA" \
+    --role=roles/aiplatform.user --all --quiet --format=none >/dev/null 2>&1 || true
+fi
 
 step "Firestore database '$STARFISH_DATABASE_ID' (its own, so the watched app's rules are never touched)"
 if ! exists gcloud firestore databases describe --database="$STARFISH_DATABASE_ID" --project="$PROJECT_ID"; then
@@ -610,7 +634,7 @@ if [ "$SKIP_FIRESTORE_RULES" != "1" ]; then
       fs.writeFileSync(process.argv[1], JSON.stringify(config, null, 2));
     ' "$FIREBASE_CONFIG" || die "could not write $FIREBASE_CONFIG from firebase.json"
   fi
-  run pnpm dlx firebase-tools@14 deploy --only firestore --project "$PROJECT_ID" --config "$FIREBASE_CONFIG"
+  run pnpm dlx "$FIREBASE_TOOLS" deploy --only firestore --project "$PROJECT_ID" --config "$FIREBASE_CONFIG"
   [ "$DRY_RUN" = "1" ] || rm -f "$FIREBASE_CONFIG"
   # #262: printed, never run here. A new composite index takes minutes to build, and the queries it serves are refused
   # until it is READY. Guests read only the trimmed copies the engine writes (#18): records stored before the engine

@@ -1,8 +1,14 @@
 version: 2
 
-# Minor/patch bumps are grouped into one PR per
+# Minor/patch npm bumps are grouped into one PR per
 # group and auto-merged on green by .github/workflows/dependabot-automerge.yml;
-# majors open individually for a deliberate review.
+# majors open individually for a deliberate review. GitHub Actions bumps are
+# never auto-merged (#301).
+#
+# `cooldown` (#301): Dependabot proposes a release only once it is 7 days old, in
+# every ecosystem. A hijacked or broken release is usually found and pulled within
+# days; this keeps it from reaching an auto-merged PR, and through deploy-on-merge
+# a deploy. A security update is not delayed by it.
 #
 # `labels: []`: Dependabot only applies labels that already exist in the repo, and
 # a missing one makes it post a config-error comment on every PR it opens. Nothing
@@ -14,6 +20,8 @@ updates:
     schedule:
       interval: "weekly"
       day: "monday"
+    cooldown:
+      default-days: 7
     open-pull-requests-limit: 10
     labels: []
     groups:
@@ -30,10 +38,13 @@ updates:
 
   # Actions are pinned to full commit SHAs, so they never move on their own;
   # this keeps them current via PRs that bump the SHA and its version comment.
+  # A person merges each one.
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
       interval: "weekly"
       day: "monday"
+    cooldown:
+      default-days: 7
     open-pull-requests-limit: 5
     labels: []

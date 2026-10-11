@@ -81,10 +81,11 @@ fix is not a reason to hold the fix. After merging, confirm each `Closes #` issu
 closed, then `unsubscribe_pr_activity` if still subscribed.
 
 This merge-on-green rule is **not limited to PRs you authored.** A green, mergeable
-**Dependabot** PR (or any routine dependency/lockfile bump) at **patch or minor** that you are
+**Dependabot** npm PR (or any routine dependency/lockfile bump) at **patch or minor** that you are
 watching is yours to squash-merge too — do not report "green, leaving it to the maintainer"
 and stand down. `.github/workflows/dependabot-automerge.yml` also auto-merges these with no
-session involved. **Still hold** (report, don't merge) a **major** bump, or a human-authored
+session involved. **Still hold** (report, don't merge) a **major** bump, a **GitHub Actions**
+bump (an action runs inside the deploy workflows with their tokens, so a person merges it, #301), or a human-authored
 PR from someone else you weren't asked to drive.
 
 ## 7. The only reasons to pause
