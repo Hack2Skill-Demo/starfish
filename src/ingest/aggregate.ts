@@ -9,7 +9,8 @@ import { Logging } from "@google-cloud/logging";
 import { Timestamp } from "firebase-admin/firestore";
 import type { Firestore } from "firebase-admin/firestore";
 import type { StarfishConfig } from "../config.js";
-import { buildLogFilter, parseLogEntry, type RawLogEntry } from "./parseLogEntry.js";
+import { buildLogFilter, parseLogEntry, type ParsedLogEntry, type RawLogEntry } from "./parseLogEntry.js";
+import type { EntryReader } from "./counterCheck.js";
 import { detectErrorType, extractErrorCode, detectService } from "./classify.js";
 import { canonicalFunctionName, fingerprintOfLogEntry } from "./fingerprint.js";
 import { createRestMonitoringReader, readMonitoringFailures, type MonitoringObservation, type MonitoringReader } from "./monitoring.js";
@@ -17,7 +18,13 @@ import { sanitize } from "./redact.js";
 import { upsertIncident, type IncidentInput, type UpsertOutcome } from "./store.js";
 import { narrowWindow, type IngestWindow } from "./window.js";
 
-const PAGE_SIZE = 500;
+/**
+ * Entries asked for per page (#296). Pages are read by hand and each is reduced to parsed entries before the next is
+ * asked for, so at most one page of raw entries is held at a time: 250 entries of Cloud Logging's largest (256 KB) is
+ * 64 MB. Fixed for the whole read: the API wants a page token sent with the same parameters as the call that returned it.
+ * Smaller pages would hold less, at the cost of more calls against the project's read quota.
+ */
+export const READ_PAGE_SIZE = 250;
 /**
  * Upper bound on entries read per window. `getEntries` auto-paginates by default,
  * so without this a sustained burst reads every entry in the window into memory
@@ -27,8 +34,12 @@ const PAGE_SIZE = 500;
  * (`narrowWindow`), and the rest is read by the windows after it (#127), unless an
  * earlier attempt already wrote under the window's id (`WindowWrites`, #199). Reading
  * the newest entries and completing the window anyway lost every older one.
+ * The count alone does not bound memory (#296): 5,000 entries of 100 KB is half a gigabyte. The read also stops at
+ * `ingestReadBudgetMb` of entries (`entryBytes`), and that stop is handled exactly like this one.
  */
 export const MAX_ENTRIES_PER_RUN = 5000;
+/** What an entry that cannot be measured counts against the byte budget: Cloud Logging's largest entry. */
+const UNMEASURABLE_ENTRY_BYTES = 256 * 1024;
 /**
  * Upsert transactions in flight at once. Each grouped input has its own
  * fingerprint, so they never contend with each other; the bound keeps a burst
@@ -50,8 +61,8 @@ export interface AggregationResult {
    */
   errorsFoldedIntoOverflow: number;
   /**
-   * True when the read stopped at MAX_ENTRIES_PER_RUN and the window could not be narrowed (more
-   * entries than that in its first millisecond, or an earlier attempt already wrote under its id: see
+   * True when the read stopped at MAX_ENTRIES_PER_RUN or at the byte budget (#296) and the window could not be
+   * narrowed (more than that in its first millisecond, or an earlier attempt already wrote under its id: see
    * `WindowWrites`): it was processed as read, and the rest of it is lost,
    * so occurrence counts are a floor.
    */
@@ -192,32 +203,24 @@ export async function aggregateErrors(
   // resolution is how a log reader ends up silently watching the wrong project
   // and reporting "no errors" forever while production burns.
   const logging = new Logging({ projectId: config.watchedProjectId });
-  const [entries] = await logging.getEntries({
-    filter: buildLogFilter(config, window.start, undefined, window.end),
-    pageSize: PAGE_SIZE,
-    maxResults: MAX_ENTRIES_PER_RUN,
-    orderBy: "timestamp asc",
-  });
+  const read = await readWindow(logging as unknown as EntryReader, config, window);
 
-  if (entries.length >= MAX_ENTRIES_PER_RUN) {
-    const lastReadAt = latestTimestamp(entries as RawLogEntry[]);
+  if (read.stopped) {
     // Not when an earlier attempt may have written under this window's id (see WindowWrites): the
     // narrowed window would count those occurrences a second time under its own id.
-    const narrowed = deps.writes?.mayNarrow !== false && lastReadAt && narrowWindow(window, lastReadAt);
+    const narrowed = deps.writes?.mayNarrow !== false && read.lastReadAt && narrowWindow(window, read.lastReadAt);
     // Nothing is written: the narrowed window gets its own id, and the store must not see these
     // entries under this window's id and again under that one's.
     if (narrowed) return { ...result, narrowedTo: narrowed };
     result.capped = true;
   }
 
-  result.entriesProcessed = entries.length;
+  result.entriesProcessed = read.entries;
 
   // Group by fingerprint before writing anything.
   const grouped = new Map<string, { input: IncidentInput }>();
 
-  for (const entry of entries) {
-    const parsed = parseLogEntry(entry as RawLogEntry, config.ignoredMessages, config.excludedServices);
-    if (!parsed) continue;
+  for (const parsed of read.parsed) {
 
     // Group on the SANITIZED message — the one the store fingerprints and keeps.
     // Grouping on the raw text split "No user for alice@x.com" and "No user for
@@ -432,17 +435,79 @@ export function buildOverflowInput(
   };
 }
 
+/** One window's read, reduced as it went (#296). */
+interface WindowRead {
+  /** The entries that parsed as incidents, in read order. Bounded by the byte budget: never the raw entries. */
+  parsed: ParsedLogEntry[];
+  /** Every entry read, parsed or not: what `entriesProcessed` reports. */
+  entries: number;
+  /** The latest readable timestamp among the entries read; undefined when none had one. */
+  lastReadAt?: Date;
+  /** True when the read stopped at MAX_ENTRIES_PER_RUN or at the byte budget, before the end of the window. */
+  stopped: boolean;
+}
+
 /**
- * The latest readable timestamp among `entries`, or undefined when none has one. The latest, not the
- * last: the read is oldest first, but taking the maximum does not depend on that.
+ * Read `window` oldest first, a page at a time (#296). Each page is reduced to parsed entries before the next is asked
+ * for, and the read stops at MAX_ENTRIES_PER_RUN entries or once the entries read reach `ingestReadBudgetMb`,
+ * whichever comes first, on the entry that reached it. Everything before that entry's millisecond was then read in full,
+ * which is what `narrowWindow` relies on, and the narrowed window holds less than the budget, so its replay reads all of
+ * it. One auto-paginated `getEntries` call held every raw entry of the window at once: 5,000 entries of 100 KB ran the
+ * 512Mi job out of memory, and since the window is pending before it is read, every run replayed it and died the same way.
+ * A Logging failure throws, as the single read did: the run records it and the window stays pending.
  */
-function latestTimestamp(entries: readonly RawLogEntry[]): Date | undefined {
+async function readWindow(logging: EntryReader, config: StarfishConfig, window: IngestWindow): Promise<WindowRead> {
+  const budgetBytes = config.ingestReadBudgetMb * 1024 * 1024;
+  const parsed: ParsedLogEntry[] = [];
+  let entries = 0;
+  let bytes = 0;
   let latest: number | undefined;
-  for (const e of entries) {
-    const ts = e?.metadata?.timestamp;
-    if (ts === undefined) continue;
-    const t = new Date(ts).getTime();
-    if (Number.isFinite(t) && (latest === undefined || t > latest)) latest = t;
+  const done = (stopped: boolean): WindowRead => ({ parsed, entries, stopped, ...(latest !== undefined && { lastReadAt: new Date(latest) }) });
+  let request: object | null = {
+    filter: buildLogFilter(config, window.start, undefined, window.end),
+    pageSize: READ_PAGE_SIZE,
+    orderBy: "timestamp asc",
+    autoPaginate: false,
+  };
+  while (request) {
+    const [page, next]: [unknown[], object | null, ...unknown[]] = await logging.getEntries(request);
+    for (const raw of page) {
+      const entry = raw as RawLogEntry;
+      entries += 1;
+      bytes += entryBytes(entry);
+      const t = readableTime(entry);
+      if (t !== undefined && (latest === undefined || t > latest)) latest = t;
+      const p = parseLogEntry(entry, config.ignoredMessages, config.excludedServices);
+      if (p) parsed.push(p);
+      if (entries >= MAX_ENTRIES_PER_RUN || bytes >= budgetBytes) return done(true);
+    }
+    // Re-asserted on every page, as in counterCheck.ts: the client drops autoPaginate from the request it hands on, so
+    // the next-page request it returns lacks it, and the default (true) would read every remaining page at once.
+    request = next ? { ...next, autoPaginate: false } : null;
   }
-  return latest === undefined ? undefined : new Date(latest);
+  return done(false);
+}
+
+/**
+ * An entry's approximate size: its payload and metadata serialised as JSON, in UTF-16 units. An estimate, not the heap
+ * it takes, but it grows with what does, which is what a budget needs. One that cannot be serialised counts as the
+ * largest entry Cloud Logging accepts, so a measuring failure can only make the read stop sooner.
+ */
+export function entryBytes(entry: RawLogEntry): number {
+  try {
+    return (JSON.stringify(entry?.data ?? null)?.length ?? 0) + (JSON.stringify(entry?.metadata ?? null)?.length ?? 0);
+  } catch {
+    return UNMEASURABLE_ENTRY_BYTES;
+  }
+}
+
+/**
+ * An entry's timestamp in milliseconds, or undefined when it has none readable. The read keeps the latest of these, not
+ * the last entry's: the read is oldest first, but taking the maximum does not depend on that.
+ */
+function readableTime(entry: RawLogEntry): number | undefined {
+  const ts = entry?.metadata?.timestamp;
+  if (ts === undefined) return undefined;
+  const t = new Date(ts).getTime();
+  return Number.isFinite(t) ? t : undefined;
 }

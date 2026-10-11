@@ -71,6 +71,16 @@ describe("EngineStatus", () => {
     expect(screen.getByTestId("engine-status")).toHaveTextContent("a floor");
   });
 
+  it("says the ingest is falling behind when its checkpoint lags past twice the schedule, though the run said ok (#297)", async () => {
+    mocks.read.mockResolvedValue(run({ intervalMinutes: 60, lagSeconds: 3 * 3600, capped: true }));
+    renderStatus();
+    expect(await screen.findByText("Ingest falling behind")).toBeInTheDocument();
+    const line = screen.getByTestId("engine-status");
+    expect(line).toHaveTextContent("checkpoint 180 min behind the newest logs (more than 120 min)");
+    // Behind outranks capped, but the floor is still said.
+    expect(line).toHaveTextContent("a floor");
+  });
+
   it("says when no run has been recorded, and that the list may be out of date", async () => {
     mocks.read.mockResolvedValue(null);
     renderStatus();

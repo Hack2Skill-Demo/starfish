@@ -4,22 +4,29 @@ import type { MonitoringObservation, MonitoringReader } from "./monitoring.js";
 import type { IncidentInput } from "./store.js";
 
 const entries: unknown[] = [];
-const logging = { projects: [] as unknown[], filters: [] as string[], orders: [] as string[] };
+const logging = { projects: [] as unknown[], filters: [] as string[], orders: [] as string[], requests: [] as Record<string, unknown>[] };
+// Pages like Cloud Logging with autoPaginate off: `pageSize` entries from the page token on, and the next request
+// (the same one with the next token) while entries remain. With autoPaginate on it would read every page at once.
 vi.mock("@google-cloud/logging", () => ({
   Logging: class {
     constructor(options: unknown) {
       logging.projects.push(options);
     }
-    getEntries = async (request: { filter: string; orderBy: string }) => {
+    getEntries = async (request: { filter: string; orderBy: string; pageSize?: number; pageToken?: string; autoPaginate?: boolean }) => {
       logging.filters.push(request.filter);
       logging.orders.push(request.orderBy);
-      return [entries];
+      logging.requests.push({ ...request });
+      if (request.autoPaginate !== false) return [entries.slice(), null, {}];
+      const from = Number(request.pageToken ?? 0);
+      const to = from + (request.pageSize ?? entries.length);
+      const next = to < entries.length ? { filter: request.filter, orderBy: request.orderBy, pageSize: request.pageSize, pageToken: String(to) } : null;
+      return [entries.slice(from, to), next, {}];
     };
   },
 }));
 
 const { SEEDED_SECRETS } = await import("./testSecrets.js");
-const { aggregateErrors, correlateMonitoring, inputsPastNewIncidentCap, MAX_ENTRIES_PER_RUN, OVERFLOW_ERROR_TYPE, overflowMessage } =
+const { aggregateErrors, correlateMonitoring, entryBytes, inputsPastNewIncidentCap, MAX_ENTRIES_PER_RUN, OVERFLOW_ERROR_TYPE, overflowMessage, READ_PAGE_SIZE } =
   await import("./aggregate.js");
 const { computeErrorFingerprint } = await import("./fingerprint.js");
 const { windowOf } = await import("./window.js");
@@ -148,7 +155,7 @@ describe("aggregateErrors", () => {
 
       const result = await aggregateErrors(db, config, window);
 
-      expect(logging.orders).toEqual(["timestamp asc"]);
+      expect(new Set(logging.orders)).toEqual(new Set(["timestamp asc"]));
       expect(created).toHaveLength(0);
       expect(result).toMatchObject({ entriesProcessed: 0, incidentsCreated: 0, capped: false });
       const lastRead = t0 + (MAX_ENTRIES_PER_RUN - 1) * 1000;
@@ -180,6 +187,88 @@ describe("aggregateErrors", () => {
       expect(result.narrowedTo).toBeUndefined();
       expect(created[0]).toMatchObject({ occurrenceCount: MAX_ENTRIES_PER_RUN });
       expect(began).toBe(1);
+    });
+  });
+
+  describe("a read bounded by bytes, not only by count (#296)", () => {
+    const MB = 1024 * 1024;
+    /** An entry whose payload is about `kb` KB, like a long stack trace. */
+    const big = (ms: number, kb: number) => ({
+      metadata: { timestamp: new Date(ms), resource: { labels: { function_name: "lookup" } } },
+      data: { message: "upstream failed", stack: "x".repeat(kb * 1024) },
+    });
+
+    it("pages by hand: every page asks for READ_PAGE_SIZE entries with autoPaginate off, and passes the token on", async () => {
+      const t0 = window.start.getTime() + 60_000;
+      entries.splice(0, entries.length, ...Array.from({ length: READ_PAGE_SIZE * 2 + 3 }, (_, i) => entry(`e${i % 2}`)).map((e, i) => ({ ...e, metadata: { ...e.metadata, timestamp: new Date(t0 + i) } })));
+      logging.requests.length = 0;
+      const { db, created } = fakeDb();
+
+      const result = await aggregateErrors(db, config, window);
+
+      expect(logging.requests.map((r) => [r.pageSize, r.autoPaginate, r.pageToken])).toEqual([
+        [READ_PAGE_SIZE, false, undefined],
+        [READ_PAGE_SIZE, false, String(READ_PAGE_SIZE)],
+        [READ_PAGE_SIZE, false, String(READ_PAGE_SIZE * 2)],
+      ]);
+      expect(logging.requests.every((r) => r.maxResults === undefined)).toBe(true);
+      expect(result).toMatchObject({ entriesProcessed: READ_PAGE_SIZE * 2 + 3, capped: false });
+      expect(created.map((c) => c.occurrenceCount)).toEqual([READ_PAGE_SIZE + 2, READ_PAGE_SIZE + 1]);
+    });
+
+    it("stops at the byte budget, writes nothing, and narrows the window like a read that hit the count cap", async () => {
+      const t0 = window.start.getTime() + 60_000;
+      // 100 KB entries, far under the 5,000-entry cap: 2,000 of them is 200 MB, and the budget here is 1 MB.
+      entries.splice(0, entries.length, ...Array.from({ length: 2000 }, (_, i) => big(t0 + i * 1000, 100)));
+      logging.requests.length = 0;
+      const { db, created } = fakeDb();
+
+      const result = await aggregateErrors(db, { ...config, ingestReadBudgetMb: 1 }, window);
+
+      expect(created).toHaveLength(0);
+      expect(result).toMatchObject({ entriesProcessed: 0, capped: false });
+      // The 11th entry takes the read past 1 MB: everything before its millisecond was read in full.
+      const stoppedAt = Math.ceil(MB / entryBytes(entries[0] as never));
+      expect(result.narrowedTo?.start).toEqual(window.start);
+      expect(result.narrowedTo?.end.getTime()).toBe(t0 + (stoppedAt - 1) * 1000 - 1);
+      // One page was enough to reach the budget: the read asked for no more.
+      expect(logging.requests).toHaveLength(1);
+    });
+
+    it("the narrowed window holds less than the budget, so its replay reads all of it", async () => {
+      const t0 = window.start.getTime() + 60_000;
+      const all = Array.from({ length: 2000 }, (_, i) => big(t0 + i * 1000, 100));
+      entries.splice(0, entries.length, ...all);
+      const tight = { ...config, ingestReadBudgetMb: 1 };
+      const first = await aggregateErrors(fakeDb().db, tight, window);
+      const narrowed = first.narrowedTo!;
+      // What Logging would return for the narrowed window.
+      entries.splice(0, entries.length, ...all.filter((e) => e.metadata.timestamp.getTime() <= narrowed.end.getTime()));
+      const { db, created } = fakeDb();
+
+      const replay = await aggregateErrors(db, tight, narrowed);
+
+      expect(replay).toMatchObject({ capped: false, entriesProcessed: entries.length, incidentsCreated: 1 });
+      expect(replay.narrowedTo).toBeUndefined();
+      expect(created[0]).toMatchObject({ occurrenceCount: entries.length });
+    });
+
+    it("processes what it read, flagged capped, when the window cannot be narrowed: never more than the budget", async () => {
+      const t0 = window.start.getTime() + 60_000;
+      entries.splice(0, entries.length, ...Array.from({ length: 2000 }, (_, i) => big(t0 + i * 1000, 100)));
+      const { db, created } = fakeDb();
+
+      const result = await aggregateErrors(db, { ...config, ingestReadBudgetMb: 1 }, window, { writes: { mayNarrow: false, beginWrites: async () => true } });
+
+      expect(result.capped).toBe(true);
+      expect(result.narrowedTo).toBeUndefined();
+      expect(result.entriesProcessed).toBeLessThan(20);
+      expect(created[0]).toMatchObject({ occurrenceCount: result.entriesProcessed });
+    });
+
+    it("counts an entry it cannot measure as the largest Cloud Logging accepts", () => {
+      expect(entryBytes({ data: { n: 1n } } as never)).toBe(256 * 1024);
+      expect(entryBytes({ data: "abc" })).toBe('"abc"'.length + "null".length);
     });
   });
 

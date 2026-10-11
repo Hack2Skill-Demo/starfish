@@ -133,6 +133,12 @@ export interface WebConfig {
    */
   engineStaleMinutes: number;
   /**
+   * The ingest counts as behind when its last run left the checkpoint further than this behind the newest logs it could
+   * read (#297). Undefined: twice the schedule's interval the run recorded, else `engineStaleMinutes`
+   * (src/ingestLag.ts `behindAfterMinutes`). Should match the engine's STARFISH_INGEST_BEHIND_MINUTES.
+   */
+  engineBehindMinutes?: number;
+  /**
    * Base URL of the admin API (src/adminApi.ts): "Run ingest now" and "Retire". Empty when none is
    * configured, and then the UI shows neither control. Must be https, or http on localhost.
    */
@@ -233,6 +239,8 @@ export function bootstrapWebConfig(
         onCallCollection: env.VITE_STARFISH_ONCALL_COLLECTION || "starfish_oncall",
         onCallPeopleCollection: env.VITE_STARFISH_ONCALL_PEOPLE_COLLECTION || "starfish_oncall_people",
         engineStaleMinutes: positiveMinutes(env.VITE_STARFISH_STALE_MINUTES, 90),
+        // Unset or unusable: follow the schedule (a bad value only affects a status line, so it never blocks startup).
+        ...(positiveMinutes(env.VITE_STARFISH_BEHIND_MINUTES, 0) > 0 && { engineBehindMinutes: positiveMinutes(env.VITE_STARFISH_BEHIND_MINUTES, 0) }),
         adminApiUrl: normalizeAdminApiUrl(env.VITE_STARFISH_ADMIN_API_URL),
         environment: env.VITE_STARFISH_ENV || "dev",
         functionsRegion: env.VITE_FUNCTIONS_REGION || "us-central1",

@@ -248,7 +248,7 @@ demo runs.
   never run against real Twilio.
 - **Settings:** connections, the engine's rules and on-call.
 
-The Incidents page opens with a line saying whether the engine is running (from the engine's last-run record: failed, stopped past a configurable threshold, read capped, or never recorded), so a quiet list can't pass for good news; the scheduled ingest job writes that record (`scripts/deploy-gcp.sh` deploys and schedules it; deployed once, on the demo project, 2026-10-05, #6). Under each incident's error is the agent's run for its current recurrence: the run's state (in the Runs page's words), triage's reason as recorded, and a link that opens that run on the Runs page; the expanded row has the decision, its rule and the reason in full. It says "No agent run yet" only when every run of the environment was read, and nothing when it could not tell.
+The Incidents page opens with a line saying whether the engine is running (from the engine's last-run record: failed, stopped past a configurable threshold, falling behind the newest logs, read capped, or never recorded), so a quiet list can't pass for good news; the scheduled ingest job writes that record (`scripts/deploy-gcp.sh` deploys and schedules it; deployed once, on the demo project, 2026-10-05, #6). Under each incident's error is the agent's run for its current recurrence: the run's state (in the Runs page's words), triage's reason as recorded, and a link that opens that run on the Runs page; the expanded row has the decision, its rule and the reason in full. It says "No agent run yet" only when every run of the environment was read, and nothing when it could not tell.
 
 The public demo needs no sign-in: a visitor is signed in anonymously and sees the Overview, the incidents and their evidence, the Runs page and a view-only Settings page, all for the `demo` environment only, with no triage buttons (#12). A guest never reads the stored incident, cycle or event documents: `firestore.rules` serve a guest only **trimmed copies** the engine writes for the `demo` environment (#18, see [Redaction limits](#redaction-limits) below), so the guest pages show no error detail, stack trace or model reasoning. That needs Anonymous sign-in enabled in the Firebase project and only `demo`-labelled data. App Check is built as an option, off unless the UI is built with a reCAPTCHA site key (`VITE_STARFISH_APPCHECK_SITE_KEY`), and enforcing it on Firestore is a console step left to a person; an optional uptime check and alert on the site come with `UPTIME_CHECK=1 scripts/deploy-web.sh`. Both are tested only with stubs and dry runs, never on a real project ([deploy.md](docs/deploy.md#app-check-and-the-uptime-check-12)). Until the agent has carried real incidents through every stage, the demo can also carry a **synthetic** evidence history: `pnpm seed-demo` (see [Synthetic demo history](#synthetic-demo-history)), every record of which the UI badges "Synthetic". A private deployment leaves Anonymous sign-in disabled and still requires an operator account.
 
@@ -304,11 +304,20 @@ apparent over-engineering is scar tissue from real incidents, and the tests in
   anything is read, the checkpoint advances only after every upsert of it has committed, and a
   retry replays the same window, and two runs that overlap are given the same one (claimed in a transaction); the incident key remembers the windows it applied, so a window
   replayed after a half-failed run counts once, even under concurrency (`run.emulator.test.ts`,
-  `store.emulator.test.ts`). A window is read oldest first; a read that hits the 5,000-entry cap
-  writes nothing and narrows the pending window to the part it read in full, and the rest is read by
-  the windows after it (#127). A window with more than 5,000 entries in its first millisecond, or one an
-  earlier attempt already began writing (narrowing it would give it a new id and count those writes
-  again, #199), is processed as read and flagged capped on the run record. `pnpm ingest` runs this once; the Cloud Run job and Scheduler that run it on a schedule (`scripts/deploy-gcp.sh`) were deployed once, to the demo project (2026-10-05, #6). The checkpoint
+  `store.emulator.test.ts`). A window is read oldest first, a page at a time, each page reduced to parsed
+  entries before the next is read; a read that hits the 5,000-entry cap, or 64 MB of entries
+  (`STARFISH_INGEST_READ_BUDGET_MB`, #296: a Cloud Logging entry can be 256 KB, and a burst of large ones ran the
+  512Mi job out of memory on every replay), writes nothing and narrows the pending window to the part it read in
+  full, and the rest is read by the windows after it (#127). A window with more than that in its first
+  millisecond, or one an earlier attempt already began writing (narrowing it would give it a new id and count
+  those writes again, #199), is processed as read and flagged capped on the run record. A pending window three
+  attempts in a row did not finish (failed, timed out or killed) is split in half before the next attempt, when
+  nothing was written under it (#296). A narrowing does not use up one of a run's eight windows; the run budget
+  bounds those (#297). The run record says how far the checkpoint is behind the newest logs it could read, and
+  `pnpm status` and the UI's engine line call the ingest "behind" past twice the schedule's interval
+  (`STARFISH_INGEST_BEHIND_MINUTES` / `VITE_STARFISH_BEHIND_MINUTES` to set it), so a flood that outpaces the runs
+  no longer reads as ok (#297). Built and tested against a fake Logging and the emulator; no flood has gone through
+  the deployed job. `pnpm ingest` runs this once; the Cloud Run job and Scheduler that run it on a schedule (`scripts/deploy-gcp.sh`) were deployed once, to the demo project (2026-10-05, #6). The checkpoint
   is kept per (watched project, environment) in its own document, so moving the engine to another target
   and back resumes where the first one stopped instead of re-reading its lookback (#198). A run whose
   settings document could not be read or is invalid, with no earlier good one to fall back to, reads

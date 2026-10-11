@@ -18,6 +18,19 @@
  * nothing has been written under its id: the narrowed window has a new id, and occurrences an earlier
  * attempt already committed under the old one would be counted again under it (#199). A window an
  * attempt already wrote is processed as read instead, under its own id, and flagged capped.
+ * A narrowing does not count against MAX_WINDOWS_PER_RUN (#297): under a sustained flood every window is narrowed once,
+ * and counting both reads halved what a run could catch up, so the checkpoint fell further behind on every run while
+ * last_run said ok. Narrowings are bounded by the run budget, and by MAX_READS_PER_RUN as a backstop.
+ *
+ * A window no attempt finishes is split (#296). `pending.attempts` counts the claims of the pending window, written in
+ * the claim's own transaction before any log is read, so a process killed mid-read (out of memory) is counted too, though
+ * it records nothing. A claim that finds MAX_ATTEMPTS_BEFORE_SPLIT attempts already made replaces the window with its
+ * first half (`splitWindow`) rather than replaying it unchanged again; the second half is planned after it. Only while
+ * nothing has been written under its id, as with narrowing (#199).
+ *
+ * How far behind (#297): `last_run.lagSeconds` is how far the checkpoint the run left is behind the newest time it could
+ * read (now minus `ingestLagMinutes`). Zero for a run that caught up; absent when the run failed before claiming a window.
+ * `pnpm status` and the UI's engine line call the ingest "behind" past a threshold (src/ingestLag.ts).
  *
  * Per target (#198): moving the engine to another watched project or environment and back resumes
  * the first target from its own checkpoint. One shared document was overwritten by the switch, and
@@ -53,7 +66,7 @@ import type { CollectionReference, DocumentReference, DocumentSnapshot, Firestor
 import type { StarfishConfig } from "../config.js";
 import type { ConfigSource, ResolvedConfig } from "../runtimeSettings.js";
 import { aggregateErrors, type AggregateDeps, type AggregationResult } from "./aggregate.js";
-import { planWindow, windowOf, type IngestWindow, type WindowPlan } from "./window.js";
+import { planWindow, splitWindow, windowOf, type IngestWindow, type WindowPlan } from "./window.js";
 import { cronIntervalMinutes } from "./cadence.js";
 import { abortIfClosed } from "./store.js";
 import { SETTINGS_UNUSABLE } from "../settingsSchema.js";
@@ -72,8 +85,22 @@ export function stateDocId(target: { watchedProjectId: string; environment: stri
   const hash = createHash("sha256").update(`${target.watchedProjectId}\n${target.environment}`).digest("hex");
   return `state_${hash.slice(0, 32)}`;
 }
-/** Windows one invocation works through before stopping, so a long outage is caught up over several runs. */
+/**
+ * Windows one invocation completes before stopping, so a long outage is caught up over several runs. A window narrowed
+ * by a capped read is not one of them (#297): the run budget bounds those.
+ */
 export const MAX_WINDOWS_PER_RUN = 8;
+/**
+ * Reads one invocation makes at most, narrowed and superseded ones included (#297): a backstop under the run budget, which
+ * is what normally ends a run that keeps narrowing. Under a flood each window is narrowed about once, so this leaves room
+ * for MAX_WINDOWS_PER_RUN windows to complete.
+ */
+export const MAX_READS_PER_RUN = 4 * MAX_WINDOWS_PER_RUN;
+/**
+ * Claims of one pending window after which the next claim splits it (#296): that many attempts started and none finished
+ * it (each failed, timed out or was killed). Replaying it unchanged wedged the ingest when the window itself was the cause.
+ */
+export const MAX_ATTEMPTS_BEFORE_SPLIT = 3;
 
 export type RunOutcome = "ok" | "failed" | "idle";
 
@@ -99,6 +126,11 @@ export interface RunSummary {
   actionsAllowed: boolean;
   /** A code or error name, never a message: messages can echo log text. */
   error?: string;
+  /**
+   * How far, in seconds, the checkpoint this run left is behind the newest time it could read (now minus the ingest
+   * lag), #297. 0 when it caught up. Absent when the run failed before claiming a window: then it is not known.
+   */
+  lagSeconds?: number;
 }
 
 /** What run.ts needs from a configuration loader (RuntimeConfigLoader satisfies it). */
@@ -149,8 +181,11 @@ function withDeadline<T>(work: Promise<T>, ms: number): Promise<T> {
 interface RunState {
   target: { watchedProjectId: string; environment: string };
   checkpoint?: Date;
-  /** `writesBegun`: an attempt at this window reached its upserts, so some may have committed (#199). */
-  pending?: IngestWindow & { writesBegun?: boolean };
+  /**
+   * `writesBegun`: an attempt at this window reached its upserts, so some may have committed (#199). `attempts`: how many
+   * times it has been claimed (#296); 0 for a narrowed window not yet claimed, absent (read as 1) on one written before.
+   */
+  pending?: IngestWindow & { writesBegun?: boolean; attempts?: number };
 }
 
 /** Where one target's state is read from and written to. */
@@ -190,6 +225,10 @@ export async function runIngest(
     problems: resolved.problems,
     actionsAllowed: resolved.actionsAllowed,
   };
+  // How far the checkpoint has certainly got (#297): the start of the window in hand, the end of the last one completed.
+  // Measured against the newest time this run could read, the same horizon `planWindow` ends windows at.
+  let readThrough: Date | undefined;
+  const horizon = new Date(now.getTime() - config.ingestLagMinutes * 60_000);
 
   try {
     if (!resolved.actionsAllowed) {
@@ -205,15 +244,21 @@ export async function runIngest(
       maxWindowHours: config.ingestMaxWindowHours,
     };
 
-    for (let i = 0; i < MAX_WINDOWS_PER_RUN; i++) {
+    for (let reads = 0; summary.windows < MAX_WINDOWS_PER_RUN && reads < MAX_READS_PER_RUN; reads++) {
       // The run budget (#221): with most of it spent, stop here and leave the rest to the next run.
       const leftMs = budgetMs - (clock() - startedMs);
-      if (i > 0 && leftMs < budgetMs * MIN_BUDGET_SHARE_FOR_NEW_WINDOW) break;
+      if (reads > 0 && leftMs < budgetMs * MIN_BUDGET_SHARE_FOR_NEW_WINDOW) break;
       // A state that can't be read stops the run: starting over from the lookback would re-read
       // time that was already counted, and nothing could tell the difference.
       const claimed = await claimWindow(db, refs, plan);
-      if (!claimed) break;
+      if (!claimed) {
+        // Nothing new to read: the checkpoint has reached the newest time the run could read.
+        readThrough = horizon;
+        break;
+      }
       const window = windowOf(claimed.start, claimed.end);
+      // A claimed window starts at the checkpoint (or, on a first run, at the start of the lookback).
+      readThrough = window.start;
 
       summary.window = { start: window.start, end: window.end };
       const writes = { mayNarrow: claimed.writesBegun !== true, beginWrites: () => beginWrites(db, refs, window) };
@@ -223,7 +268,7 @@ export async function runIngest(
       if (result.superseded) continue;
       if (result.narrowedTo) {
         // A capped read wrote nothing: replay the part it covered in full, and leave the rest of the
-        // window to the windows planned after it (#127). It still counts against MAX_WINDOWS_PER_RUN.
+        // window to the windows planned after it (#127). It does not count against MAX_WINDOWS_PER_RUN (#297).
         // If an attempt began writing this window meanwhile, it is left as it is, and the next claim
         // processes it unnarrowed (#199).
         await narrowPending(db, refs, window, result.narrowedTo);
@@ -243,12 +288,16 @@ export async function runIngest(
       }
 
       await completeWindow(db, refs, window);
+      readThrough = window.end;
     }
     // A run that only narrowed a window did work and has more to do: not idle.
     summary.outcome = summary.window ? "ok" : "idle";
   } catch (err) {
     summary.outcome = "failed";
     summary.error = errorLabel(err);
+  }
+  if (readThrough !== undefined) {
+    summary.lagSeconds = Math.max(0, Math.round((horizon.getTime() - readThrough.getTime()) / 1000));
   }
 
   await recordLastRun(runs.doc(LAST_RUN_DOC), config, summary, now);
@@ -291,6 +340,10 @@ function writeState(tx: Transaction, refs: StateRefs, state: RunState, fromLegac
  * end up with the same window, because the second sees the first's pending window instead of
  * planning its own from a different clock, so the store's replay check applies to them both.
  * Returns null when there is nothing new to read.
+ * Each claim counts an attempt on the window (#296); one that finds MAX_ATTEMPTS_BEFORE_SPLIT already made, and nothing
+ * written under its id, claims its first half instead. An overlapping run's claim counts too: splitting a window another
+ * attempt is still reading is safe, as narrowing it is, since that attempt's writes then begin on a window no longer
+ * pending and are refused (`beginWrites`).
  */
 async function claimWindow(
   db: Firestore,
@@ -300,11 +353,18 @@ async function claimWindow(
   return db.runTransaction((tx) =>
     abortIfClosed(async () => {
     const { state, fromLegacy } = await readState(tx, refs);
-    if (state.pending) return state.pending;
+    if (state.pending) {
+      const made = state.pending.attempts ?? 1;
+      const half = made >= MAX_ATTEMPTS_BEFORE_SPLIT && state.pending.writesBegun !== true ? splitWindow(state.pending) : null;
+      const pending = half ? { ...half, attempts: 1 } : { ...state.pending, attempts: made + 1 };
+      writeState(tx, refs, { ...state, pending }, fromLegacy);
+      return pending;
+    }
     const window = planWindow({ ...plan, checkpoint: state.checkpoint });
     if (!window) return null;
-    writeState(tx, refs, { ...state, pending: window }, fromLegacy);
-    return window;
+    const pending = { ...window, attempts: 1 };
+    writeState(tx, refs, { ...state, pending }, fromLegacy);
+    return pending;
   }));
 }
 
@@ -355,7 +415,8 @@ async function narrowPending(db: Firestore, refs: StateRefs, window: IngestWindo
     abortIfClosed(async () => {
     const { state, fromLegacy } = await readState(tx, refs);
     if (state.pending?.id !== window.id || state.pending.writesBegun === true) return;
-    writeState(tx, refs, { ...state, pending: narrowed }, fromLegacy);
+    // Not yet claimed: the claim that replays it is its first attempt (#296).
+    writeState(tx, refs, { ...state, pending: { ...narrowed, attempts: 0 } }, fromLegacy);
   }));
 }
 
@@ -396,13 +457,21 @@ function parseState(snap: DocumentSnapshot, target: RunState["target"]): RunStat
   // A checkpoint that is there but unreadable is not "no checkpoint": starting over would re-read time
   // that was already counted.
   if (data?.checkpoint !== undefined && !checkpoint) throw new Error("ingest state holds an unreadable checkpoint");
-  const pending = data?.pending as { start?: unknown; end?: unknown; writesBegun?: unknown } | undefined;
+  const pending = data?.pending as { start?: unknown; end?: unknown; writesBegun?: unknown; attempts?: unknown } | undefined;
   const start = toDate(pending?.start);
   const end = toDate(pending?.end);
+  const attempts = pending?.attempts;
   return {
     target,
     ...(checkpoint && { checkpoint }),
-    ...(start && end && { pending: { ...windowOf(start, end), ...(pending?.writesBegun === true && { writesBegun: true }) } }),
+    ...(start && end && {
+      pending: {
+        ...windowOf(start, end),
+        ...(pending?.writesBegun === true && { writesBegun: true }),
+        // A count that is not a whole number is read as absent (one attempt made), never as a reason to split.
+        ...(typeof attempts === "number" && Number.isInteger(attempts) && attempts >= 0 && { attempts }),
+      },
+    }),
   };
 }
 
@@ -415,6 +484,7 @@ function serializeState(state: RunState): Record<string, unknown> {
         start: Timestamp.fromDate(state.pending.start),
         end: Timestamp.fromDate(state.pending.end),
         ...(state.pending.writesBegun === true && { writesBegun: true }),
+        ...(state.pending.attempts !== undefined && { attempts: state.pending.attempts }),
       },
     }),
   };
@@ -443,6 +513,7 @@ async function recordLastRun(
       ...(cronIntervalMinutes(config.ingestSchedule) !== null && { intervalMinutes: cronIntervalMinutes(config.ingestSchedule) }),
       ...(s.window && { windowStart: Timestamp.fromDate(s.window.start), windowEnd: Timestamp.fromDate(s.window.end) }),
       ...(s.error !== undefined && { error: s.error }),
+      ...(s.lagSeconds !== undefined && { lagSeconds: s.lagSeconds }),
       // Counts only, like the totals: guests may read this record.
       ...(s.monitoring && { monitoring: s.monitoring }),
     });

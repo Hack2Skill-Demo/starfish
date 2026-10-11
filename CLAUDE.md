@@ -156,15 +156,21 @@ src/
                    null when unavailable (never zero); aggregate annotates a function's log incidents in the window
                    or opens a Monitoring-only one (fingerprint `mon-…`). Off by default, never run against real Monitoring
     aggregate      reads one window of logs and folds it into the store (each upsert carries
-                   the window id, so a replayed window counts once). At most `STARFISH_MAX_NEW_INCIDENTS_PER_FUNCTION`
+                   the window id, so a replayed window counts once). Pages by hand, each page reduced to parsed
+                   entries before the next; stops at 5,000 entries or `STARFISH_INGEST_READ_BUDGET_MB` (64) of entries
+                   and narrows the window at the last one read (#296). At most `STARFISH_MAX_NEW_INCIDENTS_PER_FUNCTION`
                    (25) new incidents per function per window (#303): the rest accrue onto an incident they already have,
                    or fold into ONE high-cardinality overflow incident per function and UTC day (`signalSource: overflow`),
-                   counted in last_run's `totals.errorsFoldedIntoOverflow`. Unit- and emulator-tested; not yet run on a real flood
+                   counted in last_run's `totals.errorsFoldedIntoOverflow`. Tested against a fake Logging and the emulator;
+                   not yet run on a real flood
     window         (start, end] windows: pure planning; ids come from the boundaries
     run            one scheduled run: resolve runtime settings (refuses on an unusable document with no
                    last-good), replay the pending window or plan the next, advance the checkpoint only
                    after it all commits, write last_run. State per (watched project, environment). Bounded by a
-                   run budget (`STARFISH_INGEST_RUN_BUDGET_SECONDS`) the deploy's timeouts are derived from (#221)
+                   run budget (`STARFISH_INGEST_RUN_BUDGET_SECONDS`) the deploy's timeouts are derived from (#221).
+                   A narrowing does not count against the 8 windows a run completes (backstop: 32 reads); a pending
+                   window 3 claims did not finish is split in half (`pending.attempts`, never once written, #296);
+                   last_run.lagSeconds = how far the checkpoint is behind now minus the lag (#297)
   agent/triage.ts  stage 1 of the agent loop (#8): act/notify/decline for one incident, and how far to go
                    (`triageLevel`: noise, log, fix, merge): on act the model may name one of the admin's merge cases
                    (`mergeCases`; `missing-index` never offered), kept only if listed. Deterministic gates before the
@@ -280,7 +286,9 @@ src/
                    limit (`ipRateLimit.ts`, `STARFISH_ADMIN_API_RATE_LIMIT_PER_MINUTE`, default 30) answers 429 before any token check. `adminApiServer.ts` is its HTTP
                    shell, `adminApiCli.ts` the Cloud Run service (`DEPLOY_ADMIN_API=1`): deployed once to the demo project (2026-10-07), "Run ingest now" run from the UI; Retire and the Twilio routes not yet tried
   operators.ts     grant a person an operator record (the first admin; `pnpm grant-operator --project <id>`, which refuses if the shell's project differs and reads the store before creating an account); the closed collection can't be written from the UI
-  status.ts        judges the engine's last_run record (`pnpm status`): the same verdicts as the UI's engine line; also prints the
+  status.ts        judges the engine's last_run record (`pnpm status`): the same verdicts as the UI's engine line ("behind" when
+                   lagSeconds passes `STARFISH_INGEST_BEHIND_MINUTES`, else twice the schedule's interval, else the stale
+                   threshold: `src/ingestLag.ts`, shared with the UI, #297); also prints the
                    agent's `agent_last_run` (#274), information only (never the exit code)
   (repo root)      Dockerfile = the engine image the Cloud Run job runs; scripts/deploy-gcp.sh deploys it
                    (job, Scheduler, Secret Manager, IAM, Firestore rules). Written and tested by a dry run; ingest part run once on the demo project (2026-10-05), agent part not
@@ -406,7 +414,8 @@ React 19, Vite, Tailwind 4, react-router, TanStack Query; Starfish's own theme i
   file governs a whole database and would replace the app's own rules.
 - **Admin controls:** an admin sees "Run ingest now" (Incidents), "Run agent now" (Runs, #276: it reports that the pass started, never what it did) and "Retire" (an incident) when the build has `VITE_STARFISH_ADMIN_API_URL`; they call the admin API with the ID token (`web/src/lib/adminApi.ts`, `components/AdminActions.tsx`). Hiding them is not the gate: the API re-checks the role. Built and unit-tested; "Run ingest now" has run once against the deployed service (2026-10-07), Retire and "Run agent now" have not.
 - **Engine status:** Overview and Incidents show the ingest's line from `{runCollection}/last_run` (`web/src/lib/engineStatus.ts`,
-  `components/EngineStatus.tsx`): failed, stopped (older than `VITE_STARFISH_STALE_MINUTES`), capped, or never recorded. Read
+  `components/EngineStatus.tsx`): failed, stopped (older than `VITE_STARFISH_STALE_MINUTES`), behind (the run left its checkpoint
+  further behind the newest logs than `VITE_STARFISH_BEHIND_MINUTES`, else twice the recorded interval, #297), capped, or never recorded. Read
   errors say nothing. When the job knows its schedule (`STARFISH_INGEST_SCHEDULE`, set by the deploy and cadence scripts) it
   records the interval, and the line says when the next run is expected. Overview (a line) and Runs (a card) show the agent's
   own status from `{runCollection}/agent_last_run` (#274, `components/AgentStatus.tsx`), judged the same way ("capped" = the

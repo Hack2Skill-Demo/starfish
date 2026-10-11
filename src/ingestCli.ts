@@ -42,6 +42,7 @@ console.log(
     `${t.incidentsCreated} new, ${t.incidentsUpdated} updated, ${t.incidentsRecurred} recurred, ${t.incidentsReplayed} replayed` +
     (t.errorsFoldedIntoOverflow > 0 ? `; ${t.errorsFoldedIntoOverflow} distinct error(s) folded into overflow incidents` : "") +
     (summary.capped ? " (a read hit the cap: counts are a floor)" : "") +
+    (summary.lagSeconds !== undefined && summary.lagSeconds >= 60 ? `; checkpoint ${Math.round(summary.lagSeconds / 60)} min behind` : "") +
     (summary.error !== undefined ? ` - ${summary.error}` : "")
 );
 console.log(`config from ${summary.configSource}${summary.problems.length ? `; settings not used: ${summary.problems.join("; ")}` : ""}`);

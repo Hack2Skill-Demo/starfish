@@ -33,6 +33,25 @@ describe("judgeRun", () => {
     expect(judgeRun(run({ capped: true }), "demo", NOW, 90)).toBe("capped");
   });
 
+  it("is behind past twice the schedule's interval, else past the stale threshold; never on a record with no lag (#297)", () => {
+    expect(judgeRun(run({ intervalMinutes: 60, lagSeconds: 121 * 60 }), "demo", NOW, 90)).toBe("behind");
+    expect(judgeRun(run({ intervalMinutes: 60, lagSeconds: 120 * 60 }), "demo", NOW, 90)).toBe("ok");
+    expect(judgeRun(run({ lagSeconds: 91 * 60 }), "demo", NOW, 90)).toBe("behind");
+    expect(judgeRun(run({ intervalMinutes: 1 }), "demo", NOW, 90)).toBe("ok");
+    expect(judgeRun(run({ intervalMinutes: 60, lagSeconds: 31 * 60 }), "demo", NOW, 90, 30)).toBe("behind");
+    // Worst first: failed, stale, then behind, then capped.
+    expect(judgeRun(run({ lagSeconds: 99_999, capped: true }), "demo", NOW, 90)).toBe("behind");
+    expect(judgeRun(run({ lagSeconds: 99_999, finishedAt: minutesAgo(500) }), "demo", NOW, 90)).toBe("stale");
+  });
+
+  it("parses the interval and the lag, ignoring values that are not usable", () => {
+    const base = { environment: "demo", outcome: "ok", finishedAt: { toDate: () => minutesAgo(3) } };
+    expect(parseRunRecord({ ...base, intervalMinutes: 60, lagSeconds: 30 })).toMatchObject({ intervalMinutes: 60, lagSeconds: 30 });
+    const bad = parseRunRecord({ ...base, intervalMinutes: 0, lagSeconds: -1 });
+    expect(bad?.intervalMinutes).toBeUndefined();
+    expect(bad?.lagSeconds).toBeUndefined();
+  });
+
   it("calls a run stale only past the threshold", () => {
     expect(judgeRun(run({ finishedAt: minutesAgo(90) }), "demo", NOW, 90)).toBe("ok");
     expect(judgeRun(run({ finishedAt: minutesAgo(91) }), "demo", NOW, 90)).toBe("stale");
@@ -152,6 +171,19 @@ describe("describeStatus", () => {
     expect(failed.lines.join("\n")).toContain("failed with: DeadlineExceeded");
     const capped = describeStatus({ run: run({ capped: true }), now: NOW, staleMinutes: 90, environment: "demo", counts: {} });
     expect(capped.lines.join("\n")).toContain("floor");
+  });
+
+  it("says the ingest is behind when the checkpoint lags past the threshold, though the run said ok (#297)", () => {
+    const behind = describeStatus({ run: run({ intervalMinutes: 60, lagSeconds: 5 * 3600 }), now: NOW, staleMinutes: 90, environment: "demo", counts: {} });
+    expect(behind.state).toBe("behind");
+    expect(behind.lines.join("\n")).toContain("behind: the checkpoint was 300 min behind the newest readable logs (more than 120 min)");
+    // Under the threshold the lag is reported, not judged.
+    const close = describeStatus({ run: run({ intervalMinutes: 60, lagSeconds: 3600 }), now: NOW, staleMinutes: 90, environment: "demo", counts: {} });
+    expect(close.state).toBe("ok");
+    expect(close.lines.join("\n")).toContain("the checkpoint was 60 min behind the newest readable logs");
+    // The configured threshold (STARFISH_INGEST_BEHIND_MINUTES) beats the schedule's.
+    const tight = describeStatus({ run: run({ intervalMinutes: 60, lagSeconds: 3600 }), now: NOW, staleMinutes: 90, environment: "demo", counts: {}, behindMinutes: 30 });
+    expect(tight.state).toBe("behind");
   });
 
   it("says a run for another environment is not this one's, and does not report its counts (#190)", () => {

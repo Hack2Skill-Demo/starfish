@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { narrowWindow, planWindow, windowOf, type WindowPlan } from "./window.js";
+import { narrowWindow, planWindow, splitWindow, windowOf, type WindowPlan } from "./window.js";
 
 const HOUR = 3600_000;
 const now = new Date("2026-10-04T12:00:00.000Z");
@@ -66,5 +66,20 @@ describe("narrowWindow (#127)", () => {
     expect(narrowWindow(w, new Date(w.start.getTime() + 1))).toBeNull();
     expect(narrowWindow(w, new Date(w.end.getTime() + 1))).toBeNull();
     expect(narrowWindow(w, new Date(Number.NaN))).toBeNull();
+  });
+});
+
+describe("splitWindow (#296)", () => {
+  it("keeps the start and ends halfway, with a new id", () => {
+    const w = windowOf(new Date(now.getTime() - 6 * HOUR), now);
+    const half = splitWindow(w)!;
+    expect(half.start).toEqual(w.start);
+    expect(half.end.getTime()).toBe(now.getTime() - 3 * HOUR);
+    expect(half.id).not.toBe(w.id);
+  });
+
+  it("is null for a window too short to halve", () => {
+    expect(splitWindow(windowOf(new Date(1000), new Date(1001)))).toBeNull();
+    expect(splitWindow(windowOf(new Date(1000), new Date(1002)))?.end.getTime()).toBe(1001);
   });
 });
