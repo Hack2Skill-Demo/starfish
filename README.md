@@ -169,8 +169,12 @@ whether to merge; it never decides what is safe to merge.** Every merge also nee
 right before it: the switches (`STARFISH_AUTO_MERGE_TARGETS` lists the target, the demo; an admin
 turned `autoMerge` on; dry run and the merge freeze off; the case still listed), the **safety floor**
 (one production file; tests only as new files, so a fix can't turn CI green by weakening a test; nothing
-on the hard-exclude list: auth and access control, security rules, money, secrets, schema,
-dependencies and imports, CI config, shared packages, judged on the whole function around each change),
+on the hard-exclude list's words: auth and access control, security rules, money, secrets, schema,
+dependencies and imports, CI config, shared packages, judged on the whole function around each change;
+and, since a list of words misses a check that names none of them, rules on the code itself: at most 40
+changed lines, no deciding line or call removed, no network, process, dynamic-code, destructive or
+file-system call and no `://` added, and no call the file did not already make but a few pure ones such as
+`String` or `Array.isArray`; a scanner, not a proof),
 **every required check green on the exact head**, at most `STARFISH_MAX_MERGES_PER_DAY` (3) a day, and
 an evidence comment posted first. Fast-revert is built with it: the same incident seen again within N
 minutes of a code merge opens and merges a revert. **Built for the demo target behind default-off

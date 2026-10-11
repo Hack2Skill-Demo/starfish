@@ -15,7 +15,8 @@
  *   no cap     no admin class rule and no operator's correction holds the incident below "merge" (src/triageRules.ts),
  *              read fresh: a correction made after triage still stops the merge;
  *   the floor  the safety floor on the verified patch (blastRadius.ts `assessMergeFloor`), recorded when the pull request
- *              was opened: one production file, tests only as new files, nothing on the hard-exclude list. The index
+ *              was opened: one production file, tests only as new files, nothing on the hard-exclude list, and the
+ *              changed code's own rules (#295: no deciding line or call removed, no sink or new call added). The index
  *              path's patch is Starfish's own (indexFilePatch.ts: entries only added) and is not run through it;
  *   the PR     still open, from `starfish/<cycle>` into the configured base branch (a retargeted PR is refused, #186),
  *              its head the very commit Starfish built from the verified patch, and every run of every named required
@@ -241,6 +242,7 @@ export function mergeEvidenceText(input: EvidenceInput): string {
           `- One production file, ${codeSpan(merge.sourceFile, 200)}; any other file is a new test file made only of added lines (an existing test file is never changed)`,
           "- The files the verify gate saw the patch change are exactly the files this check read",
           "- Hard-exclude list (auth and access control, security rules, money paths, secrets, schema, dependencies, CI config, shared packages): no path word and no changed line matched it, and no statement of the function around any change (as the base revision has it) names access control, money or a secret (a word match, not a proof)",
+          "- The changed code: at most 40 changed lines in the production file; no deciding line and no call removed; no network, process, dynamic-code, destructive or file-system call and no address added; no call added that the file did not already make (read by a scanner, not a proof)",
           "",
           "### How certain (reported, not required)",
           "",

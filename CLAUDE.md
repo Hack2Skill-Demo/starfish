@@ -183,8 +183,12 @@ src/
                    case); it never merges itself. The floor holds only if its files are exactly the files the verify
                    gate saw change
   agent/blastRadius.ts  the safety floor every merge needs (`assessMergeFloor`: gate 1's parsing, hard-exclude list and
-                   whole-function check, tests only as new files, one production file, any number of hunks; no fix
-                   class or size rule). And #9's original gate 1 (`assessBlastRadius`, no longer used to merge), pure:
+                   whole-function check, tests only as new files, one production file, any number of hunks, at most
+                   40 changed lines; no fix class. Since the hard-exclude list is words, #295 added code rules: no
+                   removed deciding line (unless put back with only `?.`/`?? null`/`await` added) or call; no added
+                   sink (network, process, dynamic code, destructive, fs; tests too) or `://`; no added call the base
+                   file does not already make, by name, but a few pure ones; no computed call; no rebinding of a
+                   called name. A scanner, not a parser: unsure refuses). And #9's original gate 1 (`assessBlastRadius`, no longer used to merge), pure:
                    a conservative diff classifier (null guard on an explicit null/undefined
                    check, never `!x`, that leaves with nothing or throws, ended by `;` or a block, after a line that ends
                    a statement; `?.` (never before a call) and only `?? null`/`?? undefined`, never on a line that
