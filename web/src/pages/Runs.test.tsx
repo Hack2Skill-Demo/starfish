@@ -319,6 +319,53 @@ describe("Runs page", () => {
     expect(screen.queryByRole("link", { name: /Issue #/ })).toBeNull();
   });
 
+  it("draws a reopened run from its latest reopening, says it was reopened, and keeps the earlier rounds (#285)", () => {
+    const HOUR = 3_600_000;
+    const reopen = "Declined earlier; triaged again: the occurrences grew past the burst threshold since the decline";
+    renderRuns();
+    act(() =>
+      mocks.cyclesCb!(
+        [cycle("inc-a_r0", { state: "declined", path: "decline", leaseExpiresAt: null, createdAt: ts(now - 3 * HOUR - 20_000), updatedAt: ts(now - HOUR + 14_100), summary: { triage: { decision: "decline", rule: "model-decline", reason: "third reason" } } })],
+        false
+      )
+    );
+    act(() =>
+      mocks.eventsCb!([
+        event(1, "cycle", "started", "Attempt 1", 3 * HOUR + 20_000),
+        event(2, "triage", "decision", "first reason", 3 * HOUR + 9000),
+        event(3, "cycle", "reconsidered", reopen, 2 * HOUR),
+        event(4, "triage", "decision", "second reason", 2 * HOUR - 10_000),
+        event(5, "cycle", "reconsidered", reopen, HOUR),
+        event(6, "triage", "decision", "third reason", HOUR - 14_000),
+      ])
+    );
+    // The step is timed within its own round: seconds, never the hours between the rounds.
+    const pipeline = screen.getByRole("region", { name: "Pipeline" });
+    expect(pipeline).toHaveTextContent("14 s from the latest reopening to the last update");
+    expect(pipeline).not.toHaveTextContent(/\d+ h \d+ min/);
+    const rounds = screen.getByTestId("run-rounds");
+    expect(rounds).toHaveTextContent("Round 3: this run was reopened 2 times.");
+    expect(rounds).toHaveTextContent(`${reopen}.`);
+    // The latest round's step in the log, then what the earlier rounds ended on, newest first.
+    const log = within(screen.getByRole("list", { name: "Step log" })).getAllByRole("listitem");
+    expect(log).toHaveLength(1);
+    expect(log[0]).toHaveTextContent("third reason");
+    const earlier = within(screen.getByRole("list", { name: "Earlier rounds" })).getAllByRole("listitem");
+    expect(earlier.map((li) => li.textContent)).toEqual([expect.stringContaining("Round 2 of 3"), expect.stringContaining("Round 1 of 3")]);
+    expect(earlier[0]).toHaveTextContent("second reason");
+    expect(earlier[0]).toHaveTextContent("10 s into that round");
+    expect(earlier[1]).toHaveTextContent("first reason");
+  });
+
+  it("says nothing about rounds for a run that was never reopened", () => {
+    renderRuns();
+    act(() => mocks.cyclesCb!([cycle("inc-a_r0", { state: "declined", path: "decline", leaseExpiresAt: null })], false));
+    act(() => mocks.eventsCb!([event(1, "cycle", "started", "Attempt 1", 50_000), event(2, "triage", "decision", "a reason", 40_000)]));
+    expect(screen.queryByTestId("run-rounds")).toBeNull();
+    expect(screen.queryByRole("list", { name: "Earlier rounds" })).toBeNull();
+    expect(screen.getByRole("region", { name: "Pipeline" })).toHaveTextContent("from start to the last update");
+  });
+
   it("does not link a pull request URL that isn't https", () => {
     renderRuns();
     act(() => mocks.cyclesCb!([cycle("inc-a_r0", { summary: { pr: { url: "javascript:alert(1)", number: 9 } } })], false));

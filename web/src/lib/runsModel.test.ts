@@ -228,6 +228,73 @@ describe("small helpers", () => {
     expect(triageFinding(cycle())).toBeUndefined();
   });
 
+  describe("a reopened run (#285)", () => {
+    const HOUR = 3_600_000;
+    const reopen = "Declined earlier; triaged again: the occurrences grew past the burst threshold since the decline";
+    // The demo's own case: declined, then reopened on a burst three times an hour apart, seconds of triage each time.
+    const events = () => [
+      ev("cycle", "started", 100, "Attempt 1"),
+      ev("triage", "decision", 11_000, "first reason"),
+      ev("cycle", "reconsidered", HOUR, reopen),
+      ev("triage", "decision", HOUR + 10_000, "second reason"),
+      ev("cycle", "reconsidered", 2 * HOUR, reopen),
+      ev("triage", "decision", 2 * HOUR + 12_000, "third reason"),
+      ev("cycle", "reconsidered", 3 * HOUR, reopen),
+      ev("triage", "decision", 3 * HOUR + 14_000, "fourth reason"),
+    ];
+    const declined = () => cycle({ state: "declined", path: "decline", leaseExpiresAt: null, updatedAt: new Date(T0 + 3 * HOUR + 14_200) });
+
+    it("times a step from the latest reopening, not from the run's start: 14 s, not 3 hours", () => {
+      const w = buildWaterfall(declined(), events(), T0 + 9 * HOUR);
+      const triage = w.steps.find((s) => s.stage === "triage")!;
+      expect(triage).toMatchObject({ status: "done", outcome: "decision", summary: "fourth reason", durationMs: 14_000 });
+      expect(w.startMs).toBe(T0 + 3 * HOUR);
+      expect(w.endMs - w.startMs).toBe(14_200);
+      expect(triage.offset).toBe(0);
+    });
+
+    it("says how many rounds there were and what the latest reopening said, in the engine's words", () => {
+      const w = buildWaterfall(declined(), events(), T0 + 9 * HOUR);
+      expect(w.rounds).toBe(4);
+      expect(w.reopened).toEqual({ at: new Date(T0 + 3 * HOUR), summary: reopen });
+      // The notes are all kept, as before.
+      expect(w.notes.map((n) => n.type)).toEqual(["started", "reconsidered", "reconsidered", "reconsidered"]);
+    });
+
+    it("keeps what each earlier round ended on, timed within its own round", () => {
+      const w = buildWaterfall(declined(), events(), T0 + 9 * HOUR);
+      expect(w.earlier).toEqual([
+        { round: 1, stage: "triage", title: "Triage", outcome: "decision", summary: "first reason", at: new Date(T0 + 11_000), durationMs: 11_000 },
+        { round: 2, stage: "triage", title: "Triage", outcome: "decision", summary: "second reason", at: new Date(T0 + HOUR + 10_000), durationMs: 10_000 },
+        { round: 3, stage: "triage", title: "Triage", outcome: "decision", summary: "third reason", at: new Date(T0 + 2 * HOUR + 12_000), durationMs: 12_000 },
+      ]);
+    });
+
+    it("shows the round in progress as triage running, not as triage done from the round before", () => {
+      const midRound = events().slice(0, 7);
+      const live = cycle({ state: "running", leaseExpiresAt: new Date(T0 + 3 * HOUR + 60_000), updatedAt: new Date(T0 + 3 * HOUR) });
+      const w = buildWaterfall(live, midRound, T0 + 3 * HOUR + 5000);
+      const triage = w.steps.find((s) => s.stage === "triage")!;
+      expect(triage.status).toBe("running");
+      expect(triage.since).toEqual(new Date(T0 + 3 * HOUR));
+      expect(w.steps.find((s) => s.stage === "fix")!.status).toBe("not-reached");
+      expect(w.earlier.map((r) => r.round)).toEqual([1, 2, 3]);
+    });
+
+    it("leaves a run that was never reopened exactly as it was: one round, nothing earlier, timed from its start", () => {
+      const w = buildWaterfall(cycle(), [ev("cycle", "started", 100, "Attempt 1"), ev("triage", "decision", 6000)], T0 + 10_000);
+      expect(w).toMatchObject({ rounds: 1, earlier: [], startMs: T0 });
+      expect(w.reopened).toBeUndefined();
+      expect(w.steps.find((s) => s.stage === "triage")!.durationMs).toBe(6000);
+    });
+
+    it("skips an earlier round that recorded no step, and counts it as a round all the same", () => {
+      const w = buildWaterfall(declined(), [ev("triage", "decision", 5000), ev("cycle", "reconsidered", HOUR, reopen), ev("cycle", "reconsidered", 2 * HOUR, reopen), ev("triage", "decision", 2 * HOUR + 3000)], T0 + 9 * HOUR);
+      expect(w.rounds).toBe(3);
+      expect(w.earlier.map((r) => r.round)).toEqual([1]);
+    });
+  });
+
   it("orders the step log newest first by each step's own time, the step in progress on top (#279)", () => {
     const at = (s: number) => new Date(T0 + s * 1000);
     const steps = [
