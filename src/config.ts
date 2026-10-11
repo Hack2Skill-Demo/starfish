@@ -373,6 +373,16 @@ export interface StarfishConfig {
   /** The longest span one ingest window may cover, so catching up after downtime is done in bounded reads. */
   ingestMaxWindowHours: number;
   /**
+   * The most NEW incidents one function may open in one ingest window (#303). An error that echoes user input
+   * ("No such user: alice", "...: bob") keeps its words through normalization, so each distinct word is a distinct
+   * fingerprint; without a cap a flood of them opens thousands of incidents, bills a write for each, and crowds the real
+   * ones out of the agent's candidate scan. Past the cap, a function's errors that match no stored incident are folded
+   * into ONE high-cardinality overflow incident per function and UTC day (aggregate.ts); errors that already have an
+   * incident still accrue onto it. Which errors get the cap's places is decided from the window's own entries (most
+   * occurrences first), so a replayed window decides the same way.
+   */
+  maxNewIncidentsPerFunctionPerWindow: number;
+  /**
    * How long one ingest run may work before it stops (#221). No new window is started once most of it is spent, and a
    * window's read is given up at what is left, so a stall is recorded as a failed `last_run` before whatever runs the
    * ingest (the Cloud Run job's task timeout, the admin API's request timeout) ends the process. scripts/deploy-gcp.sh
@@ -570,6 +580,11 @@ export function loadConfig(): StarfishConfig {
       process.env.STARFISH_INGEST_MAX_WINDOW_HOURS,
       6,
       "STARFISH_INGEST_MAX_WINDOW_HOURS"
+    ),
+    maxNewIncidentsPerFunctionPerWindow: positiveInteger(
+      process.env.STARFISH_MAX_NEW_INCIDENTS_PER_FUNCTION,
+      25,
+      "STARFISH_MAX_NEW_INCIDENTS_PER_FUNCTION"
     ),
     // 8 minutes: two under the 10-minute task timeout scripts/deploy-gcp.sh derives from it by default.
     ingestRunBudgetSeconds: positiveNumber(process.env.STARFISH_INGEST_RUN_BUDGET_SECONDS, 480, "STARFISH_INGEST_RUN_BUDGET_SECONDS"),

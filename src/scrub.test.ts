@@ -82,6 +82,12 @@ describe("scrubDocument", () => {
     expect(scrubDocument(after)).toBeNull();
   });
 
+  it("bounds a stored errorName as the store now does (#309)", () => {
+    const result = scrubDocument(legacy({ errorName: `TypeError${"x".repeat(1000)}` }))!;
+    expect(result.updates.errorName).toHaveLength(256);
+    expect(scrubDocument({ ...legacy(), ...result.updates, fingerprint: result.fingerprint })).toBeNull();
+  });
+
   it("is idempotent on a credential in a URL query parameter: no `]` gained per run (#128)", () => {
     const message = "bad callback example.com/hook?key=abc and ?api_key=XYZ&token=t";
     const first = scrubDocument(legacy({ errorMessage: message }))!;

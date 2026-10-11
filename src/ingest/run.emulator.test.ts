@@ -79,7 +79,7 @@ const loader = (over: Partial<ResolvedConfig> = {}) => ({
   }),
 });
 
-const emptyResult = { entriesProcessed: 0, incidentsCreated: 0, incidentsUpdated: 0, incidentsRecurred: 0, incidentsReplayed: 0, capped: false };
+const emptyResult = { entriesProcessed: 0, incidentsCreated: 0, incidentsUpdated: 0, incidentsRecurred: 0, incidentsReplayed: 0, errorsFoldedIntoOverflow: 0, capped: false };
 const state = async () => (await db.collection(config.runCollection).doc(stateDocId(config)).get()).data();
 const lastRun = async () => (await db.collection(config.runCollection).doc(LAST_RUN_DOC).get()).data();
 const ms = (t: unknown) => (t as Timestamp).toMillis();

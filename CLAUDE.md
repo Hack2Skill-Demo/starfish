@@ -140,7 +140,8 @@ src/
     parseLogEntry  parse + noise suppression + the shared log filter
     classify       error type (source class > code > HTTP status > keywords), service
     fingerprint    sha256(canonical functionName : first 100 chars of the normalized message);
-                   volatile ids/paths/timestamps/counts are collapsed first
+                   volatile ids/paths/timestamps/counts are collapsed first. Monitoring-only (`mon-`) and
+                   high-cardinality overflow (`ovf-`, its fixed per-day message hashed unnormalized) have their own namespaces
     store          the single write path: dedup by fingerprint; a resolved one that fires
                    again is re-opened as `recurred` (a regression). One transaction per
                    upsert, through a per-(environment, fingerprint) key document
@@ -153,7 +154,10 @@ src/
                    null when unavailable (never zero); aggregate annotates a function's log incidents in the window
                    or opens a Monitoring-only one (fingerprint `mon-…`). Off by default, never run against real Monitoring
     aggregate      reads one window of logs and folds it into the store (each upsert carries
-                   the window id, so a replayed window counts once)
+                   the window id, so a replayed window counts once). At most `STARFISH_MAX_NEW_INCIDENTS_PER_FUNCTION`
+                   (25) new incidents per function per window (#303): the rest accrue onto an incident they already have,
+                   or fold into ONE high-cardinality overflow incident per function and UTC day (`signalSource: overflow`),
+                   counted in last_run's `totals.errorsFoldedIntoOverflow`. Unit- and emulator-tested; not yet run on a real flood
     window         (start, end] windows: pure planning; ids come from the boundaries
     run            one scheduled run: resolve runtime settings (refuses on an unusable document with no
                    last-good), replay the pending window or plan the next, advance the checkpoint only
@@ -208,7 +212,8 @@ src/
                    green checks; a later change to the same files escalates; a revert is never reverted. Cleared only
                    once the ingest checkpoint has read through the window, else a person is told after a day (#241).
                    Runs before the merge step in the pass
-  agent/pass.ts    one pass over the store: candidate selection (paged past closed/settled incidents, bounded, a cap
+  agent/pass.ts    one pass over the store: candidate selection (recurred incidents first, then ones not yet triaged, then the
+                   rest, newest first within each, #303; paged past closed/settled incidents, bounded, a cap
                    reported, #226), stack trace → repo files, bounded driver; the daily cycle cap
                    (`STARFISH_MAX_CYCLES_PER_DAY`, a count of cycles started that UTC day); a sweep that gives up and
                    announces `running` cycles nobody holds whose deadline passed or attempts ran out

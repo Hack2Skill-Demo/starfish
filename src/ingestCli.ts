@@ -40,6 +40,7 @@ const t = summary.totals;
 console.log(
   `ingest ${summary.outcome}: ${summary.windows} window(s), ${t.entriesProcessed} entries; ` +
     `${t.incidentsCreated} new, ${t.incidentsUpdated} updated, ${t.incidentsRecurred} recurred, ${t.incidentsReplayed} replayed` +
+    (t.errorsFoldedIntoOverflow > 0 ? `; ${t.errorsFoldedIntoOverflow} distinct error(s) folded into overflow incidents` : "") +
     (summary.capped ? " (a read hit the cap: counts are a floor)" : "") +
     (summary.error !== undefined ? ` - ${summary.error}` : "")
 );

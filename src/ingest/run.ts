@@ -176,7 +176,15 @@ export async function runIngest(
   const summary: RunSummary = {
     outcome: "idle",
     windows: 0,
-    totals: { entriesProcessed: 0, incidentsCreated: 0, incidentsUpdated: 0, incidentsRecurred: 0, incidentsReplayed: 0 },
+    totals: {
+      entriesProcessed: 0,
+      incidentsCreated: 0,
+      incidentsUpdated: 0,
+      incidentsRecurred: 0,
+      incidentsReplayed: 0,
+      // #303: written to last_run with the other totals.
+      errorsFoldedIntoOverflow: 0,
+    },
     capped: false,
     configSource: resolved.source,
     problems: resolved.problems,

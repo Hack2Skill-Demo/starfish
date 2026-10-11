@@ -41,16 +41,27 @@ const MAX_PAGE = 500;
 export const MAX_SCANNED = 500;
 
 /**
- * Open incidents of this environment that have no settled cycle for their current recurrence, newest activity first,
- * at most `limit`. A cycle that is absent or still `running` is a candidate (the loop's lease decides whether another
- * worker holds it). A `declined` one is too, with `opts.reconsider`, when new evidence arrived since its decision
- * (reconsider.ts; the lease acquire checks again in its transaction). An operator-retired incident is never one, nor a
- * seeded synthetic one.
+ * How a candidate ranks in a selection (#303), lowest first; newest activity first within a rank.
+ *   0: the incident recurred (a fix that did not hold, or a resolved error back);
+ *   1: not yet triaged for its current recurrence (no cycle, or a `running` one that has not recorded triage);
+ *   2: the rest (a cycle past triage to resume, a declined one to reconsider).
+ * Newest activity alone let a flood of fresh, distinct incidents push a regression or an untriaged one out of reach.
+ */
+type Rank = 0 | 1 | 2;
+
+/**
+ * Open incidents of this environment that have no settled cycle for their current recurrence, at most `limit`:
+ * recurred incidents first, then ones not yet triaged, then the rest, each newest activity first (`Rank`). A cycle that
+ * is absent or still `running` is a candidate (the loop's lease decides whether another worker holds it). A `declined`
+ * one is too, with `opts.reconsider`, when new evidence arrived since its decision (reconsider.ts; the lease acquire
+ * checks again in its transaction). An operator-retired incident is never one, nor a seeded synthetic one.
  *
- * The incidents are read newest activity first, a page at a time, until `limit` candidates are found, the store has no
- * more, or `MAX_SCANNED` (or a lower `opts.maxScanned`) incidents were read (#226): an open incident older than many
- * closed or settled ones is still found. Hitting that bound is reported through `opts.onScanCapped`, never silent. Uses the same (environment,
- * lastOccurredAt) index as the incidents list, so it needs no new index.
+ * The incidents are read newest activity first, a page at a time, until `limit` recurred candidates are found, the
+ * store has no more, or `MAX_SCANNED` (or a lower `opts.maxScanned`) incidents were read (#226): an open incident older
+ * than many closed or settled ones is still found, and the ranking sees the whole scan, not only its first page (the
+ * cost: unless `limit` recurred ones turn up, a pass reads up to that bound, incidents and their cycles). Reaching
+ * that bound with fewer than `limit` candidates is reported through `opts.onScanCapped`, never silent. Uses the same
+ * (environment, lastOccurredAt) index as the incidents list, so it needs no new index.
  */
 export async function selectCandidates(
   db: Firestore,
@@ -62,7 +73,10 @@ export async function selectCandidates(
   const maxScanned = Math.max(1, Math.min(opts.maxScanned ?? MAX_SCANNED, MAX_SCANNED));
   const pageSize = Math.min(limit * SCAN_FACTOR, MAX_PAGE);
   const now = opts.now ?? new Date();
-  const out: Candidate[] = [];
+  const found: { candidate: Candidate; rank: Rank }[] = [];
+  const ranked = (): Candidate[] =>
+    // Array.prototype.sort is stable: within a rank, the scan's newest-first order is kept.
+    [...found].sort((a, b) => a.rank - b.rank).slice(0, limit).map((f) => f.candidate);
   let scanned = 0;
   let after: QueryDocumentSnapshot | undefined;
   for (;;) {
@@ -71,25 +85,25 @@ export async function selectCandidates(
     if (after) query = query.startAfter(after);
     const snap = await query.get();
     scanned += snap.size;
-    await collectCandidates(db, cfg, snap.docs, limit, now, opts.reconsider, out);
-    if (out.length >= limit || snap.size < size) return out;
+    await collectCandidates(db, cfg, snap.docs, now, opts.reconsider, found);
+    // Nothing later in the scan can outrank `limit` recurred candidates.
+    if (found.filter((f) => f.rank === 0).length >= limit || snap.size < size) return ranked();
     if (scanned >= maxScanned) {
-      opts.onScanCapped?.(scanned);
-      return out;
+      if (found.length < limit) opts.onScanCapped?.(scanned);
+      return ranked();
     }
     after = snap.docs[snap.docs.length - 1];
   }
 }
 
-/** One page of incidents: the open ones whose cycle is not settled (or may be reconsidered) go into `out`, up to `limit`. */
+/** One page of incidents: the open ones whose cycle is not settled (or may be reconsidered) go into `found`, ranked. */
 async function collectCandidates(
   db: Firestore,
   cfg: PassConfig,
   docs: readonly QueryDocumentSnapshot[],
-  limit: number,
   now: Date,
   reconsider: ReconsiderPolicy | undefined,
-  out: Candidate[]
+  found: { candidate: Candidate; rank: Rank }[]
 ): Promise<void> {
   const open: Candidate[] = [];
   const incidents = new Map<string, Record<string, unknown>>();
@@ -110,14 +124,20 @@ async function collectCandidates(
   open.forEach((c, i) => {
     const data = cycles[i]?.data();
     const state = data?.state as CycleState | undefined;
+    const recurred = incidents.get(c.incidentId)?.status === "recurred";
     if (state === "declined" && data && reconsider) {
       const trigger = reconsiderTrigger(data, incidents.get(c.incidentId), reconsider, now);
-      if (trigger !== null && out.length < limit) out.push({ ...c, reconsider: trigger });
+      if (trigger !== null) found.push({ candidate: { ...c, reconsider: trigger }, rank: recurred ? 0 : 2 });
       return;
     }
     if (state !== undefined && SETTLED.includes(state)) return;
-    if (out.length < limit) out.push(c);
+    const triaged = data !== undefined && isPlainRecord(data.summary) && data.summary.triage !== undefined;
+    found.push({ candidate: c, rank: recurred ? 0 : triaged ? 2 : 1 });
   });
+}
+
+function isPlainRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
 }
 
 /** The most `running` cycles one sweep reads. */

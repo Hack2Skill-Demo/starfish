@@ -95,7 +95,7 @@ export interface IncidentInput {
    * `monitoring` for a Monitoring-only incident (#19): fingerprinted in its own namespace
    * (`fingerprintOf`), so it never accrues onto, or is accrued onto by, a log-derived incident.
    */
-  signalSource?: "monitoring";
+  signalSource?: "monitoring" | "overflow";
   /**
    * Cloud Monitoring readings for this function in the same window (#19). On a log incident they
    * annotate it; on a Monitoring-only one they are its evidence. Folded in once per window, like the
@@ -106,9 +106,20 @@ export interface IncidentInput {
 
 /**
  * What upsertIncident did: created a document, accrued onto one, re-opened a resolved one,
- * or recognised a window it had already applied and changed nothing ("duplicate").
+ * or recognised a window it had already applied and changed nothing ("duplicate"). "absent" only
+ * with `createIfAbsent: false`: the occurrence would have opened a new incident, so nothing was written.
  */
-export type UpsertOutcome = "new" | "updated" | "recurred" | "duplicate";
+export type UpsertOutcome = "new" | "updated" | "recurred" | "duplicate" | "absent";
+
+export interface UpsertOptions {
+  /**
+   * False: accrue onto an incident that exists (open, resolved, or the retired one an earlier occurrence belongs to),
+   * but never open one; where the upsert would, it writes nothing (not even the window on the key) and returns
+   * "absent". The aggregator uses it for a function's errors past the cap on new incidents per window (#303), and
+   * folds what comes back absent into one overflow incident. Default true.
+   */
+  createIfAbsent?: boolean;
+}
 
 /** Applied windows remembered per key. A retry only ever replays the latest window or two. */
 export const APPLIED_WINDOWS_RETAINED = 32;
@@ -286,9 +297,10 @@ function redactInput(input: IncidentInput): IncidentInput {
     errorMessage: redactPii(input.errorMessage),
     ...(input.errorDetail != null && { errorDetail: redactPii(input.errorDetail) }),
     ...(input.stackTrace != null && { stackTrace: redactPii(input.stackTrace) }),
-    ...(input.errorName != null && { errorName: redactPii(input.errorName) }),
     // Short fields a handler fills from its own payload (#130): a tenantId that is an email, an errorCode
     // or service that carries a token. Shown to guests on the demo, so redacted like the text, and bounded.
+    // errorName too (#309): a class name is short, but it comes from the log entry and was stored unbounded.
+    ...(input.errorName != null && { errorName: redactShortField(input.errorName) }),
     ...(input.service != null && { service: redactShortField(input.service) }),
     ...(input.errorCode != null && { errorCode: redactShortField(input.errorCode) }),
     ...(input.tenantId != null && { tenantId: redactShortField(input.tenantId) }),
@@ -296,7 +308,7 @@ function redactInput(input: IncidentInput): IncidentInput {
   };
 }
 
-/** Cap on an identifier-like field (tenantId, errorCode, service, requestId); real ones are far shorter. */
+/** Cap on an identifier-like field (tenantId, errorCode, service, requestId, errorName); real ones are far shorter. */
 export const MAX_SHORT_FIELD_LEN = 256;
 
 /**
@@ -315,8 +327,10 @@ export async function upsertIncident(
   db: Firestore,
   store: IncidentStoreConfig & PublicViewConfig,
   rawInput: IncidentInput,
-  now: Timestamp
+  now: Timestamp,
+  options: UpsertOptions = {}
 ): Promise<UpsertOutcome> {
+  const createIfAbsent = options.createIfAbsent !== false;
   const input = redactInput(rawInput);
   const fingerprint = fingerprintOf(input.functionName, input.errorMessage, input.signalSource);
   const keyRef = db.collection(store.incidentKeyCollection).doc(incidentKeyId(input.environment, fingerprint));
@@ -327,7 +341,7 @@ export async function upsertIncident(
     (tx) =>
       abortIfClosed(() => {
         written = undefined;
-        return upsertInTransaction(db, tx, store, input, fingerprint, keyRef, now, (id) => (written = id));
+        return upsertInTransaction(db, tx, store, input, fingerprint, keyRef, now, (id) => (written = id), createIfAbsent);
       }),
     { maxAttempts: UPSERT_MAX_ATTEMPTS }
   );
@@ -379,7 +393,8 @@ async function upsertInTransaction(
   fingerprint: string,
   keyRef: DocumentReference,
   now: Timestamp,
-  wrote: (incidentId: string) => void
+  wrote: (incidentId: string) => void,
+  createIfAbsent: boolean
 ): Promise<UpsertOutcome> {
   // Every read comes before any write: Firestore transactions require it.
   const keySnap = await tx.get(keyRef);
@@ -458,7 +473,9 @@ async function upsertInTransaction(
 
   // Nothing to accrue onto, the keyed incident was ignored, or it was retired
   // before this occurrence: neither is ever re-opened, so the occurrence opens
-  // a fresh one, and the key moves to it.
+  // a fresh one, and the key moves to it. Unless the caller only accrues (#303): then nothing is written, and the
+  // window is not recorded on the key either, so a replay of it decides the same way.
+  if (!createIfAbsent) return "absent";
   const ref = db.collection(store.incidentCollection).doc();
   tx.set(ref, buildNewIncident(input, fingerprint, now));
   wrote(ref.id);
@@ -602,7 +619,7 @@ function buildNewIncident(input: IncidentInput, fingerprint: string, now: Timest
     ...(input.tenantId != null && { tenantId: input.tenantId }),
     ...(input.requestId != null && { requestId: input.requestId }),
     ...(input.sourceProjectId != null && { sourceProjectId: input.sourceProjectId }),
-    ...(input.signalSource === "monitoring" && { signalSource: "monitoring" as const }),
+    ...(input.signalSource !== undefined && { signalSource: input.signalSource }),
     ...(input.monitoring != null &&
       input.monitoring.length > 0 && {
         monitoringCount: observedFailures(input.monitoring),

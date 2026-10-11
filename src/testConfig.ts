@@ -41,6 +41,7 @@ export function testConfig(over: Partial<StarfishConfig> = {}): StarfishConfig {
     functionsSourceRoots: [],
     ingestLagMinutes: 5,
     ingestMaxWindowHours: 6,
+    maxNewIncidentsPerFunctionPerWindow: 25,
     ingestRunBudgetSeconds: 480,
     dryRun: true,
     reviewRequired: true,

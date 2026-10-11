@@ -12,7 +12,7 @@ const SUMMARY = {
   outcome: "ok",
   windows: 2,
   capped: false,
-  totals: { entriesProcessed: 5, incidentsCreated: 1, incidentsUpdated: 2, incidentsRecurred: 0, incidentsReplayed: 0 },
+  totals: { entriesProcessed: 5, incidentsCreated: 1, incidentsUpdated: 2, incidentsRecurred: 0, incidentsReplayed: 0, errorsFoldedIntoOverflow: 0 },
 } as unknown as RunSummary;
 
 function fakes(over: Partial<AdminApiDeps> = {}) {

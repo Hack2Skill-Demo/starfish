@@ -379,3 +379,44 @@ describe("upsertIncident: Monitoring readings (#19)", () => {
     expect(doc?.get("lastMonitoring")).toEqual([expect.objectContaining({ failureCount: 6, metricType: "run.googleapis.com/request_count" })]);
   });
 });
+
+describe("upsertIncident: accrue-only and the overflow namespace (#303)", () => {
+  const accrueOnly = (input: IncidentInput) => upsertIncident(db, store, input, Timestamp.now(), { createIfAbsent: false });
+
+  it("writes nothing for an error with no incident, not even the window on a key", async () => {
+    expect(await accrueOnly({ ...occurrence(base, 3), windowId: "w1" })).toBe("absent");
+    expect(await incidents()).toHaveLength(0);
+    expect(await keys()).toHaveLength(0);
+    // The window was not recorded, so a normal upsert of it still applies (it is not a "duplicate").
+    expect(await upsert({ ...occurrence(base, 3), windowId: "w1" })).toBe("new");
+  });
+
+  it("still accrues onto an open incident, recurs a resolved one, and records the window", async () => {
+    expect(await upsert(occurrence(base, 2))).toBe("new");
+    expect(await accrueOnly({ ...occurrence(base + 1000, 5), windowId: "w2" })).toBe("updated");
+    expect(await accrueOnly({ ...occurrence(base + 1000, 5), windowId: "w2" })).toBe("duplicate");
+    const [doc] = await incidents();
+    expect(doc?.get("occurrenceCount")).toBe(7);
+
+    await doc!.ref.update({ status: "resolved", resolvedAt: Timestamp.fromMillis(base + 2000) });
+    expect(await accrueOnly({ ...occurrence(base + 3000, 1), windowId: "w3" })).toBe("recurred");
+    expect((await incidents())[0]?.get("status")).toBe("recurred");
+  });
+
+  it("never opens a fresh incident behind an ignored one", async () => {
+    expect(await upsert(occurrence(base, 1))).toBe("new");
+    await (await incidents())[0]!.ref.update({ status: "ignored" });
+    expect(await accrueOnly(occurrence(base + 1000, 1))).toBe("absent");
+    expect(await incidents()).toHaveLength(1);
+  });
+
+  it("keeps an overflow incident apart from a log incident with the same function and message", async () => {
+    expect(await upsert(occurrence(base, 1))).toBe("new");
+    expect(await upsert({ ...occurrence(base, 4), signalSource: "overflow" })).toBe("new");
+    expect(await upsert({ ...occurrence(base + 1000, 2), signalSource: "overflow" })).toBe("updated");
+    const docs = Object.fromEntries((await incidents()).map((d) => [d.get("signalSource") ?? "log", d.data()]));
+    expect(docs.overflow).toMatchObject({ occurrenceCount: 6, signalSource: "overflow" });
+    expect(String(docs.overflow?.fingerprint)).toMatch(/^ovf-[0-9a-f]{16}$/);
+    expect(docs.log).toMatchObject({ occurrenceCount: 1 });
+  });
+});

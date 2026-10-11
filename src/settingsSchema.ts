@@ -133,6 +133,11 @@ const SETTINGS_KEYS = [
 ] as const;
 
 const MAX_LIST = 100;
+/**
+ * The shortest ignored-message fragment (#309). An entry is matched as a substring of every error, so a space or a
+ * single letter silently drops nearly every error the project logs. Counted after trimming.
+ */
+export const IGNORED_MESSAGE_MIN = 3;
 /** A cycle needs at least triage, a fix and a review; fifty is far past any sensible spend cap. */
 export const MODEL_CALL_BUDGET_MIN = 1;
 export const MODEL_CALL_BUDGET_MAX = 50;
@@ -217,9 +222,13 @@ export function validateSettings(raw: unknown): Validation {
     const list = raw.ignoredMessages;
     if (!Array.isArray(list) || list.length > MAX_LIST) {
       problems.push(`ignoredMessages: a list of at most ${MAX_LIST} message fragments`);
-    } else if (!list.every((m) => typeof m === "string" && m.length >= 1 && m.length <= 300 && !CONTROL.test(m))) {
-      problems.push("ignoredMessages: each entry must be 1-300 characters, no control characters");
-    } else settings.ignoredMessages = [...(list as string[])];
+    } else if (
+      !list.every(
+        (m) => typeof m === "string" && m.trim().length >= IGNORED_MESSAGE_MIN && m.trim().length <= 300 && !CONTROL.test(m)
+      )
+    ) {
+      problems.push(`ignoredMessages: each entry must be ${IGNORED_MESSAGE_MIN}-300 characters (spaces at the ends not counted), no control characters`);
+    } else settings.ignoredMessages = (list as string[]).map((m) => m.trim());
   }
 
   for (const flag of ["dryRun", "reviewRequired", "automationEnabled", "autoMerge", "mergeFreeze"] as const) {
