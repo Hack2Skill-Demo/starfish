@@ -89,7 +89,11 @@ describe("redactPii", () => {
     // A deterministic generator, so a failure reproduces.
     let seed = 128;
     const next = () => (seed = (seed * 1103515245 + 12345) % 2 ** 31);
-    const parts = ["?", "&", "key=", "token=", "sig=", "[", "]", "a", " ", "=", "redacted-", "password:", "x@y.io", "://u:p@"];
+    const parts = [
+      "?", "&", "key=", "token=", "sig=", "[", "]", "a", " ", "=", "redacted-", "password:", "x@y.io", "://u:p@",
+      // #298's shapes
+      "Cookie: ", "Authorization: ", "Basic ", '\\"', '"', "pass", "sid:", "\n", "+1", "5551234567", "-", "(",
+    ];
     for (let i = 0; i < 5000; i++) {
       let text = "";
       for (let j = next() % 12; j >= 0; j--) text += parts[next() % parts.length];
@@ -160,6 +164,13 @@ describe("isSensitiveKey", () => {
     }
     for (const k of ["userId", "orderId", "path", "keyboard"]) expect(isSensitiveKey(k)).toBe(false);
   });
+
+  it("flags the short credential names as a whole name or its last part, not inside a word (#298)", () => {
+    for (const k of ["pass", "pwd", "sid", "otp", "db_pass", "userPwd", "connect.sid", "DB_PASS", "sessionId"]) {
+      expect(isSensitiveKey(k), k).toBe(true);
+    }
+    for (const k of ["bypass", "passes", "compass", "considered", "otpEnabledAt", "sidebar"]) expect(isSensitiveKey(k), k).toBe(false);
+  });
 });
 
 // #96: a long untrusted log field must not block the event loop. Before the fix, 100 KB of one
@@ -215,5 +226,124 @@ describe("redaction shapes the linear-time rewrite must keep", () => {
     expect(redactPii("x-api-token: abc123")).toBe("x-api-token: [redacted-secret]");
     expect(redactPii("db.password=hunter2")).toBe("db.password=[redacted-secret]");
     expect(redactPii('{"client_secret":"abc"}')).toBe('{"client_secret":[redacted-secret]}');
+  });
+});
+
+// #298: shapes the policy missed. Each first case is the issue's own example.
+describe("redactPii: headers, escaped JSON, short key names and phone numbers (#298)", () => {
+  it("removes a Basic credential with its scheme, not just the scheme word", () => {
+    expect(redactPii("Authorization: Basic dXNlcjpzZWNyZXRwYXNzd29yZA==")).toBe("Authorization: [redacted-secret]");
+    expect(redactPii("proxy-authorization=Digest abc123 failed")).toBe("proxy-authorization=[redacted-secret] failed");
+    expect(redactPii("authorization: abc123, retrying")).toBe("authorization: [redacted-secret], retrying");
+    expect(redactPii('{"authorization":"Basic dXNlcjpw"}')).toBe('{"authorization":[redacted-secret]}');
+    // A JWT already redacted after the scheme does not leave a stray `]` behind.
+    const once = redactPii(`Authorization: Basic ${SEEDED_SECRETS.jwt}`);
+    expect(once).not.toMatch(/\]\]/);
+    expect(redactPii(once)).toBe(once);
+  });
+
+  it("removes every cookie in a Cookie header, to the end of the line", () => {
+    expect(redactPii("Cookie: theme=dark; __session=SECRETVALUE123; connect.sid=abc\nnext line")).toBe(
+      "Cookie: [redacted-secret]\nnext line"
+    );
+    expect(redactPii("Set-Cookie: sid=abc; Path=/; HttpOnly")).toBe("Set-Cookie: [redacted-secret]");
+    expect(redactPii('{"cookie":"a=1; b=2","user":"bob"}')).toBe('{"cookie":[redacted-secret],"user":"bob"}');
+    // A `Cookie:` that ends its line does not take the next one.
+    expect(redactPii("Cookie:\nTypeError: x")).toBe("Cookie:\nTypeError: x");
+  });
+
+  it("removes a value in escaped JSON (a JSON dump logged inside a string)", () => {
+    expect(redactPii('{\\"password\\":\\"hunter2\\",\\"user\\":\\"bob\\"}')).toBe(
+      '{\\"password\\":[redacted-secret],\\"user\\":\\"bob\\"}'
+    );
+    expect(redactPii('{\\"token\\": \\"abc\\"}')).not.toContain("abc");
+    expect(redactPii('{\\"cookie\\":\\"a=1; b=2\\"}')).toBe('{\\"cookie\\":[redacted-secret]}');
+    expect(redactPii('{\\"authorization\\":\\"Basic dXNlcjpw\\"}')).toBe('{\\"authorization\\":[redacted-secret]}');
+  });
+
+  it("removes the value of session, sid, otp, pwd and pass keys", () => {
+    for (const [text, want] of [
+      ["sessionId=abc123 user=bob", "sessionId=[redacted-secret] user=bob"],
+      ['{"session_id":"abc"}', '{"session_id":[redacted-secret]}'],
+      ["session: abc", "session: [redacted-secret]"],
+      ["sid=abc", "sid=[redacted-secret]"],
+      ["connect.sid=s%3Aabc", "connect.sid=[redacted-secret]"],
+      ["otp: 123456", "otp: [redacted-secret]"],
+      ['{"pwd":"hunter2"}', '{"pwd":[redacted-secret]}'],
+      ["db_pass=hunter2", "db_pass=[redacted-secret]"],
+      ["userPass=hunter2", "userPass=[redacted-secret]"],
+      ["DB_PASS=hunter2", "DB_PASS=[redacted-secret]"],
+    ] as const) {
+      expect(redactPii(text), text).toBe(want);
+    }
+  });
+
+  it("leaves words that merely contain a short key name alone", () => {
+    for (const text of ["bypass=true", "compass: north", "passed: 3", "Sessions: 4", "Session expired, sign in again"]) {
+      expect(redactPii(text), text).toBe(text);
+    }
+  });
+
+  it("removes phone numbers written with a + country code", () => {
+    for (const phone of ["+15551234567", "+1 555 123 4567", "+1-555-123-4567", "+44 (20) 7946 0958", "+33 6 12 34 56 78"]) {
+      expect(redactPii(`call ${phone} failed`), phone).toBe("call [redacted-phone] failed");
+    }
+    expect(redactPii('{"phone":"+15551234567"}')).toBe('{"phone":"[redacted-phone]"}');
+    expect(redactPii("tel:+15551234567")).toBe("tel:[redacted-phone]");
+  });
+
+  it("leaves timestamps, offsets, ids, ports, versions and counts that are not phone numbers alone", () => {
+    for (const text of [
+      "at 2026-10-11T12:00:00+00:00 the call failed",
+      "at 2026-10-11T12:00:00.000+0000",
+      "offset +05:30 and +10:00",
+      "version 1.0.0+20130313144700",
+      "connect ECONNREFUSED 10.0.0.12:8080",
+      "order 123456789012 not found",
+      "id +123456789012345678 is too long for a number",
+      "duration +12345678ms",
+      "added +1234 rows",
+      "host +192.168.100.200",
+      "x+15551234567",
+    ]) {
+      expect(redactPii(text), text).toBe(text);
+    }
+    // Plus-addressing is one email address, not an address and a number.
+    expect(redactPii("mail bob+15551234567@example.com")).toBe("mail [redacted-email]");
+  });
+
+  it("is idempotent on every new shape", () => {
+    for (const text of [
+      "Authorization: Basic dXNlcjpw",
+      "Cookie: a=1; b=2",
+      '{\\"password\\":\\"hunter2\\"}',
+      "userPass=x sid=y otp=1",
+      "call +1 555 123 4567",
+    ]) {
+      const once = redactPii(text);
+      expect(redactPii(once), text).toBe(once);
+    }
+  });
+
+  it("redacts before it truncates, so a phone or cookie straddling the cap does not survive in part", () => {
+    const out = sanitize("x".repeat(3990) + " +15551234567 Cookie: a=SECRETVALUE123") ?? "";
+    expect(out).not.toContain("5551234567");
+    expect(out).not.toContain("SECRETVALUE");
+  });
+
+  it("stays fast over long runs of the new patterns' characters (#96)", () => {
+    for (const input of [
+      "+1 ".repeat(33_000),
+      "+1-(2)".repeat(16_000),
+      "Authorization: ".repeat(6_000),
+      "authorization:a ".repeat(6_000),
+      "cookie=".repeat(14_000),
+      '\\"pass\\":'.repeat(10_000),
+      "Pass=".repeat(20_000),
+    ]) {
+      const t = Date.now();
+      redactPii(input);
+      expect(Date.now() - t, input.slice(0, 20)).toBeLessThan(1500);
+    }
   });
 });

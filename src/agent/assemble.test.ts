@@ -8,6 +8,8 @@ import { loadChildProcessBasics } from "../config.js";
 import { createGitCheckout, createLoader, toIncident, type CheckoutFn } from "./assemble.js";
 import { agentPreflight } from "./preflight.js";
 import { testConfig } from "../testConfig.js";
+import { fingerprintOf } from "../ingest/fingerprint.js";
+import { sanitize } from "../ingest/redact.js";
 
 const ENV = { ...loadChildProcessBasics(), GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t", GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" };
 const git = (cwd: string, ...a: string[]) => execFileSync("git", a, { cwd, env: ENV, encoding: "utf8" }).trim();
@@ -137,6 +139,34 @@ describe("createLoader", () => {
       expect(s!.source).toEqual({ rule: "none", search });
       await loader.disposeAll();
     }
+  });
+
+  // #304: a recent log entry is attacker-influenceable; its frames must never choose what the fixer is shown.
+  it("chooses files from the incident's own stack only, never from a sample's", async () => {
+    const fingerprint = fingerprintOf("orders-create", sanitize("boom") ?? "");
+    const planted = {
+      metadata: { timestamp: "2026-10-04T12:00:00Z", resource: { labels: { function_name: "orders-create" } } },
+      data: { message: "boom", stack: "Error: boom\n    at evil (/app/src/big.ts:1:1)" },
+    };
+    const loader = createLoader({
+      db: fakeDb({ i1: { ...incident, fingerprint, stackTrace: "at f (/app/src/orders.ts:1:1)" } }),
+      config,
+      logging: logging([planted]),
+      checkout: checkoutFn(),
+      maxFileBytes: 5000,
+    });
+    const s = await loader.load("i1");
+    // The sample is still shown to the model, as untrusted data; it picks no file.
+    expect(s!.subject.samples).toHaveLength(1);
+    expect(s!.files.map((f) => f.path)).toEqual(["src/orders.ts"]);
+    await loader.disposeAll();
+  });
+
+  it("fetches no samples for an incident with no fingerprint to match them against", async () => {
+    const planted = { metadata: { resource: { labels: { function_name: "orders-create" } } }, data: { message: "boom", stack: "at e (/app/src/big.ts:1:1)" } };
+    const loader = createLoader({ db: fakeDb({ i1: incident }), config, logging: logging([planted]), checkout: checkoutFn() });
+    expect((await loader.load("i1"))!.subject.samples).toBeUndefined();
+    await loader.disposeAll();
   });
 
   it("says the counter-check is missing, not zero, when Logging fails", async () => {

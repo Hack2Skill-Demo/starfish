@@ -339,9 +339,13 @@ apparent over-engineering is scar tissue from real incidents, and the tests in
 - a log's `error` field is kept apart from its title: the title keys the fingerprint, the
   error is the cause a fixer needs
 
-- one redaction policy (`src/ingest/redact.ts`) covers emails and credentials: token
+- one redaction policy (`src/ingest/redact.ts`) covers emails, credentials and phone numbers: token
   shapes (JWTs, bearer headers, Google/GitHub/AWS/Slack/Stripe keys), private keys,
-  URL credentials and credential-named `key=value` pairs. The store re-applies it on
+  URL credentials, the whole value of an `Authorization` header (scheme and credential, `Basic` included)
+  and of a `Cookie`/`Set-Cookie` header (every cookie, to the end of the line), credential-named
+  `key=value` pairs (also `session`/`sessionId`, `sid`, `otp`, `pwd`, `pass`, and in escaped JSON such as
+  `{\"password\":\"…\"}`), and phone numbers written with a `+` country code (a national number with no `+`
+  is not caught, by design: it cannot be told from an id). The store re-applies it on
   every write, so no caller can persist a seeded secret; the model prompt, model error
   messages and the spike's printed output go through it too (`redact.test.ts`)
 - what the agent loop records and sends is checked end to end: one emulator test runs a whole
@@ -388,8 +392,11 @@ free text a copy keeps: redacted again and bounded, but free-form personal data 
 public demo's data synthetic.
 
 Alongside it, the **counter-check** (`src/ingest/counterCheck.ts`): an independent raw-log
-recount of a function's errors over 24h, plus a few redacted recent samples. Nothing calls it
-in a run yet; the triage stage below consumes what it produces.
+recount of a function's errors over 24h, plus up to three redacted recent samples: entries,
+among the function's 50 newest errors, whose fingerprint (recomputed the way ingest computes it) is
+the incident's, so an error with another fingerprint in the same function is never shown as this one (#304). The
+agent's assemble step calls both; the samples are shown to the model as untrusted data and never
+choose which source files the fixer sees (only the incident's own stack trace does).
 
 The first stage of the half that acts exists as a **tested contract** and nothing more: triage
 (`src/agent/triage.ts`) decides act / notify / decline for one incident. It skips an incident

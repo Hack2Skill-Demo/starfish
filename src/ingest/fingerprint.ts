@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { sanitize } from "./redact.js";
 
 /** How much of the normalized message the fingerprint hashes. */
 const FINGERPRINT_MESSAGE_CHARS = 100;
@@ -126,6 +127,16 @@ export function computeErrorFingerprint(functionName: string, errorMessage: stri
     .update(`${normalizedFn}:${normalizedMessage}`)
     .digest("hex")
     .substring(0, 16);
+}
+
+/**
+ * The fingerprint ingest gives one parsed log entry: of its SANITIZED message, the one the store keeps and
+ * fingerprints (redaction is idempotent, so the store's re-redaction changes nothing the hash reads). Shared by
+ * the ingest's grouping (aggregate.ts) and the sample filter (counterCheck.ts, #304), so a log entry is judged to
+ * belong to an incident exactly the way ingest decided it did.
+ */
+export function fingerprintOfLogEntry(functionName: string, rawErrorMessage: string): string {
+  return computeErrorFingerprint(functionName, sanitize(rawErrorMessage) ?? "");
 }
 
 /**

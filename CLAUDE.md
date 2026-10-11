@@ -148,7 +148,8 @@ src/
     retire         admin closes an incident for good and frees its fingerprint (audited); the key stays as a
                    tombstone (applied windows kept): a later occurrence opens a new incident, an earlier one
                    (ingest lag) accrues onto the retired one without reopening it
-    counterCheck   independent raw-log recount + redacted samples
+    counterCheck   independent raw-log recount + redacted samples: up to 3 of the function's 50 newest errors (one page)
+                   whose recomputed fingerprint is the incident's (#304); null when Logging fails, [] when none match
     monitoring     Cloud Monitoring failure counts per function (#19): injectable reader, REST adapter, bounded,
                    null when unavailable (never zero); aggregate annotates a function's log incidents in the window
                    or opens a Monitoring-only one (fingerprint `mon-…`). Off by default, never run against real Monitoring
@@ -222,7 +223,8 @@ src/
                    structural cause since the recorded decision, or an incident closed mid-cycle and reopened (#227);
                    cooldown + cap per 24 h; never over ignored/resolved.
                    cycle.ts reopens the same cycle in the lease transaction, so still one issue and one PR per recurrence
-  agent/assemble.ts  one incident's inputs: shallow clone at a pinned revision, counter-check, samples, files the trace names;
+  agent/assemble.ts  one incident's inputs: shallow clone at a pinned revision, counter-check, samples, files the incident's OWN
+                   stack trace names (never a sample's: a recent log entry is attacker-influenceable, #304);
                    when no frame names a repository file, the one file exporting the function's name (#259,
                    `agent/sourceByName.ts`, `STARFISH_FUNCTIONS_SOURCE_ROOTS`; ambiguous or capped = none), the rule kept
                    as `summary.fix.source`; never a structural cause (`causeFrame` reads the stack alone)

@@ -3,11 +3,12 @@
  * counter-check and recent samples, a checkout of the target repository at a PINNED revision, and the
  * source files its stack trace names. This is the `load` the loop is given (`LoopDeps.load`).
  *
- * Every read degrades the way the rest of the engine does: the counter-check and the samples are `null` and
- * `[]` when Cloud Logging fails (missing is not zero: triage is told the check is missing). A checkout that
+ * Every read degrades the way the rest of the engine does: the counter-check is `null` and there are no samples
+ * when Cloud Logging fails (missing is not zero: triage is told the check is missing). The samples are only entries
+ * that hash to the incident's fingerprint, and never choose files (#304). A checkout that
  * fails THROWS: with no source there is nothing to fix, and the cycle's lease will expire and be resumed.
  *
- * Files come only from the repository's own file list (`pathsFromStack`; when no frame names a repository file, the one
+ * Files come only from the repository's own file list (`pathsFromStack` over the incident's own stack trace; when no frame names a repository file, the one
  * file that exports the failing function, `findSourceByFunctionName`, #259), are read as plain regular files
  * (never a symlink, never binary, bounded), and carry whatever the repository holds: the loop's stages
  * redact them before a model sees them.
@@ -168,17 +169,23 @@ export function createLoader(deps: AssembleDeps): Loader {
 
       // Both degrade to null / [] rather than throw; a missing check is reported to triage as missing.
       const opts = deps.now ? { nowMs: deps.now() } : {};
-      const [counter, samples] = await Promise.all([
+      const [counter, fetched] = await Promise.all([
         incident.functionName ? runLogCounterCheck(deps.logging, source, incident.functionName, opts) : Promise.resolve(null),
-        incident.functionName ? fetchRecentErrorSamples(deps.logging, source, incident.functionName, opts) : Promise.resolve([]),
+        incident.functionName && incident.fingerprint
+          ? fetchRecentErrorSamples(deps.logging, source, incident.functionName, incident.fingerprint, opts)
+          : Promise.resolve(null),
       ]);
       if (counter) incident.logCounterCheck = counter;
+      const samples = fetched ?? [];
 
       const checkout = await deps.checkout();
       open.push(checkout);
 
-      const stacks = [incident.stackTrace, ...samples.map((s) => s.stack)].filter((s): s is string => typeof s === "string").join("\n");
-      const wanted = pathsFromStack(stacks, checkout.files, deps.config.patchExcludedPaths, maxFiles);
+      // The incident's own stack only, never the samples' (#304): a sample is a recent log entry, and whoever can make
+      // the function log an error could plant frames in it to choose which files the fixer is shown. The samples are
+      // shown to the model as untrusted data, nothing more. (The stored stack is log text too, but it is the one record
+      // of this incident ingest kept; it was always the source of the files, and still names only repository files.)
+      const wanted = pathsFromStack(incident.stackTrace, checkout.files, deps.config.patchExcludedPaths, maxFiles);
       const files: SourceFile[] = [];
       for (const rel of wanted) {
         const file = await readSource(checkout.dir, rel, maxBytes);
