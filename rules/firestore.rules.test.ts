@@ -30,7 +30,7 @@ import {
   Timestamp,
 } from "firebase/firestore";
 import { validateSettings } from "../src/runtimeSettings.js";
-import { readRecentChanges, saveSettings, settingsCollections } from "../web/src/lib/settingsWrite";
+import { readPublicSettings, readRecentChanges, saveSettings, settingsCollections } from "../web/src/lib/settingsWrite";
 import { addPerson, readOnCall, removePerson, savePolicy, updatePerson } from "../web/src/lib/onCallWrite";
 import { readCorrections, saveCorrection } from "../web/src/lib/correctionWrite";
 import { DEFAULT_POLICY } from "../src/oncallSchema.js";
@@ -335,6 +335,8 @@ describe("runtime settings", () => {
     publicDoc?: Doc;
     skipAudit?: boolean;
     skipPublic?: boolean;
+    /** Write the operator copy without its `settings` (as a build from before it carried them would). */
+    publicWithoutSettings?: boolean;
     /** What the audit entry claims the document was before; defaults to what it really was. */
     before?: unknown;
   }
@@ -393,11 +395,16 @@ describe("runtime settings", () => {
         updatedAt: stamp(),
         ...(written.watchedProjectId !== undefined && { watchedProjectId: written.watchedProjectId }),
         ...(written.environment !== undefined && { environment: written.environment }),
+        ...(!o.publicWithoutSettings && { settings: settingsOf(written) }),
         ...o.publicDoc,
       });
     }
     return batch.commit();
   }
+
+  /** The settings fields of a written document: what the operator copy carries for the read-only view. */
+  const BOOKKEEPING = ["version", "revision", "auditId", "updatedAt", "updatedBy"];
+  const settingsOf = (d: Doc): Doc => Object.fromEntries(Object.entries(d).filter(([k]) => !BOOKKEEPING.includes(k)));
 
   const settings = { watchedProjectId: "watched-app-1", environment: "prod", logResourceTypes: ["cloud_function"] };
 
@@ -486,6 +493,23 @@ describe("runtime settings", () => {
       await assertFails(save("admin1", settings, { publicDoc: { watchedProjectId: "another-proj-1" } }));
       await assertFails(save("admin1", settings, { publicDoc: { revision: 9 } }));
       await assertFails(save("admin1", settings, { publicDoc: { logResourceTypes: ["cloud_function"] } }));
+    });
+
+    it("the operator copy's settings are exactly the saved settings: none added, left out, changed, or bookkeeping", async () => {
+      const full = { ...settings, dryRun: false, ignoredMessages: ["noise"], servicePatterns: { billing: "payments" } };
+      await assertFails(save("admin1", full, { publicWithoutSettings: true }));
+      await assertFails(save("admin1", full, { publicDoc: { settings: "everything" } }));
+      await assertFails(save("admin1", full, { publicDoc: { settings: { ...full, dryRun: true } } }));
+      await assertFails(save("admin1", full, { publicDoc: { settings: { ...full, ignoredMessages: [] } } }));
+      await assertFails(save("admin1", full, { publicDoc: { settings: { ...full, servicePatterns: { billing: "x" } } } }));
+      await assertFails(save("admin1", full, { publicDoc: { settings: { ...full, autoMerge: true } } }));
+      await assertFails(save("admin1", full, { publicDoc: { settings: { ...settings, ignoredMessages: ["noise"], servicePatterns: { billing: "payments" } } } }));
+      await assertFails(save("admin1", full, { publicDoc: { settings: { ...full, updatedBy: "admin1" } } }));
+      await assertFails(save("admin1", full, { publicDoc: { settings: { ...full, githubToken: "ghp_x" } } }));
+      await assertSucceeds(save("admin1", full));
+      // A reset: the copy's settings are empty, like the document's.
+      await assertFails(save("admin1", {}, { publicDoc: { settings: full } }));
+      await assertSucceeds(save("admin1", {}));
     });
 
     it("only an admin writes the operator copy, and not on its own", async () => {
@@ -666,6 +690,7 @@ describe("runtime settings", () => {
   // the rules are proven to accept is what the UI actually sends.
   describe("the Settings editor's own save", () => {
     const cols = settingsCollections("starfish_settings");
+    const guest = () => env.authenticatedContext("guest1", { firebase: { sign_in_provider: "anonymous" } }).firestore();
     const adminReads = async () => (await getDoc(doc(as("admin1"), CURRENT))).data() ?? null;
 
     it("is accepted: first save, a second one, and a reset, each the next revision of what the admin read", async () => {
@@ -694,6 +719,12 @@ describe("runtime settings", () => {
       const copy = await getDoc(doc(as("op1"), PUBLIC));
       expect(copy.data()).toMatchObject({ environment: "prod", watchedProjectId: "watched-app-1", revision: 1 });
       expect(copy.data()).not.toHaveProperty("servicePatterns");
+      // The read-only view's copy: the settings as saved, never who saved them.
+      expect(copy.get("settings")).toEqual({ ...settings, servicePatterns: { billing: "payments" } });
+      expect(copy.get("settings")).not.toHaveProperty("updatedBy");
+      expect(copy.data()).not.toHaveProperty("updatedBy");
+      const asGuest = await readPublicSettings(guest(), cols);
+      expect(asGuest?.settings).toEqual({ ...settings, servicePatterns: { billing: "payments" } });
 
       await assertSucceeds(
         saveSettings(as("admin1"), cols, "admin1", { environment: "staging" }, await adminReads())

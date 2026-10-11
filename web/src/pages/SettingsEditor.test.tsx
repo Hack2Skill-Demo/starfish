@@ -4,19 +4,27 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { Ctx, type StarfishAuthCtx } from "../auth/authCore";
 
-const mocks = vi.hoisted(() => ({ readSettings: vi.fn(), readRecentChanges: vi.fn(), saveSettings: vi.fn() }));
+const mocks = vi.hoisted(() => ({
+  readSettings: vi.fn(),
+  readRecentChanges: vi.fn(),
+  saveSettings: vi.fn(),
+  readPublicSettings: vi.fn(),
+}));
 vi.mock("../lib/settingsWrite", async (orig) => ({
   ...(await orig<typeof import("../lib/settingsWrite")>()),
   readSettings: mocks.readSettings,
   readRecentChanges: mocks.readRecentChanges,
   saveSettings: mocks.saveSettings,
+  readPublicSettings: mocks.readPublicSettings,
 }));
 vi.mock("../lib/firebase", () => ({ firestore: () => ({ db: true }) }));
 vi.mock("../lib/config", () => ({ webConfig: () => ({ settingsCollection: "starfish_settings" }) }));
 
-import { SettingsEditor } from "./SettingsEditor";
+import { SettingsEditor, SettingsReadOnly } from "./SettingsEditor";
 
 const stored = { version: 1, revision: 2, auditId: "a-1", updatedBy: "u0", environment: "prod" };
+/** The copy operators and guests read, as the save that wrote `stored` left it. */
+const copy = { environment: "prod", revision: 2, settings: { environment: "prod" } };
 
 function renderEditor() {
   const ctx: StarfishAuthCtx = {
@@ -47,6 +55,7 @@ describe("SettingsEditor", () => {
     mocks.readSettings.mockResolvedValue(stored);
     mocks.readRecentChanges.mockResolvedValue([]);
     mocks.saveSettings.mockResolvedValue(undefined);
+    mocks.readPublicSettings.mockResolvedValue(copy);
   });
 
   it("shows overridden fields as overrides and every other field on its default", async () => {
@@ -247,5 +256,90 @@ describe("SettingsEditor", () => {
     renderEditor();
     expect(await screen.findByRole("alert")).toHaveTextContent("Couldn't read the settings");
     expect(screen.queryByRole("button", { name: "Save settings" })).toBeNull();
+  });
+
+  it("offers a save with nothing changed when the read-only copy was written before it carried the settings", async () => {
+    mocks.readPublicSettings.mockResolvedValue({ environment: "prod", revision: 2 });
+    renderEditor();
+    expect(await screen.findByText(/doesn't show these settings yet/)).toBeInTheDocument();
+    const save = screen.getByRole("button", { name: "Save settings" });
+    await waitFor(() => expect(save).toBeEnabled());
+    await userEvent.click(save);
+    await waitFor(() => expect(mocks.saveSettings).toHaveBeenCalledTimes(1));
+    expect(mocks.saveSettings.mock.calls[0]![3]).toEqual({ environment: "prod" });
+  });
+
+  it("asks for no such save when nothing is stored: there is nothing for the copy to show", async () => {
+    mocks.readSettings.mockResolvedValue(null);
+    mocks.readPublicSettings.mockResolvedValue(null);
+    renderEditor();
+    await screen.findByText("Runtime settings");
+    await waitFor(() => expect(mocks.readPublicSettings).toHaveBeenCalled());
+    expect(screen.queryByText(/doesn't show these settings yet/)).toBeNull();
+    expect(screen.getByRole("button", { name: "Save settings" })).toBeDisabled();
+  });
+});
+
+describe("SettingsReadOnly", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  const renderReadOnly = () =>
+    render(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <SettingsReadOnly note="Read-only: only an admin can change these." />
+      </QueryClientProvider>
+    );
+
+  it("shows the settings in force as text, from the copy, with no control to change them", async () => {
+    mocks.readPublicSettings.mockResolvedValue({
+      environment: "demo",
+      revision: 4,
+      settings: {
+        environment: "demo",
+        dryRun: false,
+        autoMerge: true,
+        ignoredMessages: [],
+        servicePatterns: { billing: "payments" },
+        modelCallBudget: 9,
+      },
+    });
+    const { container } = renderReadOnly();
+    expect(await screen.findByText("Revision 4")).toBeInTheDocument();
+    const value = (label: string) => screen.getByText(label, { selector: "dt" }).nextElementSibling!;
+    expect(value("Environment label")).toHaveTextContent("demo");
+    expect(value("Dry run")).toHaveTextContent(/Off$/);
+    expect(value("Auto-merge")).toHaveTextContent(/On$/);
+    expect(value("Ignored messages")).toHaveTextContent("Overridden with nothing in it.");
+    expect(value("Service patterns")).toHaveTextContent("billing: payments");
+    expect(value("Model calls per cycle")).toHaveTextContent(/9$/);
+    expect(value("Watched project")).toHaveTextContent("Using the engine's default.");
+    expect(screen.getAllByText("Using the engine's default.")).toHaveLength(10);
+    expect(screen.getByRole("note")).toHaveTextContent("only an admin can change these");
+    // Nothing to edit, save or reset; and it never reads the admins' own document or history.
+    expect(container.querySelector("input, select, textarea, form, button")).toBeNull();
+    expect(mocks.readSettings).not.toHaveBeenCalled();
+    expect(mocks.readRecentChanges).not.toHaveBeenCalled();
+  });
+
+  it("with no copy at all (nothing ever saved), shows every field on the engine's default", async () => {
+    mocks.readPublicSettings.mockResolvedValue(null);
+    renderReadOnly();
+    expect(await screen.findAllByText("Using the engine's default.")).toHaveLength(16);
+  });
+
+  it("never guesses from a copy written before it carried the settings", async () => {
+    mocks.readPublicSettings.mockResolvedValue({ environment: "demo", revision: 3 });
+    renderReadOnly();
+    expect(await screen.findByText(/aren't shown here yet/)).toBeInTheDocument();
+    expect(screen.queryByText("Using the engine's default.")).toBeNull();
+  });
+
+  it("says so when the copy can't be read", async () => {
+    mocks.readPublicSettings.mockRejectedValue(new Error("permission-denied"));
+    renderReadOnly();
+    expect(await screen.findByRole("alert")).toHaveTextContent("Couldn't read the settings");
+    expect(screen.queryByText("Using the engine's default.")).toBeNull();
   });
 });

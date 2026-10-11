@@ -341,7 +341,8 @@ collection-group query over `events`, with its own rule and index; a guest's rea
 `web/src/lib/runs.ts`; the waterfall logic is pure in `runsModel.ts`: a step with no event is "not
 reached", a cycle whose lease ran out is not "in progress"; the step log sits under the track, newest first, with triage's
 suspected cause and the filed issue's link in their own entries, #279), an **incident evidence** page (`/incidents/:id`, `lib/evidence.ts`: only stored records, never a placeholder result; an operator's "Correct triage", the feedback engine, `components/CorrectionControl.tsx`, `lib/correctionWrite.ts`), and a **Settings** page: the Gemini, GitHub and Slack connections, the rules and feedback engines' card (GitHub and Slack read `{runCollection}/integrations`, the agent's own report of what it holds: "configured", never "connected", and "not connected yet" until the agent has run and reported), an
-admin editor for the runtime settings (`src/runtimeSettings.ts` reads what it saves; Class rules is the rules engine), and, for admins only, **On-call** (#37,
+admin editor for the runtime settings (`src/runtimeSettings.ts` reads what it saves; Class rules is the rules engine; operators and guests see the same
+settings read-only, `SettingsReadOnly`, from the operator copy), and, for admins only, **On-call** (#37,
 `pages/OnCallEditor.tsx`, `lib/onCallWrite.ts`): the people (numbers shown masked, typed in but never read back), the
 opt-in code, and the call policy.
 React 19, Vite, Tailwind 4, react-router, TanStack Query; Starfish's own theme in
@@ -389,9 +390,12 @@ React 19, Vite, Tailwind 4, react-router, TanStack Query; Starfish's own theme i
   project comes from Hosting's `/__/firebase/init.json` at startup (`VITE_FIREBASE_*` only for
   local dev); the rest from `web/.env` (`web/.env.example`).
 - **Runtime settings:** one admin save is one batch of three documents (settings, audit entry,
-  operator copy) that `firestore.rules` ties together. The UI imports `src/settingsSchema.ts`,
+  operator copy) that `firestore.rules` ties together. The operator copy carries the environment label, the watched
+  project and `settings` (every settings field, no bookkeeping; the rules require it to equal the saved document), which
+  operators and guests read for the read-only view; a copy saved before it carried them shows nothing until the next save,
+  which the editor then offers with nothing changed. The UI imports `src/settingsSchema.ts`,
   so it and the engine can't disagree on what is valid. Change that schema and the rules'
-  key list together. Verify command, timeout and excluded paths are deliberately not editable
+  key list (`settingsFields()`) together. Verify command, timeout and excluded paths are deliberately not editable
   here (an editable command is code execution on the engine host).
 - **Run:** `pnpm -C web dev` (port 5177).
 

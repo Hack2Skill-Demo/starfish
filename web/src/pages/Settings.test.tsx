@@ -8,7 +8,10 @@ vi.mock("../lib/firebase", () => ({ firestore: () => ({}) }));
 const { readIntegrations } = vi.hoisted(() => ({ readIntegrations: vi.fn() }));
 vi.mock("../lib/integrations", async (orig) => ({ ...(await orig<typeof import("../lib/integrations")>()), readIntegrations }));
 vi.mock("../lib/useSettings", () => ({ useEnvironment: () => ({ environment: "staging-eu", ready: true }) }));
-vi.mock("./SettingsEditor", () => ({ SettingsEditor: () => <div>settings editor</div> }));
+vi.mock("./SettingsEditor", () => ({
+  SettingsEditor: () => <div>settings editor</div>,
+  SettingsReadOnly: ({ note }: { note: string }) => <p role="note">read-only settings: {note}</p>,
+}));
 vi.mock("./OnCallEditor", () => ({ OnCallEditor: () => <div>on-call editor</div> }));
 
 import Settings, { CONNECTIONS } from "./Settings";
@@ -132,12 +135,20 @@ describe("Settings", () => {
     expect(screen.getByText("settings editor")).toBeInTheDocument();
   });
 
-  it("is view-only for a guest: the same connections, no editor, and a note saying why (#12)", () => {
+  it("is view-only for a guest: the same connections, the settings read-only, no editor, and a note saying why (#12)", () => {
     renderSettings(true);
     expect(screen.getByText("GitHub")).toBeInTheDocument();
     expect(screen.queryByText("settings editor")).toBeNull();
+    expect(screen.getByRole("note")).toHaveTextContent("read-only settings");
     expect(screen.getByRole("note")).toHaveTextContent("editable by the team only");
     expect(screen.getByRole("note")).toHaveTextContent("Secrets never appear on this page");
+  });
+
+  it("shows an operator the settings read-only, never the editor", () => {
+    renderSettings(false, "operator");
+    expect(screen.queryByText("settings editor")).toBeNull();
+    expect(screen.getByRole("note")).toHaveTextContent("read-only settings");
+    expect(screen.getByRole("note")).toHaveTextContent("only an admin can change");
   });
 
   it("shows the on-call rota (phone numbers) to an admin only: never an operator or a guest (#37)", () => {
