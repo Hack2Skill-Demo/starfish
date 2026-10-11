@@ -233,13 +233,47 @@ export function triageFinding(c: CycleRow): { reason: string; suspectedCause?: s
 
 /**
  * The issue Starfish filed for this run (`summary.issue`), once it recorded one as opened with a number and an https
- * link. A dry run, a failed filing and a guest's trimmed copy have none.
+ * link. A dry run and a failed filing have none; a guest's trimmed copy carries the same number and link (#18).
  */
-export function issueLink(c: CycleRow): { number: number; url: string } | undefined {
+export function issueLink(c: CycleRow): { number: number; url: string; repo?: string } | undefined {
   const issue = c.summary.issue;
-  if (issue?.state !== "opened" || typeof issue.number !== "number" || !Number.isInteger(issue.number) || issue.number <= 0) return undefined;
+  if (issue?.state !== "opened" || !isRefNumber(issue.number)) return undefined;
   const url = safeUrl(issue.url);
-  return url === undefined ? undefined : { number: issue.number, url };
+  if (url === undefined) return undefined;
+  const repo = githubRepo(url, "issues", issue.number);
+  return { number: issue.number, url, ...(repo !== undefined && { repo }) };
+}
+
+/**
+ * The pull request this run opened (`summary.pr`), whenever it recorded an https link: its number when one was
+ * recorded, and whether it is open, merged or closed as the engine last read it back (`summary.prState`), which picks
+ * GitHub's icon for it. Never read back = no state, drawn as open.
+ */
+export function prLink(c: CycleRow): { url: string; number?: number; repo?: string; state?: "open" | "merged" | "closed" } | undefined {
+  const pr = c.summary.pr;
+  const url = safeUrl(pr?.url);
+  if (url === undefined) return undefined;
+  const number = isRefNumber(pr?.number) ? pr.number : undefined;
+  const repo = number === undefined ? undefined : githubRepo(url, "pull", number);
+  const state = c.summary.prState?.state;
+  return {
+    url,
+    ...(number !== undefined && { number }),
+    ...(repo !== undefined && { repo }),
+    ...((state === "open" || state === "merged" || state === "closed") && { state }),
+  };
+}
+
+const isRefNumber = (v: unknown): v is number => typeof v === "number" && Number.isInteger(v) && v > 0;
+
+/**
+ * "owner/repo" from a link in GitHub's form (`/<owner>/<repo>/issues/<number>` or `/pull/<number>`, any host, so
+ * GitHub Enterprise too), for a reference written the way GitHub writes one (`owner/repo#30`). Absent when the link is
+ * not that form or names another number: the page then says only `#30`.
+ */
+function githubRepo(url: string, kind: "issues" | "pull", number: number): string | undefined {
+  const m = /^\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)\/(issues|pull)\/(\d+)\/?$/.exec(new URL(url).pathname);
+  return m && m[3] === kind && Number(m[4]) === number ? `${m[1]}/${m[2]}` : undefined;
 }
 
 /** A link is shown only if it is an https URL: the record is written by the engine, but it is still data. */

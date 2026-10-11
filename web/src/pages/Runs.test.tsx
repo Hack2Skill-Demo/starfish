@@ -255,9 +255,11 @@ describe("Runs page", () => {
     renderRuns();
     act(() => mocks.cyclesCb!([cycle("inc-a_r0", { state: "waiting-human", leaseExpiresAt: null, summary: { pr: { url: "https://github.com/o/r/pull/9", number: 9 } } })], false));
     act(() => mocks.eventsCb!([]));
-    expect(screen.queryByRole("link", { name: /Open the pull request/ })).toBeNull();
+    expect(screen.queryByRole("link", { name: /GitHub pull request/ })).toBeNull();
     act(() => mocks.eventsCb!([event(1, "pr", "opened", "Opened a pull request", 1000)]));
-    expect(screen.getByRole("link", { name: /Open the pull request/ })).toHaveAttribute("href", "https://github.com/o/r/pull/9");
+    const ref = screen.getByRole("link", { name: "GitHub pull request o/r#9" });
+    expect(ref).toHaveAttribute("href", "https://github.com/o/r/pull/9");
+    expect(ref).toHaveTextContent("o/r#9");
   });
 
   it("puts the step log under the pipeline, newest first, with the step in progress on top (#279)", () => {
@@ -289,9 +291,11 @@ describe("Runs page", () => {
     const log = screen.getByRole("list", { name: "Step log" });
     expect(within(log).getByText(/Suspected cause:/).parentElement).toHaveTextContent("IAM on the function's account");
     expect(within(log).getByText(/The model's reasoning/)).toHaveTextContent("gemini-x");
-    expect(within(log).queryByRole("link", { name: /Open the issue/ })).toBeNull();
+    expect(within(log).queryByRole("link", { name: /GitHub issue/ })).toBeNull();
     act(() => mocks.eventsCb!([event(1, "triage", "decision", "The account lacks a role.", 9000), event(2, "issue", "opened", "Issue #30 filed", 8000)]));
-    expect(within(log).getByRole("link", { name: /Open the issue/ })).toHaveAttribute("href", "https://github.com/o/r/issues/30");
+    const ref = within(log).getByRole("link", { name: "GitHub issue o/r#30" });
+    expect(ref).toHaveAttribute("href", "https://github.com/o/r/issues/30");
+    expect(ref).toHaveTextContent("o/r#30");
     // Newest first: the issue above triage.
     const entries = within(log).getAllByRole("listitem");
     expect(entries[0]).toHaveTextContent("GitHub issue");

@@ -17,6 +17,7 @@ import {
   runFilter,
   runStatus,
   issueLink,
+  prLink,
   failureView,
   safeUrl,
   stepLogOrder,
@@ -318,6 +319,19 @@ describe("small helpers", () => {
     expect(stepLogOrder([])).toEqual([]);
   });
 
+  it("links the pull request whenever it recorded an https link, with GitHub's reference and its last-read state", () => {
+    const url = "https://github.com/o/r/pull/9";
+    expect(prLink(cycle({ summary: { pr: { opened: true, number: 9, url } } }))).toEqual({ url, number: 9, repo: "o/r" });
+    expect(prLink(cycle({ summary: { pr: { opened: true, number: 9, url }, prState: { state: "merged" } } }))).toEqual({ url, number: 9, repo: "o/r", state: "merged" });
+    expect(prLink(cycle({ summary: { pr: { opened: true, number: 9, url }, prState: { state: "weird" } } }))).toEqual({ url, number: 9, repo: "o/r" });
+    // No number recorded: no reference either, only the link.
+    expect(prLink(cycle({ summary: { pr: { opened: true, url } } }))).toEqual({ url });
+    // An issue's link is not a pull request's.
+    expect(prLink(cycle({ summary: { pr: { opened: true, number: 9, url: "https://github.com/o/r/issues/9" } } }))).toEqual({ url: "https://github.com/o/r/issues/9", number: 9 });
+    expect(prLink(cycle({ summary: { pr: { opened: true, number: 9, url: "javascript:alert(1)" } } }))).toBeUndefined();
+    expect(prLink(cycle({ summary: {} }))).toBeUndefined();
+  });
+
   describe("failureView (#289)", () => {
     const detail = "Error: Unknown product: sku-poster\n    at /workspace/lib/functions/src/orders/createOrder.js:22:33\n    at Array.map (<anonymous>)";
 
@@ -353,7 +367,11 @@ describe("small helpers", () => {
 
   it("links the issue only once it was recorded as opened, with a number and an https link", () => {
     const url = "https://github.com/o/r/issues/30";
-    expect(issueLink(cycle({ summary: { issue: { state: "opened", number: 30, url } } }))).toEqual({ number: 30, url });
+    expect(issueLink(cycle({ summary: { issue: { state: "opened", number: 30, url } } }))).toEqual({ number: 30, url, repo: "o/r" });
+    // The repository only from a link in GitHub's issue form, for the same number.
+    const other = "https://github.com/o/r/pull/30";
+    expect(issueLink(cycle({ summary: { issue: { state: "opened", number: 30, url: other } } }))).toEqual({ number: 30, url: other });
+    expect(issueLink(cycle({ summary: { issue: { state: "opened", number: 31, url } } }))).toEqual({ number: 31, url });
     expect(issueLink(cycle({ summary: { issue: { state: "dry-run" } } }))).toBeUndefined();
     expect(issueLink(cycle({ summary: { issue: { state: "failed", reason: "error" } } }))).toBeUndefined();
     expect(issueLink(cycle({ summary: { issue: { state: "opened", number: 30, url: "javascript:alert(1)" } } }))).toBeUndefined();
