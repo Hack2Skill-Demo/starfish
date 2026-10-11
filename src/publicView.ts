@@ -217,7 +217,7 @@ const tokenOrNull: Shape = (v) => (v === null ? null : token(v));
 
 /**
  * The run record (`summary.<stage>`) a guest may see: per stage, the keys and the shape of each value. Only the stages
- * and keys the UI renders; a stage not named here (issue, alert, notify, merge, revert, escalation, before) is left out.
+ * and keys the UI renders; a stage not named here (alert, notify, merge, revert, escalation, before) is left out.
  * `counterCount: null` is kept as null: it means the recount was missing, which is not the same as not recorded.
  */
 export const PUBLIC_SUMMARY: Readonly<Record<string, Readonly<Record<string, Shape>>>> = {
@@ -227,6 +227,8 @@ export const PUBLIC_SUMMARY: Readonly<Record<string, Readonly<Record<string, Sha
   fix: { outcome: token, rule: token, testAdded: boolOrNull, revisions: count, source: token, sourceFiles: count, sourceSearch: token },
   verify: { status: token, rule: token, patchSha256: hex, baseRevision: hex, files: count, exitCode: intOrNull, durationMs: nonNegative },
   review: { verdict: tokenOrNull, rule: token, attacks: count, held: count, flagged: count, broken: count, patchSha256: hex },
+  // The issue Starfish filed: the same number and link the incident's copy already carries (`githubIssueUrl`).
+  issue: { state: token, number: count, url: publicUrl },
   pr: { opened: bool, reason: token, number: count, url: publicUrl, patchSha256: hex },
   prState: {
     number: count,

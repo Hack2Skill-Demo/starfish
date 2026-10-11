@@ -233,7 +233,7 @@ export function triageFinding(c: CycleRow): { reason: string; suspectedCause?: s
 
 /**
  * The issue Starfish filed for this run (`summary.issue`), once it recorded one as opened with a number and an https
- * link. A dry run, a failed filing and a guest's trimmed copy have none.
+ * link. A dry run and a failed filing have none; a guest's trimmed copy carries the same number and link (#18).
  */
 export function issueLink(c: CycleRow): { number: number; url: string } | undefined {
   const issue = c.summary.issue;
