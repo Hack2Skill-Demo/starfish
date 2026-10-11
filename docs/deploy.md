@@ -685,7 +685,7 @@ browser send it; browsers are allowed only from `ADMIN_API_ORIGINS`. For a scrip
 dedicated admin account in through the Firebase Auth REST API and send its ID token.
 
 **It is public on the network on purpose** (`--allow-unauthenticated`: a browser must reach it, so Cloud Run's own IAM check
-cannot be the gate), capped at two instances, with no rate limit beyond that. An organisation policy that forbids public
+cannot be the gate), capped at two instances, with a per-address request limit (above). An organisation policy that forbids public
 services will refuse the deploy line. Its name is in the default `STARFISH_EXCLUDED_SERVICES` of every deploy, with or without
 `DEPLOY_ADMIN_API=1` (#177), so its own errors are never ingested; an explicit list in `EXTRA_ENV_VARS` replaces that default,
 and the script warns if it leaves the service out (on a run that deploys it). From GitHub Actions, set the repository variables
