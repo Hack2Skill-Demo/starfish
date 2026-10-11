@@ -208,6 +208,13 @@ describe("what the model is shown", () => {
     expect(prompt).not.toContain("tenant-123");
   });
 
+  it("never shows Starfish's environment label, which says nothing about the watched app (#311)", () => {
+    const prompt = renderForTriage({ incident: incident({ environment: "demo-label-xyz" }), status: "new" });
+    expect(prompt).not.toContain("demo-label-xyz");
+    expect(prompt).not.toMatch(/environment/i);
+    expect(TRIAGE_SYSTEM).not.toMatch(/environment/i);
+  });
+
   it("says what the counter-check read, including when counting stopped at the cap", () => {
     expect(renderForTriage({ incident: incident({ logCounterCheck: { window: "24h", count: 1000, capped: true } }), status: "new" })).toContain(
       "1000 error entries for the function in 24h (at least"
