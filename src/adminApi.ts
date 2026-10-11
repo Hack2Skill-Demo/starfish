@@ -6,9 +6,12 @@
  * `src/adminApiCli.ts` serves it and supplies the token check, so every rule here is testable with stubs.
  *
  * Who may call. The caller sends a Firebase ID token (`Authorization: Bearer ...`); `verifyToken` turns it
- * into a uid, and that uid is all that is believed. Whether the uid is an ADMIN is decided by the two functions
- * this calls, from the operator record (`starfish_users/{uid}.roles`), read fresh on every call, so a revoked
- * admin loses access on the next request even though their token is valid for an hour. A token in a header, not a
+ * into a uid, and that uid is all that is believed. Whether the uid is an ADMIN is decided from the operator record
+ * (`starfish_users/{uid}.roles`), read fresh on every call, so a revoked admin loses access on the next request even
+ * though their token is valid for an hour. It is checked here (`isAdmin`) right after the token and BEFORE anything
+ * else, the one-at-a-time locks included (#305): otherwise anyone signed in, an anonymous guest too, could keep "Run
+ * ingest now" held so an admin got a 409, and learn from the 409 that a run was in progress. Each action checks the
+ * role again itself (src/ingest/trigger.ts, src/agent/trigger.ts, retire.ts, optIn.ts). A token in a header, not a
  * cookie, so a page on another site cannot make the browser send it (no CSRF); CORS is an allowlist of the
  * operator UI's origin and nothing else.
  *
@@ -30,8 +33,8 @@
  * Absent wiring (no Twilio configured): all of them are a 404.
  *
  * Public on the network on purpose: the browser must reach it (Cloud Run `--allow-unauthenticated`), and
- * everything above is what stands between the internet and the store. There is no rate limit here; the deploy caps
- * the instances, and a token check is cheap.
+ * everything above is what stands between the internet and the store. The per-address rate limit is the HTTP shell's
+ * (src/adminApiServer.ts), not this file's; the deploy caps the instances.
  */
 import { redactPii, truncate } from "./ingest/redact.js";
 import type { RetireResult } from "./ingest/retire.js";
@@ -87,6 +90,11 @@ export interface AdminApiDeps {
    * only ever sees the one message. Absent: nothing is recorded. A throw here is swallowed.
    */
   onRefused?(reason: string): void;
+  /**
+   * Whether the uid is an admin now, from the operator record (src/adminAuth.ts). Asked before any route takes a lock
+   * or calls an action (#305); false, or a throw, and the call is refused (403, or 500) having touched nothing.
+   */
+  isAdmin(uid: string): Promise<boolean>;
   runIngest(actorUid: string): Promise<TriggerResult>;
   retire(incidentId: string, actorUid: string, reason: string): Promise<RetireResult>;
   /**
@@ -120,6 +128,7 @@ const ONCALL_STATUS: Record<string, [number, string]> = {
   "invalid-id": [400, "bad request"],
   "already-confirmed": [409, "already confirmed"],
   "too-soon": [429, "a code was sent less than a minute ago"],
+  "daily-cap": [429, "today's limit of confirmation texts is reached: try again tomorrow"],
   off: [409, "phone escalation is off on this deployment"],
   "send-failed": [502, "the text could not be sent"],
   "no-code": [409, "send a code first"],
@@ -194,6 +203,17 @@ export function createAdminApi(deps: AdminApiDeps): (req: ApiRequest) => Promise
       }
       return reply(401, { error: "sign in again" });
     }
+
+    // The role before any lock (#305): a caller who is not an admin never holds one, so it can neither block an admin
+    // with a 409 nor learn from one that a run is in progress. The awaited read comes before the lock's check-and-set,
+    // which stays one synchronous step.
+    let admin: boolean;
+    try {
+      admin = await deps.isAdmin(uid);
+    } catch {
+      return reply(500, { error: "could not check the caller's role" });
+    }
+    if (!admin) return reply(403, { error: "admins only" });
 
     if (route === "ingest") {
       if (ingestRunning) return reply(409, { error: "an ingest run is already in progress here" });

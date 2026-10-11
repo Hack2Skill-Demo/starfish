@@ -779,6 +779,17 @@ describe("phone escalation settings (#37)", () => {
     expect(c.twilioWebhookUrl).toBe("");
     expect(c.twilioApiUrl).toBe("https://api.twilio.com");
     expect(c.onCallPeopleCollection).toBe("starfish_oncall_people");
+    expect(c.onCallCodeCollection).toBe("starfish_oncall_codes");
+    expect(c.onCallMaxTextsPerDay).toBe(20);
+  });
+
+  it("takes a daily cap on opt-in texts, and refuses one that is not a positive integer (#306)", () => {
+    vi.stubEnv("STARFISH_ONCALL_MAX_TEXTS_PER_DAY", "5");
+    expect(loadConfig().onCallMaxTextsPerDay).toBe(5);
+    for (const bad of ["0", "-1", "2.5", "lots"]) {
+      vi.stubEnv("STARFISH_ONCALL_MAX_TEXTS_PER_DAY", bad);
+      expect(() => loadConfig(), bad).toThrow(/STARFISH_ONCALL_MAX_TEXTS_PER_DAY/);
+    }
   });
 
   it("takes an https audio file and an exact https origin for the webhooks, and refuses anything else", () => {

@@ -13,7 +13,7 @@ import type { StarfishConfig } from "../config.js";
 import { MAX_SCAN, runEscalationTick, readPolicy, stepEscalation, type EscalationDeps } from "./escalation.js";
 import { createTwilioWebhooks, type TwilioWebhookResponse } from "./webhooks.js";
 import { twilioSignature, type TwilioClient } from "./twilio.js";
-import { confirmNumber, sendConfirmationCode } from "./optIn.js";
+import { CODE_TTL_MS, codeHash, confirmNumber, sendConfirmationCode, textCountDocId } from "./optIn.js";
 
 if (!process.env.FIRESTORE_EMULATOR_HOST) {
   throw new Error("escalation.emulator.test.ts needs the Firestore emulator: run `pnpm test:emulator`");
@@ -51,6 +51,7 @@ beforeEach(async () => {
     onCallCollection: `oncall_${p}`,
     onCallPeopleCollection: `people_${p}`,
     escalationCollection: `esc_${p}`,
+    onCallCodeCollection: `codes_${p}`,
     usersCollection: `users_${p}`,
     auditCollection: `audit_${p}`,
     onCallAudioUrl: AUDIO,
@@ -300,6 +301,65 @@ describe("opt-in", () => {
     expect(await confirmNumber(db, cfg, "p0", "424242", "admin1", T0)).toEqual({ ok: false, reason: "too-many-tries" });
   });
 
+  // #302: the hash of a six-digit code sat on the person's document, which admins read from the browser, and was undone
+  // offline in a moment. It now lives in an engine-only collection (firestore.rules closes it to every client).
+  it("keeps the code's hash, expiry and tries off the person's document, and drops them once confirmed (#302)", async () => {
+    await db.collection(cfg.usersCollection).doc("admin1").set({ roles: ["admin"] });
+    await seedPeople([{ id: "p0", role: "primary", state: "pending", phone: PHONES.pending, created: 1 }]);
+    expect(await sendConfirmationCode(db, cfg, twilio, "p0", "admin1", T0, () => "424242")).toEqual({ ok: true });
+    const person = (await db.collection(cfg.onCallPeopleCollection).doc("p0").get()).data()!;
+    expect(Object.keys(person).filter((k) => k.startsWith("code"))).toEqual([]);
+    const code = (await db.collection(cfg.onCallCodeCollection).doc("p0").get()).data()!;
+    expect(Object.keys(code).sort()).toEqual(["codeHash", "expiresAt", "sentAt", "tries"]);
+    expect(JSON.stringify(code)).not.toContain("424242");
+    expect(await confirmNumber(db, cfg, "p0", "111111", "admin1", T0)).toEqual({ ok: false, reason: "wrong-code" });
+    expect((await db.collection(cfg.onCallCodeCollection).doc("p0").get()).get("tries")).toBe(1);
+    expect(await confirmNumber(db, cfg, "p0", "424242", "admin1", T0)).toEqual({ ok: true });
+    expect((await db.collection(cfg.onCallCodeCollection).doc("p0").get()).exists).toBe(false);
+  });
+
+  it("never believes a hash an older version left on the person's document, and clears it with the next code (#302)", async () => {
+    await db.collection(cfg.usersCollection).doc("admin1").set({ roles: ["admin"] });
+    await seedPeople([{ id: "p0", role: "primary", state: "pending", phone: PHONES.pending, created: 1 }]);
+    const people = db.collection(cfg.onCallPeopleCollection);
+    await people.doc("p0").update({
+      codeHash: codeHash("p0", PHONES.pending, "424242"),
+      codeSentAt: Timestamp.fromDate(T0),
+      codeExpiresAt: Timestamp.fromMillis(T0.getTime() + CODE_TTL_MS),
+      codeTries: 0,
+    });
+    expect(await confirmNumber(db, cfg, "p0", "424242", "admin1", T0)).toEqual({ ok: false, reason: "no-code" });
+    // The legacy send time still keeps the minute between codes.
+    expect(await sendConfirmationCode(db, cfg, twilio, "p0", "admin1", at(0.5), () => "565656")).toEqual({ ok: false, reason: "too-soon" });
+    expect(await sendConfirmationCode(db, cfg, twilio, "p0", "admin1", at(1), () => "565656")).toEqual({ ok: true });
+    expect(Object.keys((await people.doc("p0").get()).data()!).filter((k) => k.startsWith("code"))).toEqual([]);
+    expect(await confirmNumber(db, cfg, "p0", "424242", "admin1", at(1))).toEqual({ ok: false, reason: "wrong-code" });
+    expect(await confirmNumber(db, cfg, "p0", "565656", "admin1", at(1))).toEqual({ ok: true });
+  });
+
+  // #306: one text a minute per person was the only limit, so a compromised admin account could text without end.
+  it("caps the deployment's opt-in texts per UTC day, audits the refusal, and counts concurrent sends exactly (#306)", async () => {
+    const capped = { ...cfg, onCallMaxTextsPerDay: 2 };
+    await db.collection(cfg.usersCollection).doc("admin1").set({ roles: ["admin"] });
+    await seedPeople([
+      { id: "p0", role: "primary", state: "pending", phone: PHONES.pending, created: 1 },
+      { id: "p1", role: "secondary", state: "pending", phone: PHONES.p1, created: 2 },
+      { id: "p2", role: "support-lead", state: "pending", phone: PHONES.p2, created: 3 },
+    ]);
+    const send = (person: string, now: Date) => sendConfirmationCode(db, capped, twilio, person, "admin1", now, () => "424242");
+    const results = await Promise.all(["p0", "p1", "p2"].map((p) => send(p, T0)));
+    expect(results.filter((r) => r.ok)).toHaveLength(2);
+    expect(results.filter((r) => !r.ok)).toEqual([{ ok: false, reason: "daily-cap" }]);
+    expect(texts).toHaveLength(2);
+    expect((await db.collection(cfg.onCallCodeCollection).doc(textCountDocId(T0)).get()).get("count")).toBe(2);
+    const audit = (await db.collection(cfg.auditCollection).get()).docs.map((d) => d.data());
+    expect(audit.filter((d) => d.outcome === "daily-cap")).toEqual([expect.objectContaining({ action: "oncall-send-code", actorUid: "admin1" })]);
+    // A new UTC day starts a new count.
+    const refusedId = ["p0", "p1", "p2"][results.findIndex((r) => !r.ok)]!;
+    expect(await send(refusedId, new Date("2026-10-07T00:00:01Z"))).toEqual({ ok: true });
+    expect(texts).toHaveLength(3);
+  });
+
   it("records every send-code and confirm attempt in the audit collection, refusals included, without the number or the code (#172)", async () => {
     await db.collection(cfg.usersCollection).doc("admin1").set({ roles: ["admin"] });
     await db.collection(cfg.usersCollection).doc("op1").set({ roles: ["operator"] });
@@ -329,7 +389,7 @@ describe("opt-in", () => {
     await run("already-confirmed", () => send("p0", "admin1", at(5)));
     refuseTexts = true;
     await run("send-failed", () => send("p1", "admin1", T0));
-    await db.collection(cfg.onCallPeopleCollection).doc("p1").update({ codeTries: 5 });
+    await db.collection(cfg.onCallCodeCollection).doc("p1").update({ tries: 5 });
     await run("too-many-tries", () => confirm("p1", "424242", "admin1", T0));
 
     const docs = (await db.collection(cfg.auditCollection).get()).docs.map((d) => d.data());

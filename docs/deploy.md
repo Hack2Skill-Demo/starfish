@@ -112,6 +112,12 @@ Twilio.** It is off by default and nothing here turns it on. What the operator m
 - **Where Twilio calls back.** Deploy the admin API (`DEPLOY_ADMIN_API=1`) and set `STARFISH_TWILIO_WEBHOOK_URL` to its
   URL (the origin only, e.g. the `https://...run.app` the script prints). The signature on each webhook is checked against
   this configured origin, never the request's Host header.
+- **Limit where texts can go (Twilio console, not scripted).** In the Twilio account's Messaging *Geo permissions*, allow
+  SMS only to the countries your on-call people's numbers are in. Starfish caps the opt-in texts it sends at
+  `STARFISH_ONCALL_MAX_TEXTS_PER_DAY` a UTC day across the whole deployment (default 20, #306; counted in a transaction,
+  a send-code over it refused and audited), and one a minute per person, but a compromised admin account could still
+  spend that day's allowance on premium-rate destinations; geo permissions are what stop those numbers being texted at
+  all. The cap counts opt-in codes only, not the link a "2" on a call texts (one per call, bounded by the calls).
 
 Then, in `EXTRA_ENV_VARS` (so the agent and the admin API agree): `STARFISH_PHONE_ESCALATION=true`,
 `STARFISH_ONCALL_AUDIO_URL=...`, `STARFISH_TWILIO_WEBHOOK_URL=...` and `STARFISH_UI_URL=...` (the link a "2" texts). An
@@ -634,7 +640,7 @@ mounted, the two opt-in routes too, admin-only and audited the same way (`sendCo
 | `POST /api/ingest/run` | one ingest run, the same `runIngest` a tick runs; the answer is the run's counts. One at a time per instance (a second is a 409) |
 | `POST /api/incidents/<id>/retire` with `{"reason": "..."}` | closes the incident for good and frees its fingerprint, so the demo's reset can replay a fault |
 | `POST /api/agent/run` | starts the deployed agent job once (#276) and answers 202 when Cloud Run accepted the start; it does not wait for the pass. Only where the deploy named the job (below); otherwise a 404. One start at a time per instance (a second is a 409); a start Cloud Run refuses is a 502 |
-| `POST /api/oncall/people/<id>/send-code` | texts a six-digit code to that person's pending number (#37); at most one a minute |
+| `POST /api/oncall/people/<id>/send-code` | texts a six-digit code to that person's pending number (#37); at most one a minute per person and `STARFISH_ONCALL_MAX_TEXTS_PER_DAY` (default 20) a UTC day in all (#306, a 429 past either). The code's hash, expiry and wrong tries are kept in `starfish_oncall_codes` (`STARFISH_ONCALL_CODE_COLLECTION`), which no client can read, an admin included (#302) |
 | `POST /api/oncall/people/<id>/confirm` with `{"code": "123456"}` | marks the number confirmed when the code matches; five wrong tries end it |
 | `GET /api/health` | `{ok:true}`, no token: the probe to use on Cloud Run. `GET /healthz` answers the same elsewhere, but on a `run.app` URL Google's front end answers it with its own 404 before it reaches the service (#212) |
 
@@ -651,7 +657,7 @@ in the dry-run plan; **never run against real Cloud Run**.
 The audit trail is `starfish_audit` (`STARFISH_AUDIT_COLLECTION`): admin-readable, engine-written. An ingest run or a retire an
 admin made is recorded before the run or in the retire's own transaction (a refused one is not). An agent start is recorded
 before the start (`run-agent`), so one Cloud Run then refused is still on record. The opt-in routes record every
-attempt by an admin, refusals included (too soon, wrong code, too many tries, escalation off); a caller who is not an
+attempt by an admin, refusals included (too soon, today's text cap reached, wrong code, too many tries, escalation off); a caller who is not an
 admin is refused and not recorded, so a guest cannot fill the audit collection: who, which person, the outcome
 and when, never the number or the code. A send-code's entry commits before the text is sent, and if it cannot be written nothing
 is sent.
@@ -670,7 +676,9 @@ deployed**. A 429 carries no CORS header, so the UI reports it as a failed call.
 not revoked: a disabled account is refused at once), and
 its uid is all that is believed; whether that uid is an admin is read from `starfish_users/{uid}.roles` on every call,
 so revoking the role stops the next request even though the token lives an hour. One 401 for any bad token, one 403
-for a non-admin; no error text from inside ever leaves. The reason for a 401 is written to the service's own log, not
+for a non-admin; the role is read right after the token, before any route takes its one-at-a-time lock (#305), so a
+guest's token can neither hold "Run ingest now" or "Run agent now" busy (an admin would get the 409) nor learn from a 409
+that a run is in progress. Each action checks the role again itself. No error text from inside ever leaves. The reason for a 401 is written to the service's own log, not
 sent to the caller (a `WARNING` entry, "admin API refused a call", with the error's code and a bounded message, token-shaped
 strings removed), so a missing Auth permission can be told from an expired session. A header token, not a cookie, so another site cannot make a
 browser send it; browsers are allowed only from `ADMIN_API_ORIGINS`. For a script (the demo's reset), sign a

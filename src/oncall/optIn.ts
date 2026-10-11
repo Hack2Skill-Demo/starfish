@@ -4,12 +4,25 @@
  *   1. An admin adds a person in Settings -> On-call: firestore.rules lets a client create one only as `pending`, and
  *      changing a number makes it `pending` again.
  *   2. An admin asks for a code (`sendConfirmationCode`, the admin API's `POST /api/oncall/people/<id>/send-code`):
- *      one text with a six-digit code, valid ten minutes, at most one a minute. Only on that explicit request: a number
- *      being added texts nothing.
+ *      one text with a six-digit code, valid ten minutes, at most one a minute per person and `onCallMaxTextsPerDay` a
+ *      day in all. Only on that explicit request: a number being added texts nothing.
  *   3. The person tells the admin the code, who enters it (`confirmNumber`, `POST .../confirm`): right code, same number,
  *      not expired, fewer than five wrong tries, and the number becomes `confirmed`.
  * Only the engine writes `confirmed` (the Admin SDK); the code itself is never stored, only a hash bound to the person
  * AND the number, so a code sent to one number cannot confirm another.
+ *
+ * Where the code's state lives (#302): `{onCallCodeCollection}/{personId}` (the hash, when it was sent, when it expires,
+ * the wrong tries), a collection firestore.rules closes to every client. It used to sit on the person's document,
+ * which admins read from the browser, and a hash of one of a million codes is undone offline in a moment: an admin
+ * could have confirmed a number its owner never agreed to. The hash needs no secret now, because nobody but the engine
+ * can read it. Code fields an older version left on a person's document are never believed, and are deleted the next
+ * time a code is sent or confirmed for that person.
+ *
+ * A deployment-wide cap on texts (#306): at most `onCallMaxTextsPerDay` opt-in texts per UTC day across all people,
+ * counted in the same transaction that claims each one (`{onCallCodeCollection}/texts.<YYYY-MM-DD>`; a dot never
+ * appears in a person id, so the count can never be taken for a person's code). Over it a send-code is refused
+ * (`daily-cap`) and audited like every other refusal, so a compromised admin account cannot pump texts at will; the
+ * per-person minute between codes still applies. A text that Twilio then refuses still counts.
  *
  * Admin only, checked HERE from the operator record, like src/ingest/retire.ts. Built, tested against a fake Twilio and
  * the Firestore emulator; never run against real Twilio.
@@ -31,9 +44,12 @@ import { hasAdminRole, isAdmin, isValidUid } from "../adminAuth.js";
 import { parsePerson } from "../oncallSchema.js";
 import type { TwilioClient } from "./twilio.js";
 
-export type OptInConfig = Pick<StarfishConfig, "usersCollection" | "onCallPeopleCollection" | "phoneEscalation" | "auditCollection">;
+export type OptInConfig = Pick<
+  StarfishConfig,
+  "usersCollection" | "onCallPeopleCollection" | "onCallCodeCollection" | "onCallMaxTextsPerDay" | "phoneEscalation" | "auditCollection"
+>;
 
-type SendCodeRefusal = "not-admin" | "invalid-id" | "no-such-person" | "already-confirmed" | "too-soon" | "off" | "send-failed";
+type SendCodeRefusal = "not-admin" | "invalid-id" | "no-such-person" | "already-confirmed" | "too-soon" | "daily-cap" | "off" | "send-failed";
 type ConfirmRefusal = "not-admin" | "invalid-id" | "no-such-person" | "no-code" | "expired" | "wrong-code" | "too-many-tries";
 export type SendCodeResult = { ok: true } | { ok: false; reason: SendCodeRefusal };
 export type ConfirmResult = { ok: true } | { ok: false; reason: ConfirmRefusal };
@@ -76,7 +92,15 @@ async function refuse<R extends OptInOutcome>(audit: DocumentReference, entry: (
   return { ok: false, reason };
 }
 
-/** The stored form of a code: bound to the person and the number. */
+/** The code fields an older version kept on the person's document (#302): deleted from it whenever a code is sent or confirmed. */
+const LEGACY_PERSON_CODE_FIELDS = { codeHash: FieldValue.delete(), codeSentAt: FieldValue.delete(), codeExpiresAt: FieldValue.delete(), codeTries: FieldValue.delete() };
+
+const utcDay = (d: Date): string => d.toISOString().slice(0, 10);
+
+/** The deployment's count of opt-in texts for one UTC day. A person id has no dot (ID_RE), so no person's code has this id. */
+export const textCountDocId = (now: Date): string => `texts.${utcDay(now)}`;
+
+/** The stored form of a code (engine-only, #302): bound to the person and the number. */
 export const codeHash = (personId: string, phone: string, code: string): string => createHash("sha256").update(`${personId}\n${phone}\n${code}`).digest("hex");
 
 export async function sendConfirmationCode(
@@ -96,11 +120,18 @@ export async function sendConfirmationCode(
   // A text costs money: nothing is sent while the deployment has phone escalation off, or has no Twilio.
   if (!cfg.phoneEscalation || !twilio) return refuse(audit, entry, "off");
   const ref = db.collection(cfg.onCallPeopleCollection).doc(personId);
+  const codeRef = db.collection(cfg.onCallCodeCollection).doc(personId);
+  const countRef = db.collection(cfg.onCallCodeCollection).doc(textCountDocId(now));
   const code = makeCode();
   // The entry is created in the transaction whatever it decides. If the transaction fails, the entry with it, this
   // throws and nothing is sent.
   const claimed = await db.runTransaction(async (tx): Promise<SendCodeResult | { ok: true; phone: string }> => {
-    const [actor, snap] = await Promise.all([tx.get(db.collection(cfg.usersCollection).doc(actorUid)), tx.get(ref)]);
+    const [actor, snap, codeSnap, countSnap] = await Promise.all([
+      tx.get(db.collection(cfg.usersCollection).doc(actorUid)),
+      tx.get(ref),
+      tx.get(codeRef),
+      tx.get(countRef),
+    ]);
     const refused = (reason: SendCodeRefusal): SendCodeResult => {
       tx.create(audit, entry(reason));
       return { ok: false, reason };
@@ -109,15 +140,21 @@ export async function sendConfirmationCode(
     const person = snap.exists ? parsePerson(personId, snap.data(), 0) : null;
     if (!person) return refused("no-such-person");
     if (person.state === "confirmed") return refused("already-confirmed");
-    const last = ms(snap.get("codeSentAt"));
+    // A code an older version recorded on the person's document still counts for the minute between codes.
+    const last = ms(codeSnap.get("sentAt")) ?? ms(snap.get("codeSentAt"));
     if (last !== undefined && now.getTime() - last < RESEND_AFTER_MS) return refused("too-soon");
+    // A count that is not a number is taken as the cap reached: fail closed, a text costs money.
+    const sentToday = Number(countSnap.get("count") ?? 0);
+    if (!Number.isFinite(sentToday) || sentToday >= cfg.onCallMaxTextsPerDay) return refused("daily-cap");
     tx.create(audit, entry("sending"));
-    tx.update(ref, {
+    tx.set(countRef, { day: utcDay(now), count: sentToday + 1, updatedAt: Timestamp.fromDate(now) });
+    tx.set(codeRef, {
       codeHash: codeHash(personId, person.phone, code),
-      codeSentAt: Timestamp.fromDate(now),
-      codeExpiresAt: Timestamp.fromMillis(now.getTime() + CODE_TTL_MS),
-      codeTries: 0,
+      sentAt: Timestamp.fromDate(now),
+      expiresAt: Timestamp.fromMillis(now.getTime() + CODE_TTL_MS),
+      tries: 0,
     });
+    tx.update(ref, LEGACY_PERSON_CODE_FIELDS);
     return { ok: true, phone: person.phone };
   });
   if (!("phone" in claimed)) return claimed;
@@ -142,8 +179,9 @@ export async function confirmNumber(db: Firestore, cfg: OptInConfig, personId: s
   const entry = (outcome: OptInOutcome) => optInAuditEntry("oncall-confirm", actorUid, personId, outcome, now);
   if (!ID_RE.test(personId) || !/^\d{6}$/.test(code)) return refuse(audit, entry, "invalid-id");
   const ref = db.collection(cfg.onCallPeopleCollection).doc(personId);
+  const codeRef = db.collection(cfg.onCallCodeCollection).doc(personId);
   return db.runTransaction(async (tx): Promise<ConfirmResult> => {
-    const [actor, snap] = await Promise.all([tx.get(db.collection(cfg.usersCollection).doc(actorUid)), tx.get(ref)]);
+    const [actor, snap, codeSnap] = await Promise.all([tx.get(db.collection(cfg.usersCollection).doc(actorUid)), tx.get(ref), tx.get(codeRef)]);
     const refused = (reason: ConfirmRefusal): ConfirmResult => {
       tx.create(audit, entry(reason));
       return { ok: false, reason };
@@ -155,27 +193,22 @@ export async function confirmNumber(db: Firestore, cfg: OptInConfig, personId: s
       tx.create(audit, entry("already-confirmed"));
       return { ok: true };
     }
-    const stored = snap.get("codeHash") as unknown;
+    // Only the engine-only document is believed: a hash an older version left on the person's document was readable by
+    // admins (#302), so it confirms nothing; a new code has to be sent.
+    const stored = codeSnap.get("codeHash") as unknown;
     if (typeof stored !== "string") return refused("no-code");
-    if ((ms(snap.get("codeExpiresAt")) ?? 0) <= now.getTime()) return refused("expired");
-    const tries = Number(snap.get("codeTries") ?? 0);
-    if (tries >= MAX_TRIES) return refused("too-many-tries");
+    if ((ms(codeSnap.get("expiresAt")) ?? 0) <= now.getTime()) return refused("expired");
+    const tries = Number(codeSnap.get("tries") ?? 0);
+    if (!Number.isFinite(tries) || tries >= MAX_TRIES) return refused("too-many-tries");
     const expected = Buffer.from(stored);
     const given = Buffer.from(codeHash(personId, person.phone, code));
     if (expected.length !== given.length || !timingSafeEqual(expected, given)) {
-      tx.update(ref, { codeTries: tries + 1 });
+      tx.update(codeRef, { tries: tries + 1 });
       return refused("wrong-code");
     }
     tx.create(audit, entry("confirmed"));
-    tx.update(ref, {
-      state: "confirmed",
-      confirmedAt: Timestamp.fromDate(now),
-      confirmedBy: actorUid,
-      codeHash: FieldValue.delete(),
-      codeSentAt: FieldValue.delete(),
-      codeExpiresAt: FieldValue.delete(),
-      codeTries: FieldValue.delete(),
-    });
+    tx.update(ref, { state: "confirmed", confirmedAt: Timestamp.fromDate(now), confirmedBy: actorUid, ...LEGACY_PERSON_CODE_FIELDS });
+    tx.delete(codeRef);
     return { ok: true };
   });
 }

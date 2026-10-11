@@ -18,6 +18,7 @@ import { retireIncident } from "./ingest/retire.js";
 import { createAgentJobStarter } from "./agent/agentJob.js";
 import { triggerAgentPass } from "./agent/trigger.js";
 import { createAdminApi } from "./adminApi.js";
+import { isAdmin } from "./adminAuth.js";
 import { startAdminApiServer } from "./adminApiServer.js";
 import { createIpRateLimiter } from "./ipRateLimit.js";
 import { createTwilioClient } from "./oncall/twilio.js";
@@ -53,6 +54,8 @@ const handle = createAdminApi({
       await getAppCheck().verifyToken(token);
     },
   }),
+  // #305: the role is read before any route takes its lock; each action reads it again itself.
+  isAdmin: (uid) => isAdmin(db, config.usersCollection, uid),
   runIngest: (uid) => triggerIngest(db, config, loader, uid),
   retire: (id, uid, reason) => retireIncident(db, config, id, uid, reason, new Date()),
   ...(startAgentJob && {

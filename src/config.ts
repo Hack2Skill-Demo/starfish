@@ -305,6 +305,19 @@ export interface StarfishConfig {
   /** Firestore collection of the call sequences, one per escalated cycle, and the per-person daily call counts. Engine-only. */
   escalationCollection: string;
   /**
+   * Firestore collection of the opt-in codes (src/oncall/optIn.ts): one document per person holding the hash of the
+   * code last texted, its expiry and the wrong tries, plus one deployment-wide count of opt-in texts per UTC day.
+   * Engine-only (firestore.rules: no client reads or writes it), because a six-digit code's hash can be brute-forced
+   * offline by anyone who can read it (#302): an admin could otherwise confirm a number its owner never agreed to.
+   */
+  onCallCodeCollection: string;
+  /**
+   * The most opt-in texts (a confirmation code) the whole deployment sends in one UTC day (#306), counted in a
+   * transaction as each is claimed: a cap on what a compromised admin account can spend on texts, or send to
+   * numbers that are not theirs. A send-code over it is refused (`daily-cap`) and audited. Default 20.
+   */
+  onCallMaxTextsPerDay: number;
+  /**
    * The ONE pre-recorded audio file every call plays (https, e.g. a public Cloud Storage object): it says an urgent
    * incident needs a person and the details are in the on-call channel. No incident detail is ever spoken. Empty: no
    * call can be placed.
@@ -611,6 +624,8 @@ export function loadConfig(): StarfishConfig {
     onCallCollection: process.env.STARFISH_ONCALL_COLLECTION || "starfish_oncall",
     onCallPeopleCollection: process.env.STARFISH_ONCALL_PEOPLE_COLLECTION || "starfish_oncall_people",
     escalationCollection: process.env.STARFISH_ESCALATION_COLLECTION || "starfish_escalations",
+    onCallCodeCollection: process.env.STARFISH_ONCALL_CODE_COLLECTION || "starfish_oncall_codes",
+    onCallMaxTextsPerDay: positiveInteger(process.env.STARFISH_ONCALL_MAX_TEXTS_PER_DAY, 20, "STARFISH_ONCALL_MAX_TEXTS_PER_DAY"),
     onCallAudioUrl: validHttpsUrl(process.env.STARFISH_ONCALL_AUDIO_URL, "STARFISH_ONCALL_AUDIO_URL"),
     twilioApiUrl: validApiRoot(process.env.STARFISH_TWILIO_API_URL, "https://api.twilio.com", "STARFISH_TWILIO_API_URL"),
     twilioWebhookUrl: validOrigins(parseList(process.env.STARFISH_TWILIO_WEBHOOK_URL, ",") ?? [], "STARFISH_TWILIO_WEBHOOK_URL")[0] ?? "",

@@ -1232,5 +1232,27 @@ describe("the on-call rota (#37): phone numbers are personal data", () => {
     await assertFails(getDoc(doc(as("admin1"), "starfish_escalations/inc1_r0")));
     await assertFails(getDoc(doc(guest(), "starfish_escalations/inc1_r0")));
   });
+
+  // #302: a code's hash on the admin-readable person document let an admin try all million codes offline and confirm a
+  // number its owner never agreed to. The code state and the daily text count live in an engine-only collection.
+  it("nobody, an admin included, reads or writes the opt-in codes or the daily text count (#302, #306)", async () => {
+    await env.withSecurityRulesDisabled(async (ctx) => {
+      await setDoc(doc(ctx.firestore(), "starfish_oncall_codes/p1"), { codeHash: "a".repeat(64), sentAt: Timestamp.now(), expiresAt: Timestamp.now(), tries: 0 });
+      await setDoc(doc(ctx.firestore(), "starfish_oncall_codes/texts.2026-10-11"), { day: "2026-10-11", count: 3 });
+    });
+    for (const db of [as("admin1"), as("op1"), as("nobody"), guest(), anon()]) {
+      await assertFails(getDoc(doc(db, "starfish_oncall_codes/p1")));
+      await assertFails(getDoc(doc(db, "starfish_oncall_codes/texts.2026-10-11")));
+      await assertFails(getDocs(collection(db, "starfish_oncall_codes")));
+      await assertFails(setDoc(doc(db, "starfish_oncall_codes/p2"), { codeHash: "b".repeat(64), tries: 0 }));
+      await assertFails(updateDoc(doc(db, "starfish_oncall_codes/p1"), { tries: 0 }));
+      await assertFails(updateDoc(doc(db, "starfish_oncall_codes/texts.2026-10-11"), { count: 0 }));
+      await assertFails(deleteDoc(doc(db, "starfish_oncall_codes/p1")));
+    }
+    // The person's document an admin reads carries no code state.
+    await seedPerson("pending");
+    const person = await assertSucceeds(getDoc(doc(as("admin1"), "starfish_oncall_people/p1")));
+    expect(Object.keys(person.data() ?? {}).filter((k) => k.startsWith("code"))).toEqual([]);
+  });
 });
 
