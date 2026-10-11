@@ -2,7 +2,9 @@
  * SignIn — email + password on Firebase
  * Auth; the route guard resolves roles and routes the operator on from here.
  * On the public demo it also offers the guest view (#12), for a visitor who
- * lands here (after signing out, or from a "Team sign in" link) without an account.
+ * lands here (after signing out, or from a guest's "Sign in" link) without an account.
+ * There it also says where the sign-in details are (`signInHint`, never the credentials), and choosing the
+ * demo view is remembered (`markGuestViewChosen`) so the app stops asking that visitor to sign in.
  */
 import { useEffect, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router";
@@ -13,6 +15,7 @@ import { Button } from "../components/ui/Button";
 import { firebaseAuth } from "../lib/firebase";
 import { StarfishLogo } from "../layout/StarfishLogo";
 import { offersGuestView } from "../lib/dataSource";
+import { markGuestViewChosen, signInHint } from "../lib/demoGuide";
 import { useAuth } from "./authCore";
 
 /** Firebase Auth error code → message. Never reveals whether the email exists. */
@@ -67,6 +70,7 @@ export function SignIn() {
 
   const handleGuest = async () => {
     setError(null);
+    markGuestViewChosen();
     setEnteringGuest(true);
     if (!(await enterAsGuest({ requested: true }))) {
       setEnteringGuest(false);
@@ -106,6 +110,12 @@ export function SignIn() {
                 <StarfishLogo variant="lockup" tone="dark" size={56} title="" />
               </div>
             </div>
+
+            {offersGuestView() && (
+              <p className="mb-6 rounded-lg border border-gray-200 bg-gray-50 p-4 text-sm text-gray-700 dark:border-gray-700 dark:bg-gray-900/40 dark:text-gray-300">
+                <span className="font-medium text-gray-900 dark:text-white">Public demo.</span> {signInHint()}
+              </p>
+            )}
 
             {error && (
               <div
@@ -174,7 +184,11 @@ export function SignIn() {
               <div className="mt-6 border-t border-gray-200 pt-6 text-center text-sm text-gray-600 dark:border-gray-700 dark:text-gray-400">
                 No account?{" "}
                 {guest ? (
-                  <Link to="/overview" className="font-medium text-brand-700 hover:underline dark:text-brand-400">
+                  <Link
+                    to="/overview"
+                    onClick={markGuestViewChosen}
+                    className="font-medium text-brand-700 hover:underline dark:text-brand-400"
+                  >
                     See the demo view
                   </Link>
                 ) : (

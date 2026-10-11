@@ -128,5 +128,8 @@ jobs:
           # (minutes; empty = 90).
           VITE_STARFISH_ADMIN_API_URL: ${{ vars.STARFISH_WEB_ADMIN_API_URL }}
           VITE_STARFISH_STALE_MINUTES: ${{ vars.STARFISH_WEB_STALE_MINUTES }}
+          # Optional, the public demo only: where a visitor finds the sign-in details, shown on the sign-in page and in
+          # the welcome guide (never the credentials: it ships in the bundle). Empty = a generic line.
+          VITE_STARFISH_DEMO_SIGNIN_HINT: ${{ vars.STARFISH_WEB_DEMO_SIGNIN_HINT }}
           DRY_RUN: ${{ inputs.dry_run && '1' || '0' }}
         run: scripts/deploy-web.sh

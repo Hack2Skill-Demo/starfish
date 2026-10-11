@@ -5,9 +5,12 @@ import { MemoryRouter, Route, Routes } from "react-router";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { Ctx, type StarfishAuthCtx } from "./authCore";
 import { SignIn } from "./SignIn";
+import { hasChosenGuestView } from "../lib/demoGuide";
 
 const mocks = vi.hoisted(() => ({ environment: "demo" }));
-vi.mock("../lib/config", () => ({ webConfig: () => ({ environment: mocks.environment }) }));
+vi.mock("../lib/config", () => ({
+  webConfig: () => ({ environment: mocks.environment, demoSignInHint: "They are in our slides." }),
+}));
 vi.mock("../lib/firebase", () => ({ firebaseAuth: () => ({}) }));
 
 const baseCtx: StarfishAuthCtx = {
@@ -47,6 +50,22 @@ const operator = { uid: "op-1", isAnonymous: false } as StarfishAuthCtx["user"];
 describe("SignIn: the demo view link", () => {
   beforeEach(() => {
     mocks.environment = "demo";
+    localStorage.clear();
+  });
+
+  it("says where the sign-in details are on the demo, and nowhere else", () => {
+    renderSignIn({});
+    expect(screen.getByText("They are in our slides.", { exact: false })).toBeInTheDocument();
+
+    mocks.environment = "prod";
+    renderSignIn({});
+    expect(screen.getAllByText("They are in our slides.", { exact: false })).toHaveLength(1);
+  });
+
+  it("remembers that the visitor chose the demo view, so the app does not ask them to sign in", async () => {
+    renderSignIn({ enterAsGuest: async () => true });
+    await userEvent.setup().click(screen.getByRole("button", { name: "See the demo view" }));
+    expect(hasChosenGuestView()).toBe(true);
   });
 
   it("asks for a guest session and opens Overview once the session is in", async () => {

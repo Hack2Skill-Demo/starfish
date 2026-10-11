@@ -13,6 +13,8 @@
 #   VITE_STARFISH_ADMIN_API_URL  the admin API's URL (deploy-gcp.sh's DEPLOY_ADMIN_API=1 prints it): an admin then sees "Run
 #                         ingest now" and "Retire". Unset or empty: both are hidden
 #   VITE_STARFISH_STALE_MINUTES  how long after the last run the engine line says "stopped". Unset or empty: 90
+#   VITE_STARFISH_DEMO_SIGNIN_HINT  the public demo only: where a visitor finds the sign-in details (never the
+#                         credentials: it ships in the bundle). Unset or empty: a generic line
 #   DRY_RUN=1             print the commands instead of running them
 #   ALLOW_RULES_DRIFT=1   deploy even when the live Firestore rules of STARFISH_DATABASE_ID are not this repository's
 #                         firestore.rules, or cannot be read (#262). Default: refuse, and say to run the engine deploy first
