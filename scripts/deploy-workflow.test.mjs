@@ -193,6 +193,14 @@ describe(".github/workflows/deploy-web.yml", () => {
     const docs = readFileSync(new URL("../docs/deploy.md", import.meta.url), "utf8");
     for (const name of ["STARFISH_WEB_ADMIN_API_URL", "STARFISH_WEB_STALE_MINUTES"]) expect(docs).toContain(name);
   });
+
+  // The public demo's sign-in hint (where the details are, never the credentials) reaches the build the same way.
+  it("hands the build the demo's sign-in hint, through the environment", () => {
+    const env = code(web).split("- name: Deploy")[1] ?? "";
+    expect(env).toMatch(/^ {10}VITE_STARFISH_DEMO_SIGNIN_HINT: \$\{\{ vars\.STARFISH_WEB_DEMO_SIGNIN_HINT \}\}$/m);
+    const docs = readFileSync(new URL("../docs/deploy.md", import.meta.url), "utf8");
+    expect(docs).toContain("STARFISH_WEB_DEMO_SIGNIN_HINT");
+  });
 });
 
 describe("every workflow", () => {

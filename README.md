@@ -8,6 +8,34 @@ urgent, drafts a fix, adversarially reviews its own work, and opens a verified p
 
 Named for the animal that regrows what it loses.
 
+## Try the live demo
+
+### **[ocean-starfish.web.app](https://ocean-starfish.web.app)**
+
+- **No account needed to look.** Opening the link puts you in a read-only view of a live
+  deployment that watches a demo project.
+- **Judges: sign in for the full records.** The email and password are in our presentation
+  slides (deliberately not here). Signed in, you see what the view-only demo leaves out: error
+  detail, stack traces, Gemini's reasoning and the patches.
+- **A three-step guide opens on your first visit.** The **?** button in the header reopens it.
+
+What happens to an incident:
+
+1. **Ingest:** reads the watched project's new error logs on a schedule and folds repeats of one
+   error into one incident (one that comes back after a fix is reopened as a regression).
+2. **Triage:** Gemini judges whether it needs action and how far to go: noise, log it, or attempt a fix.
+3. **Fix:** Gemini drafts a minimal patch, or declines when there is no confident one-step fix.
+4. **Verify:** deterministic, not a model: in the demo, the watched project's own CI checks judge the patch.
+5. **Review:** a second Gemini pass attacks the verified patch before anything is opened.
+6. **Pull request:** opened with its evidence; then Starfish stops and a person decides. It merges
+   only where an admin turned that on, for the cases they listed, with every check green.
+
+Where to look: **Overview** (is the engine alive, what is waiting on a person), **Incidents** (each
+error and what the agent decided; open one for its evidence), **Runs** (every agent run, step by
+step), **Settings** (the switches and rules an admin controls). Every number is a record the
+deployment wrote; one marked **Synthetic** is an illustration, not a run that happened. How far
+each stage has got on real incidents is in [Status](#status).
+
 ---
 
 ## Why

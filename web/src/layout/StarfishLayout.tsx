@@ -4,15 +4,22 @@
  * operator's roles; the L2 collapse persists per browser.
  *
  * No command palette or breadcrumbs: with two sections they would not earn their keep.
+ *
+ * A build for the public demo (#12) also carries the welcome guide (components/DemoWelcome.tsx): it opens by itself the
+ * first time in a browser, and from the header's help button any time. A guest gets the guest bar under every page.
  */
 import { useState } from "react";
 import { Outlet, NavLink, Link, useLocation, useNavigate } from "react-router";
-import { Menu, X, LogIn, LogOut, ChevronLeft, ChevronRight, Sun, Moon, Monitor } from "lucide-react";
+import { Menu, X, LogIn, LogOut, ChevronLeft, ChevronRight, Sun, Moon, Monitor, CircleHelp } from "lucide-react";
 import { useAuth } from "../auth/authCore";
 import { useTheme } from "../theme/useTheme";
 import { useEnvironment } from "../lib/useSettings";
 import { StarfishLogo } from "./StarfishLogo";
 import { menuItems, visibleMenuItems, activeMenuItem } from "./menuConfig";
+import { offersGuestView } from "../lib/dataSource";
+import { hasChosenGuestView, hasSeenWelcome, markWelcomeSeen } from "../lib/demoGuide";
+import { DemoWelcome } from "../components/DemoWelcome";
+import { GuestBar } from "../components/GuestBar";
 
 const ROLE_LABELS = { admin: "Admin", operator: "Operator" } as const;
 const L2_KEY = "starfish.nav.l2Collapsed";
@@ -33,6 +40,10 @@ export function StarfishLayout() {
   const navigate = useNavigate();
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [l2Collapsed, setL2Collapsed] = useState(readCollapsed);
+  const demoGuide = offersGuestView();
+  const [welcomeOpen, setWelcomeOpen] = useState(() => demoGuide && !hasSeenWelcome());
+  // Read on each render: the guide's "Continue view-only" sets it, and its close re-renders the layout.
+  const askToSignIn = guest && !hasChosenGuestView();
 
   const items = visibleMenuItems(menuItems, guest ? ["guest"] : roles);
   const active = activeMenuItem(items, location.pathname);
@@ -47,6 +58,11 @@ export function StarfishLayout() {
       }
       return next;
     });
+  };
+
+  const closeWelcome = () => {
+    markWelcomeSeen();
+    setWelcomeOpen(false);
   };
 
   const handleSignOut = async () => {
@@ -102,8 +118,9 @@ export function StarfishLayout() {
           {guest ? (
             <Link
               to="/signin"
-              aria-label="Team sign in"
-              title="Team sign in"
+              state={{ from: location }}
+              aria-label="Sign in"
+              title="Sign in"
               className="mt-2 flex h-11 w-11 items-center justify-center rounded-lg text-gray-400 transition-colors hover:bg-gray-800 hover:text-white"
             >
               <LogIn className="h-5 w-5" />
@@ -180,27 +197,35 @@ export function StarfishLayout() {
             <Menu className="h-6 w-6 text-gray-600 dark:text-gray-400" />
           </button>
           <span className="text-sm font-medium text-gray-700 dark:text-gray-200">{active?.label ?? "Starfish"}</span>
-          <button
-            onClick={toggleTheme}
-            aria-label={`Theme: ${themePreference}. Change theme`}
-            title={`Theme: ${themePreference}`}
-            className="rounded-lg border border-gray-200 p-2 text-gray-500 transition-colors hover:bg-gray-50 dark:border-gray-700 dark:text-gray-400 dark:hover:bg-gray-700/50"
-          >
-            <ThemeIcon className="h-4 w-4" />
-          </button>
+          <div className="flex items-center gap-2">
+            {demoGuide && (
+              <button
+                onClick={() => setWelcomeOpen(true)}
+                aria-label="What is Starfish? Open the guide"
+                title="What is Starfish?"
+                className="rounded-lg border border-gray-200 p-2 text-gray-500 transition-colors hover:bg-gray-50 dark:border-gray-700 dark:text-gray-400 dark:hover:bg-gray-700/50"
+              >
+                <CircleHelp className="h-4 w-4" />
+              </button>
+            )}
+            <button
+              onClick={toggleTheme}
+              aria-label={`Theme: ${themePreference}. Change theme`}
+              title={`Theme: ${themePreference}`}
+              className="rounded-lg border border-gray-200 p-2 text-gray-500 transition-colors hover:bg-gray-50 dark:border-gray-700 dark:text-gray-400 dark:hover:bg-gray-700/50"
+            >
+              <ThemeIcon className="h-4 w-4" />
+            </button>
+          </div>
         </header>
         <main className="flex-1 overflow-y-auto p-4 lg:p-6">
           <Outlet />
         </main>
         {guest && (
-          <footer className="flex flex-wrap items-center justify-between gap-2 border-t border-gray-200 bg-white px-4 py-2 text-xs text-gray-600 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-400 lg:px-6">
-            <span>Public demo · view only</span>
-            <Link to="/signin" className="font-medium text-brand-700 hover:underline dark:text-brand-400">
-              Team sign in
-            </Link>
-          </footer>
+          <GuestBar askToSignIn={askToSignIn} onOpenGuide={demoGuide ? () => setWelcomeOpen(true) : undefined} />
         )}
       </div>
+      {welcomeOpen && <DemoWelcome guest={guest} askToSignIn={askToSignIn} onClose={closeWelcome} />}
     </div>
   );
 }

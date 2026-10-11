@@ -126,6 +126,18 @@ describe("bootstrapWebConfig: the engine's run record", () => {
     ).toMatchObject({ runCollection: "my_runs", engineStaleMinutes: 15 });
   });
 
+  it("reads the demo's sign-in hint trimmed, and leaves it empty when unset", async () => {
+    vi.resetModules();
+    const fresh = await import("./config");
+    expect(await fresh.bootstrapWebConfig({}, respond(served))).toMatchObject({ demoSignInHint: "" });
+
+    vi.resetModules();
+    const other = await import("./config");
+    expect(
+      await other.bootstrapWebConfig({ VITE_STARFISH_DEMO_SIGNIN_HINT: "  In the slides.  " }, respond(served))
+    ).toMatchObject({ demoSignInHint: "In the slides." });
+  });
+
   it("defaults the cycle collection to starfish_cycles and reads it from the environment", async () => {
     vi.resetModules();
     const fresh = await import("./config");

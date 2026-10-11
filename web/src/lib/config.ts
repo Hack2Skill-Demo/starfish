@@ -145,6 +145,12 @@ export interface WebConfig {
   useEmulators: boolean;
   /** Firebase App Check (#12): see `AppCheckConfig`. */
   appCheck: AppCheckConfig;
+  /**
+   * The public demo only (`environment` = demo): one line telling a visitor where the sign-in email and password are,
+   * e.g. "They are in our presentation slides." Shown on the sign-in page and in the demo's welcome guide; never the
+   * credentials themselves. "" = the guide's generic wording.
+   */
+  demoSignInHint: string;
 }
 
 /**
@@ -232,6 +238,7 @@ export function bootstrapWebConfig(
         functionsRegion: env.VITE_FUNCTIONS_REGION || "us-central1",
         useEmulators: env.VITE_USE_EMULATORS === "1",
         appCheck: readAppCheckConfig(env),
+        demoSignInHint: (env.VITE_STARFISH_DEMO_SIGNIN_HINT ?? "").trim().slice(0, 300),
       };
       return cached;
     },
