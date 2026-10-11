@@ -454,6 +454,16 @@ describe("loadConfig: where a missing index may be created", () => {
     expect(() => loadConfig()).toThrow(/STARFISH_ADMIN_API_APPCHECK/);
   });
 
+  it("limits the admin API to 30 requests a minute per address by default, and refuses a limit that is not a whole number above zero", () => {
+    expect(loadConfig().adminApiRateLimitPerMinute).toBe(30);
+    vi.stubEnv("STARFISH_ADMIN_API_RATE_LIMIT_PER_MINUTE", "120");
+    expect(loadConfig().adminApiRateLimitPerMinute).toBe(120);
+    for (const bad of ["0", "-5", "2.5", "lots"]) {
+      vi.stubEnv("STARFISH_ADMIN_API_RATE_LIMIT_PER_MINUTE", bad);
+      expect(() => loadConfig(), bad).toThrow(/STARFISH_ADMIN_API_RATE_LIMIT_PER_MINUTE/);
+    }
+  });
+
   it("reads the UI origin for Slack links: exact, https, empty by default", () => {
     expect(loadConfig().uiBaseUrl).toBe("");
     vi.stubEnv("STARFISH_UI_URL", "https://site.web.app/");

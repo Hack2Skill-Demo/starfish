@@ -182,7 +182,9 @@ start-up comes before that (#275), so a pass that is due shows as due until its 
 
 Guests (the public demo's anonymous visitors) no longer read the incidents, cycles and run events: the rules serve them
 only the trimmed copies the engine writes for `STARFISH_PUBLIC_ENVIRONMENTS` (default `demo`) into
-`starfish_public_incidents`, `starfish_public_cycles` and `starfish_public_events` (`src/publicView.ts`). Two steps are a
+`starfish_public_incidents`, `starfish_public_cycles` and `starfish_public_events` (`src/publicView.ts`). A guest's query must
+carry a limit of at most 500 documents: anyone can open a guest session and a query is billed per document it returns, so
+without one a script could read every copy on each request (an old UI build that asked with no limit would be refused). Two steps are a
 person's, once, on a deployment that already holds demo records; **neither has been run on a real project**:
 
 1. **Deploy the rules and indexes together.** `scripts/deploy-gcp.sh` deploys `firestore.rules` and `firestore.indexes.json`
@@ -639,8 +641,8 @@ account has there. The admin API then starts the same job a schedule tick starts
 agent's own account with the agent's own switches (dry run, the kill switch, auto-merge), caps and leases: an admin's click
 is one tick, early, and gives Starfish no way to act that a tick does not. The admin API holds none of the agent's
 credentials. A run without `DEPLOY_AGENT=1` sets the name empty, and the route is gone again; the grant on the job, if an
-earlier run made it, is left in place and can be removed by hand. Starts are not rate-limited beyond one in flight per
-instance: each is a job execution, bounded by the agent's own daily caps. Tested with stubs and the emulator, and pinned
+earlier run made it, is left in place and can be removed by hand. Starts are not limited beyond one in flight per
+instance and the per-address limit below: each is a job execution, bounded by the agent's own daily caps. Tested with stubs and the emulator, and pinned
 in the dry-run plan; **never run against real Cloud Run**.
 
 The audit trail is `starfish_audit` (`STARFISH_AUDIT_COLLECTION`): admin-readable, engine-written. An ingest run or a retire an
@@ -650,6 +652,16 @@ attempt by an admin, refusals included (too soon, wrong code, too many tries, es
 admin is refused and not recorded, so a guest cannot fill the audit collection: who, which person, the outcome
 and when, never the number or the code. A send-code's entry commits before the text is sent, and if it cannot be written nothing
 is sent.
+
+**A per-address limit.** The service is public, and any guest can mint a valid ID token, so a script could make it do an
+Auth lookup and a store read on every call. Each address gets `STARFISH_ADMIN_API_RATE_LIMIT_PER_MINUTE` requests a minute
+(default 30, through `EXTRA_ENV_VARS`), per instance, so up to twice that across the two instances `--max-instances=2`
+allows; past it the answer is a 429 with `Retry-After`, before the body is read or the token checked, and the service logs
+one `WARNING` ("admin API rate limit reached") per address per minute, not one per request. The address is the last
+`X-Forwarded-For` entry, which Cloud Run's front end adds (a client cannot forge it); an IPv6 caller is limited by its /64.
+Behind a load balancer of your own, every caller would share the balancer's address and one limit. The limit is in memory
+(`src/ipRateLimit.ts`): a new instance starts with an empty table. Unit-tested and over a local HTTP server; **not yet
+deployed**. A 429 carries no CORS header, so the UI reports it as a failed call.
 
 **Who may call.** The caller sends `Authorization: Bearer <Firebase ID token>`. The token is checked (signature, expiry, and
 not revoked: a disabled account is refused at once), and

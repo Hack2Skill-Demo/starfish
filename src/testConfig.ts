@@ -70,6 +70,7 @@ export function testConfig(over: Partial<StarfishConfig> = {}): StarfishConfig {
     fastRevertGraceMinutes: 10,
     adminApiOrigins: [],
     adminApiPort: 8080,
+    adminApiRateLimitPerMinute: 30,
     agentJobName: "",
     agentJobRegion: "us-central1",
     adminApiRequireAppCheck: false,
