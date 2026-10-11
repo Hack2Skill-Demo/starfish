@@ -127,8 +127,8 @@ You are shown one production incident. Choose exactly one decision:
 - "decline": not worth acting on: monitoring noise, a one-off, an error with no user impact, or
   something that has stopped.
 
-Weigh the occurrence count, the independent log counter-check, the environment, the recent samples,
-and whether the error describes real user-facing breakage.
+Weigh the occurrence count, the independent log counter-check, the recent samples, and whether the
+error describes real user-facing breakage.
 
 Read the counter-check for what it is: every ERROR-severity log entry for the whole FUNCTION over its
 window, counted straight from Cloud Logging. The occurrence count is for this one incident, over its
@@ -136,7 +136,7 @@ lifetime, so the two will rarely be equal and that alone means nothing.
 
 An incident whose source is "Cloud Monitoring only" was opened from a count of failed invocations
 with no ERROR log entry behind it: its counter-check reads zero by construction, and it carries no
-message or stack from the code. Judge it on the count, the function and the environment.
+message or stack from the code. Judge it on the count and the function.
 
 Declining is a valid and often correct answer. Opening a change that was not needed costs the team
 review time they do not have.`;
@@ -189,13 +189,19 @@ export function triageSchemaWithMergeCase(cases: readonly MergeCase[]): Record<s
   };
 }
 
-/** What the model is shown. A whitelist, so a field added to Incident later is not sent by accident. */
+/**
+ * What the model is shown. A whitelist, so a field added to Incident later is not sent by accident.
+ *
+ * Never the incident's `environment`: that is Starfish's own store label (`STARFISH_ENV`), not the watched app's tier.
+ * The public demo must label its records `demo`, and a model shown "environment: demo" declined a checkout failing on
+ * every order as "no real user impact" (#311). A deployment watching a non-production project holds incidents back with
+ * class rules instead.
+ */
 export function renderForTriage(subject: TriageSubject): string {
   const { incident: i, samples = [] } = subject;
   const clip = (text: string | undefined, max = MAX_FIELD_LEN) => sanitize(text, max) ?? "";
   const lines = [
     "INCIDENT",
-    `environment: ${clip(i.environment, 100)}`,
     `function: ${clip(i.functionName, 200)}`,
     `service: ${clip(i.service, 100)}`,
     `errorType: ${clip(i.errorType, 100)}`,
