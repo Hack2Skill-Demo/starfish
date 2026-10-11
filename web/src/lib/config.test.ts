@@ -150,6 +150,20 @@ describe("bootstrapWebConfig: the engine's run record", () => {
     ).toMatchObject({ cycleCollection: "my_cycles" });
   });
 
+  it("leaves the behind threshold unset by default, so it follows the schedule, and reads it when set (#297)", async () => {
+    vi.resetModules();
+    const fresh = await import("./config");
+    expect((await fresh.bootstrapWebConfig({}, respond(served))).engineBehindMinutes).toBeUndefined();
+
+    vi.resetModules();
+    const other = await import("./config");
+    expect((await other.bootstrapWebConfig({ VITE_STARFISH_BEHIND_MINUTES: "45" }, respond(served))).engineBehindMinutes).toBe(45);
+
+    vi.resetModules();
+    const bad = await import("./config");
+    expect((await bad.bootstrapWebConfig({ VITE_STARFISH_BEHIND_MINUTES: "-1" }, respond(served))).engineBehindMinutes).toBeUndefined();
+  });
+
   it.each(["0", "-5", "abc", "Infinity"])("falls back to the default for %s rather than blocking startup", async (bad) => {
     vi.resetModules();
     const fresh = await import("./config");

@@ -380,6 +380,19 @@ export interface StarfishConfig {
    */
   ingestRunBudgetSeconds: number;
   /**
+   * How much log data one window's read may hold, in megabytes (#296): the approximate size of the entries read (their
+   * payload and metadata serialised as JSON). A Cloud Logging entry can be 256 KB, so the entry cap alone let a burst
+   * of large entries run the job out of memory, on every replay of the same window. A read that reaches it is treated
+   * like one that reaches the entry cap: the window is narrowed to the part read in full. Keep it well under the
+   * memory whatever runs the ingest has (scripts/deploy-gcp.sh gives the job 512Mi).
+   */
+  ingestReadBudgetMb: number;
+  /**
+   * How far the ingest's checkpoint may fall behind the newest logs it could read (#297) before `pnpm status` calls it
+   * "behind", in minutes. Unset: twice the interval of `ingestSchedule` when that is known, else the stale threshold.
+   */
+  ingestBehindMinutes?: number;
+  /**
    * The Cloud Scheduler cron that starts the ingest (set by scripts/deploy-gcp.sh and scripts/ingest-cadence.sh).
    * Only told to the UI, through the last-run record, so it can say when the next run is expected; the engine
    * does not schedule itself. Unset: the UI says nothing about the next run.
@@ -573,6 +586,10 @@ export function loadConfig(): StarfishConfig {
     ),
     // 8 minutes: two under the 10-minute task timeout scripts/deploy-gcp.sh derives from it by default.
     ingestRunBudgetSeconds: positiveNumber(process.env.STARFISH_INGEST_RUN_BUDGET_SECONDS, 480, "STARFISH_INGEST_RUN_BUDGET_SECONDS"),
+    ingestReadBudgetMb: positiveNumber(process.env.STARFISH_INGEST_READ_BUDGET_MB, 64, "STARFISH_INGEST_READ_BUDGET_MB"),
+    ...(process.env.STARFISH_INGEST_BEHIND_MINUTES?.trim()
+      ? { ingestBehindMinutes: positiveNumber(process.env.STARFISH_INGEST_BEHIND_MINUTES.trim(), 1, "STARFISH_INGEST_BEHIND_MINUTES") }
+      : {}),
     runCollection: process.env.STARFISH_RUN_COLLECTION || "starfish_runs",
     dryRun: parseBoolean(process.env.STARFISH_DRY_RUN, true, "STARFISH_DRY_RUN"),
     reviewRequired: parseBoolean(process.env.STARFISH_REVIEW_REQUIRED, true, "STARFISH_REVIEW_REQUIRED"),

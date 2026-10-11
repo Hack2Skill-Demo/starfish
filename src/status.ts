@@ -10,10 +10,11 @@
  * had errors to find, so "ok" with zero incidents on a quiet project is a correct answer.
  */
 import type { AgentRunRecord } from "./agentRunRecord.js";
+import { behindAfterMinutes, isBehind, parseLagSeconds } from "./ingestLag.js";
 import { SETTINGS_UNUSABLE } from "./settingsSchema.js";
 import { OPEN_INCIDENT_STATUSES } from "./types.js";
 
-export type EngineState = "ok" | "failed" | "stale" | "capped" | "never";
+export type EngineState = "ok" | "failed" | "stale" | "behind" | "capped" | "never";
 
 /** The outcomes run.ts records; a record with any other is unusable, as in the UI. */
 export type RunOutcome = "ok" | "failed" | "idle";
@@ -29,9 +30,14 @@ export interface RunRecord {
   problems: string[];
   /** A code or error name; never a message. */
   error?: string;
+  /** How often a run is started, from the engine's schedule; absent when the engine could not tell. */
+  intervalMinutes?: number;
+  /** How far the checkpoint was behind the newest readable logs when the run ended (#297); absent when not known. */
+  lagSeconds?: number;
 }
 
 const num = (v: unknown): number => (typeof v === "number" && Number.isFinite(v) ? v : 0);
+const positive = (v: unknown): boolean => typeof v === "number" && Number.isFinite(v) && v > 0;
 
 /** The stored last_run document as a RunRecord, or null when it is missing or unusable. */
 export function parseRunRecord(data: Record<string, unknown> | undefined): RunRecord | null {
@@ -55,6 +61,8 @@ export function parseRunRecord(data: Record<string, unknown> | undefined): RunRe
     },
     problems: Array.isArray(data.problems) ? data.problems.filter((p): p is string => typeof p === "string") : [],
     ...(typeof data.error === "string" && { error: data.error }),
+    ...(positive(data.intervalMinutes) && { intervalMinutes: data.intervalMinutes as number }),
+    ...(parseLagSeconds(data.lagSeconds) !== undefined && { lagSeconds: parseLagSeconds(data.lagSeconds) }),
   };
 }
 
@@ -68,21 +76,24 @@ export function isSettingsRefusal(run: { outcome: string; error?: string }): boo
 }
 
 /**
- * failed beats stale beats capped beats ok; no record at all is "never", and so is a record for another
+ * failed beats stale beats behind beats capped beats ok; no record at all is "never", and so is a record for another
  * environment (the label was changed): it is not this environment's run. Except a refusal on unusable settings,
- * which is failed whatever environment it names (`isSettingsRefusal`).
+ * which is failed whatever environment it names (`isSettingsRefusal`). Behind (#297) before capped: incidents seen
+ * late are worse than counts that are a floor, and a flood usually brings both.
  */
 export function judgeRun(
-  run: Pick<RunRecord, "environment" | "finishedAt" | "capped" | "error"> & { outcome: string } | null,
+  run: (Pick<RunRecord, "environment" | "finishedAt" | "capped" | "error" | "intervalMinutes" | "lagSeconds"> & { outcome: string }) | null,
   environment: string,
   now: Date,
-  staleMinutes: number
+  staleMinutes: number,
+  behindMinutes?: number
 ): EngineState {
   if (run === null) return "never";
   if (isSettingsRefusal(run)) return "failed";
   if (run.environment !== environment) return "never";
   if (run.outcome === "failed") return "failed";
   if (now.getTime() - run.finishedAt.getTime() > staleMinutes * 60_000) return "stale";
+  if (isBehind(run, staleMinutes, behindMinutes)) return "behind";
   if (run.capped) return "capped";
   return "ok";
 }
@@ -154,9 +165,11 @@ export function describeStatus(input: {
   environment: string;
   /** Incident counts by status, for the watched environment. */
   counts: Record<string, number>;
+  /** `ingestBehindMinutes` (#297); unset follows the schedule (`behindAfterMinutes`). */
+  behindMinutes?: number;
 }): StatusReport {
-  const { run, now, staleMinutes, environment, counts } = input;
-  const state = judgeRun(run, environment, now, staleMinutes);
+  const { run, now, staleMinutes, environment, counts, behindMinutes } = input;
+  const state = judgeRun(run, environment, now, staleMinutes, behindMinutes);
   const lines: string[] = [];
 
   if (run === null) {
@@ -171,6 +184,14 @@ export function describeStatus(input: {
         `${t.incidentsCreated} new, ${t.incidentsUpdated} updated, ${t.incidentsRecurred} recurred`
     );
     if (state === "stale") lines.push(`  nothing has run for more than ${staleMinutes} min (is the schedule slower than that?)`);
+    if (run.lagSeconds !== undefined && run.lagSeconds >= 60) {
+      const lag = Math.round(run.lagSeconds / 60);
+      lines.push(
+        isBehind(run, staleMinutes, behindMinutes)
+          ? `  behind: the checkpoint was ${lag} min behind the newest readable logs (more than ${behindAfterMinutes(run, staleMinutes, behindMinutes)} min): runs are not catching up, so new incidents are seen late`
+          : `  the checkpoint was ${lag} min behind the newest readable logs`
+      );
+    }
     if (run.capped) lines.push("  a read hit its cap: the counts are a floor, not the truth");
     if (run.error !== undefined) lines.push(`  failed with: ${run.error}`);
     if (isSettingsRefusal(run)) lines.push("  the run read nothing: the runtime settings could not be used and no last-good copy exists");

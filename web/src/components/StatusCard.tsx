@@ -11,6 +11,7 @@ import { formatRelativeTime } from "../lib/formatters";
 const DOT: Record<EngineState, string> = {
   ok: "bg-success-600 dark:bg-success-400",
   capped: "bg-warning-500 dark:bg-warning-400",
+  behind: "bg-warning-500 dark:bg-warning-400",
   stale: "bg-warning-500 dark:bg-warning-400",
   failed: "bg-error-600 dark:bg-error-400",
   never: "bg-gray-400 dark:bg-gray-500",
@@ -19,6 +20,7 @@ const DOT: Record<EngineState, string> = {
 const LABEL_TEXT: Record<EngineState, string> = {
   ok: "text-success-700 dark:text-success-400",
   capped: "text-warning-700 dark:text-warning-400",
+  behind: "text-warning-700 dark:text-warning-400",
   stale: "text-warning-700 dark:text-warning-400",
   failed: "text-error-700 dark:text-error-400",
   never: "text-gray-700 dark:text-gray-300",

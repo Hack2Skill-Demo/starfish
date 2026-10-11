@@ -116,6 +116,24 @@ describe("loadConfig: ingest windows", () => {
     expect(() => loadConfig()).toThrow("STARFISH_INGEST_RUN_BUDGET_SECONDS");
   });
 
+  it("reads the read's byte budget, 64 MB by default (#296)", () => {
+    vi.stubEnv("STARFISH_INGEST_READ_BUDGET_MB", "");
+    expect(loadConfig().ingestReadBudgetMb).toBe(64);
+    vi.stubEnv("STARFISH_INGEST_READ_BUDGET_MB", "32");
+    expect(loadConfig().ingestReadBudgetMb).toBe(32);
+    vi.stubEnv("STARFISH_INGEST_READ_BUDGET_MB", "0");
+    expect(() => loadConfig()).toThrow("STARFISH_INGEST_READ_BUDGET_MB");
+  });
+
+  it("reads the behind threshold, unset by default so it follows the schedule (#297)", () => {
+    vi.stubEnv("STARFISH_INGEST_BEHIND_MINUTES", "");
+    expect(loadConfig().ingestBehindMinutes).toBeUndefined();
+    vi.stubEnv("STARFISH_INGEST_BEHIND_MINUTES", "45");
+    expect(loadConfig().ingestBehindMinutes).toBe(45);
+    vi.stubEnv("STARFISH_INGEST_BEHIND_MINUTES", "-1");
+    expect(() => loadConfig()).toThrow("STARFISH_INGEST_BEHIND_MINUTES");
+  });
+
   it("reads the lookback, 24 hours by default", () => {
     vi.stubEnv("STARFISH_LOOKBACK_HOURS", "");
     expect(loadConfig().defaultLookbackHours).toBe(24);

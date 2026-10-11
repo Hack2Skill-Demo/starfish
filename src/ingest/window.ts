@@ -45,6 +45,19 @@ export function narrowWindow(window: IngestWindow, lastReadAt: Date): IngestWind
   return windowOf(window.start, new Date(end));
 }
 
+/**
+ * The first half of `window`, or null when it is too short to halve (#296). For a pending window that attempt after
+ * attempt never finished: whatever killed it (memory, a stalled read) is less likely on half the time, and the second
+ * half is planned after it, from its end, like any other window. Only for a window nothing was written under, as with
+ * `narrowWindow`: the half has a new id.
+ */
+export function splitWindow(window: IngestWindow): IngestWindow | null {
+  const start = window.start.getTime();
+  const mid = start + Math.floor((window.end.getTime() - start) / 2);
+  if (!(mid > start && mid < window.end.getTime())) return null;
+  return windowOf(window.start, new Date(mid));
+}
+
 export interface WindowPlan {
   /** Where the last completed window ended; undefined on the first run. */
   checkpoint: Date | undefined;

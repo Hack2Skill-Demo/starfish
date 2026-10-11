@@ -9,9 +9,10 @@
  */
 import { doc, getDoc, type Firestore } from "firebase/firestore";
 import { SETTINGS_UNUSABLE } from "../../../src/settingsSchema";
+import { behindAfterMinutes, isBehind, parseLagSeconds } from "../../../src/ingestLag";
 import { AGENT_LAST_RUN_DOC, parseAgentPassInProgress, parseAgentRunRecord, type AgentPassInProgress, type AgentRunRecord } from "../../../src/agentRunRecord";
 
-export { AGENT_LAST_RUN_DOC, type AgentPassInProgress, type AgentRunRecord };
+export { AGENT_LAST_RUN_DOC, behindAfterMinutes, type AgentPassInProgress, type AgentRunRecord };
 
 export const LAST_RUN_DOC = "last_run";
 
@@ -31,6 +32,8 @@ export interface LastRun {
   startedAt?: Date;
   /** How often a run is started, from the engine's schedule; absent when the engine could not tell. */
   intervalMinutes?: number;
+  /** How far the checkpoint was behind the newest readable logs when the run ended (#297); absent when not known. */
+  lagSeconds?: number;
 }
 
 const num = (v: unknown): number => (typeof v === "number" && Number.isFinite(v) ? v : 0);
@@ -62,6 +65,7 @@ export async function readLastRun(db: Firestore, runCollection: string): Promise
     ...(typeof d.error === "string" && { error: d.error }),
     ...(started && !Number.isNaN(started.getTime()) && { startedAt: started }),
     ...(typeof d.intervalMinutes === "number" && Number.isFinite(d.intervalMinutes) && d.intervalMinutes > 0 && { intervalMinutes: d.intervalMinutes }),
+    ...(parseLagSeconds(d.lagSeconds) !== undefined && { lagSeconds: parseLagSeconds(d.lagSeconds) }),
   };
 }
 
@@ -90,7 +94,7 @@ export function nextRunAt(run: Pick<LastRun, "startedAt" | "intervalMinutes"> | 
   return new Date(run.startedAt.getTime() + run.intervalMinutes * 60_000);
 }
 
-export type EngineState = "ok" | "failed" | "stale" | "capped" | "never";
+export type EngineState = "ok" | "failed" | "stale" | "behind" | "capped" | "never";
 
 export interface EngineHealth<T = LastRun> {
   state: EngineState;
@@ -98,20 +102,29 @@ export interface EngineHealth<T = LastRun> {
 }
 
 /** What `judgeRun` reads of a record: the ingest's and the agent's both have it. */
-type JudgedRecord = Pick<LastRun, "environment" | "finishedAt" | "capped" | "error"> & { outcome: string };
+type JudgedRecord = Pick<LastRun, "environment" | "finishedAt" | "capped" | "error" | "intervalMinutes" | "lagSeconds"> & { outcome: string };
 
 /**
- * Worst first: a failed last run, then a stopped engine, then a read that hit the cap, then healthy.
+ * Worst first: a failed last run, then a stopped engine, then an ingest whose checkpoint is further behind the newest logs
+ * than `behindMinutes` allows (#297; unset follows the schedule, `behindAfterMinutes`), then a read that hit the cap,
+ * then healthy.
  * A run recorded for another environment is not this environment's run (the label was changed). Except a run that
  * refused to start because the runtime settings could not be used (#223): it records the env default's environment,
  * since the one an admin chose could not be read, so it is failed whatever environment it names, as in `pnpm status`.
  */
-export function judgeRun<T extends JudgedRecord>(run: T | null, environment: string, nowMs: number, staleAfterMinutes: number): EngineHealth<T> {
+export function judgeRun<T extends JudgedRecord>(
+  run: T | null,
+  environment: string,
+  nowMs: number,
+  staleAfterMinutes: number,
+  behindMinutes?: number
+): EngineHealth<T> {
   if (!run) return { state: "never", run: null };
   if (run.outcome === "failed" && run.error === SETTINGS_UNUSABLE) return { state: "failed", run };
   if (run.environment !== environment) return { state: "never", run: null };
   if (run.outcome === "failed") return { state: "failed", run };
   if (nowMs - run.finishedAt.getTime() > staleAfterMinutes * 60_000) return { state: "stale", run };
+  if (isBehind(run, staleAfterMinutes, behindMinutes)) return { state: "behind", run };
   if (run.capped) return { state: "capped", run };
   return { state: "ok", run };
 }

@@ -113,6 +113,34 @@ describe("judgeRun", () => {
     expect(judge(run({ capped: true }))).toBe("capped");
   });
 
+  it("a checkpoint further behind than twice the schedule's interval is behind, though every run said ok (#297)", () => {
+    expect(judge(run({ intervalMinutes: 60, lagSeconds: 121 * 60 }))).toBe("behind");
+    expect(judge(run({ intervalMinutes: 60, lagSeconds: 120 * 60 }))).toBe("ok");
+    expect(judge(run({ intervalMinutes: 60, lagSeconds: 0 }))).toBe("ok");
+    // No interval recorded: the stale threshold. A configured threshold beats both.
+    expect(judge(run({ lagSeconds: 91 * 60 }))).toBe("behind");
+    expect(judge(run({ lagSeconds: 89 * 60 }))).toBe("ok");
+    expect(judgeRun(run({ intervalMinutes: 60, lagSeconds: 31 * 60 }), "demo", NOW, 90, 30).state).toBe("behind");
+    // No lag recorded (an older record): never behind. Missing is not a large number.
+    expect(judge(run({ intervalMinutes: 1 }))).toBe("ok");
+  });
+
+  it("reads the lag and ignores one that is not a count of seconds", async () => {
+    mocks.data = stored({ lagSeconds: 4200 });
+    expect((await readLastRun({} as Firestore, "r"))?.lagSeconds).toBe(4200);
+    for (const bad of [-1, "4200", Number.NaN]) {
+      mocks.data = stored({ lagSeconds: bad });
+      expect((await readLastRun({} as Firestore, "r"))?.lagSeconds).toBeUndefined();
+    }
+  });
+
+  it("worst first: failed beats stale beats behind beats capped", () => {
+    const behind = { intervalMinutes: 5, lagSeconds: 3600 };
+    expect(judge(run({ ...behind, capped: true }))).toBe("behind");
+    expect(judge(run({ ...behind, finishedAt: new Date(NOW - 5 * 3600_000) }))).toBe("stale");
+    expect(judge(run({ ...behind, outcome: "failed" }))).toBe("failed");
+  });
+
   it("worst first: failed beats stale beats capped", () => {
     const old = new Date(NOW - 5 * 3600_000);
     expect(judge(run({ outcome: "failed", finishedAt: old, capped: true }))).toBe("failed");
@@ -155,6 +183,10 @@ describe("agreement with pnpm status", () => {
     ["failed", stored({ outcome: "failed", capped: true, finishedAt: ts(NOW - 500 * 60_000) }), "demo"],
     ["stale", stored({ finishedAt: ts(NOW - 91 * 60_000) }), "demo"],
     ["capped", stored({ capped: true }), "demo"],
+    ["behind (#297)", stored({ intervalMinutes: 60, lagSeconds: 3 * 3600, capped: true }), "demo"],
+    ["behind on the stale threshold, no interval recorded", stored({ lagSeconds: 91 * 60 }), "demo"],
+    ["a lag under the threshold", stored({ intervalMinutes: 60, lagSeconds: 3600 }), "demo"],
+    ["an unusable lag", stored({ intervalMinutes: 60, lagSeconds: "9999" }), "demo"],
     ["another environment", stored(), "prod"],
     ["a settings refusal for another environment (#223)", stored({ outcome: "failed", error: "settings-unusable", environment: "dev" }), "demo"],
     ["another failure for another environment", stored({ outcome: "failed", error: "TimeoutError", environment: "dev" }), "demo"],
