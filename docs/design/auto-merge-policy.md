@@ -48,10 +48,17 @@ lower**, all checked again right before the merge:
   a request that names no secret were invisible to it (#295). The floor therefore also reads the
   changed code itself, and refuses:
   - more than 40 lines added and removed in the production file;
-  - a **removed** line that decides or steers (a condition, a comparison, `&&`/`||`, `return`,
-    `throw`, a branch, a loop, an `await`, a block's brace), unless the same run of changed lines
-    puts it back as itself with only `?.`, `?? null` or `await` added; and any call taken out of the
-    file. Removing a check is never a merge;
+  - a JSX file (`.jsx`, `.tsx`): the scanner cannot read JSX text, so these never pass;
+  - a **removed** line that decides, steers or calls anything (a condition, a comparison, `&&`/`||`,
+    `return`, `throw`, a branch, a loop, an `await`, a block's brace, any call), unless the same run
+    of changed lines puts it back as itself with only `?.`, `?? null` or `await` added; and any call
+    taken out of the file. Removing a check, or changing what it is called with, is never a merge;
+  - **added** control flow: any `try`/`catch`/`finally` (a promise's `.catch` too), and any `if`,
+    `return`, `throw`, loop or branch that is not an explicit null guard (`if (x == null) return
+    null;`, `=== undefined`, `typeof x === "undefined"`; never `!x`; leaving with nothing or
+    throwing a new error) placed after a line that ends a statement; and a run of added lines that
+    leaves a bracket open for a later run to close, which would wrap existing code (a check) in a new
+    block or a function never called. An added `?:`, `&&` or `||` in an expression is not judged;
   - an **added** line, in the production file or a new test, that names a network, process,
     dynamic-code, destructive or file-system sink (`fetch`, `http(s).get`/`request`, axios,
     `XMLHttpRequest`, `WebSocket`, `net`/`tls`/`dgram`, `child_process`/`exec`/`spawn`, `eval`,
@@ -87,8 +94,8 @@ message could argue the model into naming a merge case, and the fixer drafts its
 text. Before this decision, gate 1's three literal classes bounded what such a patch could be; now
 the bound is the floor (one file, tests only added, no path, changed line or surrounding function
 that names auth, rules, money, secrets, schema, dependencies or CI by the hard-exclude list's words,
-no deciding line or call removed, no sink, address or call the file did not already make added, at
-most 40 changed lines) and the target's own required checks, with the daily cap and fast-revert behind
+no deciding or calling line removed or altered, no control flow added but an explicit null guard, no
+try/catch, no sink, address or call the file did not already make added, at most 40 changed lines) and the target's own required checks, with the daily cap and fast-revert behind
 them. That is why the floor is not a setting and no merge case can lower it, and why the cases stay
 empty by default and the target allowlist stays environment-only.
 
