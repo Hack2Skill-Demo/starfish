@@ -17,7 +17,7 @@ the few steps only a person with the console can do.
 |---|---|---|
 | **Which project** | The demo project (the same-project decision on #6) | Starfish and the demo app share it; the deploy scopes every grant so they do not read each other's data (#32). |
 | **Environment label** | `STARFISH_ENV=demo` for the public demo | `firestore.rules` lets a guest read only the trimmed copies of records labelled `demo` (#18; the engine writes them for `STARFISH_PUBLIC_ENVIRONMENTS`, default `demo`). Any other label and the public page is empty. |
-| **Anonymous sign-in** | On only for the public demo, and only after reading #32 | It is project-wide. A private deployment leaves it off and requires an operator account. |
+| **Anonymous sign-in** | On only for the public demo, and only after reading #32 | It is project-wide. A private deployment leaves it off, turns self sign-up off too, and requires an operator account. On, it needs self sign-up left on (step 3). |
 | **Schedule** | Hourly normally; `*/5 * * * *` while demoing | A 5-minute tick all month is not free (Cloud Build, the job's runs). |
 | **A budget alert** | Yes, set `BUDGET_USD` | It emails at 50% and 90%. It is an alert, **not a cap**: nothing stops spending. |
 
@@ -26,12 +26,15 @@ the few steps only a person with the console can do.
 1. **A project with billing on.** Create or pick it; link a billing account. (`scripts/preflight-gcp.sh` checks.)
 2. **Add Firebase to it** (Firebase console → Add project → choose the existing project). Auth and Hosting need it.
 3. **Authentication → Get started → Email/Password → Enable.** The first admin signs in this way. Auth has to be
-   initialised in the console once; that step is not scripted. Then **Authentication → Settings → User actions →
-   untick "Enable create (sign-up)"**: the web API key is public, so with sign-up on anyone can register
-   `you@example.com` before you grant it. Operators are made by `pnpm grant-operator --create`, which needs no
-   sign-up. (`grant-operator` also refuses an existing account whose email is not verified, #139.) If you turn on
-   Anonymous sign-in below, check a guest visit still works afterwards; whether this setting also stops anonymous
-   accounts has not been checked here.
+   initialised in the console once; that step is not scripted. Then, **unless you turn on Anonymous sign-in below**,
+   **Authentication → Settings → User actions → untick "Enable create (sign-up)"**: the web API key is public, so
+   with sign-up on anyone can register an email account without any page offering it. Operators are made by
+   `pnpm grant-operator --create`, which needs no sign-up. **The public demo has to leave it ticked:** unticking it
+   also stops new anonymous accounts. Tried on the demo project (2026-10-11): a new browser got no guest session and
+   landed on /signin, and "See the demo view" answered "The demo view isn't available right now". With it ticked, a stranger's account still reads nothing (no role on
+   `starfish_users/{uid}`, which the UI can't write; the admin API re-checks the role), and `grant-operator` refuses
+   an existing account whose email is not verified, so a pre-registered `you@example.com` can't be granted (#139).
+   **Sign-up quota** (same Settings page) limits sign-ups per IP address.
 4. **Anonymous sign-in**, only if you decided yes above.
 5. **Gemini access.** The deploy enables the Vertex AI API. Confirm the model in `STARFISH_MODEL` is available in
    your region (the default is `gemini-3.1-pro-preview` in `us-central1`); `pnpm spike` makes real Gemini calls (it spends tokens), so run it once, on purpose.
