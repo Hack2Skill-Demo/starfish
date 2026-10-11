@@ -255,6 +255,14 @@ describe("triageIncident: a Monitoring-only incident (#19)", () => {
     expect(calls).toHaveLength(0);
   });
 
+  it("hands an overflow incident (#303) to a person without asking the model: a flood has no one cause to fix", async () => {
+    const { ask, calls } = stub(act);
+    const r = await triageIncident({ incident: incident({ signalSource: "overflow" }), status: "new" }, ask);
+    expect(r).toMatchObject({ decision: "notify", rule: "high-cardinality-overflow" });
+    expect(r.mergeCase).toBeUndefined();
+    expect(calls).toHaveLength(0);
+  });
+
   it("turns a model's act into notify: a count of failures is not cause evidence", async () => {
     const { ask } = stub(act);
     const r = await triageIncident({ incident: monitoringOnly(), status: "new" }, ask);

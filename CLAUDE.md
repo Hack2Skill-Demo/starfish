@@ -168,7 +168,7 @@ src/
   agent/triage.ts  stage 1 of the agent loop (#8): act/notify/decline for one incident, and how far to go
                    (`triageLevel`: noise, log, fix, merge): on act the model may name one of the admin's merge cases
                    (`mergeCases`; `missing-index` never offered), kept only if listed. Deterministic gates before the
-                   model, local validation after it; run by `pnpm agent` (deployed to the demo project, dry run: ran on real incidents 2026-10-08)
+                   model (an overflow incident, #303, goes to a person with no model call), local validation after it; run by `pnpm agent` (deployed to the demo project, dry run: ran on real incidents 2026-10-08)
   triageRules.ts   the rules engine and the feedback engine (#267), pure, shared with the UI: an admin's class rules
                    (`classRules`, `STARFISH_CLASS_RULES`: match error type/code, service, function -> noise, log or fix) and an
                    operator's correction of one incident (`corrected*` on it, history in `incidents/{id}/corrections`,
