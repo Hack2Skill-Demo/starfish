@@ -89,6 +89,17 @@
   --color-info-800: #135dab;
   --color-info-900: #164f87;
   --color-info-950: #123152;
+
+  /* A bar for work under way whose length is unknown (an agent pass): a segment sliding across, `motion-safe:` only. */
+  --animate-indeterminate: indeterminate 1.6s ease-in-out infinite;
+  @keyframes indeterminate {
+    0% {
+      transform: translateX(-100%);
+    }
+    100% {
+      transform: translateX(300%);
+    }
+  }
 }
 
 @layer base {

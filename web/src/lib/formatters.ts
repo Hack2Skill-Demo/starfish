@@ -27,6 +27,17 @@ export function formatRelativeTime(ts: Date | string | number | undefined | null
   return "just now";
 }
 
+/**
+ * Like `formatRelativeTime`, but to the second under a minute ("40 seconds ago"): for something under way that a page
+ * re-reads every few seconds, where "just now" would not move.
+ */
+export function formatRecentTime(ts: Date | string | number | undefined | null, fallback = "Never", nowMs = Date.now()): string {
+  const ms = toMs(ts);
+  if (!Number.isFinite(ms)) return fallback;
+  const deltaSec = Math.round((ms - nowMs) / 1000);
+  return Math.abs(deltaSec) < 60 ? RTF.format(deltaSec, "second") : formatRelativeTime(ms, fallback, nowMs);
+}
+
 export function formatDateTime(ts: Date | string | number | undefined | null, fallback = "Never"): string {
   const ms = toMs(ts);
   if (!Number.isFinite(ms)) return fallback;

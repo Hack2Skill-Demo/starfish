@@ -7,6 +7,9 @@
  * Pure and import-free, so the web UI can import it as it imports the settings schema. The record holds counts, booleans
  * and enumerated labels, never an error message, an incident id or any text from the logs: guests may read it, like
  * the ingest's `last_run`.
+ *
+ * While a pass runs, the record also holds `runningSince` (src/agent/lastRun.ts `recordAgentPassStarted`): the previous
+ * pass's fields stay as they were until the end-of-pass write replaces the whole document.
  */
 
 export const AGENT_LAST_RUN_DOC = "agent_last_run";
@@ -66,6 +69,27 @@ const toDate = (v: unknown): Date | undefined => {
   const d = (v as { toDate?: () => Date } | null | undefined)?.toDate?.();
   return d instanceof Date && !Number.isNaN(d.getTime()) ? d : undefined;
 };
+
+/**
+ * A pass that has started and not yet recorded its end: the start mark (`runningSince`) a pass stamps on the record as
+ * it begins, which the end-of-pass write replaces. It says only that a pass started; one that was killed never clears
+ * it, so a reader bounds how long it believes it (the UI uses its stale threshold).
+ */
+export interface AgentPassInProgress {
+  /** The environment the record names: the previous pass's, or the env default's on a first pass. */
+  environment: string;
+  since: Date;
+}
+
+/** The start mark, or null when no pass is in progress: none stamped, or one older than the last recorded finish. */
+export function parseAgentPassInProgress(data: Record<string, unknown> | undefined): AgentPassInProgress | null {
+  if (data === undefined) return null;
+  const since = toDate(data.runningSince);
+  if (since === undefined) return null;
+  const finishedAt = toDate(data.finishedAt);
+  if (finishedAt !== undefined && finishedAt.getTime() >= since.getTime()) return null;
+  return { environment: typeof data.environment === "string" ? data.environment : "", since };
+}
 
 /** The stored record, or null when it is missing or unusable (no finish time, an unknown outcome). */
 export function parseAgentRunRecord(data: Record<string, unknown> | undefined): AgentRunRecord | null {

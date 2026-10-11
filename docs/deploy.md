@@ -174,7 +174,9 @@ Then look at `starfish_runs/last_run` in the `starfish` database (it is what the
 shows as "engine status") and at the incidents collection. A failed run exits 1; a missing run shows
 in the UI as stopped, past `VITE_STARFISH_STALE_MINUTES`. With the agent deployed, each pass writes
 `starfish_runs/agent_last_run` at its end (#274): the agent's line on Overview and Runs, and the `agent:` lines `pnpm status`
-prints (information only: they never change its exit code).
+prints (information only: they never change its exit code). As it starts, once it can reach the store, a pass also stamps
+`runningSince` on that document, which the end-of-pass write drops, so the UI can say a pass is in progress. The job's own
+start-up comes before that (#275), so a pass that is due shows as due until its process is up.
 
 ### The guests' trimmed copies (#18)
 

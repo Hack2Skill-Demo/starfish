@@ -9,9 +9,9 @@
  */
 import { doc, getDoc, type Firestore } from "firebase/firestore";
 import { SETTINGS_UNUSABLE } from "../../../src/settingsSchema";
-import { AGENT_LAST_RUN_DOC, parseAgentRunRecord, type AgentRunRecord } from "../../../src/agentRunRecord";
+import { AGENT_LAST_RUN_DOC, parseAgentPassInProgress, parseAgentRunRecord, type AgentPassInProgress, type AgentRunRecord } from "../../../src/agentRunRecord";
 
-export { AGENT_LAST_RUN_DOC, type AgentRunRecord };
+export { AGENT_LAST_RUN_DOC, type AgentPassInProgress, type AgentRunRecord };
 
 export const LAST_RUN_DOC = "last_run";
 
@@ -65,10 +65,19 @@ export async function readLastRun(db: Firestore, runCollection: string): Promise
   };
 }
 
-/** The agent's last pass (#274), or null when none has been recorded (or the record is unusable). */
-export async function readAgentLastRun(db: Firestore, runCollection: string): Promise<AgentRunRecord | null> {
+/** What the agent's record says (#274): its last finished pass, and a pass that has started and not yet ended. */
+export interface AgentPass {
+  /** Null when no pass has been recorded (or the record is unusable). */
+  run: AgentRunRecord | null;
+  /** Null when no pass is in progress. */
+  inProgress: AgentPassInProgress | null;
+}
+
+/** The agent's record, one read for both halves. */
+export async function readAgentPass(db: Firestore, runCollection: string): Promise<AgentPass> {
   const snap = await getDoc(doc(db, runCollection, AGENT_LAST_RUN_DOC));
-  return snap.exists() ? parseAgentRunRecord(snap.data()) : null;
+  const data = snap.exists() ? snap.data() : undefined;
+  return { run: parseAgentRunRecord(data), inProgress: parseAgentPassInProgress(data) };
 }
 
 /**
@@ -114,4 +123,35 @@ export function judgeRun<T extends JudgedRecord>(run: T | null, environment: str
 export function judgeAgentRun(run: AgentRunRecord | null, environment: string, nowMs: number, staleAfterMinutes: number): EngineHealth<AgentRunRecord> {
   const { state, run: judged } = judgeRun(run && { ...run, capped: run.scanCapped }, environment, nowMs, staleAfterMinutes);
   return { state, run: judged && run };
+}
+
+/**
+ * What the agent is doing between its last recorded end and the next (#274), for feedback while it works:
+ *   running  a pass has started (its start mark) and not ended, within the stale threshold;
+ *   overrun  a pass started longer ago than that and never recorded its end (killed by its task timeout, say);
+ *   due      the next pass was expected by now and none has started (the job may still be starting);
+ *   idle     none of these.
+ * A start mark recorded for another environment is not this environment's pass. "due" only while the last pass looks
+ * alive, as the line promises a next pass only then.
+ */
+export type AgentActivity =
+  | { kind: "running"; since: Date }
+  | { kind: "overrun"; since: Date }
+  | { kind: "due"; dueAt: Date }
+  | { kind: "idle" };
+
+export function agentActivity(
+  pass: AgentPass,
+  health: EngineHealth<AgentRunRecord>,
+  environment: string,
+  nowMs: number,
+  staleAfterMinutes: number
+): AgentActivity {
+  const started = pass.inProgress;
+  if (started && started.environment === environment) {
+    const over = nowMs - started.since.getTime() > staleAfterMinutes * 60_000;
+    return { kind: over ? "overrun" : "running", since: started.since };
+  }
+  const next = health.state === "ok" || health.state === "capped" ? nextRunAt(health.run) : null;
+  return next && next.getTime() <= nowMs ? { kind: "due", dueAt: next } : { kind: "idle" };
 }

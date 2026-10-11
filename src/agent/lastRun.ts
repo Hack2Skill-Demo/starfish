@@ -30,6 +30,35 @@ export interface AgentPassReport {
   error?: string;
 }
 
+/**
+ * Marks a pass as started (`runningSince`), so the UI can say a pass is running rather than only when the last one ended.
+ * The previous pass's fields are kept: the end-of-pass write (`recordAgentLastRun`, a whole-document set) replaces them
+ * and drops the mark. On a first pass there is no document to update, so one is created holding the environment (the
+ * guests' rule reads it) and the mark. Best effort, like the end-of-pass record: never throws.
+ */
+export async function recordAgentPassStarted(
+  db: Firestore,
+  config: Pick<StarfishConfig, "runCollection">,
+  environment: string,
+  startedAt: Date
+): Promise<boolean> {
+  const ref = db.collection(config.runCollection).doc(AGENT_LAST_RUN_DOC);
+  const runningSince = Timestamp.fromDate(startedAt);
+  try {
+    await ref.update({ runningSince });
+    return true;
+  } catch (err) {
+    // 5 = NOT_FOUND: no pass has been recorded yet. Anything else is a failed write, reported like the end-of-pass one.
+    if ((err as { code?: unknown } | null)?.code !== 5) return false;
+  }
+  try {
+    await ref.create({ environment, runningSince });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function newAgentPassReport(startedAt: Date, environment: string): AgentPassReport {
   return { startedAt, environment, problems: [], scanCapped: false, failedSteps: [] };
 }

@@ -3,10 +3,14 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentRunRecord } from "../lib/engineStatus";
 
-const mocks = vi.hoisted(() => ({ read: vi.fn() }));
+const mocks = vi.hoisted(() => ({ read: vi.fn(), inProgress: null as { environment: string; since: Date } | null }));
 vi.mock("../lib/firebase", () => ({ firestore: () => ({}) }));
 vi.mock("../lib/config", () => ({ webConfig: () => ({ runCollection: "starfish_runs", engineStaleMinutes: 90 }) }));
-vi.mock("../lib/engineStatus", async (orig) => ({ ...(await orig<typeof import("../lib/engineStatus")>()), readAgentLastRun: mocks.read }));
+// `read` answers for the last finished pass, `inProgress` for a pass's start mark.
+vi.mock("../lib/engineStatus", async (orig) => ({
+  ...(await orig<typeof import("../lib/engineStatus")>()),
+  readAgentPass: async (...args: unknown[]) => ({ run: await mocks.read(...args), inProgress: mocks.inProgress }),
+}));
 
 import { AgentStatus } from "./AgentStatus";
 
@@ -37,7 +41,10 @@ function renderStatus(environment = "demo") {
 }
 
 describe("AgentStatus (#274)", () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.inProgress = null;
+  });
 
   it("says the agent is running, when its last pass finished, what it did and when the next is expected", async () => {
     mocks.read.mockResolvedValue(pass({ intervalMinutes: 60 }));
@@ -121,6 +128,62 @@ describe("AgentStatus (#274)", () => {
     expect(await screen.findByText("No agent pass recorded yet")).toBeInTheDocument();
     expect(screen.getByTestId("agent-status")).toHaveTextContent("Nothing has said the agent has run in this environment.");
     expect(screen.queryByRole("img")).toBeNull();
+  });
+
+  it("says a pass is in progress and when it started, with a sliding bar and where its runs appear (card)", async () => {
+    mocks.read.mockResolvedValue(pass({ startedAt: new Date(Date.now() - 61 * 60_000), finishedAt: new Date(Date.now() - 59 * 60_000), intervalMinutes: 60 }));
+    mocks.inProgress = { environment: "demo", since: new Date(Date.now() - 40_000) };
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <AgentStatus environment="demo" variant="card" />
+      </QueryClientProvider>
+    );
+    expect(await screen.findByText("Agent pass in progress")).toBeInTheDocument();
+    const card = screen.getByTestId("agent-status");
+    expect(card).toHaveTextContent("Started 40 seconds ago");
+    expect(card).toHaveTextContent("Runs it starts appear below as they start");
+    expect(card).toHaveTextContent("Last pass 59 minutes ago (dry run): 2 candidates, 1 run.");
+    expect(card).not.toHaveTextContent("Next pass");
+    expect(screen.getByRole("img", { name: "A pass is under way" })).toBeInTheDocument();
+  });
+
+  it("says a pass is in progress on a first pass, without saying none has run (line)", async () => {
+    mocks.read.mockResolvedValue(null);
+    mocks.inProgress = { environment: "demo", since: new Date(Date.now() - 10_000) };
+    renderStatus();
+    expect(await screen.findByText("Agent pass in progress")).toBeInTheDocument();
+    expect(screen.getByTestId("agent-status")).toHaveTextContent("started 10 seconds ago");
+    expect(screen.getByTestId("agent-status")).not.toHaveTextContent("nothing has said");
+  });
+
+  it("says when a started pass never recorded its end", async () => {
+    mocks.read.mockResolvedValue(pass({ finishedAt: new Date(Date.now() - 3 * 3600_000), intervalMinutes: 60 }));
+    mocks.inProgress = { environment: "demo", since: new Date(Date.now() - 2 * 3600_000) };
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <AgentStatus environment="demo" variant="card" />
+      </QueryClientProvider>
+    );
+    expect(await screen.findByText("Agent pass has not finished")).toBeInTheDocument();
+    expect(screen.getByTestId("agent-status")).toHaveTextContent("Started 2 hours ago");
+    expect(screen.getByTestId("agent-status")).toHaveTextContent("It has not recorded its end");
+    expect(screen.queryByRole("img", { name: "A pass is under way" })).toBeNull();
+  });
+
+  it("says a due pass is waiting to start, rather than 'just now'", async () => {
+    mocks.read.mockResolvedValue(pass({ startedAt: new Date(Date.now() - 60 * 60_000 - 20_000), finishedAt: new Date(Date.now() - 59 * 60_000), intervalMinutes: 60 }));
+    const { unmount } = renderStatus();
+    await screen.findByText("Agent running");
+    expect(screen.getByTestId("agent-status")).toHaveTextContent("next pass due now, waiting for it to start");
+    unmount();
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <AgentStatus environment="demo" variant="card" />
+      </QueryClientProvider>
+    );
+    await screen.findByText("Agent running");
+    expect(screen.getByTestId("agent-status")).toHaveTextContent("Next pass due now");
+    expect(screen.getByTestId("agent-status")).toHaveTextContent("Waiting for it to start");
   });
 
   it("doesn't alarm when the record can't be read", async () => {

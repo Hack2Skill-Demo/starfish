@@ -30,7 +30,7 @@ import { initializeApp } from "firebase-admin/app";
 import { getFirestore } from "firebase-admin/firestore";
 import { loadChildProcessBasics, loadConfig, loadGithubToken, loadSlackAlertsWebhook, loadSlackOnCallWebhook, loadTwilioCredentials, type StarfishConfig } from "./config.js";
 import { AGENT_PREFLIGHT_REFUSED } from "./agentRunRecord.js";
-import { agentPassFailed, newAgentPassReport, noteFailedStep, notePassSummary, recordAgentLastRun } from "./agent/lastRun.js";
+import { agentPassFailed, newAgentPassReport, noteFailedStep, notePassSummary, recordAgentLastRun, recordAgentPassStarted } from "./agent/lastRun.js";
 import { errorLabel } from "./ingest/run.js";
 import { SETTINGS_UNUSABLE } from "./settingsSchema.js";
 import { RuntimeConfigLoader } from "./runtimeSettings.js";
@@ -92,6 +92,12 @@ const writeRecord = async (): Promise<void> => {
     console.warn("agent: could not record this pass's outcome; the UI's agent line will not show it.");
   }
 };
+
+// "A pass is running" for the UI, as soon as the store is reachable: the record's start mark, replaced by the end-of-pass
+// write below. A pass refused by the first preflight above never gets here, like it never records its end.
+if (!(await recordAgentPassStarted(db, base, base.environment, startedAt))) {
+  console.warn("agent: could not mark this pass as started; the UI's agent line will show it only once it ends.");
+}
 
 /** The pass. Returns the exit code; a throw is recorded as a failed pass by the caller, then rethrown. */
 async function runPass(): Promise<number> {
