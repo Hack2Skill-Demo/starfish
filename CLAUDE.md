@@ -262,7 +262,9 @@ src/
   adminApi.ts      the admin API's rules (#63, #65): a Firebase ID token -> uid, admin from the operator record on every call, `POST /api/ingest/run`,
                    `POST /api/agent/run` (#276: 202 once the start is accepted, a 404 where `STARFISH_AGENT_JOB` is unset; never run)
                    and `POST /api/incidents/<id>/retire` (with Twilio, the on-call opt-in `send-code`/`confirm`, every admin's attempt audited
-                   without the number or the code, #172), one 401, bounded body, CORS allowlist, one ingest at a time. A per-address
+                   without the number or the code, #172), one 401, bounded body, CORS allowlist, one ingest at a time. The admin role is
+                   checked (`isAdmin` dep) right after the token and before any lock, so a non-admin gets 403 and never holds one (#305);
+                   each action checks it again. A per-address
                    limit (`ipRateLimit.ts`, `STARFISH_ADMIN_API_RATE_LIMIT_PER_MINUTE`, default 30) answers 429 before any token check. `adminApiServer.ts` is its HTTP
                    shell, `adminApiCli.ts` the Cloud Run service (`DEPLOY_ADMIN_API=1`): deployed once to the demo project (2026-10-07), "Run ingest now" run from the UI; Retire and the Twilio routes not yet tried
   operators.ts     grant a person an operator record (the first admin; `pnpm grant-operator --project <id>`, which refuses if the shell's project differs and reads the store before creating an account); the closed collection can't be written from the UI
@@ -306,7 +308,11 @@ src/
   oncall/webhooks.ts  Twilio's webhooks on the admin API (`/twilio/voice|gather|status`): signature-checked against the
                    configured origin, 1 takes it, 2 texts the incident link (to the number called, still confirmed), 3 passes, voicemail/no input moves on
   oncall/optIn.ts  a number is called only once confirmed: an admin asks for a texted code, the person reads it back
-                   (admin API `POST /api/oncall/people/<id>/send-code|confirm`); hash bound to person + number
+                   (admin API `POST /api/oncall/people/<id>/send-code|confirm`); hash bound to person + number, kept with its expiry
+                   and tries in the engine-only `STARFISH_ONCALL_CODE_COLLECTION` (no client reads it, admins included, #302; a hash
+                   left on a person's document by an older version is never believed). At most one text a minute per person and
+                   `STARFISH_ONCALL_MAX_TEXTS_PER_DAY` (default 20) a UTC day across the deployment, a transactional count, the
+                   refusal audited (#306)
   oncallSchema.ts  the on-call policy and person schema, `maskPhone`, quiet hours: pure, shared with the UI's Settings -> On-call.
                    People (phone numbers) live in an admin-only collection, never the runtime settings.
                    All of #37: tested against a fake Twilio and the emulator, never run against real Twilio

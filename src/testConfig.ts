@@ -79,6 +79,8 @@ export function testConfig(over: Partial<StarfishConfig> = {}): StarfishConfig {
     onCallCollection: "starfish_oncall",
     onCallPeopleCollection: "starfish_oncall_people",
     escalationCollection: "starfish_escalations",
+    onCallCodeCollection: "starfish_oncall_codes",
+    onCallMaxTextsPerDay: 20,
     onCallAudioUrl: "",
     twilioApiUrl: "https://api.twilio.com",
     twilioWebhookUrl: "",
