@@ -6,6 +6,10 @@
  *
  * The browser can't see the engine's defaults, so each field is either "use the
  * engine's default" or an override, and the form never shows a default value.
+ *
+ * SettingsReadOnly is the same fields for everyone else (operators and guests): read from
+ * the copy each save writes beside the settings (`settings` on `<settings>_public`), shown
+ * as text, with no control to change them. firestore.rules is what stops a write.
  */
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -29,6 +33,7 @@ import {
   settingsCollections,
   type StoredSettings,
 } from "../lib/settingsWrite";
+import { usePublicSettings } from "../lib/useSettings";
 
 const FIELDS: Record<
   FieldName,
@@ -150,6 +155,10 @@ export function SettingsEditor() {
   const cols = settingsCollections(webConfig().settingsCollection);
 
   const stored = useQuery({ queryKey: SETTINGS_QUERY, queryFn: () => readSettings(firestore(), cols), retry: false });
+  // The copy operators and guests read. One written before it carried the settings stays behind
+  // until the next save, so the editor offers that save even with nothing changed.
+  const copy = usePublicSettings();
+  const copyBehind = stored.data != null && copy.isSuccess && copy.data?.settings === undefined;
   const changes = useQuery({ queryKey: CHANGES_QUERY, queryFn: () => readRecentChanges(firestore(), cols), retry: false });
 
   const storedRevision = typeof stored.data?.revision === "number" ? stored.data.revision : 0;
@@ -299,6 +308,13 @@ export function SettingsEditor() {
           );
         })}
 
+        {copyBehind && (
+          <p role="status" className="text-sm text-gray-700 dark:text-gray-300">
+            The read-only copy operators and guests see doesn&apos;t show these settings yet: it was written before
+            it carried them. Save once to bring it up to date.
+          </p>
+        )}
+
         {problems.length > 0 && (
           <ul role="alert" className="list-disc space-y-1 pl-5 text-sm text-error-700 dark:text-error-400">
             {problems.map((p) => (
@@ -308,7 +324,7 @@ export function SettingsEditor() {
         )}
 
         <div className="flex flex-wrap items-center gap-3">
-          <Button type="submit" disabled={!dirty || save.isPending}>
+          <Button type="submit" disabled={(!dirty && !copyBehind) || save.isPending}>
             {save.isPending ? "Saving…" : "Save settings"}
           </Button>
           <Button variant="secondary" disabled={!dirty || save.isPending} onClick={() => setForm(formFromStored(stored.data ?? null))}>
@@ -344,6 +360,89 @@ export function SettingsEditor() {
           </ul>
         )}
       </div>
+    </section>
+  );
+}
+
+/** One field as text: the override's value, or that the engine's default applies. */
+function ReadOnlyValue({ name, field }: { name: FieldName; field: FormState[FieldName] }) {
+  const spec = FIELDS[name];
+  if (!field.override) return <p className="mt-2 text-sm text-gray-600 dark:text-gray-400">Using the engine&apos;s default.</p>;
+  if (spec.kind === "switch") {
+    return <p className="mt-2 text-sm font-medium text-gray-900 dark:text-white">{field.text === "true" ? "On" : "Off"}</p>;
+  }
+  if (field.text === "") {
+    return <p className="mt-2 text-sm text-gray-700 dark:text-gray-300">Overridden with nothing in it.</p>;
+  }
+  return spec.multiline ? (
+    <pre className="mt-2 overflow-x-auto whitespace-pre-wrap break-words rounded-lg bg-gray-50 px-3 py-2 font-mono text-sm text-gray-900 dark:bg-gray-900 dark:text-gray-100">
+      {field.text}
+    </pre>
+  ) : (
+    <p className="mt-2 break-all font-mono text-sm text-gray-900 dark:text-gray-100">{field.text}</p>
+  );
+}
+
+/**
+ * The runtime settings for anyone who can't edit them: the same fields as the editor, as text.
+ * It reads the copy each admin save writes (`<settings>_public`), never the settings document,
+ * which only admins may read. Nothing here writes.
+ */
+export function SettingsReadOnly({ note }: { note: string }) {
+  const copy = usePublicSettings();
+
+  let body;
+  if (copy.isPending) {
+    body = <p className="text-sm text-gray-600 dark:text-gray-400">Loading settings…</p>;
+  } else if (copy.isError) {
+    body = (
+      <p role="alert" className="text-sm text-error-700 dark:text-error-400">
+        Couldn&apos;t read the settings.
+      </p>
+    );
+  } else if (copy.data && copy.data.settings === undefined) {
+    // A copy from before it carried the settings: showing every field "on its default" would be a guess.
+    body = (
+      <p className="text-sm text-gray-700 dark:text-gray-300">
+        The settings in force aren&apos;t shown here yet: this copy of them is written with each admin save, and none
+        has been made since this view was added.
+      </p>
+    );
+  } else {
+    // No copy at all: no admin has saved settings, so every field is on the engine's default.
+    const form = formFromStored(copy.data?.settings ?? null);
+    body = (
+      <dl className="space-y-4">
+        {FIELD_NAMES.map((name) => (
+          <div key={name} className="rounded-lg border border-gray-200 bg-white p-4 dark:border-gray-700 dark:bg-gray-800">
+            <dt className="font-medium text-gray-900 dark:text-white">{FIELDS[name].label}</dt>
+            <dd>
+              <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">{FIELDS[name].hint}</p>
+              <ReadOnlyValue name={name} field={form[name]} />
+            </dd>
+          </div>
+        ))}
+      </dl>
+    );
+  }
+
+  const revision = copy.data?.revision;
+  return (
+    <section aria-labelledby="runtime-settings" className="space-y-4">
+      <div>
+        <div className="flex flex-wrap items-baseline justify-between gap-3">
+          <h2 id="runtime-settings" className="text-lg font-semibold text-gray-900 dark:text-white">
+            Runtime settings
+          </h2>
+          {typeof revision === "number" && revision > 0 && (
+            <span className="text-xs text-gray-600 dark:text-gray-400">Revision {revision}</span>
+          )}
+        </div>
+        <p role="note" className="mt-1 text-sm text-gray-600 dark:text-gray-400">
+          {note}
+        </p>
+      </div>
+      {body}
     </section>
   );
 }

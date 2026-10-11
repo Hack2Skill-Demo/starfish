@@ -7,7 +7,8 @@
  *
  * A save is one batch of three documents that firestore.rules ties together:
  * the settings, its audit entry (the real before and after of this change), and
- * the copy operators read. See the "Runtime settings" block in firestore.rules.
+ * the copy operators and guests read (the environment label, and the settings for
+ * the read-only view). See the "Runtime settings" block in firestore.rules.
  */
 import {
   collection,
@@ -42,11 +43,20 @@ export async function readSettings(db: Firestore, cols: SettingsCollections): Pr
   return snap.exists() ? snap.data() : null;
 }
 
-/** What operators may know. Any operator, so nothing here may be sensitive. */
+/**
+ * What operators and guests may know. Anyone with a role or a guest session reads it, so nothing
+ * here may be sensitive: secrets are never in the settings (firestore.rules rejects any key outside
+ * the schema), and the copy leaves out who saved it.
+ */
 export interface PublicSettings {
   environment?: string;
   watchedProjectId?: string;
   revision?: number;
+  /**
+   * The settings in force: every field of the stored document except its bookkeeping, for the
+   * read-only view. Absent on a copy written before the copy carried them (no admin has saved since).
+   */
+  settings?: StoredSettings;
 }
 
 export async function readPublicSettings(db: Firestore, cols: SettingsCollections): Promise<PublicSettings | null> {
@@ -57,8 +67,11 @@ export async function readPublicSettings(db: Firestore, cols: SettingsCollection
     ...(typeof d.environment === "string" && { environment: d.environment }),
     ...(typeof d.watchedProjectId === "string" && { watchedProjectId: d.watchedProjectId }),
     ...(typeof d.revision === "number" && { revision: d.revision }),
+    ...(isPlainObject(d.settings) && { settings: d.settings }),
   };
 }
+
+const isPlainObject = (v: unknown): v is StoredSettings => typeof v === "object" && v !== null && !Array.isArray(v);
 
 /**
  * A unique id for an audit entry. `crypto.randomUUID` exists only in secure
@@ -115,6 +128,8 @@ export async function saveSettings(
     updatedAt: serverTimestamp(),
     ...(input.watchedProjectId !== undefined && { watchedProjectId: input.watchedProjectId }),
     ...(input.environment !== undefined && { environment: input.environment }),
+    // The read-only view's copy: exactly the settings fields written above, nothing of the bookkeeping.
+    settings: fields,
   });
   await batch.commit();
 }

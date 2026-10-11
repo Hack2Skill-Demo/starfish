@@ -58,7 +58,9 @@ service cloud.firestore {
     // engine writes for the demo environment (src/publicView.ts), holding ids, statuses, counts,
     // times, names, a bounded one-line title, links and the run record's enumerated values. Besides
     // those, a guest reads only last_run, starfish_runs/agent_last_run, starfish_runs/integrations and
-    // the operator copy of the settings, which hold no free text.
+    // the operator copy of the settings, which holds no production text: the environment label, the
+    // watched project and the settings in force as an admin saved them, shown read-only. Secrets are
+    // never in the settings (settingsShapeOk rejects any other key), and the copy leaves out who saved.
     //
     // The demo environment label below is the default for the public demo, like the collection
     // names above: change it here if the demo deploys under another label (and in
@@ -181,9 +183,11 @@ service cloud.firestore {
     // other two with getAfter(), so none can be written alone:
     //   starfish_settings/current          what the engine runs on. Admins only.
     //   starfish_settings_audit/{auditId}  who changed what, when. Immutable.
-    //   starfish_settings_public/current   the copy operators may read.
+    //   starfish_settings_public/current   the copy operators and guests may read.
     // Reads of a document are all-or-nothing, so the operator copy is a separate
-    // document holding only what the UI needs, not a redacted view of this one.
+    // document holding only what the UI needs, not a redacted view of this one:
+    // the environment label, the watched project, and the settings fields (never the
+    // bookkeeping: auditId, updatedBy) for the read-only Settings view.
     //
     // Not here: secrets (they are never stored in Firestore: any key outside the
     // list below is rejected), and starfish_settings/last_good, the engine's own
@@ -205,11 +209,15 @@ service cloud.firestore {
       return /databases/$(database)/documents/starfish_settings_audit/$(auditId);
     }
 
+    // The settings fields: FIELD_NAMES in web/src/lib/settingsForm.ts, and src/settingsSchema.ts.
+    function settingsFields() {
+      return ['watchedProjectId', 'environment', 'logResourceTypes', 'servicePatterns', 'ignoredMessages',
+              'dryRun', 'reviewRequired', 'automationEnabled', 'autoMerge', 'mergeFreeze', 'mergeCases', 'classRules',
+              'modelCallBudget', 'model', 'location', 'vertexProjectId'];
+    }
+
     function settingsShapeOk(d) {
-      return d.keys().hasOnly(['version', 'revision', 'auditId', 'watchedProjectId', 'environment',
-                               'logResourceTypes', 'servicePatterns', 'ignoredMessages',
-                               'dryRun', 'reviewRequired', 'automationEnabled', 'autoMerge', 'mergeFreeze', 'mergeCases', 'classRules', 'modelCallBudget',
-                               'model', 'location', 'vertexProjectId', 'updatedAt', 'updatedBy'])
+      return d.keys().hasOnly(settingsFields().concat(['version', 'revision', 'auditId', 'updatedAt', 'updatedBy']))
         && d.keys().hasAll(['version', 'revision', 'auditId', 'updatedAt', 'updatedBy'])
         && d.version == 1
         && d.revision is int
@@ -290,15 +298,21 @@ service cloud.firestore {
     }
 
     // What operators may know: the environment label the UI filters incidents by,
-    // and the watched project's id. Equal to the same fields of `current`.
+    // the watched project's id, and `settings`, the settings fields of `current` for
+    // the read-only Settings view. Each equal to the same fields of `current`.
     match /starfish_settings_public/current {
-      // Guests read it too: the UI needs the environment label to ask for the right incidents.
-      // It holds only that label and the watched project's id, which the public demo shows anyway.
+      // Guests read it too: the UI needs the environment label to ask for the right incidents,
+      // and the public demo shows the settings in force, read-only. Nothing in it is a secret.
       allow read: if isOperator() || isGuest();
 
       allow create, update: if isAdmin()
-        && request.resource.data.keys().hasOnly(['version', 'revision', 'watchedProjectId', 'environment', 'updatedAt'])
-        && request.resource.data.keys().hasAll(['version', 'revision', 'updatedAt'])
+        && request.resource.data.keys().hasOnly(['version', 'revision', 'watchedProjectId', 'environment', 'updatedAt', 'settings'])
+        && request.resource.data.keys().hasAll(['version', 'revision', 'updatedAt', 'settings'])
+        // `settings` is `current` minus its bookkeeping: no field added, left out or changed.
+        && request.resource.data.settings is map
+        && request.resource.data.settings.keys().hasOnly(settingsFields())
+        && request.resource.data.settings.diff(getAfter(settingsDoc()).data).affectedKeys()
+             .hasOnly(['version', 'revision', 'auditId', 'updatedAt', 'updatedBy'])
         && request.resource.data.version == 1
         && existsAfter(settingsDoc())
         && request.resource.data.revision == getAfter(settingsDoc()).data.revision

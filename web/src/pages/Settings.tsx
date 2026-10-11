@@ -7,7 +7,8 @@
  * the page then says "configured" and when it was reported. Until the agent has reported, it says
  * "not connected yet". Gemini runs through the engine's own config (src/config.ts), which this page
  * describes but can't read from the browser; once the agent has reported, its card says when the last pass started. The rules and feedback engines are described here; their controls are the
- * Class rules setting (admins) and the correction on an incident's page (operators).
+ * Class rules setting (admins) and the correction on an incident's page (operators). The runtime
+ * settings are an editor for an admin and the same settings, read-only, for operators and guests.
  */
 import { useQuery } from "@tanstack/react-query";
 import { Bot, GitBranch, MessageSquare, SlidersHorizontal, type LucideIcon } from "lucide-react";
@@ -19,7 +20,7 @@ import { useEnvironment } from "../lib/useSettings";
 import { firestore } from "../lib/firebase";
 import { formatRelativeTime } from "../lib/formatters";
 import { readIntegrations, reportFor, type Integrations } from "../lib/integrations";
-import { SettingsEditor } from "./SettingsEditor";
+import { SettingsEditor, SettingsReadOnly } from "./SettingsEditor";
 import { OnCallEditor } from "./OnCallEditor";
 
 type ConnectionState = "engine" | "built" | "planned";
@@ -150,16 +151,13 @@ export default function Settings() {
             );
           })}
         </ul>
+        {/* Only an admin edits; everyone else sees the same settings as text. The rules are the gate. */}
         {guest ? (
-          <p
-            role="note"
-            className="rounded-lg border border-gray-200 bg-white px-4 py-3 text-sm text-gray-700 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300"
-          >
-            The runtime settings are editable by the team only, and nothing here can be changed from the public demo.
-            Secrets never appear on this page.
-          </p>
-        ) : (
+          <SettingsReadOnly note="Read-only: the runtime settings are editable by the team only, and nothing here can be changed from the public demo. Secrets never appear on this page." />
+        ) : roles.includes("admin") ? (
           <SettingsEditor />
+        ) : (
+          <SettingsReadOnly note="Read-only: only an admin can change the runtime settings. Secrets never appear on this page." />
         )}
         {/* Phone numbers are personal data: admins only, never a guest or a plain operator (#37). */}
         {!guest && roles.includes("admin") && <OnCallEditor />}
