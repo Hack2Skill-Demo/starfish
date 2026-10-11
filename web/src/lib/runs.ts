@@ -20,7 +20,7 @@ import { latestActivity, parseActivity, parsePublicActivity, type ActivityRow } 
 
 /** Cycles read for the list at first, and how many more each "Show older runs" adds. The page says so when it hits this. */
 export const CYCLE_LIMIT = 50;
-/** The most the list ever reads: "Show older runs" grows the read, so it has a ceiling too. */
+/** The most the list ever reads: "Show older runs" grows the read, so it has a ceiling too. firestore.rules refuses a guest's query above 500 (guestList). */
 export const CYCLE_LIMIT_MAX = 500;
 /** Events read for one cycle: a cycle is a handful of stages, so this is a ceiling, not a window. */
 export const EVENT_LIMIT = 200;

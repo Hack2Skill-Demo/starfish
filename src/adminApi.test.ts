@@ -2,6 +2,7 @@ import type { AddressInfo } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
 import { createAdminApi, type AdminApiDeps, type ApiRequest } from "./adminApi.js";
 import { startAdminApiServer } from "./adminApiServer.js";
+import { createIpRateLimiter } from "./ipRateLimit.js";
 import type { RunSummary } from "./ingest/run.js";
 
 const TOKEN = "t".repeat(40);
@@ -292,8 +293,8 @@ describe("admin API server", () => {
   let server: ReturnType<typeof startAdminApiServer> | undefined;
   afterEach(() => void server?.close());
 
-  async function start(over: Partial<AdminApiDeps> = {}): Promise<string> {
-    server = startAdminApiServer(fakes(over).api, 0);
+  async function start(over: Partial<AdminApiDeps> = {}, opts: Parameters<typeof startAdminApiServer>[2] = {}): Promise<string> {
+    server = startAdminApiServer(fakes(over).api, 0, opts);
     await new Promise((r) => server!.once("listening", r));
     return `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   }
@@ -328,6 +329,26 @@ describe("admin API server", () => {
     expect(big.status).toBe(413);
     const junk = await fetch(`${base}/api/incidents/i/retire`, { method: "POST", headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" }, body: "{not json" });
     expect(junk.status).toBe(200);
+  });
+
+  it("answers 429 past the per-address limit before the handler runs, logs the address once, and limits by the last X-Forwarded-For entry", async () => {
+    const handled: string[] = [];
+    const limited: string[] = [];
+    const base = await start(
+      { verifyToken: (t) => (handled.push(t), Promise.resolve({ uid: "admin-1" })) },
+      { limiter: createIpRateLimiter({ perMinute: 2 }), now: () => 1_000, onLimited: (k) => limited.push(k) }
+    );
+    const call = (xff: string) => fetch(`${base}/api/ingest/run`, { method: "POST", headers: { authorization: `Bearer ${TOKEN}`, "x-forwarded-for": xff } });
+    expect((await call("9.9.9.9, 203.0.113.5")).status).toBe(200);
+    expect((await call("8.8.8.8, 203.0.113.5")).status).toBe(200);
+    const refused = await call("7.7.7.7, 203.0.113.5");
+    expect(refused.status).toBe(429);
+    expect(refused.headers.get("retry-after")).toBe("60");
+    expect(await refused.json()).toEqual({ error: "too many requests" });
+    expect((await call("203.0.113.5")).status).toBe(429);
+    expect(handled).toHaveLength(2);
+    expect(limited).toEqual(["203.0.113.5"]);
+    expect((await call("203.0.113.6")).status).toBe(200);
   });
 
   it("hands Twilio's form body, raw query and signature header to the webhooks, and answers with their TwiML as it is", async () => {

@@ -556,6 +556,38 @@ describe("Runs page", () => {
     expect(within(failed).getByText(/^Error: getScenarios failed at entryFromArgs/)).toBeInTheDocument();
   });
 
+  it("shows the cause the engine stored beside the title, its frames, and both in the raw text (#289)", async () => {
+    mocks.getIncident.mockResolvedValue({
+      id: "inc-a",
+      functionName: "orders-createorder",
+      errorType: "UnknownError",
+      errorMessage: "Checkout failed",
+      errorDetail: "Error: Unknown product: sku-poster\n    at /workspace/lib/functions/src/orders/createOrder.js:22:33\n    at async Transaction.runTransactionOnce (/workspace/node_modules/@google-cloud/firestore/build/src/transaction.js:440:28)",
+    });
+    renderRuns();
+    act(() => mocks.cyclesCb!([cycle("inc-a_r0", { state: "declined", leaseExpiresAt: null, path: "decline" })], false));
+    const failed = await screen.findByRole("region", { name: "What failed" });
+    expect(within(failed).getByText("Checkout failed")).toBeInTheDocument();
+    expect(within(failed).getByText("Cause:").parentElement).toHaveTextContent("Cause: Unknown product: sku-poster");
+    const frames = within(within(failed).getByRole("list", { name: "Stack frames" })).getAllByRole("listitem");
+    expect(frames).toHaveLength(2);
+    expect(frames[0]).toHaveTextContent("/workspace/lib/functions/src/orders/createOrder.js:22:33");
+    // One frame is the app's own, so the "every frame is in a dependency" note is not shown.
+    expect(within(failed).queryByText(/none points at the app's own code/)).toBeNull();
+    await userEvent.click(within(failed).getByRole("button", { name: "Show the raw message" }));
+    expect(within(failed).getByText(/^Checkout failed\s+Error: Unknown product: sku-poster/)).toBeInTheDocument();
+  });
+
+  it("offers no raw message to open when there is nothing beyond the title, as on a guest's trimmed copy", async () => {
+    mocks.getIncident.mockResolvedValue({ id: "inc-a", functionName: "orders-createorder", errorType: "UnknownError", errorMessage: "Checkout failed" });
+    renderRuns();
+    act(() => mocks.cyclesCb!([cycle("inc-a_r0", { state: "declined", leaseExpiresAt: null, path: "decline" })], false));
+    const failed = await screen.findByRole("region", { name: "What failed" });
+    expect(within(failed).getByText("Checkout failed")).toBeInTheDocument();
+    expect(within(failed).queryByText("Cause:")).toBeNull();
+    expect(within(failed).queryByRole("button", { name: /raw message/ })).toBeNull();
+  });
+
   it("says in one line how a finished run ended, and draws the hand-off off the step it came after", () => {
     renderRuns();
     act(() => mocks.cyclesCb!([cycle("inc-a_r0", { state: "waiting-human", leaseExpiresAt: null, path: "human" })], false));

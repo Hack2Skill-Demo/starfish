@@ -19,6 +19,7 @@ import { createAgentJobStarter } from "./agent/agentJob.js";
 import { triggerAgentPass } from "./agent/trigger.js";
 import { createAdminApi } from "./adminApi.js";
 import { startAdminApiServer } from "./adminApiServer.js";
+import { createIpRateLimiter } from "./ipRateLimit.js";
 import { createTwilioClient } from "./oncall/twilio.js";
 import { createTwilioWebhooks } from "./oncall/webhooks.js";
 import { confirmNumber, sendConfirmationCode } from "./oncall/optIn.js";
@@ -96,8 +97,12 @@ const handle = createAdminApi({
     }),
 });
 
-const server = startAdminApiServer(handle, config.adminApiPort);
+const server = startAdminApiServer(handle, config.adminApiPort, {
+  limiter: createIpRateLimiter({ perMinute: config.adminApiRateLimitPerMinute }),
+  // Once per address per minute, not per refused request: a flood must not become a Cloud Logging bill instead.
+  onLimited: (key) => console.log(JSON.stringify({ severity: "WARNING", message: "admin API rate limit reached", key })),
+});
 console.log(
-  `admin api on :${config.adminApiPort}, ${config.adminApiOrigins.length} browser origin(s) allowed, App Check ${config.adminApiRequireAppCheck ? "required" : "not required"}, Twilio ${twilio ? "wired" : "not configured"}, agent job ${startAgentJob ? config.agentJobName : "not named"}`
+  `admin api on :${config.adminApiPort}, ${config.adminApiRateLimitPerMinute} requests a minute per address, ${config.adminApiOrigins.length} browser origin(s) allowed, App Check ${config.adminApiRequireAppCheck ? "required" : "not required"}, Twilio ${twilio ? "wired" : "not configured"}, agent job ${startAgentJob ? config.agentJobName : "not named"}`
 );
 process.on("SIGTERM", () => server.close());

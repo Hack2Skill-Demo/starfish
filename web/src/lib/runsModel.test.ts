@@ -18,6 +18,7 @@ import {
   runStatus,
   issueLink,
   prLink,
+  failureView,
   safeUrl,
   stepLogOrder,
   triageFinding,
@@ -331,6 +332,39 @@ describe("small helpers", () => {
     expect(prLink(cycle({ summary: {} }))).toBeUndefined();
   });
 
+  describe("failureView (#289)", () => {
+    const detail = "Error: Unknown product: sku-poster\n    at /workspace/lib/functions/src/orders/createOrder.js:22:33\n    at Array.map (<anonymous>)";
+
+    it("shows the cause the engine stored beside a title that says nothing, with the detail's frames", () => {
+      const f = failureView("Checkout failed", detail);
+      expect(f.headline).toBe("Checkout failed");
+      expect(f.cause).toBe("Unknown product: sku-poster");
+      expect(f.frames.map((x) => x.at)).toEqual(["/workspace/lib/functions/src/orders/createOrder.js:22:33", "<anonymous>"]);
+      expect(f.raw).toBe(`Checkout failed\n\n${detail}`);
+      expect(f.hasMore).toBe(true);
+    });
+
+    it("is the title alone when there is no detail, and then offers nothing more to open", () => {
+      for (const none of [undefined, "", "   "]) {
+        expect(failureView("Checkout failed", none)).toEqual({ headline: "Checkout failed", frames: [], raw: "Checkout failed", hasMore: false });
+      }
+    });
+
+    it("keeps the title's own trace when it carries one, and still has the raw text to open", () => {
+      const f = failureView("Error: x failed at handler (/srv/app/src/a.ts:3:1)", detail);
+      expect(f.headline).toBe("x failed");
+      expect(f.frames).toEqual([{ fn: "handler", at: "/srv/app/src/a.ts:3:1", library: false }]);
+      expect(f.cause).toBe("Unknown product: sku-poster");
+      expect(failureView("Error: x failed at handler (/srv/app/src/a.ts:3:1)").hasMore).toBe(true);
+    });
+
+    it("names no cause when the detail only repeats the title", () => {
+      expect(failureView("Checkout failed", "Error: Checkout failed")).toMatchObject({ headline: "Checkout failed", hasMore: true });
+      expect(failureView("Checkout failed", "Error: Checkout failed")).not.toHaveProperty("cause");
+      expect(failureView("Checkout failed", "Checkout failed")).toEqual({ headline: "Checkout failed", frames: [], raw: "Checkout failed", hasMore: false });
+    });
+  });
+
   it("links the issue only once it was recorded as opened, with a number and an https link", () => {
     const url = "https://github.com/o/r/issues/30";
     expect(issueLink(cycle({ summary: { issue: { state: "opened", number: 30, url } } }))).toEqual({ number: 30, url, repo: "o/r" });
@@ -549,6 +583,20 @@ describe("the run's summary, its error, and the list's strip", () => {
     ]);
     expect(splitTrace("x at handler (/srv/app/src/a.ts:3:1)").frames[0]).toMatchObject({ fn: "handler", library: false });
     expect(splitTrace("Look at the logs for details")).toEqual({ headline: "Look at the logs for details", frames: [] });
+    // #289: an `async` or `new` frame is a frame, with or without a function's name; it used to leave the whole trace unsplit.
+    const withAsync = splitTrace(
+      "Error: Unknown product: sku-poster\n    at /workspace/lib/functions/src/orders/createOrder.js:22:33\n    at Array.map (<anonymous>)\n    at async Transaction.runTransactionOnce (/workspace/node_modules/@google-cloud/firestore/build/src/transaction.js:440:28)\n    at async /workspace/lib/functions/src/accounts/onUserCreate.js:52:5\n    at new Thing (/srv/app/src/thing.js:1:1)"
+    );
+    expect(withAsync.headline).toBe("Unknown product: sku-poster");
+    expect(withAsync.frames).toEqual([
+      { fn: "", at: "/workspace/lib/functions/src/orders/createOrder.js:22:33", library: false },
+      { fn: "Array.map", at: "<anonymous>", library: false },
+      { fn: "async Transaction.runTransactionOnce", at: "/workspace/node_modules/@google-cloud/firestore/build/src/transaction.js:440:28", library: true },
+      { fn: "async", at: "/workspace/lib/functions/src/accounts/onUserCreate.js:52:5", library: false },
+      { fn: "new Thing", at: "/srv/app/src/thing.js:1:1", library: false },
+    ]);
+    // A sentence that merely contains the word is still left whole.
+    expect(splitTrace("Retry at async boundaries only")).toEqual({ headline: "Retry at async boundaries only", frames: [] });
     expect(splitTrace("Error: quota hit at noon")).toEqual({ headline: "quota hit at noon", frames: [] });
   });
 

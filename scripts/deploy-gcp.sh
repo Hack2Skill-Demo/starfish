@@ -879,7 +879,8 @@ if [ "$DEPLOY_ADMIN_API" = "1" ]; then
   fi
   # --allow-unauthenticated: a browser must reach it, so Cloud Run's own IAM check cannot be the gate. An organisation
   # policy that forbids public services will refuse this line, and then the admin API cannot serve a browser.
-  # Capped instances and a cheap token check are the only limits on a stranger who calls it.
+  # Capped instances, a per-address limit (src/ipRateLimit.ts, STARFISH_ADMIN_API_RATE_LIMIT_PER_MINUTE) and a cheap token
+  # check are the only limits on a stranger who calls it.
   ADMIN_DEPLOY_ARGS=(
     gcloud run deploy "$ADMIN_SERVICE_NAME" --image="$ADMIN_IMAGE" --region="$REGION" --project="$PROJECT_ID" --quiet
     --service-account="$ADMIN_SA"
