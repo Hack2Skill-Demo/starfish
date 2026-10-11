@@ -172,9 +172,12 @@ turned `autoMerge` on; dry run and the merge freeze off; the case still listed),
 on the hard-exclude list's words: auth and access control, security rules, money, secrets, schema,
 dependencies and imports, CI config, shared packages, judged on the whole function around each change;
 and, since a list of words misses a check that names none of them, rules on the code itself: at most 40
-changed lines, no deciding line or call removed, no network, process, dynamic-code, destructive or
-file-system call and no `://` added, and no call the file did not already make but a few pure ones such as
-`String` or `Array.isArray`; a scanner, not a proof),
+changed lines; no line that decides or calls anything removed or altered (beyond adding `?.`, `?? null`
+or `await`); no `try`/`catch` and no `if`/`return`/`throw`/loop added except an explicit null guard; no
+existing code wrapped in a new block or function; no network, process, dynamic-code, destructive or
+file-system call and no `://` added; no call the file did not already make but a few pure ones such as
+`String` or `Array.isArray`; no JSX file. Not judged: a `?:`, `&&` or `||` added inside an expression, or
+which object a reused method is called on; a scanner, not a proof),
 **every required check green on the exact head**, at most `STARFISH_MAX_MERGES_PER_DAY` (3) a day, and
 an evidence comment posted first. Fast-revert is built with it: the same incident seen again within N
 minutes of a code merge opens and merges a revert. **Built for the demo target behind default-off

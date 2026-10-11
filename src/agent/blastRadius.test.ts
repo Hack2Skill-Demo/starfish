@@ -842,7 +842,7 @@ describe("assessMergeFloor: what the changed code does, not only the words it us
     const awaitReturn = diff(SRC, ['  const ref = db.collection("orders").doc(id);', "-  return ref.set(data);", "+  return await ref.set(data);", "   // written"]);
     const chainedReturn = diff(SRC, ["  const order = await load(id);", "-  return order.items.length;", "+  return order?.items?.length ?? null;", "   // done"]);
     const throwsError = diff(SRC, ["  const order = await load(id);", '+  if (order == null) throw new Error("no such order");', "   return order.total;"]);
-    const callsPure = diff(SRC, ["  const order = await load(id);", "+  if (!Array.isArray(order.items)) return null;", "+  const n = Number(order.count ?? 0);", '+  log("count", String(n));', "   return order.total;"]);
+    const callsPure = diff(SRC, ["  const order = await load(id);", "+  const items = Array.isArray(order.items) ? order.items : [];", "+  const n = Number(order.count ?? items.length);", '+  log("count", String(n));', "   return order.total;"]);
     it.each([
       ["a null guard", guard],
       ["a guard written as a block", guardBlock],
@@ -926,8 +926,8 @@ describe("assessMergeFloor: what the changed code does, not only the words it us
       const TFILE = "functions/src/orders/createOrder.test.js";
       const base = "function get(o) {\n  const x = o;\n  return x.total;\n}\nmodule.exports = { get };\n";
       const test = [`diff --git a/${TFILE} b/${TFILE}`, "new file mode 100644", "--- /dev/null", `+++ b/${TFILE}`, "@@ -0,0 +1,2 @@", '+const { get } = require("./createOrder.js");', "+if (get(undefined) !== null) process.exit(1);"];
-      const fix = (guardLine: string) => [`--- a/${FILE}`, `+++ b/${FILE}`, "@@ -1,5 +1,6 @@", " function get(o) {", "   const x = o;", `+${guardLine}`, "   return x.total;", " }", " module.exports = { get };", ...test, ""].join("\n");
-      for (const g of ["  if (x == null) return null;", "  if (!x) return null;"]) expect(assessMergeFloor(fix(g), { excludedPaths: [], baseFiles: new Map([[FILE, base]]) })).toMatchObject({ allowed: true, problems: [] });
+      const fix = (guardLine: string) => [`--- a/${FILE}`, `+++ b/${FILE}`, `@@ -1,5 +1,${5 + guardLine.split("\n").length} @@`, " function get(o) {", "   const x = o;", `+${guardLine}`, "   return x.total;", " }", " module.exports = { get };", ...test, ""].join("\n");
+      for (const g of ["  if (x == null) return null;", "  if (x == null) return null;\n+  if (x.total === undefined) return null;"]) expect(assessMergeFloor(fix(g), { excludedPaths: [], baseFiles: new Map([[FILE, base]]) })).toMatchObject({ allowed: true, problems: [] });
     });
   });
 
@@ -962,6 +962,42 @@ describe("assessMergeFloor: what the changed code does, not only the words it us
   it("refuses an address added anywhere in a line", () => {
     for (const line of ['+  const target = "https://collector.example/o";', "+  const target = `ftp://${id}`;", "+  // see http://example.com"]) {
       expect(floor(diff(SRC, ["  const order = await load(id);", line, "   return order.total;"])).problems).toContain("adds-url");
+    }
+  });
+
+  describe("a check neutralised without removing it (review of #295)", () => {
+    /** A check written as a call whose name and body dodge the word list: `checkOrder` compares `o.placedBy !== who`. */
+    const around = (body: string[]) => diff(SRC, ["  const order = await load(id);", ...body, "   return order.total;"]);
+    it.each([
+      ["a check wrapped in try/catch", around(["-  await checkOrder(order, who);", "+  try {", "+    await checkOrder(order, who);", "+  } catch {}"]), "adds-try-catch"],
+      ["a check wrapped in try/catch, the check left as context", around(["+  try {", "   await checkOrder(order, who);", "+  } catch {}"]), "adds-try-catch"],
+      ["a promise's .catch on a check", around(["-  await checkOrder(order, who);", "+  await checkOrder(order, who).catch(() => null);"]), "removes-a-decision"],
+      ["an early return above a check", around(["+  if (order) return order;", "   await checkOrder(order, who);"]), "adds-control-flow"],
+      ["a check made conditional", around(["-  checkOrder(order, who);", "+  if (order === null) checkOrder(order, who);"]), "removes-a-decision"],
+      ["a check's arguments changed", around(["-  checkOrder(order, who);", "+  checkOrder(order, order.placedBy);"]), "removes-a-decision"],
+      ["a check wrapped in a new block", around(["+  if (order === null) {", "   checkOrder(order, who);", "+  }"]), "adds-unbalanced-brackets"],
+      ["a check wrapped in a function never called", around(["+  const skip = () => {", "   checkOrder(order, who);", "+  };"]), "adds-unbalanced-brackets"],
+      ["a return that is not a null guard", around(["+  if (order.total == null) return 0;", "   checkOrder(order, who);"]), "adds-control-flow"],
+      ["a loop", around(["+  for (const item of order.items) log(\"item\", item);", "   checkOrder(order, who);"]), "adds-control-flow"],
+      ["a null guard that becomes a braceless if's body", around(["  if (order.held === true)", "+  if (order == null) return null;", "    checkOrder(order, who);"]), "adds-control-flow"],
+    ])("refuses %s", (_name, patch, problem) => {
+      expect(floor(patch)).toMatchObject({ allowed: false, problems: expect.arrayContaining([problem]) });
+    });
+
+    it("allows a null guard whose error is a Firebase v1 HttpsError the handler already throws, with no network sink", () => {
+      const v1 = (line: string) => diff(SRC, ['  if (data == null) throw new functions.https.HttpsError("invalid-argument", "no data");', "  const snap = await load(id);", line, "   return snap.total;"]);
+      expect(floor(v1('+  if (snap == null) throw new functions.https.HttpsError("not-found", "no such order", id);'))).toMatchObject({ allowed: true, problems: [] });
+      // `!snap.exists` is not an explicit null check: refused as control flow, never as a network call.
+      const r = floor(v1('+  if (!snap.exists) throw new functions.https.HttpsError("not-found", "no such order");'));
+      expect(r.problems).toContain("adds-control-flow");
+      expect(r.problems).not.toContain("adds-sink:network");
+    });
+  });
+
+  it("refuses a JSX file with its own reason: the scanner does not read JSX text", () => {
+    for (const path of ["functions/src/orders/Order.tsx", "web/src/orders/Order.jsx"]) {
+      const p = diff(path, ["  const order = await load(id);", "+  if (order == null) return null;", "   return <p>Don't ship {order.total}</p>;"]);
+      expect(floor(p)).toMatchObject({ allowed: false, problems: ["jsx-not-judged"] });
     }
   });
 
