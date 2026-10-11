@@ -166,8 +166,13 @@ const isPlainObject = (v: unknown): v is Record<string, unknown> =>
  * Check a settings document read from Firestore. Problems name the field and the
  * rule, never the value: a bad value may be a pasted credential, and these
  * messages end up in logs and on the Settings page.
+ *
+ * `dropShortIgnoredMessages` is the engine's reading (#309): an ignored-message entry shorter than IGNORED_MESSAGE_MIN
+ * is left out instead of failing the document. A document saved before the minimum existed may hold one, and failing
+ * it would stop ingest and the agent (no usable settings, and its last-good copy fails the same check). Such an entry
+ * matched nearly every error, so leaving it out is the safe reading. The UI's editor stays strict.
  */
-export function validateSettings(raw: unknown): Validation {
+export function validateSettings(raw: unknown, opts: { dropShortIgnoredMessages?: boolean } = {}): Validation {
   if (!isPlainObject(raw)) return { ok: false, problems: ["settings: not an object"] };
   const problems: string[] = [];
   const settings: RuntimeSettings = {};
@@ -222,13 +227,14 @@ export function validateSettings(raw: unknown): Validation {
     const list = raw.ignoredMessages;
     if (!Array.isArray(list) || list.length > MAX_LIST) {
       problems.push(`ignoredMessages: a list of at most ${MAX_LIST} message fragments`);
-    } else if (
-      !list.every(
-        (m) => typeof m === "string" && m.trim().length >= IGNORED_MESSAGE_MIN && m.trim().length <= 300 && !CONTROL.test(m)
-      )
-    ) {
-      problems.push(`ignoredMessages: each entry must be ${IGNORED_MESSAGE_MIN}-300 characters (spaces at the ends not counted), no control characters`);
-    } else settings.ignoredMessages = (list as string[]).map((m) => m.trim());
+    } else {
+      const wellFormed = list.every((m) => typeof m === "string" && m.trim().length <= 300 && !CONTROL.test(m));
+      const trimmed = wellFormed ? (list as string[]).map((m) => m.trim()) : [];
+      const short = trimmed.some((m) => m.length < IGNORED_MESSAGE_MIN);
+      if (!wellFormed || (short && !opts.dropShortIgnoredMessages)) {
+        problems.push(`ignoredMessages: each entry must be ${IGNORED_MESSAGE_MIN}-300 characters (spaces at the ends not counted), no control characters`);
+      } else settings.ignoredMessages = trimmed.filter((m) => m.length >= IGNORED_MESSAGE_MIN);
+    }
   }
 
   for (const flag of ["dryRun", "reviewRequired", "automationEnabled", "autoMerge", "mergeFreeze"] as const) {

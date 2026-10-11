@@ -330,6 +330,17 @@ describe("RuntimeConfigLoader", () => {
     expect(r.config).toEqual(base);
   });
 
+  it("leaves out an ignored-message entry saved before the minimum existed instead of refusing the document (#309)", async () => {
+    // Refusing it would stop ingest and the agent: no usable settings, and the last-good copy fails the same check.
+    const { db } = fakeDb({ [SETTINGS_DOC]: { version: 1, ignoredMessages: ["probe", " ", "ab"] } });
+    const r = await new RuntimeConfigLoader(base).resolve(db);
+    expect(r).toMatchObject({ source: "settings", problems: [], actionsAllowed: true });
+    expect(r.config.ignoredMessages).toEqual(["probe"]);
+    // A malformed entry (not a string) still fails the document.
+    const bad = fakeDb({ [SETTINGS_DOC]: { version: 1, ignoredMessages: ["probe", 7] } });
+    expect((await new RuntimeConfigLoader(base).resolve(bad.db)).source).not.toBe("settings");
+  });
+
   it("applies a valid document, and keeps a copy as the last good one", async () => {
     const { db, writes } = fakeDb({ [SETTINGS_DOC]: valid });
     const r = await new RuntimeConfigLoader(base).resolve(db);

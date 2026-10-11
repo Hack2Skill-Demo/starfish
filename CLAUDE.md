@@ -225,8 +225,8 @@ src/
                    once the ingest checkpoint has read through the window, else a person is told after a day (#241).
                    Runs before the merge step in the pass
   agent/pass.ts    one pass over the store: candidate selection (recurred incidents first, then ones not yet triaged, then the
-                   rest, newest first within each, #303; paged past closed/settled incidents, bounded, a cap
-                   reported, #226), stack trace → repo files, bounded driver; the daily cycle cap
+                   rest, newest first within each, #303: so a pass usually reads up to the 500-incident bound and their
+                   cycles, not only the first page; paged past closed/settled incidents, bounded, a cap reported, #226), stack trace → repo files, bounded driver; the daily cycle cap
                    (`STARFISH_MAX_CYCLES_PER_DAY`, a count of cycles started that UTC day); a sweep that gives up and
                    announces `running` cycles nobody holds whose deadline passed or attempts ran out
   agent/reconcile.ts  after the pass (#17): polls a bounded number of opened PRs (state + named checks on the head), records

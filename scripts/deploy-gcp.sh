@@ -191,7 +191,7 @@ die() { echo "deploy-gcp: $*" >&2; exit 1; }
 # as STARFISH_INGEST_SCHEDULE / STARFISH_AGENT_SCHEDULE, into an "@"-separated list, so a bad one must fail here, before
 # anything changes, not in Cloud Scheduler halfway through.
 valid_cron() {
-  case "$1" in *[!0-9*/,\ -]*) return 1 ;; esac
+  case "$1" in *[!0-9A-Za-z*/,\ -]*) return 1 ;; esac   # letters: MON-FRI, JAN, which Cloud Scheduler accepts
   local fields
   read -r -a fields <<< "$1"   # not `set -- $1`: an unquoted * would expand to file names
   [ "${#fields[@]}" -eq 5 ]

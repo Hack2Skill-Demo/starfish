@@ -44,7 +44,7 @@ case "$MODE" in status|recording|restore|now) ;; *) die "usage: ingest-cadence.s
 
 # A cron is five fields of cron characters: it goes into a command line, and a bad one must fail here, not in the job.
 valid_cron() {
-  case "$1" in *[!0-9*/,\ -]*) return 1 ;; esac
+  case "$1" in *[!0-9A-Za-z*/,\ -]*) return 1 ;; esac   # letters: MON-FRI, JAN, which Cloud Scheduler accepts
   local fields
   read -r -a fields <<< "$1"   # not `set -- $1`: an unquoted * would expand to file names
   [ "${#fields[@]}" -eq 5 ]

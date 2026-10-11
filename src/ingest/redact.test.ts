@@ -242,6 +242,12 @@ describe("redactPii: headers, escaped JSON, short key names and phone numbers (#
     expect(redactPii(once)).toBe(once);
   });
 
+  it("reads cookie and authorization only as whole header names, so `nocookie:` keeps its text", () => {
+    expect(redactPii("nocookie: true and the rest")).toBe("nocookie: true and the rest");
+    expect(redactPii("xauthorization: pending review")).toBe("xauthorization: pending review");
+    expect(redactPii("Cookie: a=1; b=2")).not.toContain("b=2");
+  });
+
   it("removes every cookie in a Cookie header, to the end of the line", () => {
     expect(redactPii("Cookie: theme=dark; __session=SECRETVALUE123; connect.sid=abc\nnext line")).toBe(
       "Cookie: [redacted-secret]\nnext line"

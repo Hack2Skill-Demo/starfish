@@ -76,6 +76,11 @@ describe("escalationEligible", () => {
 });
 
 describe("isCritical", () => {
+  it("never counts an overflow incident's folded occurrences (#303): a flood must not ring during the quiet hours", () => {
+    expect(isCritical({ status: "new", signalSource: "overflow", occurrenceCount: 10_000 }, { criticalOccurrences: 100 })).toBe(false);
+    expect(isCritical({ status: "recurred", signalSource: "overflow", occurrenceCount: 1 }, { criticalOccurrences: 100 })).toBe(true);
+  });
+
   it("is a regression, or the configured number of occurrences", () => {
     expect(isCritical({ status: "recurred", occurrenceCount: 1 }, { criticalOccurrences: 100 })).toBe(true);
     expect(isCritical({ status: "new", occurrenceCount: 100 }, { criticalOccurrences: 100 })).toBe(true);

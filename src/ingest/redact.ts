@@ -138,7 +138,7 @@ const SHORT_KEY_VALUE_RE = new RegExp(
  * is a bare token) and bounded, so a failed attempt backtracks over at most 32 characters.
  */
 const AUTHORIZATION_RE = new RegExp(
-  String.raw`(["']?(?:proxy-)?authorization${KV_KEY_QUOTE}\s*[:=]\s*)(?!\[redacted-)` +
+  String.raw`(?<![\w-])(["']?(?:proxy-)?authorization${KV_KEY_QUOTE}\s*[:=]\s*)(?!\[redacted-)` +
     String.raw`(?:\\?"[^"]*"|'[^']*'|(?:[A-Za-z][\w-]{0,31}[ \t]+(?!\[redacted-))?[^\s,;&"'}\])]+)`,
   "gi"
 );
@@ -151,7 +151,7 @@ const AUTHORIZATION_RE = new RegExp(
  * a second pass.
  */
 const COOKIE_RE = new RegExp(
-  String.raw`(["']?(?:set-)?cookie${KV_KEY_QUOTE}\s*[:=][ \t]*)(?!\[redacted-)(?:\\?"[^"]*"|'[^']*'|\S[^\r\n]*)`,
+  String.raw`(?<![\w-])(["']?(?:set-)?cookie${KV_KEY_QUOTE}\s*[:=][ \t]*)(?!\[redacted-)(?:\\?"[^"]*"|'[^']*'|\S[^\r\n]*)`,
   "gi"
 );
 

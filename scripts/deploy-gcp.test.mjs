@@ -273,13 +273,14 @@ describe("scripts/deploy-gcp.sh", () => {
 
   it("refuses a schedule that is not a five-field cron, before anything changes (#308)", () => {
     for (const [name, bad] of [["SCHEDULE", "hourly"], ["SCHEDULE", "*/5 * * *"], ["SCHEDULE", "0 * * * * *"], ["SCHEDULE", "0 * * * *@X=1"],
-      ["SCHEDULE", "$(id) * * * *"], ["AGENT_SCHEDULE", "30 * * *"], ["AGENT_SCHEDULE", "30 * * * mon"]]) {
+      ["SCHEDULE", "$(id) * * * *"], ["AGENT_SCHEDULE", "30 * * *"], ["AGENT_SCHEDULE", "30 * * * mon;id"]]) {
       const r = deploy({ ...dry, [name]: bad });
       expect(r.status, `${name}=${bad}`).not.toBe(0);
       expect(r.out, `${name}=${bad}`).toContain(`${name} must be a five-field cron`);
       expect(r.out, `${name}=${bad}`).not.toContain("gcloud services enable");
     }
-    for (const good of ["*/5 * * * *", "0 9-17 * * 1-5", "15,45 * * * *"]) {
+    // Day and month names, which Cloud Scheduler accepts, pass too; the UI then just shows no next-run estimate.
+    for (const good of ["*/5 * * * *", "0 9-17 * * 1-5", "15,45 * * * *", "30 * * * MON-FRI", "0 9 1 JAN *"]) {
       expect(deploy({ ...dry, SCHEDULE: good, AGENT_SCHEDULE: good }).status, good).toBe(0);
     }
   });
