@@ -12,13 +12,14 @@ const SUMMARY = {
   outcome: "ok",
   windows: 2,
   capped: false,
-  totals: { entriesProcessed: 5, incidentsCreated: 1, incidentsUpdated: 2, incidentsRecurred: 0, incidentsReplayed: 0 },
+  totals: { entriesProcessed: 5, incidentsCreated: 1, incidentsUpdated: 2, incidentsRecurred: 0, incidentsReplayed: 0, errorsFoldedIntoOverflow: 0 },
 } as unknown as RunSummary;
 
 function fakes(over: Partial<AdminApiDeps> = {}) {
   const calls: string[] = [];
   const deps: AdminApiDeps = {
     verifyToken: (t) => (t === TOKEN ? Promise.resolve({ uid: "admin-1" }) : Promise.reject(new Error("bad token: details that must not leak"))),
+    isAdmin: (uid) => Promise.resolve(uid === "admin-1"),
     runIngest: (uid) => (calls.push(`ingest:${uid}`), Promise.resolve({ ok: true, summary: SUMMARY })),
     retire: (id, uid, reason) => (calls.push(`retire:${id}:${uid}:${reason}`), Promise.resolve({ ok: true, alreadyRetired: false })),
     allowedOrigins: [ORIGIN],
@@ -91,6 +92,61 @@ describe("admin API: who may call", () => {
     });
     expect((await api(post("/api/ingest/run"))).status).toBe(403);
     expect((await api(post("/api/incidents/i/retire"))).status).toBe(403);
+  });
+
+  // #305: the locks were taken before the action's own admin check, so any token, an anonymous guest's too, could hold
+  // them: an admin then got a 409, and the guest learnt from its own 409 that a run was in progress.
+  it("checks the role before any route takes its lock: a non-admin during a held lock gets 403 and never holds it", async () => {
+    let releaseIngest: () => void = () => {};
+    let releaseAgent: () => void = () => {};
+    const ingestGate = new Promise<void>((r) => (releaseIngest = r));
+    const agentGate = new Promise<void>((r) => (releaseAgent = r));
+    const ran: string[] = [];
+    const { api } = fakes({
+      verifyToken: (t) => Promise.resolve({ uid: t === TOKEN ? "admin-1" : "guest-1" }),
+      runIngest: (uid) => (ran.push(`ingest:${uid}`), ingestGate.then(() => ({ ok: true as const, summary: SUMMARY }))),
+      runAgent: (uid) => (ran.push(`agent:${uid}`), agentGate.then(() => ({ ok: true as const }))),
+    });
+    const guest = (path: string) => post(path, { authorization: `Bearer ${"g".repeat(40)}` });
+
+    // A guest first: refused, and the admin is not held up by it.
+    for (const path of ["/api/ingest/run", "/api/agent/run"]) {
+      const r = await api(guest(path));
+      expect(r, path).toMatchObject({ status: 403, body: { error: "admins only" } });
+    }
+    expect(ran).toEqual([]);
+    const ingest = api(post("/api/ingest/run"));
+    const agent = api(post("/api/agent/run"));
+
+    // While the admin's run holds each lock, a guest still gets 403, never the 409 that would say a run is in progress.
+    for (const path of ["/api/ingest/run", "/api/agent/run"]) expect((await api(guest(path))).status, path).toBe(403);
+    expect((await api(post("/api/ingest/run"))).status).toBe(409);
+    expect((await api(post("/api/agent/run"))).status).toBe(409);
+    releaseIngest();
+    releaseAgent();
+    expect((await ingest).status).toBe(200);
+    expect((await agent).status).toBe(202);
+    expect(ran).toEqual(["ingest:admin-1", "agent:admin-1"]);
+  });
+
+  it("refuses every admin route with 403 before the action runs when the caller is not an admin", async () => {
+    const { api, calls } = fakes({ isAdmin: () => Promise.resolve(false) });
+    expect((await api(post("/api/ingest/run"))).status).toBe(403);
+    expect((await api(post("/api/incidents/i/retire"))).status).toBe(403);
+    expect(calls).toEqual([]);
+  });
+
+  it("answers 500 with no detail, and runs nothing, when the role cannot be read", async () => {
+    let down = true;
+    const { api, calls } = fakes({ isAdmin: () => (down ? Promise.reject(new Error("store down: password=hunter2")) : Promise.resolve(true)) });
+    const r = await api(post("/api/ingest/run"));
+    expect(r.status).toBe(500);
+    expect(JSON.stringify(r.body)).not.toContain("hunter2");
+    expect(calls).toEqual([]);
+    // The lock was never taken: the next call, once the store answers, runs.
+    down = false;
+    expect((await api(post("/api/ingest/run"))).status).toBe(200);
+    expect(calls).toEqual(["ingest:admin-1"]);
   });
 });
 

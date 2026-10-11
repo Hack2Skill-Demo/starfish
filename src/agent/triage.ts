@@ -58,6 +58,7 @@ export type TriageRule =
   | "model-call-failed"
   | "model-output-invalid"
   | "monitoring-only-no-cause"
+  | "high-cardinality-overflow"
   | "rule-cap"
   | "correction-cap";
 
@@ -283,6 +284,19 @@ export async function triageIncident(subject: TriageSubject, ask: AskJson = askJ
   const cap = levelCap(subject.incident, options.classRules ?? [], subject.correction) ?? undefined;
   if (cap?.level === "noise") {
     return result("decline", `${cap.by}-cap`, `Declined without asking the model: ${capSource(cap)} holds this incident to noise.`, undefined, undefined, cap);
+  }
+
+  // An overflow incident (#303) is the many distinct errors one function logged past the per-window cap, folded into one.
+  // It has no single cause to fix, and its text is whatever the flood carried: a person looks, the model is not asked.
+  if (subject.incident.signalSource === "overflow") {
+    return result(
+      "notify",
+      "high-cardinality-overflow",
+      "This function logged more distinct errors than the per-window cap allows, and the rest were folded into this one incident. That is a flood or an error that echoes its input, not one cause a fix can aim at: a human should look.",
+      undefined,
+      undefined,
+      cap
+    );
   }
 
   const check = subject.incident.logCounterCheck;

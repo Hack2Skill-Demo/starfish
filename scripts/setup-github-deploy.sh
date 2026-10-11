@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # One-time Google Cloud setup so GitHub Actions can deploy Starfish with no key and no secret (#75, #92): a Workload
-# Identity pool and provider that trust ONE repository's jobs in the `deploy` environment, and a deployer service
+# Identity pool and provider that trust ONE repository's jobs in the `deploy` environment on one branch, and a deployer service
 # account those jobs may act as. Run it ONCE, as an owner of the project (Cloud Shell is fine). Idempotent.
 #
 #   PROJECT_ID=my-project REPO=owner/name scripts/setup-github-deploy.sh
@@ -20,8 +20,13 @@
 #   BUILD_SERVICE_ACCOUNT  deploy-gcp.sh's: the account Cloud Run builds the image as. Default: the project's Compute Engine
 #                        default account. The deployer is allowed to act as it, which a build from source requires; what
 #                        that account may do, the deployer can then do through a build, so keep it to roles/run.builder
-#                        (deploy-gcp.sh grants only that) or name an account made for building
+#                        (deploy-gcp.sh grants only that) or name an account made for building. The script REFUSES to run
+#                        while that account holds roles/editor or roles/owner on PROJECT_ID (#300): through a build, the
+#                        deployer would be an Editor of the project
 #   ENVIRONMENT          the GitHub environment the jobs run in. Default deploy (the workflows are fixed to it)
+#   DEPLOY_BRANCH        the one branch whose runs may present a token (#299). Default main. The provider checks the
+#                        token's own ref claim, so a run on any other branch, or on a tag, is refused by Google even
+#                        when the `deploy` environment's branch rule in GitHub is missing or wrong
 #   POOL, PROVIDER       Default github, github-deploy
 #   DEPLOYER_NAME        Default starfish-deployer
 #   DEPLOYER_ROLE_ID, SA_IAM_ROLE_ID   the two custom roles this script makes. Default starfishDeployer, starfishServiceAccountIam
@@ -31,8 +36,9 @@
 #   SLACK_ALERTS_SECRET, TWILIO_SID_SECRET, TWILIO_TOKEN_SECRET, TWILIO_FROM_SECRET, VERIFY_BUCKET
 #                        the names deploy-gcp.sh uses, with its defaults: set them here as you set them there
 #
-# What it makes: the pool, the provider (attribute condition: this repository's id AND this environment, so no other
-# repository and no other environment can present a token), the deployer account, and the roles docs/deploy.md lists.
+# What it makes: the pool, the provider (attribute condition: this repository's id AND this environment AND a run on
+# DEPLOY_BRANCH, so no other repository, environment or branch can present a token; a re-run updates an existing
+# provider's mapping and condition), the deployer account, and the roles docs/deploy.md lists.
 # What it does NOT make: a key (none exists), the GitHub environment, or the repository variables: it prints them for you.
 #
 # The deployer is powerful, and bounded (#145). Granting roles on a project is limited by an IAM condition to the roles
@@ -41,9 +47,10 @@
 # roles/aiplatform.user (a project that is more than one of these may be granted the roles of each). Service accounts: it may create and read them (a custom role), never set their IAM policy,
 # except on the agent's own account with cloud-run-job. Secrets and buckets: only Starfish's, by name, through conditions.
 # What is still project-wide: Cloud Run, Cloud Build, Artifact Registry, Scheduler, Firestore and the rules, and Hosting (the
-# table in docs/deploy.md). Anyone who can change a workflow on a branch the `deploy` environment allows can use it: limit the
-# environment to `main` and, if you want a person in the loop, add required reviewers. Written and tested by a dry run;
-# never run against a real project.
+# table in docs/deploy.md). Anyone who can change a workflow on DEPLOY_BRANCH can use it (the provider refuses every other
+# branch, #299): limit the `deploy` environment to that branch too, and with deploy-on-merge on add required reviewers, since
+# a merge is then a deploy (#301). Run once on the demo project (2026-10-10); the branch condition and the build account
+# check (#299, #300) are written and tested with stubs, not run.
 set -euo pipefail
 
 PROJECT_ID="${PROJECT_ID:-}"
@@ -53,6 +60,7 @@ VERTEX_PROJECT_ID="${VERTEX_PROJECT_ID:-$PROJECT_ID}"
 INDEX_TARGETS="${INDEX_TARGETS:-}"
 BUILD_SERVICE_ACCOUNT="${BUILD_SERVICE_ACCOUNT:-}"
 ENVIRONMENT="${ENVIRONMENT:-deploy}"
+DEPLOY_BRANCH="${DEPLOY_BRANCH:-main}"
 POOL="${POOL:-github}"
 PROVIDER="${PROVIDER:-github-deploy}"
 DEPLOYER_NAME="${DEPLOYER_NAME:-starfish-deployer}"
@@ -88,6 +96,8 @@ case "$ENVIRONMENT$POOL$PROVIDER$DEPLOYER_NAME" in *[!A-Za-z0-9._-]*) die "ENVIR
 for var in ENGINE_SA_NAME SCHEDULER_SA_NAME AGENT_SA_NAME VERIFIER_SA_NAME ADMIN_SA_NAME GITHUB_SECRET SLACK_SECRET SLACK_ALERTS_SECRET TWILIO_SID_SECRET TWILIO_TOKEN_SECRET TWILIO_FROM_SECRET VERIFY_BUCKET; do
   case "${!var}" in ''|*[!A-Za-z0-9._-]*) die "$var may hold only letters, digits, . _ -: ${!var}" ;; esac
 done
+# The branch goes into the provider's condition between single quotes: only a branch name's usual characters.
+case "$DEPLOY_BRANCH" in ''|*[!A-Za-z0-9._/-]*|/*|*/|*..*|*//*|-*) die "DEPLOY_BRANCH must be a branch name such as main: $DEPLOY_BRANCH" ;; esac
 case "$DEPLOYER_ROLE_ID$SA_IAM_ROLE_ID" in *[!A-Za-z0-9_.]*) die "DEPLOYER_ROLE_ID and SA_IAM_ROLE_ID may hold only letters, digits, _ ." ;; esac
 case "$VERIFY_ISOLATION" in github-actions|cloud-run-job) ;; *) die "VERIFY_ISOLATION must be github-actions or cloud-run-job: $VERIFY_ISOLATION" ;; esac
 case "$BUILD_SERVICE_ACCOUNT" in *[!A-Za-z0-9.@_-]*) die "BUILD_SERVICE_ACCOUNT must be a service account's email: $BUILD_SERVICE_ACCOUNT" ;; esac
@@ -127,6 +137,36 @@ if [ -z "$REPO_ID" ]; then
 fi
 case "$REPO_ID" in "<id of $REPO>") ;; ''|*[!0-9]*) die "REPO_ID must be the repository's numeric id: $REPO_ID" ;; esac
 
+# The deployer will act as the build account (below), and a build can do whatever that account may. On many projects the
+# Compute Engine default account still holds roles/editor, which would make the deployer an Editor of the project (#300).
+# Checked before anything is made, on the project's own policy (a role granted on a folder or the organisation is not
+# seen here), and refused: a check that cannot read the policy refuses too. scripts/preflight-gcp.sh makes the same check.
+BUILD_SA="${BUILD_SERVICE_ACCOUNT:-$PROJECT_NUMBER-compute@developer.gserviceaccount.com}"
+if [ "$DRY_RUN" = "1" ]; then
+  echo "+ (check) gcloud projects get-iam-policy $PROJECT_ID: $BUILD_SA must hold neither roles/editor nor roles/owner"
+else
+  POLICY="$(gcloud projects get-iam-policy "$PROJECT_ID" --flatten='bindings[].members' \
+    --format='csv[no-heading](bindings.role,bindings.members)' 2>/dev/null)" && [ -n "$POLICY" ] ||
+    die "cannot read the IAM policy of $PROJECT_ID to check that $BUILD_SA holds neither roles/editor nor roles/owner (#300)"
+  BASIC="" REMOVE=""
+  while IFS=, read -r role member; do
+    [ "$member" = "serviceAccount:$BUILD_SA" ] || continue
+    case "$role" in
+      roles/editor|roles/owner)
+        BASIC="${BASIC:+$BASIC and }$role"
+        REMOVE="$REMOVE
+      gcloud projects remove-iam-policy-binding $PROJECT_ID --member=serviceAccount:$BUILD_SA --role=$role --all" ;;
+    esac
+  done <<<"$POLICY"
+  [ -z "$BASIC" ] || die "$BUILD_SA, the account Cloud Run builds images as, holds $BASIC on $PROJECT_ID. The deployer must be
+  allowed to act as it (a build from source needs that), and would then hold $BASIC through a build (#300). Either:
+  - take it away, if nothing else in the project needs it (Cloud Functions 2nd gen and Cloud Run services run as this
+    account by default, so check first; deploy-gcp.sh grants it roles/run.builder, which is all a build needs):$REMOVE
+  - or make an account for building, make it Cloud Build's default service account for the project (Cloud Build > Settings),
+    and set BUILD_SERVICE_ACCOUNT to it here and for deploy-gcp.sh.
+  Then run this again."
+fi
+
 bind() { # bind <project> <role> [condition expression]
   local condition=(--condition=None)
   # The expression holds commas, so the key=value pairs are separated by ";" instead (gcloud's "^;^" prefix).
@@ -137,15 +177,18 @@ bind() { # bind <project> <role> [condition expression]
 step "APIs"
 run gcloud services enable iamcredentials.googleapis.com sts.googleapis.com --project="$PROJECT_ID"
 
-step "Workload Identity pool '$POOL' and provider '$PROVIDER': only $REPO, only the $ENVIRONMENT environment"
+step "Workload Identity pool '$POOL' and provider '$PROVIDER': only $REPO, only the $ENVIRONMENT environment, only $DEPLOY_BRANCH"
 if ! exists gcloud iam workload-identity-pools describe "$POOL" --project="$PROJECT_ID" --location=global; then
   run gcloud iam workload-identity-pools create "$POOL" --project="$PROJECT_ID" --location=global --display-name="GitHub Actions"
 fi
+# The branch is checked by Google on the token's own claims (#299), not only by the environment's branch rule in GitHub,
+# which is a setting a person can leave out or widen: a run on another branch or on a tag gets no credentials. An
+# existing provider is updated with the same mapping and condition, so running this again tightens one made earlier.
 PROVIDER_ARGS=(
   --project="$PROJECT_ID" --location=global --workload-identity-pool="$POOL"
   --issuer-uri="https://token.actions.githubusercontent.com"
-  --attribute-mapping="google.subject=assertion.sub,attribute.repository_id=assertion.repository_id,attribute.repository=assertion.repository,attribute.environment=assertion.environment"
-  --attribute-condition="assertion.repository_id == '$REPO_ID' && assertion.environment == '$ENVIRONMENT'"
+  --attribute-mapping="google.subject=assertion.sub,attribute.repository_id=assertion.repository_id,attribute.repository=assertion.repository,attribute.environment=assertion.environment,attribute.ref=assertion.ref"
+  --attribute-condition="assertion.repository_id == '$REPO_ID' && assertion.environment == '$ENVIRONMENT' && assertion.ref == 'refs/heads/$DEPLOY_BRANCH' && assertion.ref_type == 'branch'"
 )
 if exists gcloud iam workload-identity-pools providers describe "$PROVIDER" --project="$PROJECT_ID" --location=global --workload-identity-pool="$POOL"; then
   run gcloud iam workload-identity-pools providers update-oidc "$PROVIDER" "${PROVIDER_ARGS[@]}"
@@ -267,9 +310,9 @@ done
 # Compute Engine default account), and Cloud Build refuses a caller that may not act as it: "caller does not have
 # permission to act as service account", which stopped the first real run of the deploy workflow (2026-10-10) at its
 # first image. A person deploying as an owner never meets it. It is one more account the deployer reaches, so it is
-# named apart from the five above: whatever that account may do, a build can do.
-step "May act as the account Cloud Run builds images as"
-BUILD_SA="${BUILD_SERVICE_ACCOUNT:-$PROJECT_NUMBER-compute@developer.gserviceaccount.com}"
+# named apart from the five above: whatever that account may do, a build can do. That is why the script stopped above
+# if it holds roles/editor or roles/owner on the project (#300).
+step "May act as the account Cloud Run builds images as ($BUILD_SA)"
 run gcloud iam service-accounts add-iam-policy-binding "$BUILD_SA" --project="$PROJECT_ID" \
   --role=roles/iam.serviceAccountUser --member="serviceAccount:$DEPLOYER"
 
@@ -289,8 +332,10 @@ fi
 
 step "Done on the Google Cloud side. Now, in GitHub ($REPO):"
 cat <<NEXT
-1. Settings > Environments > New environment: "$ENVIRONMENT". Under "Deployment branches", choose "Selected branches" and add: main.
-   (Add "Required reviewers" if you want a person to approve each deploy; leave it empty for a fully automatic one.)
+1. Settings > Environments > New environment: "$ENVIRONMENT". Under "Deployment branches", choose "Selected branches" and add:
+   $DEPLOY_BRANCH. (Google already refuses a token from any other branch; this rule makes GitHub refuse the run too.)
+   Required reviewers: REQUIRED if you turn deploy-on-merge on (step 3): every merge to $DEPLOY_BRANCH, a Dependabot bump
+   included, then changes what runs, and a reviewer is the person who says yes to it. Optional while you only deploy by hand.
 2. Settings > Secrets and variables > Actions > Variables > New repository variable, each of:
      GCP_WORKLOAD_IDENTITY_PROVIDER = $POOL_PATH/providers/$PROVIDER
      GCP_DEPLOY_SERVICE_ACCOUNT     = $DEPLOYER
@@ -302,7 +347,9 @@ cat <<NEXT
      STARFISH_DEPLOY_ADMIN_API      = (1 to deploy the admin API too, with STARFISH_ADMIN_API_ORIGINS = https://<your site>.web.app)
      STARFISH_WEB_ADMIN_API_URL     = (the admin API's URL once deployed: the web UI shows its admin controls only with it)
 3. To deploy on every merge to main that changes what runs, also set:   STARFISH_DEPLOY_ON_MERGE = true
-   Until you do, the workflows only run when you start them (Actions > Deploy engine / Deploy web UI > Run workflow).
+   and first add the required reviewers of step 1. Until you set it, the workflows only run when you start them
+   (Actions > Deploy engine / Deploy web UI > Run workflow). Their push trigger is main: with another DEPLOY_BRANCH,
+   only runs started by hand on that branch can deploy.
 4. Try it first: Actions > Deploy engine > Run workflow, with "dry_run" ticked. Besides printing the plan, it makes two read-only
    calls as the deployer (describe the project, describe the deployer account), which fail the run unless the pool, the
    provider and the workloadIdentityUser binding work. They do not check the deployer's other roles: the first real run does.

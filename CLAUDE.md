@@ -50,7 +50,7 @@ pnpm ingest           # one ingest run: next window(s) of the watched project's 
 PROJECT_ID=<p> scripts/deploy-gcp.sh   # Cloud Run job + Scheduler + Secret Manager; DRY_RUN=1 prints the plan (docs/deploy.md)
 # The whole setup, in order (docs/setup.md): scripts/preflight-gcp.sh → deploy-gcp.sh → pnpm grant-operator →
 # scripts/smoke-gcp.sh → scripts/deploy-web.sh. pnpm status: is the deployed engine alive? Run once on the demo project (2026-10-05), the smoke test included; the agent job was deployed there on 2026-10-07 and, since the Deploy engine workflow's first run (2026-10-10), runs hourly with dry run off and auto-merge on for the demo target; no incident has gone through it yet.
-scripts/setup-github-deploy.sh   # one-time (re-run after it changes): lets GitHub Actions deploy with no key (WIF); deploy-on-merge is then a repo variable (docs/deploy.md); run on the demo project 2026-10-10, before it granted Hosting for the web UI (#265)
+scripts/setup-github-deploy.sh   # one-time (re-run after it changes): lets GitHub Actions deploy with no key (WIF); deploy-on-merge is then a repo variable that needs required reviewers on `deploy` (#301) (docs/deploy.md); run on the demo project 2026-10-10, before it granted Hosting for the web UI (#265), required a run on main in the provider's condition (#299) and refused an Editor/Owner build account (#300, which preflight-gcp.sh also FAILs on); those two are written and tested with stubs, not run: re-run it there
 scripts/ingest-cadence.sh status|recording|restore|now   # the ingest's tick for recording the demo, and a run now (#65); DRY_RUN=1 prints
 pnpm scoreboard       # scoreboard/RESULTS.md from recorded runs (#10; format in scoreboard/FORMAT.md; no run recorded yet)
 pnpm feedback-corpus -- --out=<new dir>   # operators' noise/log corrections -> a replay corpus (#267); reads the store, writes local files; never run on a real project
@@ -95,7 +95,8 @@ asked. `/ship` encodes the loop:
 - **Merge automatically on green** (squash) once every check is green **and** every review
   thread is resolved (`mergeable_state: clean`). Losing an approval by pushing a fix is an
   accepted cost, never a reason to hold.
-- **Dependabot patch/minor PRs** are merge-on-green too; majors get a report, not a merge.
+- **Dependabot npm patch/minor PRs** are merge-on-green too; majors and GitHub Actions bumps get a report, not a merge
+  (an action runs inside the deploy workflows with their tokens; the auto-merge workflow leaves them to a person, #301).
 - **A pasted error means "I'm blocked — fix it and ship it."** Root-cause, fix, verify,
   open the PR. Don't explain the error and stop.
 - **Pick the cleanest long-term option without asking** when one clearly is. Pause only
@@ -140,7 +141,8 @@ src/
     parseLogEntry  parse + noise suppression + the shared log filter
     classify       error type (source class > code > HTTP status > keywords), service
     fingerprint    sha256(canonical functionName : first 100 chars of the normalized message);
-                   volatile ids/paths/timestamps/counts are collapsed first
+                   volatile ids/paths/timestamps/counts are collapsed first. Monitoring-only (`mon-`) and
+                   high-cardinality overflow (`ovf-`, its fixed per-day message hashed unnormalized) have their own namespaces
     store          the single write path: dedup by fingerprint; a resolved one that fires
                    again is re-opened as `recurred` (a regression). One transaction per
                    upsert, through a per-(environment, fingerprint) key document
@@ -148,21 +150,31 @@ src/
     retire         admin closes an incident for good and frees its fingerprint (audited); the key stays as a
                    tombstone (applied windows kept): a later occurrence opens a new incident, an earlier one
                    (ingest lag) accrues onto the retired one without reopening it
-    counterCheck   independent raw-log recount + redacted samples
+    counterCheck   independent raw-log recount + redacted samples: up to 3 of the function's 50 newest errors (one page)
+                   whose recomputed fingerprint is the incident's (#304); null when Logging fails, [] when none match
     monitoring     Cloud Monitoring failure counts per function (#19): injectable reader, REST adapter, bounded,
                    null when unavailable (never zero); aggregate annotates a function's log incidents in the window
                    or opens a Monitoring-only one (fingerprint `mon-…`). Off by default, never run against real Monitoring
     aggregate      reads one window of logs and folds it into the store (each upsert carries
-                   the window id, so a replayed window counts once)
+                   the window id, so a replayed window counts once). Pages by hand, each page reduced to parsed
+                   entries before the next; stops at 5,000 entries or `STARFISH_INGEST_READ_BUDGET_MB` (64) of entries
+                   and narrows the window at the last one read (#296). At most `STARFISH_MAX_NEW_INCIDENTS_PER_FUNCTION`
+                   (25) new incidents per function per window (#303): the rest accrue onto an incident they already have,
+                   or fold into ONE high-cardinality overflow incident per function and UTC day (`signalSource: overflow`),
+                   counted in last_run's `totals.errorsFoldedIntoOverflow`. Tested against a fake Logging and the emulator;
+                   not yet run on a real flood
     window         (start, end] windows: pure planning; ids come from the boundaries
     run            one scheduled run: resolve runtime settings (refuses on an unusable document with no
                    last-good), replay the pending window or plan the next, advance the checkpoint only
                    after it all commits, write last_run. State per (watched project, environment). Bounded by a
-                   run budget (`STARFISH_INGEST_RUN_BUDGET_SECONDS`) the deploy's timeouts are derived from (#221)
+                   run budget (`STARFISH_INGEST_RUN_BUDGET_SECONDS`) the deploy's timeouts are derived from (#221).
+                   A narrowing does not count against the 8 windows a run completes (backstop: 32 reads); a pending
+                   window 3 claims did not finish is split in half (`pending.attempts`, never once written, #296);
+                   last_run.lagSeconds = how far the checkpoint is behind now minus the lag (#297)
   agent/triage.ts  stage 1 of the agent loop (#8): act/notify/decline for one incident, and how far to go
                    (`triageLevel`: noise, log, fix, merge): on act the model may name one of the admin's merge cases
                    (`mergeCases`; `missing-index` never offered), kept only if listed. Deterministic gates before the
-                   model, local validation after it; run by `pnpm agent` (deployed to the demo project, dry run: ran on real incidents 2026-10-08)
+                   model (an overflow incident, #303, goes to a person with no model call), local validation after it; run by `pnpm agent` (deployed to the demo project, dry run: ran on real incidents 2026-10-08)
   triageRules.ts   the rules engine and the feedback engine (#267), pure, shared with the UI: an admin's class rules
                    (`classRules`, `STARFISH_CLASS_RULES`: match error type/code, service, function -> noise, log or fix) and an
                    operator's correction of one incident (`corrected*` on it, history in `incidents/{id}/corrections`,
@@ -181,8 +193,15 @@ src/
                    case); it never merges itself. The floor holds only if its files are exactly the files the verify
                    gate saw change
   agent/blastRadius.ts  the safety floor every merge needs (`assessMergeFloor`: gate 1's parsing, hard-exclude list and
-                   whole-function check, tests only as new files, one production file, any number of hunks; no fix
-                   class or size rule). And #9's original gate 1 (`assessBlastRadius`, no longer used to merge), pure:
+                   whole-function check, tests only as new files, one production file, any number of hunks, at most
+                   40 changed lines; no fix class. Since the hard-exclude list is words, #295 added code rules: no
+                   removed line that decides or calls anything (unless put back with only `?.`/`?? null`/`await`
+                   added); no added try/catch, and no added if/return/throw/loop but an explicit null guard; no added
+                   run that leaves a bracket open (wrapping a check); no added sink (network, process, dynamic code,
+                   destructive, fs; tests too) or `://`; no added call the base file does not already make, by name,
+                   but a few pure ones; no computed call; no rebinding of a called name; no JSX file. Not judged: an
+                   added `?:`/`&&`/`||` in an expression, or which object a reused method is called on. A scanner,
+                   not a parser: unsure refuses). And #9's original gate 1 (`assessBlastRadius`, no longer used to merge), pure:
                    a conservative diff classifier (null guard on an explicit null/undefined
                    check, never `!x`, that leaves with nothing or throws, ended by `;` or a block, after a line that ends
                    a statement; `?.` (never before a call) and only `?? null`/`?? undefined`, never on a line that
@@ -208,8 +227,9 @@ src/
                    green checks; a later change to the same files escalates; a revert is never reverted. Cleared only
                    once the ingest checkpoint has read through the window, else a person is told after a day (#241).
                    Runs before the merge step in the pass
-  agent/pass.ts    one pass over the store: candidate selection (paged past closed/settled incidents, bounded, a cap
-                   reported, #226), stack trace → repo files, bounded driver; the daily cycle cap
+  agent/pass.ts    one pass over the store: candidate selection (recurred incidents first, then ones not yet triaged, then the
+                   rest, newest first within each, #303: so a pass usually reads up to the 500-incident bound and their
+                   cycles, not only the first page; paged past closed/settled incidents, bounded, a cap reported, #226), stack trace → repo files, bounded driver; the daily cycle cap
                    (`STARFISH_MAX_CYCLES_PER_DAY`, a count of cycles started that UTC day); a sweep that gives up and
                    announces `running` cycles nobody holds whose deadline passed or attempts ran out
   agent/reconcile.ts  after the pass (#17): polls a bounded number of opened PRs (state + named checks on the head), records
@@ -222,7 +242,8 @@ src/
                    structural cause since the recorded decision, or an incident closed mid-cycle and reopened (#227);
                    cooldown + cap per 24 h; never over ignored/resolved.
                    cycle.ts reopens the same cycle in the lease transaction, so still one issue and one PR per recurrence
-  agent/assemble.ts  one incident's inputs: shallow clone at a pinned revision, counter-check, samples, files the trace names;
+  agent/assemble.ts  one incident's inputs: shallow clone at a pinned revision, counter-check, samples, files the incident's OWN
+                   stack trace names (never a sample's: a recent log entry is attacker-influenceable, #304);
                    when no frame names a repository file, the one file exporting the function's name (#259,
                    `agent/sourceByName.ts`, `STARFISH_FUNCTIONS_SOURCE_ROOTS`; ambiguous or capped = none), the rule kept
                    as `summary.fix.source`; never a structural cause (`causeFrame` reads the stack alone)
@@ -262,11 +283,15 @@ src/
   adminApi.ts      the admin API's rules (#63, #65): a Firebase ID token -> uid, admin from the operator record on every call, `POST /api/ingest/run`,
                    `POST /api/agent/run` (#276: 202 once the start is accepted, a 404 where `STARFISH_AGENT_JOB` is unset; never run)
                    and `POST /api/incidents/<id>/retire` (with Twilio, the on-call opt-in `send-code`/`confirm`, every admin's attempt audited
-                   without the number or the code, #172), one 401, bounded body, CORS allowlist, one ingest at a time. A per-address
+                   without the number or the code, #172), one 401, bounded body, CORS allowlist, one ingest at a time. The admin role is
+                   checked (`isAdmin` dep) right after the token and before any lock, so a non-admin gets 403 and never holds one (#305);
+                   each action checks it again. A per-address
                    limit (`ipRateLimit.ts`, `STARFISH_ADMIN_API_RATE_LIMIT_PER_MINUTE`, default 30) answers 429 before any token check. `adminApiServer.ts` is its HTTP
                    shell, `adminApiCli.ts` the Cloud Run service (`DEPLOY_ADMIN_API=1`): deployed once to the demo project (2026-10-07), "Run ingest now" run from the UI; Retire and the Twilio routes not yet tried
   operators.ts     grant a person an operator record (the first admin; `pnpm grant-operator --project <id>`, which refuses if the shell's project differs and reads the store before creating an account); the closed collection can't be written from the UI
-  status.ts        judges the engine's last_run record (`pnpm status`): the same verdicts as the UI's engine line; also prints the
+  status.ts        judges the engine's last_run record (`pnpm status`): the same verdicts as the UI's engine line ("behind" when
+                   lagSeconds passes `STARFISH_INGEST_BEHIND_MINUTES`, else twice the schedule's interval, else the stale
+                   threshold: `src/ingestLag.ts`, shared with the UI, #297); also prints the
                    agent's `agent_last_run` (#274), information only (never the exit code)
   (repo root)      Dockerfile = the engine image the Cloud Run job runs; scripts/deploy-gcp.sh deploys it
                    (job, Scheduler, Secret Manager, IAM, Firestore rules). Written and tested by a dry run; ingest part run once on the demo project (2026-10-05), agent part not
@@ -306,7 +331,11 @@ src/
   oncall/webhooks.ts  Twilio's webhooks on the admin API (`/twilio/voice|gather|status`): signature-checked against the
                    configured origin, 1 takes it, 2 texts the incident link (to the number called, still confirmed), 3 passes, voicemail/no input moves on
   oncall/optIn.ts  a number is called only once confirmed: an admin asks for a texted code, the person reads it back
-                   (admin API `POST /api/oncall/people/<id>/send-code|confirm`); hash bound to person + number
+                   (admin API `POST /api/oncall/people/<id>/send-code|confirm`); hash bound to person + number, kept with its expiry
+                   and tries in the engine-only `STARFISH_ONCALL_CODE_COLLECTION` (no client reads it, admins included, #302; a hash
+                   left on a person's document by an older version is never believed). At most one text a minute per person and
+                   `STARFISH_ONCALL_MAX_TEXTS_PER_DAY` (default 20) a UTC day across the deployment, a transactional count, the
+                   refusal audited (#306)
   oncallSchema.ts  the on-call policy and person schema, `maskPhone`, quiet hours: pure, shared with the UI's Settings -> On-call.
                    People (phone numbers) live in an admin-only collection, never the runtime settings.
                    All of #37: tested against a fake Twilio and the emulator, never run against real Twilio
@@ -388,7 +417,8 @@ React 19, Vite, Tailwind 4, react-router, TanStack Query; Starfish's own theme i
   file governs a whole database and would replace the app's own rules.
 - **Admin controls:** an admin sees "Run ingest now" (Incidents), "Run agent now" (Runs, #276: it reports that the pass started, never what it did) and "Retire" (an incident) when the build has `VITE_STARFISH_ADMIN_API_URL`; they call the admin API with the ID token (`web/src/lib/adminApi.ts`, `components/AdminActions.tsx`). Hiding them is not the gate: the API re-checks the role. Built and unit-tested; "Run ingest now" has run once against the deployed service (2026-10-07), Retire and "Run agent now" have not.
 - **Engine status:** Overview and Incidents show the ingest's line from `{runCollection}/last_run` (`web/src/lib/engineStatus.ts`,
-  `components/EngineStatus.tsx`): failed, stopped (older than `VITE_STARFISH_STALE_MINUTES`), capped, or never recorded. Read
+  `components/EngineStatus.tsx`): failed, stopped (older than `VITE_STARFISH_STALE_MINUTES`), behind (the run left its checkpoint
+  further behind the newest logs than `VITE_STARFISH_BEHIND_MINUTES`, else twice the recorded interval, #297), capped, or never recorded. Read
   errors say nothing. When the job knows its schedule (`STARFISH_INGEST_SCHEDULE`, set by the deploy and cadence scripts) it
   records the interval, and the line says when the next run is expected. Overview (a line) and Runs (a card) show the agent's
   own status from `{runCollection}/agent_last_run` (#274, `components/AgentStatus.tsx`), judged the same way ("capped" = the

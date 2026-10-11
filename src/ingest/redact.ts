@@ -86,21 +86,84 @@ const OTHER_TOKEN_RES: RegExp[] = [
  */
 const SENSITIVE_KEY_RE =
   /token|secret|passw|auth|api[-_]?key|key$|cookie|credential|jwt|bearer|signature|session/i;
+/**
+ * The short names (`pass`, `pwd`, `sid`, `otp`) as a whole name or its last part (`db_pass`, `userPwd`), never inside
+ * a word (`bypass`, `passes`): case-sensitive, like `SHORT_KEY_VALUE_RE` below (#298).
+ */
+const SHORT_SENSITIVE_KEY_RE = /(?:(?<![A-Za-z0-9])(?:pass|pwd|sid|otp|PASS|PWD|SID|OTP)|(?<![A-Z0-9])(?:Pass|Pwd|Sid|Otp))$/;
 
 export function isSensitiveKey(key: string): boolean {
-  return SENSITIVE_KEY_RE.test(key);
+  return SENSITIVE_KEY_RE.test(key) || SHORT_SENSITIVE_KEY_RE.test(key);
 }
 
 /**
- * `password: hunter2`, `api_key=abc`, `"token":"abc"` — name and separator kept,
+ * The value half of a `key: value` pair: a double-quoted string, also in escaped JSON (`\"hunter2\"`, what a JSON
+ * dump logged inside a string looks like: `parseLogEntry` stringifies a payload with no message), a single-quoted
+ * string, or a bare run up to a delimiter. `[^"]*` stops at the first quote, so the escaped form ends on its `\"`
+ * with no backtracking.
+ */
+const KV_VALUE = String.raw`(?:\\?"[^"]*"|'[^']*'|[^\s,;&"'}\])]+)`;
+/** The quote after a key name: none, `"`, `'`, or an escaped `\"`. */
+const KV_KEY_QUOTE = String.raw`(?:\\?["'])?`;
+
+/**
+ * `password: hunter2`, `api_key=abc`, `"token":"abc"`, `{\"password\":\"abc\"}` — name and separator kept,
  * value dropped. Narrower than `SENSITIVE_KEY_RE` on purpose: this runs over free
  * text, where a bare `auth` substring would mangle "Unauthorized: invalid grant"
  * (and move its fingerprint). The name must be followed directly by `:` or `=`. Whatever precedes
  * the keyword in the name (`x-api-token`, `db.password`) stays in the text untouched, so the match
  * need not, and must not (#96), scan backwards over it.
  */
-const KEY_VALUE_RE =
-  /(["']?(?:token|secret|passw(?:or)?d|api[-_]?key|authorization|cookie|credentials?|private[-_]?key|access[-_]?key|signature)["']?\s*[:=]\s*)(?!\[redacted-)(?:"[^"]*"|'[^']*'|[^\s,;&"'}\])]+)/gi;
+const KEY_VALUE_RE = new RegExp(
+  String.raw`(["']?(?:token|secret|passw(?:or)?d|api[-_]?key|credentials?|private[-_]?key|access[-_]?key|signature|session(?:[-_]?id)?)` +
+    String.raw`${KV_KEY_QUOTE}\s*[:=]\s*)(?!\[redacted-)${KV_VALUE}`,
+  "gi"
+);
+
+/**
+ * Short credential names (`pass`, `pwd`, `sid`, `otp`), which as substrings sit inside ordinary words (`bypass`,
+ * `compass`): each must start a name or a camelCase part (`db_pass`, `connect.sid`, `userPwd`), so this pattern is
+ * case-sensitive and spells each casing out. A one-character lookbehind, not a backward scan (#96).
+ */
+const SHORT_KEY_VALUE_RE = new RegExp(
+  String.raw`((?:(?<![A-Za-z0-9])(?:pass|pwd|sid|otp|PASS|PWD|SID|OTP)|(?<![A-Z0-9])(?:Pass|Pwd|Sid|Otp))` +
+    String.raw`${KV_KEY_QUOTE}\s*[:=]\s*)(?!\[redacted-)${KV_VALUE}`,
+  "g"
+);
+
+/**
+ * An `Authorization` header: the scheme word AND its credential (`Basic dXNlcjpw…`, `Digest …`). As a plain
+ * credential key only the scheme word was dropped, and the base64 `user:password` after it survived (#298). A
+ * Bearer value is already gone by the time this runs (`BEARER_RE`). The scheme is optional (`Authorization: abc123`
+ * is a bare token) and bounded, so a failed attempt backtracks over at most 32 characters.
+ */
+const AUTHORIZATION_RE = new RegExp(
+  String.raw`(?<![\w-])(["']?(?:proxy-)?authorization${KV_KEY_QUOTE}\s*[:=]\s*)(?!\[redacted-)` +
+    String.raw`(?:\\?"[^"]*"|'[^']*'|(?:[A-Za-z][\w-]{0,31}[ \t]+(?!\[redacted-))?[^\s,;&"'}\])]+)`,
+  "gi"
+);
+
+/**
+ * A `Cookie` / `Set-Cookie` header: every cookie in it, to the end of the line. Its value is `a=1; b=2`, so a value
+ * that stopped at `;` kept every cookie after the first, a session cookie among them (#298). A quoted value (a JSON
+ * dump) ends at its closing quote instead. `[ \t]*`, not `\s*`: a `Cookie:` that ends a line must not take the next.
+ * The bare value starts on a non-space, so the spaces cannot be given back to it to slip past `(?!\[redacted-)` on
+ * a second pass.
+ */
+const COOKIE_RE = new RegExp(
+  String.raw`(?<![\w-])(["']?(?:set-)?cookie${KV_KEY_QUOTE}\s*[:=][ \t]*)(?!\[redacted-)(?:\\?"[^"]*"|'[^']*'|\S[^\r\n]*)`,
+  "gi"
+);
+
+/**
+ * A phone number written internationally (#298): `+`, a country code that does not start with 0, and 8 to 15 digits
+ * in all (E.164's maximum), split by single spaces or dashes, optionally with a parenthesised area code. Narrow on
+ * purpose: the `+` is required (a bare digit run is an id, a port or a count), a `.` never separates (an IP address or
+ * a version), and nothing word-like may touch either end, so `+0000` and `+05:30` (time zone offsets),
+ * `1.0.0+20130313144700` (build metadata) and a longer digit run are left alone. Each repetition consumes exactly one
+ * digit, so a failed attempt backtracks over at most 15 of them (#96).
+ */
+const PHONE_RE = /(?<![\w+])\+[1-9](?:[ -]?\(?\d\)?){7,14}(?![\w-])/g;
 
 /**
  * Redact credential-shaped VALUES: bearer tokens, JWTs, Google API keys, other
@@ -127,13 +190,19 @@ export function redactCredentials(text: string): string {
 /**
  * Strip the PII and credentials we can reliably pattern-match before incident text
  * is stored or reaches the model: credential shapes, credential-named `key=value`
- * pairs (shapes first, so "Authorization: Bearer abc" loses the whole credential),
- * and emails. Idempotent, so it is safe to apply at several layers: the store
- * re-applies it to whatever a caller hands it.
+ * pairs (shapes first, so "Authorization: Bearer abc" loses the whole credential), the whole value of
+ * an Authorization or Cookie header, emails, and phone numbers written with a `+` country code.
+ * Idempotent, so it is safe to apply at several layers: the store re-applies it to whatever a caller
+ * hands it.
  */
 export function redactPii(text: string): string {
-  const out = redactCredentials(text).replace(KEY_VALUE_RE, `$1${SECRET_MARKER}`);
-  return redactEmails(out);
+  const out = redactCredentials(text)
+    .replace(AUTHORIZATION_RE, `$1${SECRET_MARKER}`)
+    .replace(COOKIE_RE, `$1${SECRET_MARKER}`)
+    .replace(KEY_VALUE_RE, `$1${SECRET_MARKER}`)
+    .replace(SHORT_KEY_VALUE_RE, `$1${SECRET_MARKER}`);
+  // Emails before phones: `bob+15551234567@example.com` is one address, not a number.
+  return redactEmails(out).replace(PHONE_RE, "[redacted-phone]");
 }
 
 /**

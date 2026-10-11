@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { sanitize } from "./redact.js";
 
 /** How much of the normalized message the fingerprint hashes. */
 const FINGERPRINT_MESSAGE_CHARS = 100;
@@ -129,21 +130,55 @@ export function computeErrorFingerprint(functionName: string, errorMessage: stri
 }
 
 /**
+ * The fingerprint ingest gives one parsed log entry: of its SANITIZED message, the one the store keeps and
+ * fingerprints (redaction is idempotent, so the store's re-redaction changes nothing the hash reads). Shared by
+ * the ingest's grouping (aggregate.ts) and the sample filter (counterCheck.ts, #304), so a log entry is judged to
+ * belong to an incident exactly the way ingest decided it did.
+ */
+export function fingerprintOfLogEntry(functionName: string, rawErrorMessage: string): string {
+  return computeErrorFingerprint(functionName, sanitize(rawErrorMessage) ?? "");
+}
+
+/**
  * Prefix of every Monitoring-only incident's fingerprint (#19). A log fingerprint is 16 hex
  * characters, so no log-derived incident can ever share a fingerprint, or an incident key, with a
  * Monitoring-only one: the two signals never merge in the store.
  */
 export const MONITORING_FINGERPRINT_PREFIX = "mon-";
 
-/** Where an incident came from. Absent on a stored record means Cloud Logging (every record before #19). */
-export type SignalSource = "log" | "monitoring";
+/**
+ * Prefix of every high-cardinality overflow incident's fingerprint (#303). Like the Monitoring prefix, it keeps
+ * the overflow namespace apart from the 16-hex log fingerprints, so an overflow incident never merges with a log
+ * incident, or with a Monitoring-only one.
+ */
+export const OVERFLOW_FINGERPRINT_PREFIX = "ovf-";
+
+/**
+ * Where an incident came from. Absent on a stored record means Cloud Logging (every record before #19).
+ * `overflow` (#303): a function's log errors past the per-window cap on new incidents, folded into one record.
+ */
+export type SignalSource = "log" | "monitoring" | "overflow";
+
+/**
+ * An overflow incident's fingerprint: its canonical function name and its message hashed WITHOUT normalization.
+ * The message is fixed text naming the UTC day (aggregate.ts `overflowMessage`), and normalization would collapse
+ * the date to `<ts>`, merging every day's overflow into one incident.
+ */
+function overflowFingerprint(functionName: string, errorMessage: string): string {
+  const digest = createHash("sha256")
+    .update(`${canonicalFunctionName(functionName)}\n${String(errorMessage ?? "")}`)
+    .digest("hex")
+    .substring(0, 16);
+  return `${OVERFLOW_FINGERPRINT_PREFIX}${digest}`;
+}
 
 /**
  * The fingerprint a record holds, recomputed from its content: the one place that knows a
- * Monitoring-only record hashes into its own namespace. The store, retire and scrub all recompute
- * through this, so none of them can confuse the two.
+ * Monitoring-only record, or a high-cardinality overflow one, hashes into its own namespace. The
+ * store, retire and scrub all recompute through this, so none of them can confuse them.
  */
 export function fingerprintOf(functionName: string, errorMessage: string, signalSource?: unknown): string {
+  if (signalSource === "overflow") return overflowFingerprint(functionName, errorMessage);
   const base = computeErrorFingerprint(functionName, errorMessage);
   return signalSource === "monitoring" ? `${MONITORING_FINGERPRINT_PREFIX}${base}` : base;
 }

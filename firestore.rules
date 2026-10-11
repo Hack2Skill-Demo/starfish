@@ -431,10 +431,16 @@ service cloud.firestore {
     // starfish_oncall_people/{personId}    a person on the rota: name, role and PHONE NUMBER. Personal data: admins
     //                                      only, never guests or plain operators (which is why it is not in the runtime
     //                                      settings, whose operator copy anyone signed in may read). The UI shows it masked.
+    // starfish_oncall_codes/{id}           engine-only (#302, #306): a code's hash, expiry and wrong tries per person,
+    //                                      and the deployment's count of opt-in texts per UTC day (`texts.<day>`).
+    //                                      Closed to every client, admins included: a six-digit code's hash an admin
+    //                                      could read would be undone offline, confirming a number its owner never
+    //                                      agreed to.
     // A client creates a person only as `pending`, and changing a number makes it `pending` again: only the engine
-    // (src/oncall/optIn.ts, the Admin SDK) marks a number `confirmed`, when its owner read back the code it texted, and
-    // only it writes the code fields. The call sequences (starfish_escalations) are engine-only: the closing rule.
-    // Same names as STARFISH_ONCALL_COLLECTION / STARFISH_ONCALL_PEOPLE_COLLECTION; change both together.
+    // (src/oncall/optIn.ts, the Admin SDK) marks a number `confirmed`, when its owner read back the code it texted.
+    // The call sequences (starfish_escalations) are engine-only: the closing rule.
+    // Same names as STARFISH_ONCALL_COLLECTION / STARFISH_ONCALL_PEOPLE_COLLECTION / STARFISH_ONCALL_CODE_COLLECTION;
+    // change them together.
     function onCallPersonFieldsOk(d) {
       return d.name is string && d.name.size() >= 1 && d.name.size() <= 80
         && d.role in ['primary', 'secondary', 'support-lead']
@@ -461,6 +467,11 @@ service cloud.firestore {
         && (request.resource.data.phone != resource.data.phone
               ? request.resource.data.state == 'pending'
               : request.resource.data.state == resource.data.state);
+    }
+
+    // Explicit, though the closing rule would refuse it too: this collection must never be opened by a later rule.
+    match /starfish_oncall_codes/{codeId} {
+      allow read, write: if false;
     }
 
     match /starfish_oncall/policy {

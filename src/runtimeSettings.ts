@@ -136,7 +136,7 @@ export class RuntimeConfigLoader {
       return this.fallback(collection, [`settings read failed: ${errorLabel(err)}`]);
     }
 
-    const checked = validateSettings(data);
+    const checked = validateSettings(data, { dropShortIgnoredMessages: true });
     if (!checked.ok) return this.fallback(collection, checked.problems);
 
     this.lastGood = checked.settings;
@@ -165,7 +165,7 @@ export class RuntimeConfigLoader {
     try {
       const snap = await collection.doc(LAST_GOOD_DOC).get();
       if (!snap.exists) return undefined;
-      const checked = validateSettings(snap.data());
+      const checked = validateSettings(snap.data(), { dropShortIgnoredMessages: true });
       return checked.ok ? checked.settings : undefined;
     } catch {
       return undefined;

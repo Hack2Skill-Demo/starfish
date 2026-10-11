@@ -79,6 +79,7 @@ Where it currently holds, and where it doesn't:
 | Agent cycle collection, lease length, cycle deadline, attempts | ⚠️ environment only (`STARFISH_CYCLE_COLLECTION`, `STARFISH_LEASE_SECONDS`, `STARFISH_CYCLE_DEADLINE_MINUTES`, `STARFISH_MAX_CYCLE_ATTEMPTS`); the rules name `starfish_cycles` too |
 | What guests may see, and where its trimmed copies live (#18) | ⚠️ environment only (`STARFISH_PUBLIC_ENVIRONMENTS`, default `demo`, empty turns the copies off; `STARFISH_PUBLIC_INCIDENT_COLLECTION`, `_CYCLE_COLLECTION`, `_EVENT_COLLECTION`, and the UI's `VITE_STARFISH_PUBLIC_*`). The rules name the `starfish_public_*` collections and serve guests the `demo` label only, so another label needs a rules edit too. What a copy holds is an allowlist in code (`src/publicView.ts`), not a setting |
 | Ingest lag, longest window, run-record collection | ⚠️ environment only (`STARFISH_INGEST_LAG_MINUTES`, `STARFISH_INGEST_MAX_WINDOW_HOURS`, `STARFISH_RUN_COLLECTION`); the rules name `starfish_runs` too |
+| New incidents one function may open per ingest window (#303) | ⚠️ environment only (`STARFISH_MAX_NEW_INCIDENTS_PER_FUNCTION`, default 25). Past it, a function's errors that match no stored incident are folded into one high-cardinality overflow incident per function and UTC day, counted in the run record; unit- and emulator-tested, not yet run on a real flood |
 | Services Starfish never ingests (its own) | ✅ config (`STARFISH_EXCLUDED_SERVICES`, default `starfish`), applied at query time and at parse time; environment-only on purpose, because it guards against a feedback loop and is not an operational preference. `scripts/deploy-gcp.sh` sets it on every job it deploys, unless `EXTRA_ENV_VARS` gives its own: `starfish`, the ingest job's name and the admin API's service name, whether or not that run deploys the admin API, and on the agent job also its own name and, with `cloud-run-job`, the verify job's (#32, #177) |
 | Log source resource types | ⚠️ config, but attribution reads only `function_name` / `service_name`, so only Cloud Functions and Cloud Run work |
 | Framework-noise suppression list | ✅ config, callable GET-probe noise by default |
@@ -169,8 +170,15 @@ whether to merge; it never decides what is safe to merge.** Every merge also nee
 right before it: the switches (`STARFISH_AUTO_MERGE_TARGETS` lists the target, the demo; an admin
 turned `autoMerge` on; dry run and the merge freeze off; the case still listed), the **safety floor**
 (one production file; tests only as new files, so a fix can't turn CI green by weakening a test; nothing
-on the hard-exclude list: auth and access control, security rules, money, secrets, schema,
-dependencies and imports, CI config, shared packages, judged on the whole function around each change),
+on the hard-exclude list's words: auth and access control, security rules, money, secrets, schema,
+dependencies and imports, CI config, shared packages, judged on the whole function around each change;
+and, since a list of words misses a check that names none of them, rules on the code itself: at most 40
+changed lines; no line that decides or calls anything removed or altered (beyond adding `?.`, `?? null`
+or `await`); no `try`/`catch` and no `if`/`return`/`throw`/loop added except an explicit null guard; no
+existing code wrapped in a new block or function; no network, process, dynamic-code, destructive or
+file-system call and no `://` added; no call the file did not already make but a few pure ones such as
+`String` or `Array.isArray`; no JSX file. Not judged: a `?:`, `&&` or `||` added inside an expression, or
+which object a reused method is called on; a scanner, not a proof),
 **every required check green on the exact head**, at most `STARFISH_MAX_MERGES_PER_DAY` (3) a day, and
 an evidence comment posted first. Fast-revert is built with it: the same incident seen again within N
 minutes of a code merge opens and merges a revert. **Built for the demo target behind default-off
@@ -243,7 +251,7 @@ demo runs.
   never run against real Twilio.
 - **Settings:** connections, the engine's rules and on-call.
 
-The Incidents page opens with a line saying whether the engine is running (from the engine's last-run record: failed, stopped past a configurable threshold, read capped, or never recorded), so a quiet list can't pass for good news; the scheduled ingest job writes that record (`scripts/deploy-gcp.sh` deploys and schedules it; deployed once, on the demo project, 2026-10-05, #6). Under each incident's error is the agent's run for its current recurrence: the run's state (in the Runs page's words), triage's reason as recorded, and a link that opens that run on the Runs page; the expanded row has the decision, its rule and the reason in full. It says "No agent run yet" only when every run of the environment was read, and nothing when it could not tell.
+The Incidents page opens with a line saying whether the engine is running (from the engine's last-run record: failed, stopped past a configurable threshold, falling behind the newest logs, read capped, or never recorded), so a quiet list can't pass for good news; the scheduled ingest job writes that record (`scripts/deploy-gcp.sh` deploys and schedules it; deployed once, on the demo project, 2026-10-05, #6). Under each incident's error is the agent's run for its current recurrence: the run's state (in the Runs page's words), triage's reason as recorded, and a link that opens that run on the Runs page; the expanded row has the decision, its rule and the reason in full. It says "No agent run yet" only when every run of the environment was read, and nothing when it could not tell.
 
 The public demo needs no sign-in: a visitor is signed in anonymously and sees the Overview, the incidents and their evidence, the Runs page and a view-only Settings page, all for the `demo` environment only, with no triage buttons (#12). A guest never reads the stored incident, cycle or event documents: `firestore.rules` serve a guest only **trimmed copies** the engine writes for the `demo` environment (#18, see [Redaction limits](#redaction-limits) below), so the guest pages show no error detail, stack trace or model reasoning. That needs Anonymous sign-in enabled in the Firebase project and only `demo`-labelled data. App Check is built as an option, off unless the UI is built with a reCAPTCHA site key (`VITE_STARFISH_APPCHECK_SITE_KEY`), and enforcing it on Firestore is a console step left to a person; an optional uptime check and alert on the site come with `UPTIME_CHECK=1 scripts/deploy-web.sh`. Both are tested only with stubs and dry runs, never on a real project ([deploy.md](docs/deploy.md#app-check-and-the-uptime-check-12)). Until the agent has carried real incidents through every stage, the demo can also carry a **synthetic** evidence history: `pnpm seed-demo` (see [Synthetic demo history](#synthetic-demo-history)), every record of which the UI badges "Synthetic". A private deployment leaves Anonymous sign-in disabled and still requires an operator account.
 
@@ -299,11 +307,20 @@ apparent over-engineering is scar tissue from real incidents, and the tests in
   anything is read, the checkpoint advances only after every upsert of it has committed, and a
   retry replays the same window, and two runs that overlap are given the same one (claimed in a transaction); the incident key remembers the windows it applied, so a window
   replayed after a half-failed run counts once, even under concurrency (`run.emulator.test.ts`,
-  `store.emulator.test.ts`). A window is read oldest first; a read that hits the 5,000-entry cap
-  writes nothing and narrows the pending window to the part it read in full, and the rest is read by
-  the windows after it (#127). A window with more than 5,000 entries in its first millisecond, or one an
-  earlier attempt already began writing (narrowing it would give it a new id and count those writes
-  again, #199), is processed as read and flagged capped on the run record. `pnpm ingest` runs this once; the Cloud Run job and Scheduler that run it on a schedule (`scripts/deploy-gcp.sh`) were deployed once, to the demo project (2026-10-05, #6). The checkpoint
+  `store.emulator.test.ts`). A window is read oldest first, a page at a time, each page reduced to parsed
+  entries before the next is read; a read that hits the 5,000-entry cap, or 64 MB of entries
+  (`STARFISH_INGEST_READ_BUDGET_MB`, #296: a Cloud Logging entry can be 256 KB, and a burst of large ones ran the
+  512Mi job out of memory on every replay), writes nothing and narrows the pending window to the part it read in
+  full, and the rest is read by the windows after it (#127). A window with more than that in its first
+  millisecond, or one an earlier attempt already began writing (narrowing it would give it a new id and count
+  those writes again, #199), is processed as read and flagged capped on the run record. A pending window three
+  attempts in a row did not finish (failed, timed out or killed) is split in half before the next attempt, when
+  nothing was written under it (#296). A narrowing does not use up one of a run's eight windows; the run budget
+  bounds those (#297). The run record says how far the checkpoint is behind the newest logs it could read, and
+  `pnpm status` and the UI's engine line call the ingest "behind" past twice the schedule's interval
+  (`STARFISH_INGEST_BEHIND_MINUTES` / `VITE_STARFISH_BEHIND_MINUTES` to set it), so a flood that outpaces the runs
+  no longer reads as ok (#297). Built and tested against a fake Logging and the emulator; no flood has gone through
+  the deployed job. `pnpm ingest` runs this once; the Cloud Run job and Scheduler that run it on a schedule (`scripts/deploy-gcp.sh`) were deployed once, to the demo project (2026-10-05, #6). The checkpoint
   is kept per (watched project, environment) in its own document, so moving the engine to another target
   and back resumes where the first one stopped instead of re-reading its lookback (#198). A run whose
   settings document could not be read or is invalid, with no earlier good one to fall back to, reads
@@ -339,9 +356,13 @@ apparent over-engineering is scar tissue from real incidents, and the tests in
 - a log's `error` field is kept apart from its title: the title keys the fingerprint, the
   error is the cause a fixer needs
 
-- one redaction policy (`src/ingest/redact.ts`) covers emails and credentials: token
+- one redaction policy (`src/ingest/redact.ts`) covers emails, credentials and phone numbers: token
   shapes (JWTs, bearer headers, Google/GitHub/AWS/Slack/Stripe keys), private keys,
-  URL credentials and credential-named `key=value` pairs. The store re-applies it on
+  URL credentials, the whole value of an `Authorization` header (scheme and credential, `Basic` included)
+  and of a `Cookie`/`Set-Cookie` header (every cookie, to the end of the line), credential-named
+  `key=value` pairs (also `session`/`sessionId`, `sid`, `otp`, `pwd`, `pass`, and in escaped JSON such as
+  `{\"password\":\"…\"}`), and phone numbers written with a `+` country code (a national number with no `+`
+  is not caught, by design: it cannot be told from an id). The store re-applies it on
   every write, so no caller can persist a seeded secret; the model prompt, model error
   messages and the spike's printed output go through it too (`redact.test.ts`)
 - what the agent loop records and sends is checked end to end: one emulator test runs a whole
@@ -357,8 +378,9 @@ get through, and free-form PII (names, addresses, record ids) is not detectable 
 `truncate` bounds how much raw text leaves, it does not clean it. The store redacts new
 writes; incidents stored **before** the policy are scrubbed in place by `pnpm scrub` (a dry
 run that counts what it would change; `pnpm scrub -- --apply --project=<id>` rewrites, and
-refuses unless the project matches `GOOGLE_CLOUD_PROJECT`). It redacts the same four fields the
-store does, recomputes each changed record's fingerprint (the store fingerprints the redacted
+refuses unless the project matches `GOOGLE_CLOUD_PROJECT`). It redacts the same eight fields the
+store does (message, cause, stack trace, error name, service, error code, tenant id, request id; the last five bounded
+as the store bounds them), recomputes each changed record's fingerprint (the store fingerprints the redacted
 text, so otherwise the next occurrence would fork a duplicate), removes the stale incident
 key, and is safe to re-run (`scrub.test.ts`, `scrub.emulator.test.ts`). Run it before real
 data is exposed to anyone. It does not touch Firestore exports or backups, logs, or anything
@@ -388,8 +410,11 @@ free text a copy keeps: redacted again and bounded, but free-form personal data 
 public demo's data synthetic.
 
 Alongside it, the **counter-check** (`src/ingest/counterCheck.ts`): an independent raw-log
-recount of a function's errors over 24h, plus a few redacted recent samples. Nothing calls it
-in a run yet; the triage stage below consumes what it produces.
+recount of a function's errors over 24h, plus up to three redacted recent samples: entries,
+among the function's 50 newest errors, whose fingerprint (recomputed the way ingest computes it) is
+the incident's, so an error with another fingerprint in the same function is never shown as this one (#304). The
+agent's assemble step calls both; the samples are shown to the model as untrusted data and never
+choose which source files the fixer sees (only the incident's own stack trace does).
 
 The first stage of the half that acts exists as a **tested contract** and nothing more: triage
 (`src/agent/triage.ts`) decides act / notify / decline for one incident. It skips an incident

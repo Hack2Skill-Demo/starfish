@@ -34,7 +34,9 @@ case "$*" in
   "auth list"*) echo "$STUB_ACCOUNT" ;;
   "auth application-default print-access-token") [ "$STUB_ADC" = "1" ] && echo tok || exit 1 ;;
   "auth print-access-token") echo tok ;;
+  "projects describe star-proj --format=value(projectNumber)") [ "$STUB_PROJECT" = "0" ] && exit 1 || echo 424242 ;;
   "projects describe star-proj"*) [ "$STUB_PROJECT" = "0" ] && exit 1 || echo star-proj ;;
+  "projects get-iam-policy star-proj"*) [ "$STUB_POLICY_FAIL" = "1" ] && exit 1; printf '%s\\n' "$STUB_POLICY" ;;
   "projects describe "*) echo other ;;
   "billing projects describe"*) echo "$STUB_BILLING" ;;
   *) exit 1 ;;
@@ -53,6 +55,7 @@ esac
       STUB_ACCOUNT: "me@example.com",
       STUB_ADC: "1",
       STUB_BILLING: "True",
+      STUB_POLICY: "roles/owner,user:me@example.com\nroles/run.builder,serviceAccount:424242-compute@developer.gserviceaccount.com",
       STUB_PERMS_JSON: JSON.stringify({ permissions: granted }),
       ...env,
     },
@@ -135,12 +138,35 @@ describe("scripts/preflight-gcp.sh", () => {
     expect(r.curlStdin).toBe("Authorization: Bearer tok\n");
   });
 
+  it("fails while the account Cloud Run builds as is Editor or Owner of the project, and says how to fix it (#300)", () => {
+    const compute = "424242-compute@developer.gserviceaccount.com";
+    expect(run().out).toContain(`ok    the build account ${compute} holds neither roles/editor nor roles/owner on star-proj`);
+    for (const role of ["roles/editor", "roles/owner"]) {
+      const r = run({ STUB_POLICY: `roles/owner,user:me@example.com\n${role},serviceAccount:${compute}` });
+      expect(r.status, role).toBe(1);
+      expect(r.out, role).toContain(`FAIL  ${compute}, the account Cloud Run builds images as, holds ${role} on star-proj`);
+      expect(r.out, role).toContain("BUILD_SERVICE_ACCOUNT");
+    }
+    // BUILD_SERVICE_ACCOUNT names the account checked.
+    const builder = "builder@star-proj.iam.gserviceaccount.com";
+    const named = run({ BUILD_SERVICE_ACCOUNT: builder, STUB_POLICY: `roles/editor,serviceAccount:${compute}\nroles/run.builder,serviceAccount:${builder}` });
+    expect(named.status).toBe(0);
+    expect(named.out).toContain(`ok    the build account ${builder} holds neither`);
+    expect(run({ BUILD_SERVICE_ACCOUNT: builder, STUB_POLICY: `roles/editor,serviceAccount:${builder}` }).status).toBe(1);
+    // A policy it cannot read is a warning, never a pass.
+    for (const unreadable of [{ STUB_POLICY_FAIL: "1" }, { STUB_POLICY: "" }]) {
+      const r = run(unreadable);
+      expect(r.out).toContain("warn  could not read");
+      expect(r.out).not.toContain("ok    the build account");
+    }
+  }, 30_000);
+
   it("only reads: every gcloud call it makes is a describe, list or token request", () => {
     const r = run();
     const verbs = r.calls.filter((c) => c !== "");
     expect(verbs.length).toBeGreaterThan(3);
     for (const call of verbs) {
-      expect(call).toMatch(/^(--version|auth |projects describe|billing projects describe|firestore databases describe|run jobs describe|scheduler jobs describe)/);
+      expect(call).toMatch(/^(--version|auth |projects describe|projects get-iam-policy|billing projects describe|firestore databases describe|run jobs describe|scheduler jobs describe)/);
       expect(call).not.toMatch(/\b(create|delete|update|enable|add-iam|deploy|execute)\b/);
     }
   });

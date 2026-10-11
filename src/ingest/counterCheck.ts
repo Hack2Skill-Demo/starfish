@@ -10,10 +10,12 @@
  * The samples are what turn an incident from a one-line message into something
  * a fixer can work from: the stack, the underlying cause, and the structured
  * fields that say where it failed. Everything in them is redacted and bounded
- * before it can reach the model.
+ * before it can reach the model. Only entries that hash to the incident's own
+ * fingerprint are samples, and they are untrusted text like the rest (#304).
  */
 import type { LogCounterCheck } from "../types.js";
-import { buildLogFilter, extractErrorDetail, extractMessageTitle, type LogSource } from "./parseLogEntry.js";
+import { fingerprintOfLogEntry } from "./fingerprint.js";
+import { buildLogFilter, extractErrorDetail, extractMessageTitle, parseLogEntry, type LogSource, type RawLogEntry } from "./parseLogEntry.js";
 import { isSensitiveKey, redactPii, sliceWellFormed } from "./redact.js";
 
 export const COUNTER_CHECK_WINDOW_HOURS = 24;
@@ -28,6 +30,11 @@ const FUNCTION_NAME_RE = /^[A-Za-z0-9_-]+$/;
 const MS_PER_HOUR = 60 * 60 * 1000;
 
 const SAMPLE_COUNT = 3;
+/**
+ * How many of the function's newest error entries are read to find `SAMPLE_COUNT` of the incident's own (#304).
+ * One page: other errors of the same function sit in between, and a burst of them ends with fewer samples.
+ */
+export const SAMPLE_SCAN_MAX = 50;
 const MAX_CONTEXT_KEYS = 12;
 const MAX_CONTEXT_VALUE = 200;
 const SAMPLE_MESSAGE_MAX = 500;
@@ -169,34 +176,57 @@ export function toSample(entry: unknown): ErrorLogSample | null {
 }
 
 /**
- * The few most recent error entries for `functionName`. Never throws — a
- * Logging failure returns [] and the incident goes forward without samples.
+ * The few most recent error entries that are THIS incident: of `functionName`, whose fingerprint, recomputed the
+ * way ingest computes it (`fingerprintOfLogEntry` over `parseLogEntry`), equals the incident's `fingerprint`.
+ *
+ * Why the fingerprint and not just the function (#304): anyone who can make the function log an error (a crafted
+ * request) controlled the newest entries, so the samples, and through their fake stack frames which repository
+ * files the fixer was shown. Now an entry must hash to the incident to be a sample, and the samples never choose
+ * files (assemble.ts reads only the incident's own stack). One bounded page is read (`SAMPLE_SCAN_MAX`, newest
+ * first, no auto-paging), so a burst of other errors in the function leaves fewer samples, never an unbounded read.
+ *
+ * A Monitoring-only incident (`mon-…`) has no log message to match, so it gets none. Never throws: a Logging
+ * failure, or a function name no filter could hold, is null (missing), and no match is [] (#304).
  */
 export async function fetchRecentErrorSamples(
   logging: EntryReader,
   source: LogSource,
   functionName: string,
+  fingerprint: string,
   opts: CheckOptions = {}
-): Promise<ErrorLogSample[]> {
+): Promise<ErrorLogSample[] | null> {
   // Same rule as the counter-check: buildLogFilter would strip a bad character
   // and query a different function ("my.fn" becomes "myfn"), handing the fixer
   // another function's stack traces as if they were this incident's.
-  if (typeof functionName !== "string" || !FUNCTION_NAME_RE.test(functionName)) return [];
+  if (typeof functionName !== "string" || !FUNCTION_NAME_RE.test(functionName)) return null;
+  if (typeof fingerprint !== "string" || fingerprint === "") return null;
 
   const windowHours = opts.windowHours ?? COUNTER_CHECK_WINDOW_HOURS;
   const since = new Date((opts.nowMs ?? Date.now()) - windowHours * MS_PER_HOUR);
   try {
     const [entries] = await logging.getEntries({
       filter: buildLogFilter(source, since, functionName),
-      pageSize: SAMPLE_COUNT,
+      pageSize: SAMPLE_SCAN_MAX,
       orderBy: "timestamp desc",
       autoPaginate: false,
     });
-    return entries
-      .map(toSample)
-      .filter((s): s is ErrorLogSample => s !== null)
-      .slice(0, SAMPLE_COUNT);
+    const samples: ErrorLogSample[] = [];
+    // `slice`: the reader is asked for one page, but nothing here trusts it to have honoured the size.
+    for (const entry of entries.slice(0, SAMPLE_SCAN_MAX)) {
+      if (samples.length >= SAMPLE_COUNT) break;
+      if (!isEntryOf(entry, source, fingerprint)) continue;
+      const sample = toSample(entry);
+      if (sample) samples.push(sample);
+    }
+    return samples;
   } catch {
-    return [];
+    return null;
   }
+}
+
+/** Whether ingest would have filed `entry` under `fingerprint`: parsed (noise dropped) and hashed as aggregate.ts does. */
+function isEntryOf(entry: unknown, source: LogSource, fingerprint: string): boolean {
+  if (entry === null || typeof entry !== "object") return false;
+  const parsed = parseLogEntry(entry as RawLogEntry, source.ignoredMessages, source.excludedServices ?? []);
+  return parsed !== null && fingerprintOfLogEntry(parsed.functionName, parsed.errorMessage) === fingerprint;
 }

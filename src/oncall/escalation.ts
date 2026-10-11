@@ -137,10 +137,13 @@ export function escalationEligible(cycle: Record<string, unknown> | undefined, n
   return new Date(at);
 }
 
-/** A regression, or at least the policy's occurrences: such an incident may ring during the quiet hours. Pure. */
+/** A regression, or at least the policy's occurrences (never on an overflow incident): such an incident may ring during the quiet hours. Pure. */
 export function isCritical(incident: Record<string, unknown> | undefined, policy: Pick<OnCallPolicy, "criticalOccurrences">): boolean {
   if (!incident) return false;
   if (incident.status === "recurred") return true;
+  // An overflow incident's count (#303) is every folded error added up: anyone who can make a function log many distinct
+  // errors could reach the threshold at will. Its occurrences never make it critical, so it waits out the quiet hours.
+  if (incident.signalSource === "overflow") return false;
   return typeof incident.occurrenceCount === "number" && incident.occurrenceCount >= policy.criticalOccurrences;
 }
 

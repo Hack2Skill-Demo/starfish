@@ -1415,8 +1415,9 @@ describe("runCycle: auto-merge evidence (#9): Gemini names the merge case, the f
     "+if (get(undefined) !== null) process.exit(1);",
   ];
   const FIX = [...sourceHunk(["+  if (x == null) return null;", "   return x.total;"]), ...testFile, ""].join("\n");
-  // Correct, and tested, and not one of gate 1's three classes: with merge cases, Gemini's case decides, not its shape.
-  const OTHER_FIX = [...sourceHunk(["-  return x.total;", "+  return x ? x.total : null;"]), ...testFile, ""].join("\n");
+  // Correct, and tested, and not one of gate 1's three classes (two guards in one block are not one guard): with merge
+  // cases, Gemini's case decides, not its shape. Each line is an explicit null guard, as the floor requires (#295).
+  const OTHER_FIX = [...sourceHunk(["+  if (x == null) return null;", "+  if (x.total === undefined) return null;", "   return x.total;"]), ...testFile, ""].join("\n");
   // Gemini's triage naming the admin's listed case.
   const actMerge = { ...act, mergeCase: "null-guard" };
   const stackIncident: Incident = { ...incident, stackTrace: `TypeError: Cannot read properties of undefined\n    at get (/workspace/${SRC_FILE}:3:12)` };

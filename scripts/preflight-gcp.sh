@@ -16,6 +16,7 @@ REGION="${REGION:-us-central1}"
 WATCHED_PROJECT_ID="${WATCHED_PROJECT_ID:-$PROJECT_ID}"
 VERTEX_PROJECT_ID="${VERTEX_PROJECT_ID:-$PROJECT_ID}"
 STARFISH_DATABASE_ID="${STARFISH_DATABASE_ID:-starfish}"
+BUILD_SERVICE_ACCOUNT="${BUILD_SERVICE_ACCOUNT:-}"
 JOB_NAME="${JOB_NAME:-starfish-ingest}"
 SCHEDULER_JOB_NAME="${SCHEDULER_JOB_NAME:-$JOB_NAME-tick}"
 
@@ -92,6 +93,33 @@ if check_project "Starfish" "$PROJECT_ID"; then
     esac
   else
     warn "no access token, so your permissions on $PROJECT_ID were not checked"
+  fi
+
+  # The account Cloud Run builds the image as (#300). The deploy-from-Actions deployer must be allowed to act as it, and a
+  # build can then do whatever it may: on many projects the Compute Engine default account still holds roles/editor,
+  # which would make the deployer an Editor. scripts/setup-github-deploy.sh refuses such an account; so does this. Only
+  # the project's own policy is read: a role granted on a folder or the organisation is not seen.
+  build_sa="$BUILD_SERVICE_ACCOUNT"
+  if [ -z "$build_sa" ]; then
+    number="$(gcloud projects describe "$PROJECT_ID" --format='value(projectNumber)' 2>/dev/null || true)"
+    case "$number" in ''|*[!0-9]*) build_sa="" ;; *) build_sa="$number-compute@developer.gserviceaccount.com" ;; esac
+  fi
+  policy=""
+  [ -z "$build_sa" ] || policy="$(gcloud projects get-iam-policy "$PROJECT_ID" --flatten='bindings[].members' \
+    --format='csv[no-heading](bindings.role,bindings.members)' 2>/dev/null || true)"
+  if [ -z "$policy" ]; then
+    warn "could not read ${build_sa:-the build account} or the IAM policy of $PROJECT_ID: make sure the account Cloud Run builds as holds neither roles/editor nor roles/owner (setup-github-deploy.sh refuses it)"
+  else
+    basic=""
+    while IFS=, read -r role member; do
+      [ "$member" = "serviceAccount:$build_sa" ] || continue
+      case "$role" in roles/editor|roles/owner) basic="${basic:+$basic and }$role" ;; esac
+    done <<<"$policy"
+    if [ -n "$basic" ]; then
+      fail "$build_sa, the account Cloud Run builds images as, holds $basic on $PROJECT_ID: whoever may act as it (the Actions deployer must) holds that too through a build. Take it away (gcloud projects remove-iam-policy-binding $PROJECT_ID --member=serviceAccount:$build_sa --role=<the role> --all; check first that nothing else running as it needs it), or make an account for building, set it as Cloud Build's default service account, and set BUILD_SERVICE_ACCOUNT to it (docs/deploy.md)"
+    else
+      ok "the build account $build_sa holds neither roles/editor nor roles/owner on $PROJECT_ID"
+    fi
   fi
 
   # Informational: is this a first deploy or a redeploy?

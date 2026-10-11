@@ -9,15 +9,22 @@ import { Logging } from "@google-cloud/logging";
 import { Timestamp } from "firebase-admin/firestore";
 import type { Firestore } from "firebase-admin/firestore";
 import type { StarfishConfig } from "../config.js";
-import { buildLogFilter, parseLogEntry, type RawLogEntry } from "./parseLogEntry.js";
+import { buildLogFilter, parseLogEntry, type ParsedLogEntry, type RawLogEntry } from "./parseLogEntry.js";
+import type { EntryReader } from "./counterCheck.js";
 import { detectErrorType, extractErrorCode, detectService } from "./classify.js";
-import { canonicalFunctionName, computeErrorFingerprint } from "./fingerprint.js";
+import { canonicalFunctionName, fingerprintOfLogEntry } from "./fingerprint.js";
 import { createRestMonitoringReader, readMonitoringFailures, type MonitoringObservation, type MonitoringReader } from "./monitoring.js";
 import { sanitize } from "./redact.js";
-import { upsertIncident, type IncidentInput } from "./store.js";
+import { upsertIncident, type IncidentInput, type UpsertOutcome } from "./store.js";
 import { narrowWindow, type IngestWindow } from "./window.js";
 
-const PAGE_SIZE = 500;
+/**
+ * Entries asked for per page (#296). Pages are read by hand and each is reduced to parsed entries before the next is
+ * asked for, so at most one page of raw entries is held at a time: 250 entries of Cloud Logging's largest (256 KB) is
+ * 64 MB. Fixed for the whole read: the API wants a page token sent with the same parameters as the call that returned it.
+ * Smaller pages would hold less, at the cost of more calls against the project's read quota.
+ */
+export const READ_PAGE_SIZE = 250;
 /**
  * Upper bound on entries read per window. `getEntries` auto-paginates by default,
  * so without this a sustained burst reads every entry in the window into memory
@@ -27,8 +34,12 @@ const PAGE_SIZE = 500;
  * (`narrowWindow`), and the rest is read by the windows after it (#127), unless an
  * earlier attempt already wrote under the window's id (`WindowWrites`, #199). Reading
  * the newest entries and completing the window anyway lost every older one.
+ * The count alone does not bound memory (#296): 5,000 entries of 100 KB is half a gigabyte. The read also stops at
+ * `ingestReadBudgetMb` of entries (`entryBytes`), and that stop is handled exactly like this one.
  */
 export const MAX_ENTRIES_PER_RUN = 5000;
+/** What an entry that cannot be measured counts against the byte budget: Cloud Logging's largest entry. */
+const UNMEASURABLE_ENTRY_BYTES = 256 * 1024;
 /**
  * Upsert transactions in flight at once. Each grouped input has its own
  * fingerprint, so they never contend with each other; the bound keeps a burst
@@ -45,8 +56,13 @@ export interface AggregationResult {
   /** Incidents whose window had already been applied, so this run changed nothing for them. */
   incidentsReplayed: number;
   /**
-   * True when the read stopped at MAX_ENTRIES_PER_RUN and the window could not be narrowed (more
-   * entries than that in its first millisecond, or an earlier attempt already wrote under its id: see
+   * Distinct errors (fingerprints) folded into a high-cardinality overflow incident (#303): past the per-function cap
+   * on new incidents, matching no stored incident. Their occurrences are counted on the overflow incident.
+   */
+  errorsFoldedIntoOverflow: number;
+  /**
+   * True when the read stopped at MAX_ENTRIES_PER_RUN or at the byte budget (#296) and the window could not be
+   * narrowed (more than that in its first millisecond, or an earlier attempt already wrote under its id: see
    * `WindowWrites`): it was processed as read, and the rest of it is lost,
    * so occurrence counts are a floor.
    */
@@ -179,6 +195,7 @@ export async function aggregateErrors(
     incidentsUpdated: 0,
     incidentsRecurred: 0,
     incidentsReplayed: 0,
+    errorsFoldedIntoOverflow: 0,
     capped: false,
   };
 
@@ -186,32 +203,24 @@ export async function aggregateErrors(
   // resolution is how a log reader ends up silently watching the wrong project
   // and reporting "no errors" forever while production burns.
   const logging = new Logging({ projectId: config.watchedProjectId });
-  const [entries] = await logging.getEntries({
-    filter: buildLogFilter(config, window.start, undefined, window.end),
-    pageSize: PAGE_SIZE,
-    maxResults: MAX_ENTRIES_PER_RUN,
-    orderBy: "timestamp asc",
-  });
+  const read = await readWindow(logging as unknown as EntryReader, config, window);
 
-  if (entries.length >= MAX_ENTRIES_PER_RUN) {
-    const lastReadAt = latestTimestamp(entries as RawLogEntry[]);
+  if (read.stopped) {
     // Not when an earlier attempt may have written under this window's id (see WindowWrites): the
     // narrowed window would count those occurrences a second time under its own id.
-    const narrowed = deps.writes?.mayNarrow !== false && lastReadAt && narrowWindow(window, lastReadAt);
+    const narrowed = deps.writes?.mayNarrow !== false && read.lastReadAt && narrowWindow(window, read.lastReadAt);
     // Nothing is written: the narrowed window gets its own id, and the store must not see these
     // entries under this window's id and again under that one's.
     if (narrowed) return { ...result, narrowedTo: narrowed };
     result.capped = true;
   }
 
-  result.entriesProcessed = entries.length;
+  result.entriesProcessed = read.entries;
 
   // Group by fingerprint before writing anything.
   const grouped = new Map<string, { input: IncidentInput }>();
 
-  for (const entry of entries) {
-    const parsed = parseLogEntry(entry as RawLogEntry, config.ignoredMessages, config.excludedServices);
-    if (!parsed) continue;
+  for (const parsed of read.parsed) {
 
     // Group on the SANITIZED message — the one the store fingerprints and keeps.
     // Grouping on the raw text split "No user for alice@x.com" and "No user for
@@ -219,7 +228,7 @@ export async function aggregateErrors(
     // upserts then missed against the same uncommitted batch and one run created
     // two open documents for a single incident.
     const errorMessage = sanitize(parsed.errorMessage) ?? "";
-    const fingerprint = computeErrorFingerprint(parsed.functionName, errorMessage);
+    const fingerprint = fingerprintOfLogEntry(parsed.functionName, parsed.errorMessage);
     const found = grouped.get(fingerprint);
 
     if (found) {
@@ -266,6 +275,8 @@ export async function aggregateErrors(
   // ERROR log is exactly what it is for. Only for a window that is going to be written (a narrowed
   // read returned above), so its readings are folded in once, under this window's id.
   const queue = [...grouped.values()].map((g) => g.input);
+  // Decided before Monitoring adds its inputs: the cap is on log errors (a Monitoring-only input is one per function).
+  const accrueOnly = inputsPastNewIncidentCap(grouped, config.maxNewIncidentsPerFunctionPerWindow);
   if (config.monitoringEnabled) {
     const reader = deps.monitoring ?? createRestMonitoringReader();
     const observations = await readMonitoringFailures(reader, config, window);
@@ -280,7 +291,16 @@ export async function aggregateErrors(
   if (queue.length === 0) return result;
   // Recorded before the first upsert, so a later attempt at this window knows it may not narrow it.
   if (deps.writes && !(await deps.writes.beginWrites())) {
-    return { entriesProcessed: 0, incidentsCreated: 0, incidentsUpdated: 0, incidentsRecurred: 0, incidentsReplayed: 0, capped: false, superseded: true };
+    return {
+      entriesProcessed: 0,
+      incidentsCreated: 0,
+      incidentsUpdated: 0,
+      incidentsRecurred: 0,
+      incidentsReplayed: 0,
+      errorsFoldedIntoOverflow: 0,
+      capped: false,
+      superseded: true,
+    };
   }
 
   const now = Timestamp.now();
@@ -290,38 +310,204 @@ export async function aggregateErrors(
   // is awaited before the run reports: a failure throws only after the rest
   // have settled, and the incidents that committed are accrued onto next run.
   const failures: unknown[] = [];
+  // Errors past the cap that matched no stored incident, by canonical function: folded into its overflow incident.
+  const absent = new Map<string, IncidentInput[]>();
+  const count = (outcome: UpsertOutcome) => {
+    if (outcome === "new") result.incidentsCreated += 1;
+    else if (outcome === "recurred") result.incidentsRecurred += 1;
+    else if (outcome === "duplicate") result.incidentsReplayed += 1;
+    else result.incidentsUpdated += 1;
+  };
   const worker = async () => {
     for (let input = queue.shift(); input; input = queue.shift()) {
       try {
-        const outcome = await upsertIncident(db, config, input, now);
-        if (outcome === "new") result.incidentsCreated += 1;
-        else if (outcome === "recurred") result.incidentsRecurred += 1;
-        else if (outcome === "duplicate") result.incidentsReplayed += 1;
-        else result.incidentsUpdated += 1;
+        if (!accrueOnly.has(input)) {
+          count(await upsertIncident(db, config, input, now));
+          continue;
+        }
+        // Past the cap: accrue onto an incident that exists, never open one.
+        const outcome = await upsertIncident(db, config, input, now, { createIfAbsent: false });
+        if (outcome === "absent") {
+          const key = canonicalFunctionName(input.functionName);
+          absent.set(key, [...(absent.get(key) ?? []), input]);
+        } else count(outcome);
       } catch (err) {
         failures.push(err);
       }
     }
   };
   await Promise.all(Array.from({ length: Math.min(UPSERT_CONCURRENCY, queue.length) }, worker));
+  // Not folded when an upsert failed: a fold of part of them would mark the window applied on the overflow
+  // incident, and the replay of the window would then drop the rest. The replay folds them all (an absent one
+  // wrote nothing, so it comes back absent again).
   if (failures.length > 0) {
     throw new AggregateError(failures, `${failures.length} of ${total} incident upserts failed`);
+  }
+
+  for (const folded of absent.values()) {
+    const outcome = await upsertIncident(db, config, buildOverflowInput(folded, config, window), now);
+    count(outcome);
+    // A replayed window folded these already: the overflow incident holds them, and they are not counted twice.
+    if (outcome !== "duplicate") result.errorsFoldedIntoOverflow += folded.length;
   }
 
   return result;
 }
 
+/** The errorType of a high-cardinality overflow incident (#303): many distinct errors of one function, folded. */
+export const OVERFLOW_ERROR_TYPE = "HighCardinalityOverflow";
+
 /**
- * The latest readable timestamp among `entries`, or undefined when none has one. The latest, not the
- * last: the read is oldest first, but taking the maximum does not depend on that.
+ * The inputs of a window past the per-function cap on new incidents (#303): for every function (canonical spelling)
+ * with more than `cap` distinct errors in the window, all but its `cap` most frequent (ties by fingerprint, so the
+ * choice depends only on the window's own entries and a replay makes the same one). Those are upserted accrue-only:
+ * one that matches a stored incident still accrues onto it; one that does not is folded into the overflow incident.
+ * The `cap` most frequent upsert as usual, so a function opens at most `cap` incidents per window from them.
  */
-function latestTimestamp(entries: readonly RawLogEntry[]): Date | undefined {
-  let latest: number | undefined;
-  for (const e of entries) {
-    const ts = e?.metadata?.timestamp;
-    if (ts === undefined) continue;
-    const t = new Date(ts).getTime();
-    if (Number.isFinite(t) && (latest === undefined || t > latest)) latest = t;
+export function inputsPastNewIncidentCap(grouped: ReadonlyMap<string, { input: IncidentInput }>, cap: number): Set<IncidentInput> {
+  const byFunction = new Map<string, { fingerprint: string; input: IncidentInput }[]>();
+  for (const [fingerprint, { input }] of grouped) {
+    const key = canonicalFunctionName(input.functionName);
+    const list = byFunction.get(key);
+    if (list) list.push({ fingerprint, input });
+    else byFunction.set(key, [{ fingerprint, input }]);
   }
-  return latest === undefined ? undefined : new Date(latest);
+  const past = new Set<IncidentInput>();
+  for (const list of byFunction.values()) {
+    if (list.length <= cap) continue;
+    list.sort(
+      (a, b) =>
+        b.input.occurrenceCount - a.input.occurrenceCount ||
+        (a.fingerprint < b.fingerprint ? -1 : a.fingerprint > b.fingerprint ? 1 : 0)
+    );
+    for (const { input } of list.slice(cap)) past.add(input);
+  }
+  return past;
+}
+
+/**
+ * The fixed message of a function's overflow incident for one UTC day. It keys the fingerprint (`fingerprintOf`
+ * hashes it unnormalized in the `ovf-` namespace), so it holds no data, only the day: one overflow incident per
+ * function and day.
+ */
+export function overflowMessage(day: string): string {
+  return `High-cardinality overflow on ${day} (UTC): distinct errors of this function past the per-window cap on new incidents, each matching no stored incident, are counted here instead of opening one incident each`;
+}
+
+/**
+ * One function's folded errors as the overflow input (#303), dated by the UTC day the window ends in. The most
+ * frequent folded error lends its (already sanitized) message, as an example, and its stack trace, so a person or the
+ * agent can find the code that echoes the varying text.
+ */
+export function buildOverflowInput(
+  folded: readonly IncidentInput[],
+  config: Pick<StarfishConfig, "environment">,
+  window: IngestWindow
+): IncidentInput {
+  const sorted = [...folded].sort(
+    (a, b) => b.occurrenceCount - a.occurrenceCount || (a.errorMessage < b.errorMessage ? -1 : a.errorMessage > b.errorMessage ? 1 : 0)
+  );
+  const top = sorted[0]!;
+  let occurrences = 0;
+  let first = top.firstOccurredAt;
+  let last = top.lastOccurredAt;
+  for (const f of sorted) {
+    occurrences += f.occurrenceCount;
+    if (f.firstOccurredAt < first) first = f.firstOccurredAt;
+    if (f.lastOccurredAt > last) last = f.lastOccurredAt;
+  }
+  const detail = sanitize(`${sorted.length} distinct errors folded in one window; the most frequent: ${top.errorMessage}`);
+  return {
+    functionName: top.functionName,
+    service: top.service,
+    environment: config.environment,
+    errorType: OVERFLOW_ERROR_TYPE,
+    errorMessage: overflowMessage(window.end.toISOString().slice(0, 10)),
+    occurrenceCount: occurrences,
+    firstOccurredAt: first,
+    lastOccurredAt: last,
+    ...(detail !== undefined && { errorDetail: detail }),
+    ...(top.stackTrace !== undefined && { stackTrace: top.stackTrace }),
+    ...(top.sourceProjectId !== undefined && { sourceProjectId: top.sourceProjectId }),
+    ...(top.monitoring !== undefined && { monitoring: top.monitoring }),
+    signalSource: "overflow",
+    windowId: window.id,
+  };
+}
+
+/** One window's read, reduced as it went (#296). */
+interface WindowRead {
+  /** The entries that parsed as incidents, in read order. Bounded by the byte budget: never the raw entries. */
+  parsed: ParsedLogEntry[];
+  /** Every entry read, parsed or not: what `entriesProcessed` reports. */
+  entries: number;
+  /** The latest readable timestamp among the entries read; undefined when none had one. */
+  lastReadAt?: Date;
+  /** True when the read stopped at MAX_ENTRIES_PER_RUN or at the byte budget, before the end of the window. */
+  stopped: boolean;
+}
+
+/**
+ * Read `window` oldest first, a page at a time (#296). Each page is reduced to parsed entries before the next is asked
+ * for, and the read stops at MAX_ENTRIES_PER_RUN entries or once the entries read reach `ingestReadBudgetMb`,
+ * whichever comes first, on the entry that reached it. Everything before that entry's millisecond was then read in full,
+ * which is what `narrowWindow` relies on, and the narrowed window holds less than the budget, so its replay reads all of
+ * it. One auto-paginated `getEntries` call held every raw entry of the window at once: 5,000 entries of 100 KB ran the
+ * 512Mi job out of memory, and since the window is pending before it is read, every run replayed it and died the same way.
+ * A Logging failure throws, as the single read did: the run records it and the window stays pending.
+ */
+async function readWindow(logging: EntryReader, config: StarfishConfig, window: IngestWindow): Promise<WindowRead> {
+  const budgetBytes = config.ingestReadBudgetMb * 1024 * 1024;
+  const parsed: ParsedLogEntry[] = [];
+  let entries = 0;
+  let bytes = 0;
+  let latest: number | undefined;
+  const done = (stopped: boolean): WindowRead => ({ parsed, entries, stopped, ...(latest !== undefined && { lastReadAt: new Date(latest) }) });
+  let request: object | null = {
+    filter: buildLogFilter(config, window.start, undefined, window.end),
+    pageSize: READ_PAGE_SIZE,
+    orderBy: "timestamp asc",
+    autoPaginate: false,
+  };
+  while (request) {
+    const [page, next]: [unknown[], object | null, ...unknown[]] = await logging.getEntries(request);
+    for (const raw of page) {
+      const entry = raw as RawLogEntry;
+      entries += 1;
+      bytes += entryBytes(entry);
+      const t = readableTime(entry);
+      if (t !== undefined && (latest === undefined || t > latest)) latest = t;
+      const p = parseLogEntry(entry, config.ignoredMessages, config.excludedServices);
+      if (p) parsed.push(p);
+      if (entries >= MAX_ENTRIES_PER_RUN || bytes >= budgetBytes) return done(true);
+    }
+    // Re-asserted on every page, as in counterCheck.ts: the client drops autoPaginate from the request it hands on, so
+    // the next-page request it returns lacks it, and the default (true) would read every remaining page at once.
+    request = next ? { ...next, autoPaginate: false } : null;
+  }
+  return done(false);
+}
+
+/**
+ * An entry's approximate size: its payload and metadata serialised as JSON, in UTF-16 units. An estimate, not the heap
+ * it takes, but it grows with what does, which is what a budget needs. One that cannot be serialised counts as the
+ * largest entry Cloud Logging accepts, so a measuring failure can only make the read stop sooner.
+ */
+export function entryBytes(entry: RawLogEntry): number {
+  try {
+    return (JSON.stringify(entry?.data ?? null)?.length ?? 0) + (JSON.stringify(entry?.metadata ?? null)?.length ?? 0);
+  } catch {
+    return UNMEASURABLE_ENTRY_BYTES;
+  }
+}
+
+/**
+ * An entry's timestamp in milliseconds, or undefined when it has none readable. The read keeps the latest of these, not
+ * the last entry's: the read is oldest first, but taking the maximum does not depend on that.
+ */
+function readableTime(entry: RawLogEntry): number | undefined {
+  const ts = entry?.metadata?.timestamp;
+  if (ts === undefined) return undefined;
+  const t = new Date(ts).getTime();
+  return Number.isFinite(t) ? t : undefined;
 }

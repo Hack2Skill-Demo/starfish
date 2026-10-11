@@ -39,8 +39,8 @@ export const SCRUBBED_FIELDS = [
 ] as const;
 export type ScrubbedField = (typeof SCRUBBED_FIELDS)[number];
 
-/** The identifier-like fields, which the store also bounds (#130): scrubbed the same way, so a rerun is a no-op. */
-const SHORT_FIELDS: ReadonlySet<ScrubbedField> = new Set(["service", "errorCode", "tenantId", "requestId"]);
+/** The identifier-like fields, which the store also bounds (#130, errorName #309): scrubbed the same way, so a rerun is a no-op. */
+const SHORT_FIELDS: ReadonlySet<ScrubbedField> = new Set(["errorName", "service", "errorCode", "tenantId", "requestId"]);
 
 const PAGE_SIZE = 200;
 /** Firestore caps a batch at 500 writes; each record can need up to 2 (update + key delete). */

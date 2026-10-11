@@ -305,6 +305,19 @@ export interface StarfishConfig {
   /** Firestore collection of the call sequences, one per escalated cycle, and the per-person daily call counts. Engine-only. */
   escalationCollection: string;
   /**
+   * Firestore collection of the opt-in codes (src/oncall/optIn.ts): one document per person holding the hash of the
+   * code last texted, its expiry and the wrong tries, plus one deployment-wide count of opt-in texts per UTC day.
+   * Engine-only (firestore.rules: no client reads or writes it), because a six-digit code's hash can be brute-forced
+   * offline by anyone who can read it (#302): an admin could otherwise confirm a number its owner never agreed to.
+   */
+  onCallCodeCollection: string;
+  /**
+   * The most opt-in texts (a confirmation code) the whole deployment sends in one UTC day (#306), counted in a
+   * transaction as each is claimed: a cap on what a compromised admin account can spend on texts, or send to
+   * numbers that are not theirs. A send-code over it is refused (`daily-cap`) and audited. Default 20.
+   */
+  onCallMaxTextsPerDay: number;
+  /**
    * The ONE pre-recorded audio file every call plays (https, e.g. a public Cloud Storage object): it says an urgent
    * incident needs a person and the details are in the on-call channel. No incident detail is ever spoken. Empty: no
    * call can be placed.
@@ -373,12 +386,35 @@ export interface StarfishConfig {
   /** The longest span one ingest window may cover, so catching up after downtime is done in bounded reads. */
   ingestMaxWindowHours: number;
   /**
+   * The most NEW incidents one function may open in one ingest window (#303). An error that echoes user input
+   * ("No such user: alice", "...: bob") keeps its words through normalization, so each distinct word is a distinct
+   * fingerprint; without a cap a flood of them opens thousands of incidents, bills a write for each, and crowds the real
+   * ones out of the agent's candidate scan. Past the cap, a function's errors that match no stored incident are folded
+   * into ONE high-cardinality overflow incident per function and UTC day (aggregate.ts); errors that already have an
+   * incident still accrue onto it. Which errors get the cap's places is decided from the window's own entries (most
+   * occurrences first), so a replayed window decides the same way.
+   */
+  maxNewIncidentsPerFunctionPerWindow: number;
+  /**
    * How long one ingest run may work before it stops (#221). No new window is started once most of it is spent, and a
    * window's read is given up at what is left, so a stall is recorded as a failed `last_run` before whatever runs the
    * ingest (the Cloud Run job's task timeout, the admin API's request timeout) ends the process. scripts/deploy-gcp.sh
    * sets it and derives both timeouts from it, so they exceed it.
    */
   ingestRunBudgetSeconds: number;
+  /**
+   * How much log data one window's read may hold, in megabytes (#296): the approximate size of the entries read (their
+   * payload and metadata serialised as JSON). A Cloud Logging entry can be 256 KB, so the entry cap alone let a burst
+   * of large entries run the job out of memory, on every replay of the same window. A read that reaches it is treated
+   * like one that reaches the entry cap: the window is narrowed to the part read in full. Keep it well under the
+   * memory whatever runs the ingest has (scripts/deploy-gcp.sh gives the job 512Mi).
+   */
+  ingestReadBudgetMb: number;
+  /**
+   * How far the ingest's checkpoint may fall behind the newest logs it could read (#297) before `pnpm status` calls it
+   * "behind", in minutes. Unset: twice the interval of `ingestSchedule` when that is known, else the stale threshold.
+   */
+  ingestBehindMinutes?: number;
   /**
    * The Cloud Scheduler cron that starts the ingest (set by scripts/deploy-gcp.sh and scripts/ingest-cadence.sh).
    * Only told to the UI, through the last-run record, so it can say when the next run is expected; the engine
@@ -571,8 +607,17 @@ export function loadConfig(): StarfishConfig {
       6,
       "STARFISH_INGEST_MAX_WINDOW_HOURS"
     ),
+    maxNewIncidentsPerFunctionPerWindow: positiveInteger(
+      process.env.STARFISH_MAX_NEW_INCIDENTS_PER_FUNCTION,
+      25,
+      "STARFISH_MAX_NEW_INCIDENTS_PER_FUNCTION"
+    ),
     // 8 minutes: two under the 10-minute task timeout scripts/deploy-gcp.sh derives from it by default.
     ingestRunBudgetSeconds: positiveNumber(process.env.STARFISH_INGEST_RUN_BUDGET_SECONDS, 480, "STARFISH_INGEST_RUN_BUDGET_SECONDS"),
+    ingestReadBudgetMb: positiveNumber(process.env.STARFISH_INGEST_READ_BUDGET_MB, 64, "STARFISH_INGEST_READ_BUDGET_MB"),
+    ...(process.env.STARFISH_INGEST_BEHIND_MINUTES?.trim()
+      ? { ingestBehindMinutes: positiveNumber(process.env.STARFISH_INGEST_BEHIND_MINUTES.trim(), 1, "STARFISH_INGEST_BEHIND_MINUTES") }
+      : {}),
     runCollection: process.env.STARFISH_RUN_COLLECTION || "starfish_runs",
     dryRun: parseBoolean(process.env.STARFISH_DRY_RUN, true, "STARFISH_DRY_RUN"),
     reviewRequired: parseBoolean(process.env.STARFISH_REVIEW_REQUIRED, true, "STARFISH_REVIEW_REQUIRED"),
@@ -611,6 +656,8 @@ export function loadConfig(): StarfishConfig {
     onCallCollection: process.env.STARFISH_ONCALL_COLLECTION || "starfish_oncall",
     onCallPeopleCollection: process.env.STARFISH_ONCALL_PEOPLE_COLLECTION || "starfish_oncall_people",
     escalationCollection: process.env.STARFISH_ESCALATION_COLLECTION || "starfish_escalations",
+    onCallCodeCollection: process.env.STARFISH_ONCALL_CODE_COLLECTION || "starfish_oncall_codes",
+    onCallMaxTextsPerDay: positiveInteger(process.env.STARFISH_ONCALL_MAX_TEXTS_PER_DAY, 20, "STARFISH_ONCALL_MAX_TEXTS_PER_DAY"),
     onCallAudioUrl: validHttpsUrl(process.env.STARFISH_ONCALL_AUDIO_URL, "STARFISH_ONCALL_AUDIO_URL"),
     twilioApiUrl: validApiRoot(process.env.STARFISH_TWILIO_API_URL, "https://api.twilio.com", "STARFISH_TWILIO_API_URL"),
     twilioWebhookUrl: validOrigins(parseList(process.env.STARFISH_TWILIO_WEBHOOK_URL, ",") ?? [], "STARFISH_TWILIO_WEBHOOK_URL")[0] ?? "",

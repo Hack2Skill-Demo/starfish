@@ -85,6 +85,18 @@ describe("validateSettings", () => {
     });
   });
 
+  it("rejects an ignored-message entry so short it would drop nearly every error (#309), and trims the ends", () => {
+    for (const entry of [" ", "e", "  e  ", "ab", "\t"]) {
+      const v = validateSettings({ version: 1, ignoredMessages: ["probe", entry] });
+      expect(v.ok).toBe(false);
+      expect(!v.ok && v.problems).toEqual([expect.stringMatching(/^ignoredMessages: each entry must be 3-300 characters/)]);
+    }
+    expect(validateSettings({ version: 1, ignoredMessages: ["  probe  ", "abc"] })).toEqual({
+      ok: true,
+      settings: { ignoredMessages: ["probe", "abc"] },
+    });
+  });
+
   it.each([
     ["not an object", "settings"],
     [[], "settings"],
@@ -133,7 +145,8 @@ describe("validateSettings", () => {
   it("enforces list shape and size", () => {
     expect(validateSettings({ version: 1, logResourceTypes: [] }).ok).toBe(false);
     expect(validateSettings({ version: 1, logResourceTypes: "cloud_function" }).ok).toBe(false);
-    expect(validateSettings({ version: 1, ignoredMessages: Array(101).fill("x") }).ok).toBe(false);
+    expect(validateSettings({ version: 1, ignoredMessages: Array(100).fill("xyz") }).ok).toBe(true);
+    expect(validateSettings({ version: 1, ignoredMessages: Array(101).fill("xyz") }).ok).toBe(false);
     expect(validateSettings({ version: 1, servicePatterns: ["x"] }).ok).toBe(false);
     expect(validateSettings({ version: 1, updatedAt: "yesterday" }).ok).toBe(false);
     expect(validateSettings({ version: 1, revision: 1.5 }).ok).toBe(false);
@@ -315,6 +328,17 @@ describe("RuntimeConfigLoader", () => {
     const r = await new RuntimeConfigLoader(base).resolve(db);
     expect(r).toMatchObject({ source: "env", problems: [], actionsAllowed: true });
     expect(r.config).toEqual(base);
+  });
+
+  it("leaves out an ignored-message entry saved before the minimum existed instead of refusing the document (#309)", async () => {
+    // Refusing it would stop ingest and the agent: no usable settings, and the last-good copy fails the same check.
+    const { db } = fakeDb({ [SETTINGS_DOC]: { version: 1, ignoredMessages: ["probe", " ", "ab"] } });
+    const r = await new RuntimeConfigLoader(base).resolve(db);
+    expect(r).toMatchObject({ source: "settings", problems: [], actionsAllowed: true });
+    expect(r.config.ignoredMessages).toEqual(["probe"]);
+    // A malformed entry (not a string) still fails the document.
+    const bad = fakeDb({ [SETTINGS_DOC]: { version: 1, ignoredMessages: ["probe", 7] } });
+    expect((await new RuntimeConfigLoader(base).resolve(bad.db)).source).not.toBe("settings");
   });
 
   it("applies a valid document, and keeps a copy as the last good one", async () => {

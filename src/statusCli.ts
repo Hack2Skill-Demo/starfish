@@ -1,7 +1,7 @@
 /**
  * `pnpm status [--stale-minutes N] [--min-incidents N] [--min-entries N]`: is the deployed engine alive?
  * Prints what the engine last recorded and how many incidents it holds, and exits 0 only when the last
- * run is ok and recent and the minimums hold (src/status.ts). It also prints the agent pass's last record (#274), which
+ * run is ok and recent, not behind (STARFISH_INGEST_BEHIND_MINUTES, #297), and the minimums hold (src/status.ts). It also prints the agent pass's last record (#274), which
  * never changes the exit code. Both minimums default to 0: a quiet project
  * is a correct answer. --min-entries is about the last run (log entries it processed), --min-incidents
  * about the store.
@@ -82,6 +82,7 @@ const report = describeStatus({
   staleMinutes,
   environment: config.environment,
   counts,
+  ...(config.ingestBehindMinutes !== undefined && { behindMinutes: config.ingestBehindMinutes }),
 });
 console.log(`project ${config.projectId}, database ${config.databaseId}`);
 for (const line of report.lines) console.log(line);

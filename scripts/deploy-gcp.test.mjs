@@ -196,7 +196,7 @@ describe("scripts/deploy-gcp.sh", () => {
     const r = deploy({ ...dry, STARFISH_DATABASE_ID: "ops-store" });
     expect(r.status).toBe(0);
     expect(r.out).toContain('(write .firebase-deploy.json: firebase.json with "database": "ops-store")');
-    expect(r.out).toContain("firebase-tools@14 deploy --only firestore --project star-proj --config .firebase-deploy.json");
+    expect(r.out).toContain("firebase-tools@14.27.0 deploy --only firestore --project star-proj --config .firebase-deploy.json");
     expect(r.out).toContain("gcloud firestore databases create --database=ops-store");
     expect(r.out).toContain('resource.name == "projects/star-proj/databases/ops-store"');
     // The default goes through the same copy, so there is one path.
@@ -217,7 +217,7 @@ describe("scripts/deploy-gcp.sh", () => {
       "gcloud iam service-accounts create starfish-engine",
       "gcloud iam service-accounts create starfish-scheduler",
       "gcloud firestore databases create --database=starfish",
-      "firebase-tools@14 deploy --only firestore",
+      "firebase-tools@14.27.0 deploy --only firestore",
       "gcloud secrets create starfish-github-token",
       "gcloud run jobs deploy starfish-ingest --source .",
       "gcloud scheduler jobs create http starfish-ingest-tick",
@@ -253,9 +253,36 @@ describe("scripts/deploy-gcp.sh", () => {
     expect(store).toContain('resource.name == "projects/star-proj/databases/starfish"');
     expect(store).toContain('resource.name.startsWith("projects/star-proj/databases/starfish/")');
     expect(store).not.toContain("--condition=None");
-    expect(r.out).toContain(`add-iam-policy-binding ai-proj --member=${engine} --role=roles/aiplatform.user`);
-    // Nothing broader than the three roles is granted to the engine.
+    // Nothing broader than the two roles is granted to the engine, and no Gemini role at all (#308): ingest makes no model call.
+    expect(r.out).not.toContain(`--member=${engine} --role=roles/aiplatform.user`);
     expect(r.out).not.toMatch(/roles\/(owner|editor|admin)/i);
+  });
+
+  it("takes back the Gemini role an earlier deploy gave the engine, before the agent's own grant (#308)", () => {
+    const r = deploy({ ...dry, VERTEX_PROJECT_ID: "ai-proj", DEPLOY_AGENT: "1", AGENT_REPO: "acme/shop", VERIFY_CHECKS: "verify" });
+    expect(r.status).toBe(0);
+    const remove = "(if an earlier deploy granted it) gcloud projects remove-iam-policy-binding ai-proj: roles/aiplatform.user of starfish-engine@star-proj.iam.gserviceaccount.com";
+    expect(r.out).toContain(remove);
+    // The agent still calls Gemini: its grant comes after the removal, so an account shared by name would keep it.
+    const agentGrant = "add-iam-policy-binding ai-proj --member=serviceAccount:starfish-agent@star-proj.iam.gserviceaccount.com --role=roles/aiplatform.user";
+    expect(r.out).toContain(agentGrant);
+    expect(r.out.indexOf(remove)).toBeLessThan(r.out.indexOf(agentGrant));
+    // Without the agent nothing in the plan grants Gemini to anyone.
+    expect(deploy(dry).out).not.toMatch(/add-iam-policy-binding \S+ --member=\S+ --role=roles\/aiplatform\.user/);
+  });
+
+  it("refuses a schedule that is not a five-field cron, before anything changes (#308)", () => {
+    for (const [name, bad] of [["SCHEDULE", "hourly"], ["SCHEDULE", "*/5 * * *"], ["SCHEDULE", "0 * * * * *"], ["SCHEDULE", "0 * * * *@X=1"],
+      ["SCHEDULE", "$(id) * * * *"], ["AGENT_SCHEDULE", "30 * * *"], ["AGENT_SCHEDULE", "30 * * * mon;id"]]) {
+      const r = deploy({ ...dry, [name]: bad });
+      expect(r.status, `${name}=${bad}`).not.toBe(0);
+      expect(r.out, `${name}=${bad}`).toContain(`${name} must be a five-field cron`);
+      expect(r.out, `${name}=${bad}`).not.toContain("gcloud services enable");
+    }
+    // Day and month names, which Cloud Scheduler accepts, pass too; the UI then just shows no next-run estimate.
+    for (const good of ["*/5 * * * *", "0 9-17 * * 1-5", "15,45 * * * *", "30 * * * MON-FRI", "0 9 1 JAN *"]) {
+      expect(deploy({ ...dry, SCHEDULE: good, AGENT_SCHEDULE: good }).status, good).toBe(0);
+    }
   });
 
   it("lets the scheduler's account start the job and nothing else", () => {
@@ -653,8 +680,8 @@ describe("scripts/deploy-gcp.sh: the agent and its isolated verify job (#74), VE
     expect(line(r.out, "roles/iam.serviceAccountTokenCreator")).toContain("service-accounts add-iam-policy-binding starfish-agent@star-proj");
     const store = line(r.out, "roles/datastore.user");
     expect(store).toContain('resource.name == "projects/star-proj/databases/starfish"');
-    // The ingest's account keeps its three roles and gains nothing from the agent, not even the token (#146).
-    expect(grants(r.out, sa("starfish-engine"))).toEqual(["roles/aiplatform.user", "roles/datastore.user", "roles/logging.viewer"]);
+    // The ingest's account keeps its two roles (no Gemini, #308) and gains nothing from the agent, not even the token (#146).
+    expect(grants(r.out, sa("starfish-engine"))).toEqual(["roles/datastore.user", "roles/logging.viewer"]);
     expect(r.out).not.toMatch(/roles\/(owner|editor|admin)/i);
   });
 

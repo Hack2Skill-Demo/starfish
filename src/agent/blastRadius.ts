@@ -933,9 +933,26 @@ function baseProblems(src: FileDiff, hunk: Hunk, first: number, last: number, ba
  *     so a patch cannot turn the required checks green by weakening the test that judges it;
  *   - no path, no changed line, and no statement of the function around any hunk (every statement naming one, as for a
  *     null guard) hits the hard-exclude list: auth and access control, security rules, money, secrets, schema,
- *     dependencies and imports, CI and deploy config, shared packages, and the deployment's own exclusions.
- * What it does NOT ask, unlike gate 1: one of three fix classes, one hunk, a size or span limit, three lines of context.
- * Those were Starfish deciding WHAT KIND of change may merge; that call is now Gemini's, within the cases an admin lists.
+ *     dependencies and imports, CI and deploy config, shared packages, and the deployment's own exclusions. That list
+ *     is WORDS: a check on `order.createdBy !== req.user.id` names none of them (#295), hence the rules below;
+ *   - at most `MAX_FLOOR_CHANGED` (40) lines added and removed in the production file;
+ *   - not a JSX file (`.jsx`/`.tsx`: the scanner cannot read JSX text, `jsx-not-judged`);
+ *   - no removed line decides, steers or calls (a condition, comparison, `&&`/`||`, `return`, `throw`, a branch, a loop,
+ *     an `await`, a block's brace, any call) unless the same run of changed lines puts it back as itself with only `?.`,
+ *     `?? null` or `await` added; and no call is taken out of the file (`removes-a-decision`, `removes-a-call`);
+ *   - no added `try`/`catch`/`finally` (`.catch(` included); no added `if`, `return`, `throw`, loop or branch but an
+ *     explicit null guard (gate 1's `MISSING_ATOM`, leaving with nothing or throwing a new error) placed as gate 1
+ *     places one; and every run of added lines closes the brackets it opens, so nothing existing is wrapped in a new
+ *     block or function (`adds-try-catch`, `adds-control-flow`, `adds-unbalanced-brackets`);
+ *   - no added line, in the production file or a new test, names a network, process, dynamic-code, destructive or
+ *     file-system sink (`SINKS`, matched on the whole line, strings and comments included) or holds `://`;
+ *   - the added code calls nothing the base file does not already call (by name: `foo(`, `.bar(`, `new X`, a tagged
+ *     template), except the pure calls in `PURE_CALLS`; calls nothing that is not a name (`fns[k](…)`, `f()(…)`); and
+ *     binds no name the base file calls (`const load = …`, an arrow parameter `load`).
+ * What it does NOT ask, unlike gate 1: one of three fix classes, one hunk, a span limit, three lines of context. Those
+ * were Starfish deciding WHAT KIND of change may merge; that call is now Gemini's, within the cases an admin lists.
+ * The code rules read text with a scanner, not a parser, and by name, not by receiver: a method the base calls on one
+ * object may be added on another. Unsure refuses. They are a floor under the target's required checks, not a proof.
  */
 export function assessMergeFloor(patch: string, cfg: BlastRadiusConfig): BlastRadius {
   const problems = new Set<string>();
@@ -975,9 +992,415 @@ export function assessMergeFloor(patch: string, cfg: BlastRadiusConfig): BlastRa
   if (!CODE_EXT.test(sourceFile)) problems.add("not-javascript-or-typescript");
   const changed = src.hunks.flatMap((h) => h.lines.filter((l) => l.kind !== " "));
   if (changed.length === 0) problems.add("no-source-change");
+  if (changed.length > MAX_FLOOR_CHANGED) problems.add("change-too-large");
   for (const l of changed) for (const c of excludedLineCategories(l.text)) problems.add(`excluded:${c}`);
   for (const p of floorBaseProblems(src, cfg.baseFiles)) problems.add(p);
+  // JSX text is not JavaScript (`<p>Don't</p>` is no string): the code rules cannot read it, so a JSX file never passes.
+  if (JSX_EXT.test(sourceFile)) problems.add("jsx-not-judged");
+  else for (const p of floorCodeProblems(src, cfg.baseFiles)) problems.add(p);
+  // A new test file runs in the target's CI on every later commit once merged: what it may not reach is the same.
+  for (const t of tests) for (const l of t.hunks.flatMap((h) => h.lines)) if (l.kind === "+") for (const p of addedLineHazards(l.text, true)) problems.add(p);
   return done({ sourceFile, testFiles });
+}
+
+// ---- The merge floor: what the changed code does (#295) ---------------------------------------------------------
+//
+// The hard-exclude list is a list of words: a check on `order.createdBy !== req.user.id` names none of them, and neither
+// does a `fetch` that posts a collection to another host. These rules judge the code itself, deterministically and
+// conservatively; each refuses what it cannot read for certain. They are a floor under Gemini's decision and the
+// target's own required checks, not a proof that a patch is harmless.
+
+/** The most lines the production file's hunks may add and remove together. Tests are judged apart (new files only). */
+const MAX_FLOOR_CHANGED = 40;
+/** A file that may hold JSX, which the floor's scanner does not read. */
+const JSX_EXT = /\.[cm]?[jt]sx$/i;
+
+/**
+ * One piece of JavaScript/TypeScript with every string, template text, regular expression and comment replaced by a
+ * placeholder, and those literals in order. A template's `${…}` is code and is kept, inside `(…)`. Null when anything is
+ * not read for certain: an unterminated string, template, comment or regex, or a string that runs over a line end.
+ */
+function lexCode(text: string): { code: string; literals: string[] } | null {
+  const n = text.length;
+  const literals: string[] = [];
+  const out: string[] = [];
+  let i = 0;
+  /** Reads until the end, or, inside a template's `${`, until its closing `}` (consumed). False when not certain. */
+  const run = (inTemplate: boolean): boolean => {
+    let depth = 0;
+    let regexOk = true;
+    while (i < n) {
+      const ch = text[i]!;
+      if (ch === "/" && text[i + 1] === "/") {
+        const e = text.indexOf("\n", i);
+        const end = e < 0 ? n : e;
+        literals.push(text.slice(i, end));
+        out.push("//");
+        i = end;
+        continue;
+      }
+      if (ch === "/" && text[i + 1] === "*") {
+        const e = text.indexOf("*/", i + 2);
+        if (e < 0) return false;
+        literals.push(text.slice(i, e + 2));
+        out.push("/**/");
+        i = e + 2;
+        continue;
+      }
+      if (ch === '"' || ch === "'") {
+        let j = i + 1;
+        for (; j < n && text[j] !== ch; j++) {
+          if (text[j] === "\\") j++;
+          else if (text[j] === "\n") return false;
+        }
+        if (j >= n) return false;
+        literals.push(text.slice(i, j + 1));
+        out.push(ch + ch);
+        i = j + 1;
+        regexOk = false;
+        continue;
+      }
+      if (ch === "`") {
+        out.push("``");
+        i++;
+        let start = i;
+        for (;;) {
+          if (i >= n) return false;
+          const c = text[i];
+          if (c === "\\") i += 2;
+          else if (c === "`") {
+            literals.push(text.slice(start, i));
+            i++;
+            break;
+          } else if (c === "$" && text[i + 1] === "{") {
+            literals.push(text.slice(start, i));
+            i += 2;
+            out.push(",(");
+            if (!run(true)) return false;
+            out.push(")");
+            start = i;
+          } else i++;
+        }
+        regexOk = false;
+        continue;
+      }
+      if (ch === "/" && regexOk) {
+        let j = i + 1;
+        let inClass = false;
+        for (; j < n; j++) {
+          const c = text[j];
+          if (c === "\\") j++;
+          else if (c === "\n") return false;
+          else if (inClass) inClass = c !== "]";
+          else if (c === "[") inClass = true;
+          else if (c === "/") break;
+        }
+        if (j >= n) return false;
+        j++;
+        while (j < n && /[a-z]/i.test(text[j]!)) j++;
+        literals.push(text.slice(i, j));
+        out.push("/_/");
+        i = j;
+        regexOk = false;
+        continue;
+      }
+      if (/[A-Za-z_$]/.test(ch)) {
+        let j = i + 1;
+        while (j < n && /[\w$]/.test(text[j]!)) j++;
+        const word = text.slice(i, j);
+        regexOk = BEFORE_EXPRESSION.has(word);
+        out.push(word);
+        i = j;
+        continue;
+      }
+      if (/[0-9]/.test(ch)) {
+        let j = i;
+        while (j < n && /[\w.]/.test(text[j]!)) j++;
+        out.push(text.slice(i, j));
+        regexOk = false;
+        i = j;
+        continue;
+      }
+      if (ch === "{") depth++;
+      else if (ch === "}") {
+        if (inTemplate && depth === 0) {
+          i++;
+          return true;
+        }
+        depth--;
+      }
+      if (ch === ")" || ch === "]") regexOk = false;
+      else if (!/\s/.test(ch)) regexOk = true;
+      out.push(ch);
+      i++;
+    }
+    return !inTemplate;
+  };
+  return run(false) ? { code: out.join(""), literals } : null;
+}
+
+/** Words followed by `(` that are not calls. `new`, `super` and `import` are not here: they are (or are refused) calls. */
+const NOT_CALLS = new Set(["if", "for", "while", "switch", "catch", "return", "typeof", "await", "function", "void", "in", "of", "yield", "throw", "case", "do", "else", "instanceof", "async", "with", "delete"]);
+/** An optional TypeScript type argument list before a call's `(`: `get<Order>(…)`. Read wide: it may also match a comparison. */
+const TYPE_ARGS = String.raw`(?:<[\w$ \t,.|[\]<>]*>\s*)?`; // one line at most: no line end inside
+const MEMBER_CALL_RE = new RegExp(String.raw`(?:\?\.|\.)\s*([A-Za-z_$][\w$]*)\s*(?:\?\.\s*)?${TYPE_ARGS}\(`, "g");
+const PLAIN_CALL_RE = new RegExp(String.raw`(?<![\w$.])([A-Za-z_$][\w$]*)\s*(?:\?\.\s*)?${TYPE_ARGS}\(`, "g");
+/** `new X`, with or without its `(`: the constructor runs either way. `new a.b.C` calls `.C`. */
+const NEW_RE = /\bnew\s+([A-Za-z_$][\w$]*(?:\s*\.\s*[A-Za-z_$][\w$]*)*)/g;
+/** A tagged template calls its tag with no `(`: `` tag`…` ``, in lexed code `` tag`` ``. */
+const TAGGED_RE = /(?<![\w$.])([A-Za-z_$][\w$]*)\s*``|\.\s*([A-Za-z_$][\w$]*)\s*``/g;
+/** A call of something that is not a name: `fns[k](…)`, `get()(…)`, `(0, f)(…)`, `` x[k]`…` ``. */
+const COMPUTED_CALL_RE = /[\])]\s*(?:\?\.\s*)?\(|[\])]\s*``/;
+
+/**
+ * The names a piece of lexed code calls: `foo` for `foo(…)`, `.bar` for `x.bar(…)` (by name, never by receiver), and the
+ * constructor of every `new`. Declarations count too (`function foo(`, a method `foo() {`): wider is the safe direction.
+ */
+function callsIn(code: string): string[] {
+  const out: string[] = [];
+  for (const m of code.matchAll(MEMBER_CALL_RE)) out.push(`.${m[1]!}`);
+  for (const m of code.matchAll(PLAIN_CALL_RE)) if (!NOT_CALLS.has(m[1]!)) out.push(m[1]!);
+  for (const m of code.matchAll(NEW_RE)) {
+    const parts = m[1]!.split(".").map((p) => p.trim());
+    out.push(parts.length > 1 ? `.${parts.at(-1)!}` : parts[0]!);
+  }
+  for (const m of code.matchAll(TAGGED_RE)) {
+    if (m[1] === undefined) out.push(`.${m[2]!}`);
+    else if (!NOT_CALLS.has(m[1]) && m[1] !== "new") out.push(m[1]);
+  }
+  return out;
+}
+
+/**
+ * Calls a fix may add though the base file never makes them: pure conversions and checks of a value, and the standard
+ * errors a guard throws. Nothing here reaches the network, the disk, a process or the store, or runs text as code.
+ * `console` is not here: a value written to the log is not a fix, and the log is what Starfish reads back. A method the
+ * base file already calls (`.log`, `.set`) may be added, by name, whatever object it is called on.
+ */
+const PURE_CALLS = new Set(["String", "Number", "Boolean", "Error", "TypeError", "RangeError", ".isArray", ".isFinite", ".isInteger", ".isNaN"]);
+
+/**
+ * The Node process itself (`process.exit`, `process.kill`, `process.env`): refused in production code. A new test file may
+ * name it: a plain-node test fails by `process.exit(1)`.
+ */
+const NODE_PROCESS: readonly [string, RegExp] = ["process", /\bprocess\b/];
+/**
+ * What added code may not reach, whether or not the base file already does: matched on the line's whole text, strings
+ * and comments included (`globalThis["fetch"]`), so a word in a comment refuses too. Wider is the safe direction.
+ */
+const SINKS: readonly (readonly [string, RegExp])[] = [
+  ["network", /\bfetch\b|\baxios\b|\bXMLHttpRequest\b|\bWebSocket\b|\bEventSource\b|\bsendBeacon\b|\bundici\b|\bsuperagent\b|\bgot\s*\(|(?<![.\w$])(?:https?|http2|net|tls|dgram|dns)\s*\.\s*[A-Za-z_$]|\brequest\s*\(/],
+  ["process", /\bchild_process\b|(?<![.\w$])exec(?:Sync|File|FileSync)?\s*\(|\bspawn(?:Sync)?\b|\bfork\s*\(|\bworker_threads\b|\bWorker\b/],
+  NODE_PROCESS,
+  ["dynamic-code", /\beval\b|\bFunction\b|\bvm\s*\.|\bglobalThis\b|\bglobal\s*\.|\bReflect\b|\bProxy\b|__proto__|\bconstructor\b|\bprototype\b|\bset(?:Timeout|Interval|Immediate)\s*\(\s*["'`]/],
+  ["destructive", /\.\s*delete\b|\bdelete\s|\brecursiveDelete\b|\bdeleteDoc\b|\bdeleteField\b|\.\s*(?:remove|purge|destroy|drop)\s*\(/],
+  ["filesystem", /\bfs\b|\bfs\/promises\b|\b(?:writeFile|appendFile|unlink|rmdir|rm|rename|copyFile|createWriteStream|truncate|chmod|chown|symlink|mkdir)(?:Sync)?\s*\(/],
+];
+
+/** The sinks a new test file is judged on: all but the Node process itself. */
+const TEST_SINKS = SINKS.filter((sink) => sink !== NODE_PROCESS);
+
+/** What one added line reaches on its own: a sink, or an address (`://`) anywhere in it. */
+function addedLineHazards(text: string, inTest = false): string[] {
+  const out = (inTest ? TEST_SINKS : SINKS).filter(([, re]) => re.test(text)).map(([kind]) => `adds-sink:${kind}`);
+  if (text.includes("://")) out.push("adds-url");
+  return out;
+}
+
+/**
+ * A removed line that decides or steers: a condition, a comparison, a boolean operator, `return`, `throw`, a branch or a
+ * loop, an `await`, a brace that opens or closes a block, or ANY call: a check is often a call (`checkOrder(o, who);`), and
+ * one whose arguments change (`checkOrder(o, o.placedBy)`) checks something else. Removing one is removing a check
+ * (#295). Matched on the code, literals blanked; a line not read for certain counts.
+ */
+const REMOVED_DECIDING_RE = /\b(?:if|else|throw|return|while|for|do|switch|case|default|break|continue|try|catch|finally|yield|await)\b|&&|\|\||\?|[!=]=|[<>]|[{}]/;
+const removedDecides = (text: string): boolean => {
+  const lexed = lexCode(text);
+  return lexed === null || REMOVED_DECIDING_RE.test(lexed.code) || COMPUTED_CALL_RE.test(lexed.code) || callsIn(lexed.code).length > 0;
+};
+
+/**
+ * `added` is `removed` with only guards added: `?.`, `?? null` / `?? undefined` and `await`, never one taken away, the
+ * literals byte for byte. The one way a deciding line may be removed: rewritten as itself, guarded.
+ */
+function onlyAddsGuards(removed: string, added: string): boolean {
+  const r = lexCode(removed);
+  const a = lexCode(added);
+  if (r === null || a === null) return false;
+  if (r.literals.length !== a.literals.length || r.literals.some((l, k) => l !== a.literals[k])) return false;
+  const strip = (s: string) => norm(stripOptional(s).replace(/\bawait\s+/g, ""));
+  const atLeast = (re: RegExp) => count(a.code, re) >= count(r.code, re);
+  return strip(a.code) === strip(r.code) && atLeast(/\?\./g) && atLeast(/\?\?/g) && atLeast(/\bawait\b/g);
+}
+
+/**
+ * Control flow in an added line: what can skip, repeat or end the code after it. Allowed only as an explicit null guard
+ * (`FLOOR_GUARD_RE`), or as the very line a removed one came back as, guarded. Matched on the code, literals blanked; a
+ * property of that name (`x.default`) is not one.
+ */
+const ADDED_CONTROL_RE = /(?<![.\w$])(?:if|else|return|throw|switch|case|default|while|for|do|break|continue|yield|with)\b/;
+/** A caught exception is a check that threw and was ignored: `try`, `catch`, `finally`, and a promise's `.catch(`/`.finally(`. */
+const ADDED_TRY_RE = /\b(?:try|catch|finally)\b/;
+
+/** One argument of a guard's error: a string, a reference, a number. Never a call or an expression. */
+const GUARD_ARG = String.raw`(?:"[^"\\\n]*"|'[^'\\\n]*'|${REF}|\d+)`;
+/**
+ * What a floor guard does: leave with nothing (`return;`, `return null`, `return undefined`) or throw a new error whose
+ * class may be a member (`functions.https.HttpsError`) and whose arguments are strings, references or numbers. Wider
+ * than gate 1's `ACTION` only in the error's arguments.
+ */
+const FLOOR_ACTION = String.raw`(?:return(?:\s+(?:null|undefined))?|throw\s+new\s+(?:[A-Za-z_$][\w$]*\s*\.\s*)*[A-Z][\w$]*\(\s*(?:${GUARD_ARG}(?:\s*,\s*${GUARD_ARG})*)?\s*\))`;
+/** Gate 1's explicit null guard (`MISSING_ATOM`: `== null`, `=== undefined`, `typeof x === "undefined"`; never `!x`). */
+const FLOOR_GUARD_RE = new RegExp(String.raw`^if\s*\(\s*${MISSING_ATOM}(?:\s*\|\|\s*${MISSING_ATOM})*\s*\)\s*(?:\{\s*${FLOOR_ACTION}\s*;?\s*\}|${FLOOR_ACTION}\s*;)$`);
+
+/** Whether a piece of lexed code closes every `(`, `[` and `{` it opens, in order, and opens every one it closes. */
+function bracketsBalance(code: string): boolean {
+  const stack: string[] = [];
+  const pairs: Record<string, string> = { ")": "(", "]": "[", "}": "{" };
+  for (const ch of code) {
+    if (ch === "(" || ch === "[" || ch === "{") stack.push(ch);
+    else if (ch in pairs && stack.pop() !== pairs[ch]) return false;
+  }
+  return stack.length === 0;
+}
+
+/** Names a binding in added code could give a new meaning: `const load = fetch`, `(load) => load(url)`, `load = …`. */
+function rebinds(code: string, name: string): boolean {
+  const n = name.replace(/\$/g, "\\$");
+  return [
+    new RegExp(String.raw`\b(?:const|let|var|function|class)\b[^=;]*(?<![\w$])${n}(?![\w$])`),
+    new RegExp(String.raw`(?<![\w$.])${n}\s*=(?![=>])`),
+    new RegExp(String.raw`\([^()]*(?<![\w$.])${n}(?![\w$])[^()]*\)\s*(?::[^=]*)?=>`),
+    new RegExp(String.raw`(?<![\w$.])${n}\s*=>`),
+    new RegExp(String.raw`\bcatch\s*\(\s*${n}(?![\w$])`),
+  ].some((re) => re.test(code));
+}
+
+/**
+ * The production file's changed code against what it does (#295): no deciding line removed (unless rewritten as itself
+ * with only guards added, in the same run of changed lines), no call removed from the file; and the added code holding no
+ * control flow but an explicit null guard, no `try`/`catch`, each run's brackets closed within it (nothing existing
+ * wrapped in a new block or function), reaching no sink, no address, no call the base file does not already make (but
+ * `PURE_CALLS`), no call of something that is not a name, and no new binding for a name the base file calls.
+ */
+function floorCodeProblems(src: FileDiff, baseFiles: ReadonlyMap<string, string> | undefined): string[] {
+  const out = new Set<string>();
+  const removedCalls = new Map<string, number>();
+  const addedCalls = new Map<string, number>();
+  const tally = (into: Map<string, number>, names: readonly string[]) => {
+    for (const name of names) into.set(name, (into.get(name) ?? 0) + 1);
+  };
+  const addedCode: string[] = [];
+
+  for (const hunk of src.hunks) {
+    const lines = hunk.lines;
+    /** Added lines (by index in the hunk) that are a removed deciding line put back, guarded. */
+    const putBack = new Set<number>();
+    // Runs of consecutive changed lines: a deciding line removed must come back, guarded, in its own run.
+    for (let i = 0; i < lines.length; ) {
+      if (lines[i]!.kind === " ") {
+        i++;
+        continue;
+      }
+      const removedAt: number[] = [];
+      const addedAt: number[] = [];
+      for (; i < lines.length && lines[i]!.kind !== " "; i++) (lines[i]!.kind === "-" ? removedAt : addedAt).push(i);
+      const free = [...addedAt];
+      for (const at of removedAt) {
+        const removed = lines[at]!.text;
+        const lexed = lexCode(removed);
+        tally(removedCalls, lexed === null ? [] : callsIn(lexed.code));
+        if (!removedDecides(removed)) continue;
+        const k = free.findIndex((a) => onlyAddsGuards(removed, lines[a]!.text));
+        if (k < 0) out.add("removes-a-decision");
+        else putBack.add(free.splice(k, 1)[0]!);
+      }
+      const runCode: string[] = [];
+      for (const at of addedAt) {
+        const added = lines[at]!.text;
+        for (const p of addedLineHazards(added)) out.add(p);
+        const lexed = lexCode(added);
+        if (lexed === null) {
+          out.add("added-line-not-understood");
+          continue;
+        }
+        if (COMPUTED_CALL_RE.test(lexed.code)) out.add("adds-a-computed-call");
+        tally(addedCalls, callsIn(lexed.code));
+        addedCode.push(lexed.code);
+        runCode.push(lexed.code);
+      }
+      // An opening in one run and its closing in another wraps the context between them: `+ if (o === null) {`, the
+      // check, `+ }`; or `+ const skip = () => {`, the check, `+ };`, a function never called.
+      if (!bracketsBalance(runCode.join("\n"))) out.add("adds-unbalanced-brackets");
+    }
+    for (const p of addedControlProblems(hunk, putBack)) out.add(p);
+  }
+  // A call the patch takes out of the file is a step the code no longer takes: a check written as a call
+  // (`await assertCanRead(…)`) among them. Moved or kept with a guard added, its count is unchanged.
+  for (const [name, n] of removedCalls) if ((addedCalls.get(name) ?? 0) < n) out.add("removes-a-call");
+
+  // A fix reuses what the code already does. The base file's calls, read the same way (its literals and comments
+  // blanked, so a `fetch(` in a string or a comment does not count).
+  // Unreadable base: nothing added is judged against it, so nothing added passes.
+  if (addedCode.length > 0) {
+    const newNames = [...addedCalls.keys()].filter((name) => !PURE_CALLS.has(name));
+    const raw = src.oldPath === null ? undefined : baseFiles?.get(src.oldPath);
+    const baseLexed = raw === undefined ? null : lexCode(raw.replace(/\r\n/g, "\n"));
+    if (baseLexed === null) {
+      if (raw !== undefined) out.add("base-not-understood");
+    } else {
+      const baseCalls = new Set(callsIn(baseLexed.code));
+      if (newNames.some((name) => !baseCalls.has(name))) out.add("adds-a-new-call");
+      const code = addedCode.join("\n");
+      for (const name of new Set([...baseCalls, ...PURE_CALLS])) if (!name.startsWith(".") && rebinds(code, name)) out.add("rebinds-a-called-name");
+    }
+  }
+  return [...out];
+}
+
+/**
+ * Control flow in a hunk's added lines (#295): an added `try`/`catch`/`finally` is refused (a check that throws is then
+ * ignored), and an added `if`, `return`, `throw`, loop or branch is allowed only as an explicit null guard (one line, or
+ * `if (…) {` / the action / `}`), placed as gate 1 places one: after a line that ends a statement, and before none that
+ * would join it or take its `if`. `if (order) return order;` above a check skips it; this refuses it. The lines a removed
+ * one came back as (`putBack`) are that line, already judged.
+ */
+function addedControlProblems(hunk: Hunk, putBack: ReadonlySet<number>): string[] {
+  const out = new Set<string>();
+  const seq = hunk.lines.flatMap((l, at) => (l.kind === "-" ? [] : [{ ...l, at }]));
+  const isNew = (k: number) => seq[k]?.kind === "+" && !putBack.has(seq[k].at);
+  const guardAt = (j: number): number => {
+    for (const len of [1, 3]) {
+      if (!Array.from({ length: len }, (_, d) => isNew(j + d)).every(Boolean)) continue;
+      if (!FLOOR_GUARD_RE.test(norm(seq.slice(j, j + len).map((l) => l.text).join(" ")))) continue;
+      let prev: string | null | undefined = hunk.oldStart <= 1 && hunk.newStart <= 1 ? null : undefined;
+      for (let k = j - 1; k >= 0; k--) {
+        if (!isBlankOrComment(seq[k]!.text)) {
+          prev = seq[k]!.text;
+          break;
+        }
+      }
+      const next = seq[j + len]?.text;
+      if (prev === undefined || (prev !== null && !ENDS_STATEMENT_RE.test(prev.trim()))) continue;
+      if (next !== undefined && CONTINUES_RE.test(next)) continue;
+      return len;
+    }
+    return 0;
+  };
+  for (let j = 0; j < seq.length; j++) {
+    if (!isNew(j)) continue;
+    const lexed = lexCode(seq[j]!.text);
+    if (lexed === null) continue; // refused already: added-line-not-understood
+    if (ADDED_TRY_RE.test(lexed.code)) {
+      out.add("adds-try-catch");
+      continue;
+    }
+    if (!ADDED_CONTROL_RE.test(lexed.code)) continue;
+    const len = guardAt(j);
+    if (len === 0) out.add("adds-control-flow");
+    else j += len - 1;
+  }
+  return [...out];
 }
 
 /**

@@ -40,10 +40,40 @@ lower**, all checked again right before the merge:
   its merges);
 - the **safety floor** on the verified patch (`assessMergeFloor`): the diff read exactly as git
   applies it, no control characters, one production file, tests only as **new** files (an existing
-  test is never changed, so a fix cannot turn CI green by weakening the test that judges it), and
+  test is never changed, so a fix cannot turn CI green by weakening the test that judges it),
   nothing on the hard-exclude list (auth and access control, security rules, money, secrets and
   crypto, schema, dependencies and imports, CI and deploy config, shared packages, the deployment's
-  exclusions), judged on the whole function around each change as the base revision has it;
+  exclusions), judged on the whole function around each change as the base revision has it. That
+  list matches **words**, so a check that names none of them (`order.createdBy !== req.user.id`) and
+  a request that names no secret were invisible to it (#295). The floor therefore also reads the
+  changed code itself, and refuses:
+  - more than 40 lines added and removed in the production file;
+  - a JSX file (`.jsx`, `.tsx`): the scanner cannot read JSX text, so these never pass;
+  - a **removed** line that decides, steers or calls anything (a condition, a comparison, `&&`/`||`,
+    `return`, `throw`, a branch, a loop, an `await`, a block's brace, any call), unless the same run
+    of changed lines puts it back as itself with only `?.`, `?? null` or `await` added; and any call
+    taken out of the file. Removing a check, or changing what it is called with, is never a merge;
+  - **added** control flow: any `try`/`catch`/`finally` (a promise's `.catch` too), and any `if`,
+    `return`, `throw`, loop or branch that is not an explicit null guard (`if (x == null) return
+    null;`, `=== undefined`, `typeof x === "undefined"`; never `!x`; leaving with nothing or
+    throwing a new error) placed after a line that ends a statement; and a run of added lines that
+    leaves a bracket open for a later run to close, which would wrap existing code (a check) in a new
+    block or a function never called. An added `?:`, `&&` or `||` in an expression is not judged;
+  - an **added** line, in the production file or a new test, that names a network, process,
+    dynamic-code, destructive or file-system sink (`fetch`, `http(s).get`/`request`, axios,
+    `XMLHttpRequest`, `WebSocket`, `net`/`tls`/`dgram`, `child_process`/`exec`/`spawn`, `eval`,
+    `Function`, `globalThis`, `.delete`/`recursiveDelete`/`deleteDoc`, `fs` writes and removals, and
+    a few more), even where the base file already does, or that holds `://`. Matched on the whole
+    line, strings and comments included, so a word in a comment refuses too;
+  - added code that calls anything the base file does not already call (by name: `foo(`, `.bar(`,
+    `new X`, a tagged template), except a short list of pure calls (`String`, `Number`, `Boolean`,
+    `Error`, `TypeError`, `RangeError`, `Array.isArray`, `Number.isFinite`/`isInteger`/`isNaN`;
+    not `console`), anything called that is not a name (`fns[k](…)`, `f()(…)`), and a new binding
+    for a name the base file calls (`const load = …`). A fix reuses what the code already does.
+
+  These rules read text with a scanner, not a parser, and match calls by name, not by receiver (a
+  method the base calls on one object may be added on another); what they cannot read for certain
+  they refuse. They raise the floor; they do not prove a patch harmless;
 - **every run of every required check green** on the exact head Starfish built, the base branch
   not having changed the fixed file since it was verified;
 - at most `STARFISH_MAX_MERGES_PER_DAY` (3) merges a day, an evidence comment posted first, one
@@ -55,14 +85,17 @@ lower**, all checked again right before the merge:
 The old gate 2 is still computed and **reported** in the evidence comment ("would have passed" or
 which check failed), so a reader sees how certain the change was; it no longer blocks. The sections
 below on gate 1 and gate 2 describe the original #9 rules, kept for their reasoning: gate 1's
-parsing, hard-exclude list and whole-function check are exactly what the floor still runs.
+parsing, hard-exclude list and whole-function check are what the floor still runs, with the code
+rules above (#295) added on top.
 
 **What a decision by the model costs.** Production logs are attacker-influenceable, and the incident
 text reaches triage (redacted, bounded, marked as untrusted data, `vertex.ts`). A crafted error
 message could argue the model into naming a merge case, and the fixer drafts its patch from the same
 text. Before this decision, gate 1's three literal classes bounded what such a patch could be; now
-the bound is the floor (one file, tests only added, nothing near auth, rules, money, secrets, schema,
-dependencies or CI) and the target's own required checks, with the daily cap and fast-revert behind
+the bound is the floor (one file, tests only added, no path, changed line or surrounding function
+that names auth, rules, money, secrets, schema, dependencies or CI by the hard-exclude list's words,
+no deciding or calling line removed or altered, no control flow added but an explicit null guard, no
+try/catch, no sink, address or call the file did not already make added, at most 40 changed lines) and the target's own required checks, with the daily cap and fast-revert behind
 them. That is why the floor is not a setting and no merge case can lower it, and why the cases stay
 empty by default and the target allowlist stays environment-only.
 

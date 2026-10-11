@@ -29,6 +29,8 @@ import {
 const BADGE: Record<EngineState, { tone: BadgeTone; label: string }> = {
   ok: { tone: "success", label: "Agent running" },
   capped: { tone: "warning", label: "Agent running, scan capped" },
+  // Never judged for the agent: its record carries no checkpoint lag (#297), only the ingest's does.
+  behind: { tone: "warning", label: "Agent running, behind" },
   stale: { tone: "warning", label: "Agent not running" },
   failed: { tone: "error", label: "Last agent pass failed" },
   never: { tone: "neutral", label: "No agent pass recorded yet" },

@@ -116,6 +116,35 @@ describe("loadConfig: ingest windows", () => {
     expect(() => loadConfig()).toThrow("STARFISH_INGEST_RUN_BUDGET_SECONDS");
   });
 
+  it("reads the cap on new incidents per function and window, 25 by default (#303)", () => {
+    vi.stubEnv("STARFISH_MAX_NEW_INCIDENTS_PER_FUNCTION", "");
+    expect(loadConfig().maxNewIncidentsPerFunctionPerWindow).toBe(25);
+    vi.stubEnv("STARFISH_MAX_NEW_INCIDENTS_PER_FUNCTION", "100");
+    expect(loadConfig().maxNewIncidentsPerFunctionPerWindow).toBe(100);
+    for (const bad of ["0", "2.5", "lots"]) {
+      vi.stubEnv("STARFISH_MAX_NEW_INCIDENTS_PER_FUNCTION", bad);
+      expect(() => loadConfig()).toThrow("STARFISH_MAX_NEW_INCIDENTS_PER_FUNCTION");
+    }
+  });
+
+  it("reads the read's byte budget, 64 MB by default (#296)", () => {
+    vi.stubEnv("STARFISH_INGEST_READ_BUDGET_MB", "");
+    expect(loadConfig().ingestReadBudgetMb).toBe(64);
+    vi.stubEnv("STARFISH_INGEST_READ_BUDGET_MB", "32");
+    expect(loadConfig().ingestReadBudgetMb).toBe(32);
+    vi.stubEnv("STARFISH_INGEST_READ_BUDGET_MB", "0");
+    expect(() => loadConfig()).toThrow("STARFISH_INGEST_READ_BUDGET_MB");
+  });
+
+  it("reads the behind threshold, unset by default so it follows the schedule (#297)", () => {
+    vi.stubEnv("STARFISH_INGEST_BEHIND_MINUTES", "");
+    expect(loadConfig().ingestBehindMinutes).toBeUndefined();
+    vi.stubEnv("STARFISH_INGEST_BEHIND_MINUTES", "45");
+    expect(loadConfig().ingestBehindMinutes).toBe(45);
+    vi.stubEnv("STARFISH_INGEST_BEHIND_MINUTES", "-1");
+    expect(() => loadConfig()).toThrow("STARFISH_INGEST_BEHIND_MINUTES");
+  });
+
   it("reads the lookback, 24 hours by default", () => {
     vi.stubEnv("STARFISH_LOOKBACK_HOURS", "");
     expect(loadConfig().defaultLookbackHours).toBe(24);
@@ -779,6 +808,17 @@ describe("phone escalation settings (#37)", () => {
     expect(c.twilioWebhookUrl).toBe("");
     expect(c.twilioApiUrl).toBe("https://api.twilio.com");
     expect(c.onCallPeopleCollection).toBe("starfish_oncall_people");
+    expect(c.onCallCodeCollection).toBe("starfish_oncall_codes");
+    expect(c.onCallMaxTextsPerDay).toBe(20);
+  });
+
+  it("takes a daily cap on opt-in texts, and refuses one that is not a positive integer (#306)", () => {
+    vi.stubEnv("STARFISH_ONCALL_MAX_TEXTS_PER_DAY", "5");
+    expect(loadConfig().onCallMaxTextsPerDay).toBe(5);
+    for (const bad of ["0", "-1", "2.5", "lots"]) {
+      vi.stubEnv("STARFISH_ONCALL_MAX_TEXTS_PER_DAY", bad);
+      expect(() => loadConfig(), bad).toThrow(/STARFISH_ONCALL_MAX_TEXTS_PER_DAY/);
+    }
   });
 
   it("takes an https audio file and an exact https origin for the webhooks, and refuses anything else", () => {
