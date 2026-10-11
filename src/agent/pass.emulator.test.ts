@@ -81,6 +81,29 @@ describe("selectCandidates", () => {
     expect(await selectCandidates(db, cfg, 10)).toEqual([]);
   });
 
+  it("puts a recurred incident first, then untriaged ones, ahead of newer ones already past triage (#303)", async () => {
+    await incident("past-triage", { lastOccurredAt: ts(1) });
+    await db.collection(cfg.cycleCollection).doc("past-triage_r0").set({
+      incidentId: "past-triage",
+      environment: "demo",
+      state: "running",
+      summary: { triage: { decision: "act" } },
+    });
+    await incident("untriaged-running", { lastOccurredAt: ts(2) });
+    await cycle("untriaged-running_r0", "running");
+    await incident("untriaged", { lastOccurredAt: ts(3) });
+    await incident("regression", { lastOccurredAt: ts(90), status: "recurred", recurrenceCount: 1 });
+    expect(ids(await selectCandidates(db, cfg, 10))).toEqual(["regression:1", "untriaged-running:0", "untriaged:0", "past-triage:0"]);
+    expect(ids(await selectCandidates(db, cfg, 2))).toEqual(["regression:1", "untriaged-running:0"]);
+  });
+
+  it("finds a recurred incident behind a flood of newer ones, within the read budget (#303)", async () => {
+    // A flood of 30 newer, distinct, untriaged incidents fills more than a page of a limit of 2 (2 x 5).
+    for (let i = 0; i < 30; i++) await incident(`flood${i}`, { lastOccurredAt: ts(i) });
+    await incident("regression", { lastOccurredAt: ts(120), status: "recurred", recurrenceCount: 2 });
+    expect(ids(await selectCandidates(db, cfg, 2))).toEqual(["regression:2", "flood0:0"]);
+  });
+
   it("stops at the limit, and looks past closed incidents to find enough open ones", async () => {
     for (let i = 0; i < 6; i++) await incident(`closed${i}`, { status: "resolved", lastOccurredAt: ts(i) });
     for (let i = 0; i < 4; i++) await incident(`open${i}`, { lastOccurredAt: ts(10 + i) });

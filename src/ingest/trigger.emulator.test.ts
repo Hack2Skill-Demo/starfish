@@ -23,7 +23,7 @@ const db: Firestore = getFirestore(app, "trigger-tests");
 afterAll(() => deleteApp(app));
 
 const now = new Date("2026-10-04T12:00:00.000Z");
-const empty = { entriesProcessed: 0, incidentsCreated: 0, incidentsUpdated: 0, incidentsRecurred: 0, incidentsReplayed: 0, capped: false };
+const empty = { entriesProcessed: 0, incidentsCreated: 0, incidentsUpdated: 0, incidentsRecurred: 0, incidentsReplayed: 0, errorsFoldedIntoOverflow: 0, capped: false };
 
 let config: StarfishConfig;
 beforeEach(async () => {

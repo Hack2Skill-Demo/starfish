@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { canonicalFunctionName, computeErrorFingerprint, normalizeErrorMessage } from "./fingerprint.js";
+import { canonicalFunctionName, computeErrorFingerprint, fingerprintOf, normalizeErrorMessage } from "./fingerprint.js";
 import { detectErrorType, detectService, extractErrorCode } from "./classify.js";
 import { buildLogFilter, isExcludedService, parseLogEntry, type RawLogEntry } from "./parseLogEntry.js";
 import { DEFAULT_IGNORED_MESSAGES, DEFAULT_LOG_RESOURCE_TYPES } from "../config.js";
@@ -55,6 +55,22 @@ describe("fingerprint", () => {
   it("normalization is idempotent", () => {
     const once = normalizeErrorMessage("fail 42 at https://x.example/a?b=1 for a@b.co uuid 123e4567-e89b-12d3-a456-426614174000");
     expect(normalizeErrorMessage(once)).toBe(once);
+  });
+
+  it("keeps a log fingerprint as it was: 16 hex characters of the normalized message", () => {
+    // Pinned value: the overflow namespace (#303) must not move a single log incident's fingerprint.
+    expect(fingerprintOf("api", "boom")).toBe(computeErrorFingerprint("api", "boom"));
+    expect(fingerprintOf("api", "boom")).toMatch(/^[0-9a-f]{16}$/);
+  });
+
+  it("hashes an overflow incident in its own namespace, one per function and day (#303)", () => {
+    const day1 = fingerprintOf("api", "High-cardinality overflow on 2026-10-10 (UTC)", "overflow");
+    const day2 = fingerprintOf("api", "High-cardinality overflow on 2026-10-11 (UTC)", "overflow");
+    expect(day1).toMatch(/^ovf-[0-9a-f]{16}$/);
+    // Not normalized: the date would collapse to <ts> and merge every day into one incident.
+    expect(day1).not.toBe(day2);
+    expect(fingerprintOf("Api", "High-cardinality overflow on 2026-10-10 (UTC)", "overflow")).toBe(day1);
+    expect(fingerprintOf("worker", "High-cardinality overflow on 2026-10-10 (UTC)", "overflow")).not.toBe(day1);
   });
 });
 

@@ -79,6 +79,7 @@ Where it currently holds, and where it doesn't:
 | Agent cycle collection, lease length, cycle deadline, attempts | ⚠️ environment only (`STARFISH_CYCLE_COLLECTION`, `STARFISH_LEASE_SECONDS`, `STARFISH_CYCLE_DEADLINE_MINUTES`, `STARFISH_MAX_CYCLE_ATTEMPTS`); the rules name `starfish_cycles` too |
 | What guests may see, and where its trimmed copies live (#18) | ⚠️ environment only (`STARFISH_PUBLIC_ENVIRONMENTS`, default `demo`, empty turns the copies off; `STARFISH_PUBLIC_INCIDENT_COLLECTION`, `_CYCLE_COLLECTION`, `_EVENT_COLLECTION`, and the UI's `VITE_STARFISH_PUBLIC_*`). The rules name the `starfish_public_*` collections and serve guests the `demo` label only, so another label needs a rules edit too. What a copy holds is an allowlist in code (`src/publicView.ts`), not a setting |
 | Ingest lag, longest window, run-record collection | ⚠️ environment only (`STARFISH_INGEST_LAG_MINUTES`, `STARFISH_INGEST_MAX_WINDOW_HOURS`, `STARFISH_RUN_COLLECTION`); the rules name `starfish_runs` too |
+| New incidents one function may open per ingest window (#303) | ⚠️ environment only (`STARFISH_MAX_NEW_INCIDENTS_PER_FUNCTION`, default 25). Past it, a function's errors that match no stored incident are folded into one high-cardinality overflow incident per function and UTC day, counted in the run record; unit- and emulator-tested, not yet run on a real flood |
 | Services Starfish never ingests (its own) | ✅ config (`STARFISH_EXCLUDED_SERVICES`, default `starfish`), applied at query time and at parse time; environment-only on purpose, because it guards against a feedback loop and is not an operational preference. `scripts/deploy-gcp.sh` sets it on every job it deploys, unless `EXTRA_ENV_VARS` gives its own: `starfish`, the ingest job's name and the admin API's service name, whether or not that run deploys the admin API, and on the agent job also its own name and, with `cloud-run-job`, the verify job's (#32, #177) |
 | Log source resource types | ⚠️ config, but attribution reads only `function_name` / `service_name`, so only Cloud Functions and Cloud Run work |
 | Framework-noise suppression list | ✅ config, callable GET-probe noise by default |
@@ -365,8 +366,9 @@ get through, and free-form PII (names, addresses, record ids) is not detectable 
 `truncate` bounds how much raw text leaves, it does not clean it. The store redacts new
 writes; incidents stored **before** the policy are scrubbed in place by `pnpm scrub` (a dry
 run that counts what it would change; `pnpm scrub -- --apply --project=<id>` rewrites, and
-refuses unless the project matches `GOOGLE_CLOUD_PROJECT`). It redacts the same four fields the
-store does, recomputes each changed record's fingerprint (the store fingerprints the redacted
+refuses unless the project matches `GOOGLE_CLOUD_PROJECT`). It redacts the same eight fields the
+store does (message, cause, stack trace, error name, service, error code, tenant id, request id; the last five bounded
+as the store bounds them), recomputes each changed record's fingerprint (the store fingerprints the redacted
 text, so otherwise the next occurrence would fork a duplicate), removes the stale incident
 key, and is safe to re-run (`scrub.test.ts`, `scrub.emulator.test.ts`). Run it before real
 data is exposed to anyone. It does not touch Firestore exports or backups, logs, or anything

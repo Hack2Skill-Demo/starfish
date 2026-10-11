@@ -19,7 +19,9 @@ vi.mock("@google-cloud/logging", () => ({
 }));
 
 const { SEEDED_SECRETS } = await import("./testSecrets.js");
-const { aggregateErrors, correlateMonitoring, MAX_ENTRIES_PER_RUN } = await import("./aggregate.js");
+const { aggregateErrors, correlateMonitoring, inputsPastNewIncidentCap, MAX_ENTRIES_PER_RUN, OVERFLOW_ERROR_TYPE, overflowMessage } =
+  await import("./aggregate.js");
+const { computeErrorFingerprint } = await import("./fingerprint.js");
 const { windowOf } = await import("./window.js");
 const { testConfig } = await import("../testConfig.js");
 
@@ -209,6 +211,125 @@ describe("aggregateErrors", () => {
       await aggregateErrors(fakeDb().db, config, window, { writes: { mayNarrow: true, beginWrites: async () => (began = true) } });
       expect(began).toBe(false);
     });
+  });
+});
+
+describe("aggregateErrors: the cap on new incidents per function and window (#303)", () => {
+  /**
+   * A fake store in which the incidents for `existing` (messages of the function "lookup") are open, found by the
+   * fingerprint lookup; it records the incidents created and the ones accrued onto.
+   */
+  function storeWith(existing: string[]) {
+    const open = new Map(existing.map((m) => [computeErrorFingerprint("lookup", m), m]));
+    const created: Record<string, unknown>[] = [];
+    const updated: string[] = [];
+    const queryFor = (fingerprint?: string) => {
+      const q = {
+        fingerprint,
+        where: (field: string, _op: string, value: unknown) => (field === "fingerprint" ? queryFor(String(value)) : q),
+        limit: () => q,
+      };
+      return q;
+    };
+    const tx = {
+      get: async (target: { fingerprint?: string; id?: string }) => {
+        const message = target.fingerprint !== undefined ? open.get(target.fingerprint) : undefined;
+        const docs = message === undefined ? [] : [{ id: message, ref: { id: message }, data: () => ({ functionName: "lookup", errorMessage: message, status: "new" }) }];
+        return { docs, exists: false, data: () => undefined, get: () => undefined };
+      },
+      set: (ref: { collection: string }, data: Record<string, unknown>) => {
+        if (ref.collection === "incidents") created.push(data);
+      },
+      update: (ref: { id: string }) => void updated.push(ref.id),
+    };
+    const db = {
+      collection: (collection: string) => ({ ...queryFor(), doc: () => ({ collection, id: `doc${created.length}` }) }),
+      runTransaction: async (fn: (t: typeof tx) => Promise<unknown>) => fn(tx),
+    } as unknown as Firestore;
+    return { db, created, updated };
+  }
+
+  // Distinct plain words survive normalization: each one is its own fingerprint, as an echoed user input is.
+  const words = (n: number) => Array.from({ length: n }, (_, i) => `No such user: ${String.fromCharCode(97 + (i % 26))}${"z".repeat(Math.floor(i / 26))}`);
+  const capped = { ...config, maxNewIncidentsPerFunctionPerWindow: 3 };
+
+  it("opens at most the cap's incidents for one function and folds the rest into one overflow incident", async () => {
+    const messages = words(10);
+    // The first message fires three times, so it is certain to be among the cap's places.
+    entries.splice(0, entries.length, ...messages.map(entry), entry(messages[0]!), entry(messages[0]!));
+    const { db, created } = storeWith([]);
+
+    const result = await aggregateErrors(db, capped, window);
+
+    expect(created).toHaveLength(4);
+    const overflow = created.filter((c) => c.signalSource === "overflow");
+    expect(overflow).toHaveLength(1);
+    expect(overflow[0]).toMatchObject({
+      functionName: "lookup",
+      errorType: OVERFLOW_ERROR_TYPE,
+      errorMessage: overflowMessage("2026-09-21"),
+      occurrenceCount: 7,
+    });
+    expect(String(overflow[0]?.fingerprint)).toMatch(/^ovf-[0-9a-f]{16}$/);
+    expect(String(overflow[0]?.errorDetail)).toContain("7 distinct errors folded");
+    expect(created.map((c) => c.errorMessage)).toContain(messages[0]);
+    expect(result).toMatchObject({ incidentsCreated: 4, errorsFoldedIntoOverflow: 7 });
+  });
+
+  it("still accrues an error past the cap onto the incident it already has", async () => {
+    const messages = words(10);
+    entries.splice(0, entries.length, ...messages.map(entry));
+    // Every one already has an incident: the seven past the cap accrue onto theirs like the three within it.
+    const { db, created, updated } = storeWith(messages);
+
+    const result = await aggregateErrors(db, capped, window);
+
+    expect(created).toEqual([]);
+    expect(updated).toHaveLength(10);
+    expect(result).toMatchObject({ incidentsCreated: 0, incidentsUpdated: 10, errorsFoldedIntoOverflow: 0 });
+  });
+
+  it("caps each function on its own, and leaves a function under the cap alone", async () => {
+    const other = (m: string) => ({ ...entry(m), metadata: { ...entry(m).metadata, resource: { labels: { function_name: "billing" } } } });
+    entries.splice(0, entries.length, ...words(3).map(entry), ...words(5).map(other));
+    const { db, created } = storeWith([]);
+
+    const result = await aggregateErrors(db, capped, window);
+
+    expect(created.filter((c) => c.functionName === "lookup" && c.signalSource === undefined)).toHaveLength(3);
+    expect(created.filter((c) => c.functionName === "billing" && c.signalSource === undefined)).toHaveLength(3);
+    expect(created.filter((c) => c.signalSource === "overflow").map((c) => [c.functionName, c.occurrenceCount])).toEqual([["billing", 2]]);
+    expect(result.errorsFoldedIntoOverflow).toBe(2);
+  });
+
+  it("chooses the cap's places from the window alone: most occurrences first, then by fingerprint", () => {
+    const input = (message: string, occurrenceCount: number) =>
+      [computeErrorFingerprint("lookup", message), { input: { functionName: "lookup", errorMessage: message, occurrenceCount } as IncidentInput }] as const;
+    const grouped = new Map([input("a", 1), input("b", 9), input("c", 1), input("d", 5)]);
+    const past = inputsPastNewIncidentCap(grouped, 2);
+    expect([...past].map((i) => i.errorMessage).sort()).toEqual(["a", "c"]);
+    // The same entries in another order choose the same places.
+    const again = inputsPastNewIncidentCap(new Map([...grouped].reverse()), 2);
+    expect([...again].map((i) => i.errorMessage).sort()).toEqual(["a", "c"]);
+    expect(inputsPastNewIncidentCap(grouped, 4).size).toBe(0);
+  });
+
+  it("folds nothing when an upsert failed, so the replay of the window folds them all", async () => {
+    const messages = words(6);
+    entries.splice(0, entries.length, ...messages.map(entry));
+    const { db, created } = storeWith([]);
+    let calls = 0;
+    const flaky = {
+      ...db,
+      collection: db.collection.bind(db),
+      runTransaction: async (fn: (t: unknown) => Promise<unknown>) => {
+        if (++calls === 1) throw new Error("contention");
+        return db.runTransaction(fn as never);
+      },
+    } as unknown as Firestore;
+
+    await expect(aggregateErrors(flaky, capped, window)).rejects.toThrow("1 of 6 incident upserts failed");
+    expect(created.filter((c) => c.signalSource === "overflow")).toEqual([]);
   });
 });
 

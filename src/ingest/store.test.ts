@@ -723,5 +723,31 @@ describe("upsertIncident redaction", () => {
     await upsertIncident(db, STORE, { ...input, tenantId: "t-42", errorCode: "E_TIMEOUT", service: "billing", requestId: "abc123" }, Timestamp.now());
     expect(writes[0]?.data).toMatchObject({ tenantId: "t-42", errorCode: "E_TIMEOUT", service: "billing", requestId: "abc123" });
   });
+
+  it("bounds errorName like the other short fields (#309), on a new incident and on accrual", async () => {
+    const long = `TypeError${"x".repeat(5000)}`;
+    const fresh = fakeDb([]);
+    await upsertIncident(fresh.db, STORE, { ...input, errorName: long }, Timestamp.now());
+    expect(fresh.writes[0]?.data.errorName).toHaveLength(MAX_SHORT_FIELD_LEN);
+
+    const open = fakeDb([{ id: "open", data: stored("2026-09-20T00:00:00.000Z", { triageState: "pending" }) }]);
+    await upsertIncident(open.db, STORE, { ...input, errorName: long }, Timestamp.now());
+    expect(open.writes[0]?.data.errorName).toHaveLength(MAX_SHORT_FIELD_LEN);
+  });
+});
+
+describe("upsertIncident with createIfAbsent: false (#303)", () => {
+  it("writes nothing and reports absent where it would have opened an incident", async () => {
+    const { db, writes, keyWrites } = fakeDb([]);
+    expect(await upsertIncident(db, STORE, { ...input, windowId: "w1" }, Timestamp.now(), { createIfAbsent: false })).toBe("absent");
+    expect(writes).toEqual([]);
+    expect(keyWrites).toEqual([]);
+  });
+
+  it("accrues onto an open incident as usual", async () => {
+    const { db, writes } = fakeDb([{ id: "open", data: stored("2026-09-20T00:00:00.000Z") }]);
+    expect(await upsertIncident(db, STORE, input, Timestamp.now(), { createIfAbsent: false })).toBe("updated");
+    expect(writes).toMatchObject([{ op: "update", id: "open" }]);
+  });
 });
 

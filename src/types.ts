@@ -36,9 +36,10 @@ export interface Incident {
   stackTrace?: string;
   /**
    * `monitoring`: a Monitoring-only incident (#19), opened because Cloud Monitoring counted failed
-   * invocations of a function that wrote no ERROR log in that window. Absent means Cloud Logging.
+   * invocations of a function that wrote no ERROR log in that window. `overflow`: a function's log errors past the
+   * per-window cap on new incidents, folded into one record (#303). Absent means Cloud Logging.
    */
-  signalSource?: "log" | "monitoring";
+  signalSource?: "log" | "monitoring" | "overflow";
   /** Failed invocations Cloud Monitoring counted for this incident's function, summed over the windows read (#19). */
   monitoringCount?: number;
 }
@@ -144,8 +145,10 @@ export interface StoredIncident {
   /**
    * `monitoring` for a Monitoring-only incident (#19): its fingerprint lives in a namespace of its own
    * (`fingerprintOf`), so it never merges with a log-derived incident. Absent means Cloud Logging.
+   * `overflow` (#303): a high-cardinality overflow incident, the log errors of one function and UTC day past the
+   * per-window cap on new incidents; its own namespace too (`ovf-`).
    */
-  signalSource?: "log" | "monitoring";
+  signalSource?: "log" | "monitoring" | "overflow";
   /**
    * Failed invocations Cloud Monitoring counted for this incident's function, summed over the ingest
    * windows that folded a reading in (#19). On a log incident it is an annotation (the function's

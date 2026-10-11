@@ -14,7 +14,7 @@ import { detectErrorType, extractErrorCode, detectService } from "./classify.js"
 import { canonicalFunctionName, fingerprintOfLogEntry } from "./fingerprint.js";
 import { createRestMonitoringReader, readMonitoringFailures, type MonitoringObservation, type MonitoringReader } from "./monitoring.js";
 import { sanitize } from "./redact.js";
-import { upsertIncident, type IncidentInput } from "./store.js";
+import { upsertIncident, type IncidentInput, type UpsertOutcome } from "./store.js";
 import { narrowWindow, type IngestWindow } from "./window.js";
 
 const PAGE_SIZE = 500;
@@ -44,6 +44,11 @@ export interface AggregationResult {
   incidentsRecurred: number;
   /** Incidents whose window had already been applied, so this run changed nothing for them. */
   incidentsReplayed: number;
+  /**
+   * Distinct errors (fingerprints) folded into a high-cardinality overflow incident (#303): past the per-function cap
+   * on new incidents, matching no stored incident. Their occurrences are counted on the overflow incident.
+   */
+  errorsFoldedIntoOverflow: number;
   /**
    * True when the read stopped at MAX_ENTRIES_PER_RUN and the window could not be narrowed (more
    * entries than that in its first millisecond, or an earlier attempt already wrote under its id: see
@@ -179,6 +184,7 @@ export async function aggregateErrors(
     incidentsUpdated: 0,
     incidentsRecurred: 0,
     incidentsReplayed: 0,
+    errorsFoldedIntoOverflow: 0,
     capped: false,
   };
 
@@ -266,6 +272,8 @@ export async function aggregateErrors(
   // ERROR log is exactly what it is for. Only for a window that is going to be written (a narrowed
   // read returned above), so its readings are folded in once, under this window's id.
   const queue = [...grouped.values()].map((g) => g.input);
+  // Decided before Monitoring adds its inputs: the cap is on log errors (a Monitoring-only input is one per function).
+  const accrueOnly = inputsPastNewIncidentCap(grouped, config.maxNewIncidentsPerFunctionPerWindow);
   if (config.monitoringEnabled) {
     const reader = deps.monitoring ?? createRestMonitoringReader();
     const observations = await readMonitoringFailures(reader, config, window);
@@ -280,7 +288,16 @@ export async function aggregateErrors(
   if (queue.length === 0) return result;
   // Recorded before the first upsert, so a later attempt at this window knows it may not narrow it.
   if (deps.writes && !(await deps.writes.beginWrites())) {
-    return { entriesProcessed: 0, incidentsCreated: 0, incidentsUpdated: 0, incidentsRecurred: 0, incidentsReplayed: 0, capped: false, superseded: true };
+    return {
+      entriesProcessed: 0,
+      incidentsCreated: 0,
+      incidentsUpdated: 0,
+      incidentsRecurred: 0,
+      incidentsReplayed: 0,
+      errorsFoldedIntoOverflow: 0,
+      capped: false,
+      superseded: true,
+    };
   }
 
   const now = Timestamp.now();
@@ -290,25 +307,129 @@ export async function aggregateErrors(
   // is awaited before the run reports: a failure throws only after the rest
   // have settled, and the incidents that committed are accrued onto next run.
   const failures: unknown[] = [];
+  // Errors past the cap that matched no stored incident, by canonical function: folded into its overflow incident.
+  const absent = new Map<string, IncidentInput[]>();
+  const count = (outcome: UpsertOutcome) => {
+    if (outcome === "new") result.incidentsCreated += 1;
+    else if (outcome === "recurred") result.incidentsRecurred += 1;
+    else if (outcome === "duplicate") result.incidentsReplayed += 1;
+    else result.incidentsUpdated += 1;
+  };
   const worker = async () => {
     for (let input = queue.shift(); input; input = queue.shift()) {
       try {
-        const outcome = await upsertIncident(db, config, input, now);
-        if (outcome === "new") result.incidentsCreated += 1;
-        else if (outcome === "recurred") result.incidentsRecurred += 1;
-        else if (outcome === "duplicate") result.incidentsReplayed += 1;
-        else result.incidentsUpdated += 1;
+        if (!accrueOnly.has(input)) {
+          count(await upsertIncident(db, config, input, now));
+          continue;
+        }
+        // Past the cap: accrue onto an incident that exists, never open one.
+        const outcome = await upsertIncident(db, config, input, now, { createIfAbsent: false });
+        if (outcome === "absent") {
+          const key = canonicalFunctionName(input.functionName);
+          absent.set(key, [...(absent.get(key) ?? []), input]);
+        } else count(outcome);
       } catch (err) {
         failures.push(err);
       }
     }
   };
   await Promise.all(Array.from({ length: Math.min(UPSERT_CONCURRENCY, queue.length) }, worker));
+  // Not folded when an upsert failed: a fold of part of them would mark the window applied on the overflow
+  // incident, and the replay of the window would then drop the rest. The replay folds them all (an absent one
+  // wrote nothing, so it comes back absent again).
   if (failures.length > 0) {
     throw new AggregateError(failures, `${failures.length} of ${total} incident upserts failed`);
   }
 
+  for (const folded of absent.values()) {
+    const outcome = await upsertIncident(db, config, buildOverflowInput(folded, config, window), now);
+    count(outcome);
+    // A replayed window folded these already: the overflow incident holds them, and they are not counted twice.
+    if (outcome !== "duplicate") result.errorsFoldedIntoOverflow += folded.length;
+  }
+
   return result;
+}
+
+/** The errorType of a high-cardinality overflow incident (#303): many distinct errors of one function, folded. */
+export const OVERFLOW_ERROR_TYPE = "HighCardinalityOverflow";
+
+/**
+ * The inputs of a window past the per-function cap on new incidents (#303): for every function (canonical spelling)
+ * with more than `cap` distinct errors in the window, all but its `cap` most frequent (ties by fingerprint, so the
+ * choice depends only on the window's own entries and a replay makes the same one). Those are upserted accrue-only:
+ * one that matches a stored incident still accrues onto it; one that does not is folded into the overflow incident.
+ * The `cap` most frequent upsert as usual, so a function opens at most `cap` incidents per window from them.
+ */
+export function inputsPastNewIncidentCap(grouped: ReadonlyMap<string, { input: IncidentInput }>, cap: number): Set<IncidentInput> {
+  const byFunction = new Map<string, { fingerprint: string; input: IncidentInput }[]>();
+  for (const [fingerprint, { input }] of grouped) {
+    const key = canonicalFunctionName(input.functionName);
+    const list = byFunction.get(key);
+    if (list) list.push({ fingerprint, input });
+    else byFunction.set(key, [{ fingerprint, input }]);
+  }
+  const past = new Set<IncidentInput>();
+  for (const list of byFunction.values()) {
+    if (list.length <= cap) continue;
+    list.sort(
+      (a, b) =>
+        b.input.occurrenceCount - a.input.occurrenceCount ||
+        (a.fingerprint < b.fingerprint ? -1 : a.fingerprint > b.fingerprint ? 1 : 0)
+    );
+    for (const { input } of list.slice(cap)) past.add(input);
+  }
+  return past;
+}
+
+/**
+ * The fixed message of a function's overflow incident for one UTC day. It keys the fingerprint (`fingerprintOf`
+ * hashes it unnormalized in the `ovf-` namespace), so it holds no data, only the day: one overflow incident per
+ * function and day.
+ */
+export function overflowMessage(day: string): string {
+  return `High-cardinality overflow on ${day} (UTC): distinct errors of this function past the per-window cap on new incidents, each matching no stored incident, are counted here instead of opening one incident each`;
+}
+
+/**
+ * One function's folded errors as the overflow input (#303), dated by the UTC day the window ends in. The most
+ * frequent folded error lends its (already sanitized) message, as an example, and its stack trace, so a person or the
+ * agent can find the code that echoes the varying text.
+ */
+export function buildOverflowInput(
+  folded: readonly IncidentInput[],
+  config: Pick<StarfishConfig, "environment">,
+  window: IngestWindow
+): IncidentInput {
+  const sorted = [...folded].sort(
+    (a, b) => b.occurrenceCount - a.occurrenceCount || (a.errorMessage < b.errorMessage ? -1 : a.errorMessage > b.errorMessage ? 1 : 0)
+  );
+  const top = sorted[0]!;
+  let occurrences = 0;
+  let first = top.firstOccurredAt;
+  let last = top.lastOccurredAt;
+  for (const f of sorted) {
+    occurrences += f.occurrenceCount;
+    if (f.firstOccurredAt < first) first = f.firstOccurredAt;
+    if (f.lastOccurredAt > last) last = f.lastOccurredAt;
+  }
+  const detail = sanitize(`${sorted.length} distinct errors folded in one window; the most frequent: ${top.errorMessage}`);
+  return {
+    functionName: top.functionName,
+    service: top.service,
+    environment: config.environment,
+    errorType: OVERFLOW_ERROR_TYPE,
+    errorMessage: overflowMessage(window.end.toISOString().slice(0, 10)),
+    occurrenceCount: occurrences,
+    firstOccurredAt: first,
+    lastOccurredAt: last,
+    ...(detail !== undefined && { errorDetail: detail }),
+    ...(top.stackTrace !== undefined && { stackTrace: top.stackTrace }),
+    ...(top.sourceProjectId !== undefined && { sourceProjectId: top.sourceProjectId }),
+    ...(top.monitoring !== undefined && { monitoring: top.monitoring }),
+    signalSource: "overflow",
+    windowId: window.id,
+  };
 }
 
 /**
