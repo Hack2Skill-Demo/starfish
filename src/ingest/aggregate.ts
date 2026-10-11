@@ -11,7 +11,7 @@ import type { Firestore } from "firebase-admin/firestore";
 import type { StarfishConfig } from "../config.js";
 import { buildLogFilter, parseLogEntry, type RawLogEntry } from "./parseLogEntry.js";
 import { detectErrorType, extractErrorCode, detectService } from "./classify.js";
-import { canonicalFunctionName, computeErrorFingerprint } from "./fingerprint.js";
+import { canonicalFunctionName, fingerprintOfLogEntry } from "./fingerprint.js";
 import { createRestMonitoringReader, readMonitoringFailures, type MonitoringObservation, type MonitoringReader } from "./monitoring.js";
 import { sanitize } from "./redact.js";
 import { upsertIncident, type IncidentInput } from "./store.js";
@@ -219,7 +219,7 @@ export async function aggregateErrors(
     // upserts then missed against the same uncommitted batch and one run created
     // two open documents for a single incident.
     const errorMessage = sanitize(parsed.errorMessage) ?? "";
-    const fingerprint = computeErrorFingerprint(parsed.functionName, errorMessage);
+    const fingerprint = fingerprintOfLogEntry(parsed.functionName, parsed.errorMessage);
     const found = grouped.get(fingerprint);
 
     if (found) {
