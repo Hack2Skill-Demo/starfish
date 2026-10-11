@@ -7,12 +7,13 @@ name: Deploy engine
 #   - Started by hand (workflow_dispatch), and, when a person turns it on, by a push to main that changes
 #     what the engine runs (the paths below). Deploy-on-merge is OFF until the repository variable
 #     STARFISH_DEPLOY_ON_MERGE is `true`: a merge cannot change what is running by itself, and each run
-#     spends a Cloud Build. Whoever can merge to main then changes what runs; the `deploy` environment's
-#     required reviewers (below) are the way to keep a person in that loop.
+#     spends a Cloud Build. Whoever can merge to main then changes what runs, Dependabot's auto-merged
+#     bumps of package.json and the lockfile included: turn deploy-on-merge on only with required
+#     reviewers on the `deploy` environment (#301), which keep a person in that loop.
 #   - The job runs in the `deploy` environment. The Workload Identity provider only accepts tokens
-#     minted for that environment (docs/deploy.md), so the environment's protection rules (required
-#     reviewers, deployment branches limited to main) are the gate, not a convention.
-#     Do not rename it without changing the provider's attribute condition.
+#     minted for that environment and for a run on main (docs/deploy.md, #299), so the environment's
+#     protection rules (required reviewers, deployment branches limited to main) are the gate, not a
+#     convention. Do not rename it without changing the provider's attribute condition.
 #   - No service-account key and no GitHub secret: the job swaps its OIDC token for short-lived
 #     credentials. The workflow's GITHUB_TOKEN is never handed to the script, which reads
 #     STARFISH_GITHUB_TOKEN (the engine's own token, set once from a terminal) and so leaves
@@ -148,6 +149,10 @@ jobs:
           INDEX_TARGETS: ${{ vars.STARFISH_INDEX_TARGETS }}
           DEPLOY_ADMIN_API: ${{ vars.STARFISH_DEPLOY_ADMIN_API }}
           ADMIN_API_ORIGINS: ${{ vars.STARFISH_ADMIN_API_ORIGINS }}
+          # Both empty (the default): no budget step. Set, the deployer needs a role on the billing account that
+          # setup-github-deploy.sh does not grant (docs/deploy.md, "Repository variables").
+          BUDGET_USD: ${{ vars.STARFISH_BUDGET_USD }}
+          BILLING_ACCOUNT: ${{ vars.STARFISH_BILLING_ACCOUNT }}
           DRY_RUN: ${{ inputs.dry_run && '1' || '0' }}
           RUN_AFTER_DEPLOY: ${{ inputs.run_after_deploy && '1' || '0' }}
           SKIP_FIRESTORE_RULES: ${{ inputs.skip_firestore_rules && '1' || '0' }}

@@ -1,19 +1,33 @@
 name: Dependabot auto-merge
 
 # Auto-merges routine Dependabot dependency bumps so nobody has to click "merge"
-# on them by hand. Scope is deliberately narrow — see the `if:` on the merge step:
+# on them by hand. Scope is deliberately narrow — see the `if:`s below:
 #
-#   • Only PRs opened by dependabot[bot] (the job `if:` guard).
+#   • Only PRs whose AUTHOR is dependabot[bot] (the job `if:` reads the pull
+#     request's user, not `github.actor`: the actor is whoever triggered this run,
+#     and a person re-running or pushing to the PR would otherwise be judged by
+#     the author's name, or Dependabot by theirs).
+#   • Only npm bumps (#301). GitHub Actions bumps are never auto-merged: an action
+#     runs inside our workflows, the deploy ones included, with their tokens, so a
+#     new action SHA always waits for a person, however small the bump.
 #   • Only patch and minor bumps. Major bumps still open a PR and wait for a human,
 #     because a major is where a breaking change lives.
 #   • For a GROUPED PR (the `production-deps` / `dev-deps` groups), fetch-metadata
 #     reports the HIGHEST bump across the group, so a group that contains any major
 #     reports "major" and is skipped — the safe direction.
+#   • A release is at least 7 days old before Dependabot proposes it (the
+#     `cooldown` in .github/dependabot.yml, #301): a hijacked release is usually
+#     found and pulled within days, before it would reach a PR here.
 #
 # This does NOT merge immediately. `gh pr merge --auto` turns on GitHub's native
 # auto-merge, which merges only once every REQUIRED status check passes and the PR
 # is mergeable. A bump that turns CI red therefore never merges — it sits red for a
 # human, exactly like today.
+#
+# A merged bump of package.json or the lockfile is a push to main that the Deploy
+# engine workflow deploys when STARFISH_DEPLOY_ON_MERGE is true. That is why
+# deploy-on-merge needs required reviewers on the `deploy` environment
+# (docs/deploy.md): the merge here is automatic, the deploy is not.
 #
 # PREREQUISITES (repo settings, one-time, not expressible in this file):
 #   1. Settings → General → "Allow auto-merge" must be enabled.
@@ -36,15 +50,16 @@ permissions:
 
 jobs:
   dependabot-automerge:
-    if: ${{ github.actor == 'dependabot[bot]' }}
+    if: ${{ github.event.pull_request.user.login == 'dependabot[bot]' }}
     runs-on: ubuntu-latest
     steps:
       - name: Fetch Dependabot metadata
         id: meta
         uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3.1.0
 
-      - name: Enable auto-merge for patch and minor bumps
-        if: ${{ steps.meta.outputs.update-type == 'version-update:semver-patch' || steps.meta.outputs.update-type == 'version-update:semver-minor' }}
+      # `npm_and_yarn` is fetch-metadata's name for the npm ecosystem (pnpm included); `github_actions` never matches.
+      - name: Enable auto-merge for npm patch and minor bumps
+        if: ${{ steps.meta.outputs.package-ecosystem == 'npm_and_yarn' && (steps.meta.outputs.update-type == 'version-update:semver-patch' || steps.meta.outputs.update-type == 'version-update:semver-minor') }}
         run: gh pr merge --auto --squash "$PR_URL"
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}

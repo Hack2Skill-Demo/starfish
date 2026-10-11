@@ -86,7 +86,9 @@ step() { printf '\n== %s\n' "$*"; }
 run() {
   if [ "$DRY_RUN" = "1" ]; then printf '+'; printf ' %q' "$@"; printf '\n'; else "$@"; fi
 }
-FIREBASE=(pnpm dlx firebase-tools@14)
+# One release of the Firebase CLI, not a major that moves under the deploy (#301): it runs with the deploy's credentials.
+# Bump it on purpose, here and in scripts/deploy-gcp.sh together.
+FIREBASE=(pnpm dlx firebase-tools@14.27.0)
 
 # #262: this deploy publishes the UI only. The rules and indexes it needs, and the guests' trimmed copies, come from the
 # engine deploy (scripts/deploy-gcp.sh) and the engine. A UI published ahead of them reads "couldn't be read" wherever the

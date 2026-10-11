@@ -97,6 +97,43 @@ describe(".github/workflows/deploy.yml", () => {
     // The script never receives user input by interpolation into shell text.
     expect(code(deploy).match(/run: [^\n]*\$\{\{/g)).toBeNull();
   });
+
+  // #308: the budget alert is optional (empty = the script skips it) and reaches the script like every other setting.
+  it("passes the budget alert's settings from repository variables", () => {
+    const vars = code(deploy).split("- name: Deploy")[1] ?? "";
+    expect(vars).toMatch(/^ {10}BUDGET_USD: \$\{\{ vars\.STARFISH_BUDGET_USD \}\}$/m);
+    expect(vars).toMatch(/^ {10}BILLING_ACCOUNT: \$\{\{ vars\.STARFISH_BILLING_ACCOUNT \}\}$/m);
+    const docs = readFileSync(new URL("../docs/deploy.md", import.meta.url), "utf8");
+    for (const name of ["STARFISH_BUDGET_USD", "STARFISH_BILLING_ACCOUNT", "roles/billing.costsManager"]) expect(docs).toContain(name);
+  });
+});
+
+// #301: a Dependabot bump of package.json or the lockfile merged on green is a push that Deploy engine deploys when
+// deploy-on-merge is on, so what may merge without a person is kept narrow.
+describe(".github/workflows/dependabot-automerge.yml and .github/dependabot.yml", () => {
+  const automerge = code(read("dependabot-automerge.yml"));
+  const dependabot = code(readFileSync(new URL("../.github/dependabot.yml", import.meta.url), "utf8"));
+
+  it("judges the pull request by its author, never by whoever triggered the run", () => {
+    expect(automerge).toMatch(/^ {4}if: \$\{\{ github\.event\.pull_request\.user\.login == 'dependabot\[bot\]' \}\}$/m);
+    expect(automerge).not.toContain("github.actor");
+    expect(automerge).not.toContain("pull_request_target");
+  });
+
+  it("auto-merges npm patch and minor bumps only: never a GitHub Actions bump, never a major", () => {
+    const steps = automerge.split(/\n {6}- /).filter((s) => s.includes("gh pr merge"));
+    expect(steps).toHaveLength(1);
+    const condition = steps[0].match(/^ {8}if: (.*)$/m)?.[1] ?? "";
+    expect(condition).toContain("steps.meta.outputs.package-ecosystem == 'npm_and_yarn' &&");
+    expect(condition).not.toMatch(/github[_-]actions/);
+    expect(condition).not.toContain("semver-major");
+  });
+
+  it("holds every ecosystem's releases back seven days before proposing them", () => {
+    const updates = dependabot.split(/\n {2}- package-ecosystem: /).slice(1);
+    expect(updates.map((u) => u.split("\n")[0])).toEqual(['"npm"', '"github-actions"']);
+    for (const u of updates) expect(u, u.split("\n")[0]).toMatch(/^ {4}cooldown:\n {6}default-days: 7$/m);
+  });
 });
 
 describe("a dry run of either deploy workflow (#175)", () => {

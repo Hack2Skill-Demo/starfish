@@ -6,7 +6,7 @@ the few steps only a person with the console can do.
 > **Status: run once, on the demo project (2026-10-05); most of it worked.** The preflight, the ingest deploy (job, Scheduler,
 > database and rules), `grant-operator` and the web deploy ran against `hack2skill-demo`, after two fixes the first run found (the
 > build account's role, #103; `grant-operator` following the shell's project, #104). The smoke test then passed: a planted error was read into the store and retired. **The agent job was
-> deployed on 2026-10-07 and ran hourly in dry run (triage and fix drafting ran; verify, review and a PR have not); since 2026-10-10 it runs with dry run off and auto-merge on for the demo target, and no incident has gone through it yet; the admin API was deployed once on 2026-10-07 ("Run ingest now" worked from the UI; Retire has not been tried), and the GitHub Actions deploy workflows have never run.** Every script below is tested against stubs of `gcloud` and `firebase`
+> deployed on 2026-10-07 and ran hourly in dry run (triage and fix drafting ran; verify, review and a PR have not); since 2026-10-10 it runs with dry run off and auto-merge on for the demo target, and no incident has gone through it yet; the admin API was deployed once on 2026-10-07 ("Run ingest now" worked from the UI; Retire has not been tried), the Deploy engine workflow has run there since 2026-10-10, and Deploy web UI's two runs failed before publishing (#265).** Every script below is tested against stubs of `gcloud` and `firebase`
 > (so the plan, the order and the refusals are pinned; the web deploy is tested against a stub of `pnpm`), and the two CLIs (`grant-operator`, `status`)
 > were run end to end against the Firebase emulators. Expect
 > to fix one or two things on the first pass of the parts that have not run; [`deploy.md`](deploy.md) lists the likely ones.
@@ -45,7 +45,7 @@ the few steps only a person with the console can do.
 # On your machine (Node 22+, pnpm, gcloud; Docker is NOT needed)
 gcloud auth login
 gcloud auth application-default login          # for pnpm status / grant-operator
-pnpm dlx firebase-tools@14 login               # for the web deploy
+pnpm dlx firebase-tools@14.27.0 login         # for the web deploy (the version the scripts pin)
 pnpm install
 
 export PROJECT_ID=my-demo-project              # the scripts read this
@@ -56,6 +56,9 @@ export STARFISH_ENV=demo                       # both read this: the label stamp
 
 # 1. Read-only: is everything in place? Fix any FAIL line before going on.
 scripts/preflight-gcp.sh
+# It FAILs when the account Cloud Run builds images as (BUILD_SERVICE_ACCOUNT, else the Compute Engine default account)
+# holds roles/editor or roles/owner on the project (#300): the Actions deployer acts as that account. Remove the role, or
+# use an account made for building (docs/deploy.md, "The build account"). Stub-tested, not yet run on a real project.
 
 # 2. The engine: Cloud Run job + Scheduler + Secret Manager + IAM + Firestore database and rules.
 DRY_RUN=1 scripts/deploy-gcp.sh                # read the plan first
@@ -93,7 +96,7 @@ operator you granted with `pnpm grant-operator`; required), audited, and reads t
 incident is in no list. If cleanup fails the script says which incident document to delete in the Firestore console
 and exits non-zero. Dry-run tested, and run once against the demo project (2026-10-05), where it passed (#6).
 
-**Redeploying later without a local `gcloud`:** the Deploy engine workflow (`.github/workflows/deploy.yml`, Actions → Deploy engine → Run workflow) runs step 2 from GitHub Actions with no stored key. Use it once the one-time Workload Identity setup is done (a console step, in [`deploy.md`](deploy.md#deploy-from-github-actions-75); the workflow is written and pinned by a test, never run). Until then, or for the very first deploy, run `scripts/deploy-gcp.sh` by hand as above. The web UI has its own workflow, Deploy web UI (`.github/workflows/deploy-web.yml`, [`deploy.md`](deploy.md#deploy-the-web-ui-from-github-actions-92); its two runs so far failed before publishing because the deployer had no Hosting role, #265, which `setup-github-deploy.sh` now grants once run again; whether the Firebase CLI accepts its credentials for the release is unverified); step 5 below stays the dependable path, and the first deploy of the site must be from it.
+**Redeploying later without a local `gcloud`:** the Deploy engine workflow (`.github/workflows/deploy.yml`, Actions → Deploy engine → Run workflow) runs step 2 from GitHub Actions with no stored key. Use it once the one-time Workload Identity setup is done (`scripts/setup-github-deploy.sh`, in [`deploy.md`](deploy.md#deploy-from-github-actions-75); the workflow has run on the demo project since 2026-10-10). The provider now also requires a run on `main` (#299) and the script refuses a build account that is Editor or Owner (#300): on a project set up before that, **run `setup-github-deploy.sh` again** so the provider gets the branch condition (written and tested with stubs, not run). With deploy-on-merge on, add required reviewers to the `deploy` environment: every merge, a Dependabot bump included, is then a deploy (#301). Until then, or for the very first deploy, run `scripts/deploy-gcp.sh` by hand as above. The web UI has its own workflow, Deploy web UI (`.github/workflows/deploy-web.yml`, [`deploy.md`](deploy.md#deploy-the-web-ui-from-github-actions-92); its two runs so far failed before publishing because the deployer had no Hosting role, #265, which `setup-github-deploy.sh` now grants once run again; whether the Firebase CLI accepts its credentials for the release is unverified); step 5 below stays the dependable path, and the first deploy of the site must be from it.
 
 ## What you will still not have after this
 

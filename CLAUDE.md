@@ -50,7 +50,7 @@ pnpm ingest           # one ingest run: next window(s) of the watched project's 
 PROJECT_ID=<p> scripts/deploy-gcp.sh   # Cloud Run job + Scheduler + Secret Manager; DRY_RUN=1 prints the plan (docs/deploy.md)
 # The whole setup, in order (docs/setup.md): scripts/preflight-gcp.sh → deploy-gcp.sh → pnpm grant-operator →
 # scripts/smoke-gcp.sh → scripts/deploy-web.sh. pnpm status: is the deployed engine alive? Run once on the demo project (2026-10-05), the smoke test included; the agent job was deployed there on 2026-10-07 and, since the Deploy engine workflow's first run (2026-10-10), runs hourly with dry run off and auto-merge on for the demo target; no incident has gone through it yet.
-scripts/setup-github-deploy.sh   # one-time (re-run after it changes): lets GitHub Actions deploy with no key (WIF); deploy-on-merge is then a repo variable (docs/deploy.md); run on the demo project 2026-10-10, before it granted Hosting for the web UI (#265)
+scripts/setup-github-deploy.sh   # one-time (re-run after it changes): lets GitHub Actions deploy with no key (WIF); deploy-on-merge is then a repo variable that needs required reviewers on `deploy` (#301) (docs/deploy.md); run on the demo project 2026-10-10, before it granted Hosting for the web UI (#265), required a run on main in the provider's condition (#299) and refused an Editor/Owner build account (#300, which preflight-gcp.sh also FAILs on); those two are written and tested with stubs, not run: re-run it there
 scripts/ingest-cadence.sh status|recording|restore|now   # the ingest's tick for recording the demo, and a run now (#65); DRY_RUN=1 prints
 pnpm scoreboard       # scoreboard/RESULTS.md from recorded runs (#10; format in scoreboard/FORMAT.md; no run recorded yet)
 pnpm feedback-corpus -- --out=<new dir>   # operators' noise/log corrections -> a replay corpus (#267); reads the store, writes local files; never run on a real project
@@ -95,7 +95,8 @@ asked. `/ship` encodes the loop:
 - **Merge automatically on green** (squash) once every check is green **and** every review
   thread is resolved (`mergeable_state: clean`). Losing an approval by pushing a fix is an
   accepted cost, never a reason to hold.
-- **Dependabot patch/minor PRs** are merge-on-green too; majors get a report, not a merge.
+- **Dependabot npm patch/minor PRs** are merge-on-green too; majors and GitHub Actions bumps get a report, not a merge
+  (an action runs inside the deploy workflows with their tokens; the auto-merge workflow leaves them to a person, #301).
 - **A pasted error means "I'm blocked — fix it and ship it."** Root-cause, fix, verify,
   open the PR. Don't explain the error and stop.
 - **Pick the cleanest long-term option without asking** when one clearly is. Pause only
