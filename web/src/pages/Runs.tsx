@@ -40,7 +40,10 @@ import {
   titleOf,
   trackMarks,
   type TrackMark,
+  issueLink,
   safeUrl,
+  stepLogOrder,
+  triageFinding,
   triageDecision,
   triageRule,
   type CycleRow,
@@ -408,6 +411,8 @@ function RunDetail({ cycle, incident, environment, now }: { cycle: CycleRow; inc
   const rule = triageRule(cycle);
   const decision = triageDecision(cycle);
   const prUrl = safeUrl(cycle.summary.pr?.url);
+  const issue = issueLink(cycle);
+  const finding = triageFinding(cycle);
   const prNow = prStateView(cycle, now);
   const indexNow = indexRuntimeView(cycle);
   const water = useMemo(() => {
@@ -458,6 +463,16 @@ function RunDetail({ cycle, incident, environment, now }: { cycle: CycleRow; inc
             <FileText className="h-4 w-4" aria-hidden />
             Evidence for this incident
           </Link>
+          {issue && (
+            <a
+              href={issue.url}
+              target="_blank"
+              rel="noreferrer noopener"
+              className="inline-flex min-h-11 items-center gap-2 rounded-lg border border-gray-200 px-4 text-sm font-medium text-gray-900 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-100 dark:hover:bg-gray-700"
+            >
+              Issue #{issue.number} <ExternalLink className="h-3.5 w-3.5" aria-hidden />
+            </a>
+          )}
           {prUrl && (
             <a
               href={prUrl}
@@ -492,6 +507,9 @@ function RunDetail({ cycle, incident, environment, now }: { cycle: CycleRow; inc
               clock={trackClock}
               label={asLive && replayAt !== null ? `Replaying · ${formatClock(replayAt - startMs)} of ${formatClock(spanMs)}` : undefined}
             />
+            {/* Under the track, not below the trace: it fills in as the track moves, live or in a replay, so the page
+                says what is happening and not only how far it got. */}
+            <StepLog steps={stepLogOrder(water.steps)} prUrl={prUrl} issueUrl={issue?.url} finding={finding} />
           </>
         )}
       </section>
@@ -545,7 +563,6 @@ function RunDetail({ cycle, incident, environment, now }: { cycle: CycleRow; inc
         </section>
       </div>
 
-      {water && <StepLog steps={water.steps.filter((s) => s.status === "done")} prUrl={prUrl} />}
       {water && water.notes.length > 0 && (
         <div>
           <h3 className={SECTION_TITLE}>Cycle notes</h3>
@@ -811,8 +828,13 @@ function TimeBar({ water, live, clock, label }: { water: Waterfall; live: boolea
   );
 }
 
-/** What each recorded step said, when, and the pull request from its own step once that step happened. */
-function StepLog({ steps, prUrl }: { steps: Step[]; prUrl?: string }) {
+/**
+ * What each step said and when, newest first: the step in progress on top, then the latest finished one, so what is
+ * happening now sits right under the track without scrolling. Triage's entry carries
+ * its suspected cause and whose words they are; the issue's and the pull request's carry their links, each only once its
+ * own step happened.
+ */
+function StepLog({ steps, prUrl, issueUrl, finding }: { steps: Step[]; prUrl?: string; issueUrl?: string; finding?: ReturnType<typeof triageFinding> }) {
   if (steps.length === 0) return null;
   return (
     <div>
@@ -822,7 +844,9 @@ function StepLog({ steps, prUrl }: { steps: Step[]; prUrl?: string }) {
           <li key={step.stage} className="py-2">
             <div className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5">
               <span className="text-sm font-medium text-gray-900 dark:text-white">{step.title}</span>
-              <span className="text-xs text-gray-600 dark:text-gray-400">Done{step.outcome ? `: ${step.outcome}` : ""}</span>
+              <span className="text-xs text-gray-600 dark:text-gray-400">
+                {step.status === "running" ? "In progress" : `Done${step.outcome ? `: ${step.outcome}` : ""}`}
+              </span>
               {step.at && (
                 <span className="ml-auto text-xs text-gray-600 dark:text-gray-400">
                   {formatDateTime(step.at)}
@@ -830,8 +854,36 @@ function StepLog({ steps, prUrl }: { steps: Step[]; prUrl?: string }) {
                 </span>
               )}
             </div>
-            {step.summary && <p className="mt-0.5 text-sm text-gray-700 dark:text-gray-300">{step.summary}</p>}
-            {step.stage === "pr" && prUrl && (
+            {step.summary && <p className="mt-0.5 whitespace-pre-wrap break-words text-sm text-gray-700 dark:text-gray-300">{step.summary}</p>}
+            {step.stage === "triage" && step.status === "done" && finding && (
+              <>
+                {!step.summary && <p className="mt-0.5 whitespace-pre-wrap break-words text-sm text-gray-700 dark:text-gray-300">{finding.reason}</p>}
+                {finding.suspectedCause && (
+                  <p className="mt-0.5 break-words text-sm text-gray-700 dark:text-gray-300">
+                    <span className="font-medium text-gray-900 dark:text-gray-100">Suspected cause:</span> {finding.suspectedCause}
+                  </p>
+                )}
+                {finding.by && (
+                  <p className="mt-0.5 text-xs text-gray-600 dark:text-gray-400">
+                    {finding.by === "model" ? (
+                      <>
+                        The model&apos;s reasoning{finding.model && <> (<span className="font-mono">{finding.model}</span>)</>}, as triage recorded it.
+                      </>
+                    ) : (
+                      <>
+                        Decided by the rule <span className="font-mono">{finding.rule}</span>, with no model call.
+                      </>
+                    )}
+                  </p>
+                )}
+              </>
+            )}
+            {step.stage === "issue" && step.status === "done" && issueUrl && (
+              <a href={issueUrl} target="_blank" rel="noreferrer noopener" className="mt-1 inline-flex items-center gap-1 break-all text-sm font-medium text-brand-700 hover:underline dark:text-brand-400">
+                Open the issue <ExternalLink className="h-3 w-3" aria-hidden />
+              </a>
+            )}
+            {step.stage === "pr" && step.status === "done" && prUrl && (
               <a href={prUrl} target="_blank" rel="noreferrer noopener" className="mt-1 inline-flex items-center gap-1 break-all text-sm font-medium text-brand-700 hover:underline dark:text-brand-400">
                 Open the pull request <ExternalLink className="h-3 w-3" aria-hidden />
               </a>

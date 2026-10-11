@@ -192,6 +192,56 @@ export function triageRule(c: CycleRow): string | undefined {
   return typeof rule === "string" && rule !== "" ? rule : undefined;
 }
 
+/**
+ * The step log's order (#279): the step in progress first, then the finished steps from the latest back, by the time
+ * each one's last event was recorded. Not the track's order reversed: a side step (the issue, the alert) is listed
+ * after the track's stages but happens between them. A step with no time keeps its place after the timed ones.
+ */
+export function stepLogOrder(steps: Step[]): Step[] {
+  const reached = steps.filter((s) => s.status !== "not-reached");
+  const time = (s: Step): number => s.at?.getTime() ?? Number.NEGATIVE_INFINITY;
+  return reached
+    .map((step, i) => ({ step, i }))
+    .sort((a, b) => Number(b.step.status === "running") - Number(a.step.status === "running") || time(b.step) - time(a.step) || b.i - a.i)
+    .map((x) => x.step);
+}
+
+/**
+ * What triage found, as it recorded it (`summary.triage.reason`, `suspectedCause`), and whose words they are (`by`),
+ * read from the record and never assumed: the model's when triage recorded one or the rule is a `model-*` one (an
+ * older run recorded the rule but not the model's name); a rule's when another rule decided, which the engine words
+ * itself with no model call. A `*-cap` rule with no model recorded could be either (a cap of noise asks no model, any
+ * other cap does, src/agent/loop.ts), so `by` is then left out, as it is with no rule at all. Absent until triage has
+ * recorded a reason, and on a guest's trimmed copy, which never carries model text (src/publicView.ts).
+ */
+export function triageFinding(c: CycleRow): { reason: string; suspectedCause?: string; by?: "model" | "rule"; model?: string; rule?: string } | undefined {
+  const triage = c.summary.triage;
+  const reason = typeof triage?.reason === "string" ? triage.reason.trim() : "";
+  if (reason === "") return undefined;
+  const cause = typeof triage?.suspectedCause === "string" ? triage.suspectedCause.trim() : "";
+  const model = typeof triage?.model === "string" ? triage.model.trim() : "";
+  const rule = typeof triage?.rule === "string" ? triage.rule.trim() : "";
+  const by = model !== "" || rule.startsWith("model-") ? "model" : rule !== "" && !rule.endsWith("-cap") ? "rule" : undefined;
+  return {
+    reason,
+    ...(cause !== "" && { suspectedCause: cause }),
+    ...(by !== undefined && { by }),
+    ...(model !== "" && { model }),
+    ...(by === "rule" && { rule }),
+  };
+}
+
+/**
+ * The issue Starfish filed for this run (`summary.issue`), once it recorded one as opened with a number and an https
+ * link. A dry run, a failed filing and a guest's trimmed copy have none.
+ */
+export function issueLink(c: CycleRow): { number: number; url: string } | undefined {
+  const issue = c.summary.issue;
+  if (issue?.state !== "opened" || typeof issue.number !== "number" || !Number.isInteger(issue.number) || issue.number <= 0) return undefined;
+  const url = safeUrl(issue.url);
+  return url === undefined ? undefined : { number: issue.number, url };
+}
+
 /** A link is shown only if it is an https URL: the record is written by the engine, but it is still data. */
 export function safeUrl(v: unknown): string | undefined {
   if (typeof v !== "string") return undefined;

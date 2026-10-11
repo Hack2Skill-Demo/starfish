@@ -16,7 +16,10 @@ import {
   progressText,
   runFilter,
   runStatus,
+  issueLink,
   safeUrl,
+  stepLogOrder,
+  triageFinding,
   triageDecision,
   triageRule,
   type CycleRow,
@@ -202,6 +205,61 @@ describe("small helpers", () => {
     expect(safeUrl("http://x.test")).toBeUndefined();
     expect(safeUrl("not a url")).toBeUndefined();
     expect(safeUrl(5)).toBeUndefined();
+  });
+
+  it("reads what triage found and whose words they are, and nothing where it recorded no reason", () => {
+    const model = cycle({ summary: { triage: { rule: "model-notify", reason: " The account lacks a role. ", suspectedCause: "IAM on the function's account", model: "gemini-x" } } });
+    expect(triageFinding(model)).toEqual({ reason: "The account lacks a role.", suspectedCause: "IAM on the function's account", by: "model", model: "gemini-x" });
+    // An older run: the rule says the model decided, though its name was not recorded then.
+    expect(triageFinding(cycle({ summary: { triage: { rule: "model-decline", reason: "Not a code defect." } } }))).toEqual({ reason: "Not a code defect.", by: "model" });
+    // A gate's decision: the engine's own words, no model call, and no cause for a decline.
+    expect(triageFinding(cycle({ summary: { triage: { rule: "counter-check-zero", reason: "The recount found no errors.", suspectedCause: null } } }))).toEqual({
+      reason: "The recount found no errors.",
+      by: "rule",
+      rule: "counter-check-zero",
+    });
+    // A cap asked the model when one is recorded; with none recorded the record cannot say, so nothing is claimed.
+    expect(triageFinding(cycle({ summary: { triage: { rule: "rule-cap", reason: "Held to log.", model: "gemini-x" } } }))).toMatchObject({ by: "model", model: "gemini-x" });
+    expect(triageFinding(cycle({ summary: { triage: { rule: "rule-cap", reason: "Held to noise." } } }))).toEqual({ reason: "Held to noise." });
+    expect(triageFinding(cycle({ summary: { triage: { reason: "No rule recorded." } } }))).toEqual({ reason: "No rule recorded." });
+    // A guest's trimmed copy keeps the tokens and drops the words.
+    expect(triageFinding(cycle({ summary: { triage: { decision: "notify", rule: "model-notify", model: "gemini-x" } } }))).toBeUndefined();
+    expect(triageFinding(cycle({ summary: { triage: { reason: "   " } } }))).toBeUndefined();
+    expect(triageFinding(cycle())).toBeUndefined();
+  });
+
+  it("orders the step log newest first by each step's own time, the step in progress on top (#279)", () => {
+    const at = (s: number) => new Date(T0 + s * 1000);
+    const steps = [
+      { stage: "triage", title: "Triage", status: "done" as const, at: at(6) },
+      { stage: "fix", title: "Draft a fix", status: "done" as const, at: at(40) },
+      { stage: "verify", title: "Verify gate", status: "running" as const },
+      { stage: "review", title: "Adversarial review", status: "not-reached" as const },
+      // Side steps are listed after the track's stages but happened right after triage.
+      { stage: "issue", title: "GitHub issue", status: "done" as const, at: at(7), side: true as const },
+      { stage: "alert", title: "Alert the team", status: "done" as const, at: at(8), side: true as const },
+    ];
+    expect(stepLogOrder(steps).map((s) => s.stage)).toEqual(["verify", "fix", "alert", "issue", "triage"]);
+    // Equal times, or none: the later-listed step counts as the later one, and an untimed step follows the timed.
+    const tie = [
+      { stage: "a", title: "A", status: "done" as const, at: at(1) },
+      { stage: "b", title: "B", status: "done" as const, at: at(1) },
+      { stage: "c", title: "C", status: "done" as const },
+    ];
+    expect(stepLogOrder(tie).map((s) => s.stage)).toEqual(["b", "a", "c"]);
+    expect(stepLogOrder([])).toEqual([]);
+  });
+
+  it("links the issue only once it was recorded as opened, with a number and an https link", () => {
+    const url = "https://github.com/o/r/issues/30";
+    expect(issueLink(cycle({ summary: { issue: { state: "opened", number: 30, url } } }))).toEqual({ number: 30, url });
+    expect(issueLink(cycle({ summary: { issue: { state: "dry-run" } } }))).toBeUndefined();
+    expect(issueLink(cycle({ summary: { issue: { state: "failed", reason: "error" } } }))).toBeUndefined();
+    expect(issueLink(cycle({ summary: { issue: { state: "opened", number: 30, url: "javascript:alert(1)" } } }))).toBeUndefined();
+    expect(issueLink(cycle({ summary: { issue: { state: "opened", number: 0, url } } }))).toBeUndefined();
+    expect(issueLink(cycle({ summary: { issue: { state: "opened", number: 1.5, url } } }))).toBeUndefined();
+    expect(issueLink(cycle({ summary: { issue: { state: "opened", url } } }))).toBeUndefined();
+    expect(issueLink(cycle())).toBeUndefined();
   });
 
   it("reads how far triage went, with the merge case only for a merge", () => {
