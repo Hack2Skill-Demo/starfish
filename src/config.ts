@@ -267,6 +267,12 @@ export interface StarfishConfig {
   /** The port the admin API listens on. Cloud Run sets `PORT`. */
   adminApiPort: number;
   /**
+   * Requests one address may make to the admin API per minute, per instance (src/ipRateLimit.ts); past it, a 429 before
+   * any token is checked. The service is public and any guest can mint a valid ID token, so this bounds what one caller
+   * can spend. 30 by default: the operator UI makes a few calls per click (a CORS preflight counts).
+   */
+  adminApiRateLimitPerMinute: number;
+  /**
    * The Cloud Run job an admin's "Run agent now" starts (src/agent/trigger.ts, #276): the deployed agent job, the one
    * its schedule starts. Empty by default: the admin API then has no such route. Read by the admin API only; its
    * account needs `roles/run.invoker` on that job (scripts/deploy-gcp.sh sets both when it deploys the two together).
@@ -596,6 +602,7 @@ export function loadConfig(): StarfishConfig {
     fastRevertGraceMinutes: positiveNumber(process.env.STARFISH_FAST_REVERT_GRACE_MINUTES, 10, "STARFISH_FAST_REVERT_GRACE_MINUTES"),
     adminApiOrigins: validOrigins(parseList(process.env.STARFISH_ADMIN_API_ORIGINS, ",") ?? []),
     adminApiPort: positiveNumber(process.env.PORT, 8080, "PORT"),
+    adminApiRateLimitPerMinute: positiveInteger(process.env.STARFISH_ADMIN_API_RATE_LIMIT_PER_MINUTE, 30, "STARFISH_ADMIN_API_RATE_LIMIT_PER_MINUTE"),
     agentJobName: (process.env.STARFISH_AGENT_JOB ?? "").trim(),
     agentJobRegion: textOr(process.env.STARFISH_AGENT_JOB_REGION, textOr(process.env.GOOGLE_CLOUD_LOCATION, "us-central1")),
     adminApiRequireAppCheck: parseBoolean(process.env.STARFISH_ADMIN_API_APPCHECK, false, "STARFISH_ADMIN_API_APPCHECK"),
@@ -920,6 +927,13 @@ function positiveNumber(raw: string | undefined, fallback: number, name: string)
   if (raw === undefined || raw === "") return fallback;
   const n = Number(raw);
   if (!Number.isFinite(n) || n <= 0) throw new Error(`${name} must be a number above zero, got "${raw}"`);
+  return n;
+}
+
+/** A whole number above zero, or the default when unset: a count of requests, where 2.5 means nothing. */
+function positiveInteger(raw: string | undefined, fallback: number, name: string): number {
+  const n = positiveNumber(raw, fallback, name);
+  if (!Number.isInteger(n)) throw new Error(`${name} must be a whole number above zero, got "${raw}"`);
   return n;
 }
 

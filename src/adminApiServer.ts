@@ -1,6 +1,7 @@
 /** The HTTP shell around the admin API's handler (src/adminApi.ts): reads a bounded body, calls it, writes the answer. */
 import { createServer, type IncomingMessage, type Server } from "node:http";
 import type { ApiRequest, ApiResponse } from "./adminApi.js";
+import { clientKey, type IpRateLimiter } from "./ipRateLimit.js";
 
 const MAX_BODY_BYTES = 4096;
 /** Twilio's webhooks post a few dozen form fields (#37): more room for those, and only for those. */
@@ -29,9 +30,26 @@ async function readBody(req: IncomingMessage): Promise<{ json?: unknown; form?: 
   }
 }
 
-export function startAdminApiServer(handle: (req: ApiRequest) => Promise<ApiResponse>, port: number): Server {
+export function startAdminApiServer(
+  handle: (req: ApiRequest) => Promise<ApiResponse>,
+  port: number,
+  opts: { limiter?: IpRateLimiter; now?: () => number; onLimited?: (key: string) => void } = {}
+): Server {
+  const now = opts.now ?? Date.now;
   const server = createServer((req, res) => {
     void (async () => {
+      // The per-IP limit comes first (src/ipRateLimit.ts): a refused caller costs no body read, token check or store read.
+      if (opts.limiter) {
+        const key = clientKey(req.headers["x-forwarded-for"], req.socket.remoteAddress);
+        const decision = opts.limiter.take(key, now());
+        if (!decision.ok) {
+          if (decision.firstRefusal) opts.onLimited?.(key);
+          res.writeHead(429, { "content-type": "application/json", "retry-after": String(decision.retryAfterSeconds), "cache-control": "no-store" });
+          res.end(JSON.stringify({ error: "too many requests" }));
+          req.resume();
+          return;
+        }
+      }
       let out: ApiResponse;
       try {
         const body = await readBody(req);

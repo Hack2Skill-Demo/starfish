@@ -1034,6 +1034,17 @@ describe("agent cycles and their run events", () => {
     );
   });
 
+  it("a guest's query must carry a limit of at most 500 documents: anyone can be a guest, and a query is billed per document", async () => {
+    const demo = (name: string) => query(collection(guest(), name), where("environment", "==", "demo"));
+    for (const name of ["starfish_public_incidents", "starfish_public_cycles", "starfish_public_events"]) {
+      await assertFails(getDocs(demo(name)));
+      await assertFails(getDocs(query(demo(name), limit(501))));
+      await assertSucceeds(getDocs(query(demo(name), limit(500))));
+    }
+    // The Runs page's "show more" asks for the most (CYCLE_LIMIT_MAX in web/src/lib/runs.ts).
+    await assertSucceeds(getDocs(query(collection(guest(), "starfish_public_cycles"), where("environment", "==", "demo"), orderBy("updatedAt", "desc"), limit(500))));
+  });
+
   it("a guest gets a cycle or event copy that doesn't exist as missing, not as a refusal (#142)", async () => {
     // Every demo incident the agent never reached: the evidence page must say "Not reached".
     const cycle = await assertSucceeds(getDoc(doc(guest(), "starfish_public_cycles/never-run_r0")));

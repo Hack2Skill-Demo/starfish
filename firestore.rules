@@ -81,8 +81,13 @@ service cloud.firestore {
       return isGuest() && (resource == null || resource.data.environment == 'demo');
     }
 
+    // A guest's query must also carry a limit, at most 500 documents (the most the UI asks for: the Runs
+    // page's "show more", CYCLE_LIMIT_MAX in web/src/lib/runs.ts). Anyone can mint a guest session, and
+    // a query is billed per document it returns: without a limit, a script could read every copy on
+    // every request, and the event copies only grow.
     function guestList() {
-      return isGuest() && resource.data.environment == 'demo';
+      return isGuest() && resource.data.environment == 'demo'
+        && request.query.limit is int && request.query.limit <= 500;
     }
 
     // Operators read only their own record. Roles are granted from the Admin SDK

@@ -27,7 +27,8 @@ vi.mock("./config", () => ({
 }));
 
 import { Timestamp } from "firebase/firestore";
-import { readCycle, subscribeCycles, subscribeEvents, subscribeLatestEvents } from "./runs";
+import { ACTIVITY_LIMIT, CYCLE_LIMIT_MAX, EVENT_LIMIT, readCycle, subscribeCycles, subscribeEvents, subscribeLatestEvents } from "./runs";
+import { SCAN_LIMIT } from "./incidents";
 import type { ActivityRow } from "./overviewModel";
 import type { EventRow } from "./runsModel";
 
@@ -43,6 +44,12 @@ const at = (ms: number) => Timestamp.fromMillis(ms);
 beforeEach(() => {
   vi.clearAllMocks();
   auth.currentUser = null;
+});
+
+describe("the read limits", () => {
+  it("stay within the 500 documents firestore.rules allows a guest's query (guestList)", () => {
+    for (const n of [CYCLE_LIMIT_MAX, EVENT_LIMIT, ACTIVITY_LIMIT, SCAN_LIMIT]) expect(n).toBeLessThanOrEqual(500);
+  });
 });
 
 describe("operators read the stored documents", () => {

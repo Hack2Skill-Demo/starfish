@@ -262,7 +262,8 @@ src/
   adminApi.ts      the admin API's rules (#63, #65): a Firebase ID token -> uid, admin from the operator record on every call, `POST /api/ingest/run`,
                    `POST /api/agent/run` (#276: 202 once the start is accepted, a 404 where `STARFISH_AGENT_JOB` is unset; never run)
                    and `POST /api/incidents/<id>/retire` (with Twilio, the on-call opt-in `send-code`/`confirm`, every admin's attempt audited
-                   without the number or the code, #172), one 401, bounded body, CORS allowlist, one ingest at a time. `adminApiServer.ts` is its HTTP
+                   without the number or the code, #172), one 401, bounded body, CORS allowlist, one ingest at a time. A per-address
+                   limit (`ipRateLimit.ts`, `STARFISH_ADMIN_API_RATE_LIMIT_PER_MINUTE`, default 30) answers 429 before any token check. `adminApiServer.ts` is its HTTP
                    shell, `adminApiCli.ts` the Cloud Run service (`DEPLOY_ADMIN_API=1`): deployed once to the demo project (2026-10-07), "Run ingest now" run from the UI; Retire and the Twilio routes not yet tried
   operators.ts     grant a person an operator record (the first admin; `pnpm grant-operator --project <id>`, which refuses if the shell's project differs and reads the store before creating an account); the closed collection can't be written from the UI
   status.ts        judges the engine's last_run record (`pnpm status`): the same verdicts as the UI's engine line; also prints the
@@ -359,7 +360,8 @@ React 19, Vite, Tailwind 4, react-router, TanStack Query; Starfish's own theme i
   (#18). It may *read* their trimmed copies (`starfish_public_incidents`, `starfish_public_cycles`,
   `starfish_public_events`, written by the engine only, `src/publicView.ts`), `last_run`, `agent_last_run` and
   `starfish_runs/integrations` (which credentials the agent job holds: booleans and a time, never a value), each only
-  whose `environment` is `demo` (a get of a missing one reads as missing), and the operator copy of the settings, and
+  whose `environment` is `demo` (a get of a missing one reads as missing; a query must carry a limit of at most 500, since
+  anyone can be a guest and a query is billed per document), and the operator copy of the settings, and
   nothing else; it never writes. The UI switches in ONE place, `web/src/lib/dataSource.ts` (an anonymous session reads
   the copies, everyone else the stored documents); a copy keeps the stored field names, so the same parsers read it, and
   a field it leaves out shows as nothing (the evidence and Runs pages say the view is a trimmed copy).
