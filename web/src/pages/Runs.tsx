@@ -49,6 +49,7 @@ import {
   type CycleRow,
   type EventRow,
   type RunStatus,
+  type EarlierRound,
   type Step,
   type StepStatus,
   type Waterfall,
@@ -444,6 +445,17 @@ function RunDetail({ cycle, incident, environment, now }: { cycle: CycleRow; inc
             {cycle.synthetic && <SyntheticBadge />}
           </div>
           <p className="text-base text-gray-700 dark:text-gray-300" data-testid="run-summary">{summary}</p>
+          {/* A reopened run (#285): say so here, since the steps and times below are only its latest round's. */}
+          {water?.reopened && (
+            <p className="text-sm text-gray-700 dark:text-gray-300" data-testid="run-rounds">
+              <span className="font-medium text-gray-900 dark:text-gray-100">
+                Round {water.rounds}: this run was reopened {water.rounds - 1} {water.rounds - 1 === 1 ? "time" : "times"}.
+              </span>{" "}
+              Latest {formatRelativeTime(water.reopened.at, "never", now)}
+              {water.reopened.summary.replace(/[.\s]+$/, "") ? `: ${water.reopened.summary.replace(/[.\s]+$/, "")}.` : "."} The steps and times below are this round&apos;s; what the earlier
+              rounds ended on is at the end of the step log.
+            </p>
+          )}
         </div>
         <div className="flex flex-wrap gap-2">
           {canReplay && (
@@ -509,7 +521,7 @@ function RunDetail({ cycle, incident, environment, now }: { cycle: CycleRow; inc
             />
             {/* Under the track, not below the trace: it fills in as the track moves, live or in a replay, so the page
                 says what is happening and not only how far it got. */}
-            <StepLog steps={stepLogOrder(water.steps)} prUrl={prUrl} issueUrl={issue?.url} finding={finding} />
+            <StepLog steps={stepLogOrder(water.steps)} prUrl={prUrl} issueUrl={issue?.url} finding={finding} earlier={water.earlier} rounds={water.rounds} />
           </>
         )}
       </section>
@@ -800,7 +812,10 @@ function TimeBar({ water, live, clock, label }: { water: Waterfall; live: boolea
   return (
     <div className="space-y-2 rounded-lg bg-gray-50 p-3 dark:bg-gray-900/40">
       <p className="text-xs font-medium tabular-nums text-gray-900 dark:text-white">
-        {label ?? (live ? `Running for ${formatDuration(clock - water.startMs)}` : `${formatDuration(span)} from start to the last update`)}
+        {label ??
+          (live
+            ? `Running for ${formatDuration(clock - water.startMs)}${water.reopened ? " since it was reopened" : ""}`
+            : `${formatDuration(span)} from ${water.reopened ? "the latest reopening" : "start"} to the last update`)}
       </p>
       <div role="img" aria-label={`Time per step: ${parts.join(", ")}`} className="flex h-2.5 gap-0.5 overflow-hidden rounded-full bg-gray-200 dark:bg-gray-700">
         {done.map((s, i) => (
@@ -832,10 +847,25 @@ function TimeBar({ water, live, clock, label }: { water: Waterfall; live: boolea
  * What each step said and when, newest first: the step in progress on top, then the latest finished one, so what is
  * happening now sits right under the track without scrolling. Triage's entry carries
  * its suspected cause and whose words they are; the issue's and the pull request's carry their links, each only once its
- * own step happened.
+ * own step happened. For a reopened run (#285) these are its latest round's steps, and what each earlier round ended on
+ * follows, newest first.
  */
-function StepLog({ steps, prUrl, issueUrl, finding }: { steps: Step[]; prUrl?: string; issueUrl?: string; finding?: ReturnType<typeof triageFinding> }) {
-  if (steps.length === 0) return null;
+function StepLog({
+  steps,
+  prUrl,
+  issueUrl,
+  finding,
+  earlier = [],
+  rounds = 1,
+}: {
+  steps: Step[];
+  prUrl?: string;
+  issueUrl?: string;
+  finding?: ReturnType<typeof triageFinding>;
+  earlier?: EarlierRound[];
+  rounds?: number;
+}) {
+  if (steps.length === 0 && earlier.length === 0) return null;
   return (
     <div>
       <h3 className={SECTION_TITLE}>Step log</h3>
@@ -891,6 +921,27 @@ function StepLog({ steps, prUrl, issueUrl, finding }: { steps: Step[]; prUrl?: s
           </li>
         ))}
       </ol>
+      {earlier.length > 0 && (
+        <>
+          <h4 className="mt-3 text-xs font-medium text-gray-600 dark:text-gray-400">Earlier rounds</h4>
+          <ol aria-label="Earlier rounds" className="mt-1 divide-y divide-gray-100 dark:divide-gray-700">
+            {[...earlier].reverse().map((r) => (
+              <li key={r.round} className="py-2">
+                <div className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5">
+                  <span className="text-sm font-medium text-gray-900 dark:text-white">{r.title}</span>
+                  <span className="text-xs text-gray-600 dark:text-gray-400">
+                    Round {r.round} of {rounds} · Done{r.outcome ? `: ${r.outcome}` : ""}
+                  </span>
+                  <span className="ml-auto text-xs text-gray-600 dark:text-gray-400">
+                    {formatDateTime(r.at)} · {formatDuration(r.durationMs)} into that round
+                  </span>
+                </div>
+                {r.summary && <p className="mt-0.5 whitespace-pre-wrap break-words text-sm text-gray-700 dark:text-gray-300">{r.summary}</p>}
+              </li>
+            ))}
+          </ol>
+        </>
+      )}
     </div>
   );
 }

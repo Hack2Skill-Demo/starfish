@@ -410,12 +410,38 @@ export interface Step {
   width?: number;
 }
 
+/**
+ * A `cycle` note of this type: a declined cycle was reopened and its stages run again (src/agent/reconsider.ts,
+ * src/agent/cycle.ts). The same cycle, so its earlier stages' events are still in its log.
+ */
+const REOPENED_TYPE = "reconsidered";
+
+/** The step an earlier round of a reopened run ended on (#285). */
+export interface EarlierRound {
+  /** 1 for the run's first round. */
+  round: number;
+  stage: string;
+  title: string;
+  outcome?: string;
+  summary?: string;
+  at: Date;
+  /** From that round's start (the cycle's start, or the reopening before it) to the event. */
+  durationMs: number;
+}
+
 export interface Waterfall {
+  /** The steps of the run's LATEST round: a reopened run's earlier rounds are in `earlier`, not here. */
   steps: Step[];
   notes: EventRow[];
-  /** The axis: from the cycle's start to its last update, or to now while a worker holds it. */
+  /** The axis: from the cycle's start (or its latest reopening) to its last update, or to now while a worker holds it. */
   startMs: number;
   endMs: number;
+  /** How many rounds the run has had: 1, plus one for each time it was reopened. */
+  rounds: number;
+  /** The latest reopening, in the engine's own words, when there was one. */
+  reopened?: { at: Date; summary: string };
+  /** What each earlier round ended on, oldest first. Empty for a run never reopened. */
+  earlier: EarlierRound[];
 }
 
 /**
@@ -441,22 +467,47 @@ export const titleOf = (stage: string): string =>
  * the cycle is still running, in which case the first of them is "running". Stages the screen does not
  * know are kept, after the known ones, in the order they first appeared: a stage added to the loop
  * shows up without a change here.
+ *
+ * A reopened run (#285) is drawn from its latest reopening on: the steps, their times and the axis are that round's.
+ * Timed from the cycle's start instead, a triage that ran four times an hour apart, seconds each, read as one step of
+ * three hours, and a round in progress read as "triage done" from the round before. The earlier rounds are kept, as
+ * what each ended on.
  */
 export function buildWaterfall(cycle: CycleRow, events: readonly EventRow[], nowMs: number): Waterfall {
   const ordered = [...events].sort((a, b) => a.seq - b.seq);
   const notes = ordered.filter((e) => e.stage === NOTE_STAGE);
+  const reopenings = notes.filter((n) => n.type === REOPENED_TYPE);
+  const lastReopening = reopenings[reopenings.length - 1];
   const byStage = new Map<string, EventRow[]>();
   for (const e of ordered) {
-    if (e.stage === NOTE_STAGE) continue;
+    if (e.stage === NOTE_STAGE || (lastReopening && e.seq < lastReopening.seq)) continue;
     byStage.set(e.stage, [...(byStage.get(e.stage) ?? []), e]);
   }
+  const createdMs = cycle.createdAt.getTime();
+  const earlier: EarlierRound[] = reopenings.flatMap((reopening, r): EarlierRound[] => {
+    const before = reopenings[r - 1];
+    const last = ordered.filter((e) => e.stage !== NOTE_STAGE && e.seq < reopening.seq && (!before || e.seq > before.seq)).pop();
+    if (!last) return [];
+    const began = before ? before.at.getTime() : createdMs;
+    return [
+      {
+        round: r + 1,
+        stage: last.stage,
+        title: titleOf(last.stage),
+        ...(last.type && { outcome: last.type }),
+        ...(last.summary && { summary: last.summary }),
+        at: last.at,
+        durationMs: Math.max(0, last.at.getTime() - began),
+      },
+    ];
+  });
 
   const known: string[] = (isIndexCycle(cycle) || byStage.has("index") ? INDEX_STAGES : KNOWN_STAGES).map((s) => s.stage);
   const extra = [...byStage.keys()].filter((s) => !known.includes(s));
   const stages = [...known, ...extra];
 
   const status = runStatus(cycle, nowMs);
-  const startMs = cycle.createdAt.getTime();
+  const startMs = lastReopening ? lastReopening.at.getTime() : createdMs;
   const endMs = Math.max(status.live ? nowMs : cycle.updatedAt.getTime(), ...ordered.map((e) => e.at.getTime()), startMs + 1);
   const span = endMs - startMs;
 
@@ -493,7 +544,15 @@ export function buildWaterfall(cycle: CycleRow, events: readonly EventRow[], now
     };
   });
 
-  return { steps, notes, startMs, endMs };
+  return {
+    steps,
+    notes,
+    startMs,
+    endMs,
+    rounds: reopenings.length + 1,
+    ...(lastReopening && { reopened: { at: lastReopening.at, summary: lastReopening.summary } }),
+    earlier,
+  };
 }
 
 /**
