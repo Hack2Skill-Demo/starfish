@@ -10,7 +10,7 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useQueries } from "@tanstack/react-query";
 import { Link, useSearchParams } from "react-router";
-import { Check, Copy, CornerDownRight, ExternalLink, FileText, RotateCcw, Square, Workflow } from "lucide-react";
+import { Check, CircleDot, Copy, CornerDownRight, ExternalLink, FileText, GitMerge, GitPullRequest, GitPullRequestClosed, RotateCcw, Square, Workflow } from "lucide-react";
 import PageMeta from "../components/PageMeta";
 import SettingsUnavailableNotice from "../components/SettingsUnavailableNotice";
 import StoreReadHint from "../components/StoreReadHint";
@@ -41,7 +41,7 @@ import {
   trackMarks,
   type TrackMark,
   issueLink,
-  safeUrl,
+  prLink,
   stepLogOrder,
   triageFinding,
   triageDecision,
@@ -411,7 +411,7 @@ function RunDetail({ cycle, incident, environment, now }: { cycle: CycleRow; inc
   const trackClock = asLive && replayAt !== null ? replayAt : clock;
   const rule = triageRule(cycle);
   const decision = triageDecision(cycle);
-  const prUrl = safeUrl(cycle.summary.pr?.url);
+  const pr = prLink(cycle);
   const issue = issueLink(cycle);
   const finding = triageFinding(cycle);
   const prNow = prStateView(cycle, now);
@@ -482,17 +482,19 @@ function RunDetail({ cycle, incident, environment, now }: { cycle: CycleRow; inc
               rel="noreferrer noopener"
               className="inline-flex min-h-11 items-center gap-2 rounded-lg border border-gray-200 px-4 text-sm font-medium text-gray-900 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-100 dark:hover:bg-gray-700"
             >
+              <CircleDot className="h-4 w-4" aria-hidden />
               Issue #{issue.number} <ExternalLink className="h-3.5 w-3.5" aria-hidden />
             </a>
           )}
-          {prUrl && (
+          {pr && (
             <a
-              href={prUrl}
+              href={pr.url}
               target="_blank"
               rel="noreferrer noopener"
               className="inline-flex min-h-11 items-center gap-2 rounded-lg border border-gray-200 px-4 text-sm font-medium text-gray-900 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-100 dark:hover:bg-gray-700"
             >
-              Pull request #{String(cycle.summary.pr?.number ?? "")} <ExternalLink className="h-3.5 w-3.5" aria-hidden />
+              <PrIcon state={pr.state} className="h-4 w-4" />
+              Pull request #{pr.number ?? ""} <ExternalLink className="h-3.5 w-3.5" aria-hidden />
             </a>
           )}
         </div>
@@ -521,7 +523,7 @@ function RunDetail({ cycle, incident, environment, now }: { cycle: CycleRow; inc
             />
             {/* Under the track, not below the trace: it fills in as the track moves, live or in a replay, so the page
                 says what is happening and not only how far it got. */}
-            <StepLog steps={stepLogOrder(water.steps)} prUrl={prUrl} issueUrl={issue?.url} finding={finding} earlier={water.earlier} rounds={water.rounds} />
+            <StepLog steps={stepLogOrder(water.steps)} pr={pr} issue={issue} finding={finding} earlier={water.earlier} rounds={water.rounds} />
           </>
         )}
       </section>
@@ -843,6 +845,30 @@ function TimeBar({ water, live, clock, label }: { water: Waterfall; live: boolea
   );
 }
 
+/** GitHub's own mark for a pull request: merged, closed without merging, or open (also when never read back). */
+function PrIcon({ state, className }: { state?: "open" | "merged" | "closed"; className: string }) {
+  const Icon = state === "merged" ? GitMerge : state === "closed" ? GitPullRequestClosed : GitPullRequest;
+  return <Icon className={className} aria-hidden />;
+}
+
+/** A link to an issue or pull request, written the way GitHub writes a reference: its mark and `owner/repo#30`. */
+function GitHubRef({ url, what, repo, number, icon }: { url: string; what: string; repo?: string; number?: number; icon: ReactNode }) {
+  const ref = number === undefined ? undefined : `${repo ?? ""}#${number}`;
+  return (
+    <a
+      href={url}
+      target="_blank"
+      rel="noreferrer noopener"
+      aria-label={ref === undefined ? `GitHub ${what}` : `GitHub ${what} ${ref}`}
+      className="mt-1 inline-flex items-center gap-1.5 break-all text-sm font-medium text-brand-700 hover:underline dark:text-brand-400"
+    >
+      {icon}
+      {ref === undefined ? <span>Open the {what}</span> : <span className="font-mono">{ref}</span>}
+      <ExternalLink className="h-3 w-3 shrink-0" aria-hidden />
+    </a>
+  );
+}
+
 /**
  * What each step said and when, newest first: the step in progress on top, then the latest finished one, so what is
  * happening now sits right under the track without scrolling. Triage's entry carries
@@ -852,15 +878,15 @@ function TimeBar({ water, live, clock, label }: { water: Waterfall; live: boolea
  */
 function StepLog({
   steps,
-  prUrl,
-  issueUrl,
+  pr,
+  issue,
   finding,
   earlier = [],
   rounds = 1,
 }: {
   steps: Step[];
-  prUrl?: string;
-  issueUrl?: string;
+  pr?: ReturnType<typeof prLink>;
+  issue?: ReturnType<typeof issueLink>;
   finding?: ReturnType<typeof triageFinding>;
   earlier?: EarlierRound[];
   rounds?: number;
@@ -908,15 +934,11 @@ function StepLog({
                 )}
               </>
             )}
-            {step.stage === "issue" && step.status === "done" && issueUrl && (
-              <a href={issueUrl} target="_blank" rel="noreferrer noopener" className="mt-1 inline-flex items-center gap-1 break-all text-sm font-medium text-brand-700 hover:underline dark:text-brand-400">
-                Open the issue <ExternalLink className="h-3 w-3" aria-hidden />
-              </a>
+            {step.stage === "issue" && step.status === "done" && issue && (
+              <GitHubRef url={issue.url} what="issue" repo={issue.repo} number={issue.number} icon={<CircleDot className="h-4 w-4 shrink-0" aria-hidden />} />
             )}
-            {step.stage === "pr" && step.status === "done" && prUrl && (
-              <a href={prUrl} target="_blank" rel="noreferrer noopener" className="mt-1 inline-flex items-center gap-1 break-all text-sm font-medium text-brand-700 hover:underline dark:text-brand-400">
-                Open the pull request <ExternalLink className="h-3 w-3" aria-hidden />
-              </a>
+            {step.stage === "pr" && step.status === "done" && pr && (
+              <GitHubRef url={pr.url} what="pull request" repo={pr.repo} number={pr.number} icon={<PrIcon state={pr.state} className="h-4 w-4 shrink-0" />} />
             )}
           </li>
         ))}
