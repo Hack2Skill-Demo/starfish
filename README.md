@@ -123,6 +123,15 @@ badge a Monitoring-only incident and show `monitoringCount` and the latest windo
 count). With it off, which is every deployment today, a clean
 ingest run still means *no logged errors*, not *no errors*.
 
+One failure is folded on purpose: a **project-level Cloud Run quota rejection** ("the project exceeded its quota
+limit for run.googleapis.com/cpu_allocation", which Google's front end returns for every function at once, often
+while a deploy rolls many revisions). Keyed by function, one such event opened one incident per function. Ingest now
+folds them into one incident per quota metric (`signalSource: platform-quota`, a fingerprint namespace of its own,
+`src/ingest/platformQuota.ts`) whose detail lists the functions it hit; with Monitoring on, those functions'
+failure counts in that window annotate it instead of opening a Monitoring-only incident each. Triage hands it to a
+person without asking the model, since no code change fixes a quota. A "no available instance" abort is not folded:
+it can be one function's real saturation. Unit-tested against a fake Logging; not yet seen on a real project.
+
 ## How it works
 
 ```
@@ -420,7 +429,8 @@ The first stage of the half that acts exists as a **tested contract** and nothin
 (`src/agent/triage.ts`) decides act / notify / decline for one incident. It skips an incident
 that isn't open, defers when the counter-check is missing (missing is not zero), declines a
 counter-check of zero without asking the model (except a Monitoring-only incident, whose zero is
-expected; and that one is turned from act to notify when it carries no cause evidence), validates the model's answer locally and
+expected; and that one is turned from act to notify when it carries no cause evidence), sends an overflow or a
+consolidated Cloud Run quota incident to a person (notify) without asking the model, validates the model's answer locally and
 fails closed, and redacts and bounds both what the model is shown and what it returns. It is
 tested with a stubbed model; the agent job (`pnpm agent`, deployed with `DEPLOY_AGENT=1` to the demo project, in dry run) runs it and takes the counter-check itself,
 and it is not on Google's Agent Development Kit yet.

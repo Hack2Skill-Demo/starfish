@@ -154,10 +154,17 @@ export const MONITORING_FINGERPRINT_PREFIX = "mon-";
 export const OVERFLOW_FINGERPRINT_PREFIX = "ovf-";
 
 /**
+ * Prefix of every consolidated Cloud Run quota incident's fingerprint (ingest/platformQuota.ts). Its function name is
+ * synthetic, so the namespace keeps it from ever sharing a fingerprint with a deployed function's log incident.
+ */
+export const PLATFORM_QUOTA_FINGERPRINT_PREFIX = "pq-";
+
+/**
  * Where an incident came from. Absent on a stored record means Cloud Logging (every record before #19).
  * `overflow` (#303): a function's log errors past the per-window cap on new incidents, folded into one record.
+ * `platform-quota`: Cloud Run's project quota rejections across every function, one record per quota metric.
  */
-export type SignalSource = "log" | "monitoring" | "overflow";
+export type SignalSource = "log" | "monitoring" | "overflow" | "platform-quota";
 
 /**
  * An overflow incident's fingerprint: its canonical function name and its message hashed WITHOUT normalization.
@@ -174,11 +181,12 @@ function overflowFingerprint(functionName: string, errorMessage: string): string
 
 /**
  * The fingerprint a record holds, recomputed from its content: the one place that knows a
- * Monitoring-only record, or a high-cardinality overflow one, hashes into its own namespace. The
- * store, retire and scrub all recompute through this, so none of them can confuse them.
+ * Monitoring-only record, a high-cardinality overflow one, or a consolidated quota one, hashes into its own
+ * namespace. The store, retire and scrub all recompute through this, so none of them can confuse them.
  */
 export function fingerprintOf(functionName: string, errorMessage: string, signalSource?: unknown): string {
   if (signalSource === "overflow") return overflowFingerprint(functionName, errorMessage);
   const base = computeErrorFingerprint(functionName, errorMessage);
-  return signalSource === "monitoring" ? `${MONITORING_FINGERPRINT_PREFIX}${base}` : base;
+  if (signalSource === "monitoring") return `${MONITORING_FINGERPRINT_PREFIX}${base}`;
+  return signalSource === "platform-quota" ? `${PLATFORM_QUOTA_FINGERPRINT_PREFIX}${base}` : base;
 }

@@ -141,8 +141,9 @@ src/
     parseLogEntry  parse + noise suppression + the shared log filter
     classify       error type (source class > code > HTTP status > keywords), service
     fingerprint    sha256(canonical functionName : first 100 chars of the normalized message);
-                   volatile ids/paths/timestamps/counts are collapsed first. Monitoring-only (`mon-`) and
-                   high-cardinality overflow (`ovf-`, its fixed per-day message hashed unnormalized) have their own namespaces
+                   volatile ids/paths/timestamps/counts are collapsed first. Monitoring-only (`mon-`),
+                   high-cardinality overflow (`ovf-`, its fixed per-day message hashed unnormalized) and consolidated Cloud Run
+                   quota (`pq-`) have their own namespaces
     store          the single write path: dedup by fingerprint; a resolved one that fires
                    again is re-opened as `recurred` (a regression). One transaction per
                    upsert, through a per-(environment, fingerprint) key document
@@ -162,7 +163,11 @@ src/
                    (25) new incidents per function per window (#303): the rest accrue onto an incident they already have,
                    or fold into ONE high-cardinality overflow incident per function and UTC day (`signalSource: overflow`),
                    counted in last_run's `totals.errorsFoldedIntoOverflow`. Tested against a fake Logging and the emulator;
-                   not yet run on a real flood
+                   not yet run on a real flood.
+                   Cloud Run's project quota rejection ("exceeded its quota limit for run.googleapis.com/<metric>", every
+                   function at once) is folded into ONE incident per metric (`platformQuota.ts`, `signalSource: platform-quota`,
+                   fingerprint `pq-…`, the functions listed in its detail); with Monitoring on, those functions' readings in the
+                   window annotate it instead of opening a Monitoring-only incident each. Unit-tested; never seen on a real project
     window         (start, end] windows: pure planning; ids come from the boundaries
     run            one scheduled run: resolve runtime settings (refuses on an unusable document with no
                    last-good), replay the pending window or plan the next, advance the checkpoint only
@@ -174,7 +179,7 @@ src/
   agent/triage.ts  stage 1 of the agent loop (#8): act/notify/decline for one incident, and how far to go
                    (`triageLevel`: noise, log, fix, merge): on act the model may name one of the admin's merge cases
                    (`mergeCases`; `missing-index` never offered), kept only if listed. Deterministic gates before the
-                   model (an overflow incident, #303, goes to a person with no model call), local validation after it; run by `pnpm agent` (deployed to the demo project, dry run: ran on real incidents 2026-10-08)
+                   model (an overflow incident, #303, or a consolidated Cloud Run quota one goes to a person with no model call), local validation after it; run by `pnpm agent` (deployed to the demo project, dry run: ran on real incidents 2026-10-08)
   triageRules.ts   the rules engine and the feedback engine (#267), pure, shared with the UI: an admin's class rules
                    (`classRules`, `STARFISH_CLASS_RULES`: match error type/code, service, function -> noise, log or fix) and an
                    operator's correction of one incident (`corrected*` on it, history in `incidents/{id}/corrections`,

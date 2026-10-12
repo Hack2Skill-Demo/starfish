@@ -422,6 +422,78 @@ describe("aggregateErrors: the cap on new incidents per function and window (#30
   });
 });
 
+describe("aggregateErrors: project-level Cloud Run quota rejections", () => {
+  const QUOTA = "The request failed because the project exceeded its quota limit for run.googleapis.com/cpu_allocation recently.";
+  const rejected = (name: string, at = "2026-09-21T00:00:00.000Z") => ({
+    metadata: { timestamp: at, resource: { type: "cloud_run_revision", labels: { service_name: name } } },
+    data: QUOTA,
+  });
+
+  it("folds the rejections of every function into ONE incident in its own namespace", async () => {
+    entries.splice(
+      0,
+      entries.length,
+      rejected("orders-create"),
+      rejected("billing_sync", "2026-09-21T00:05:00.000Z"),
+      rejected("users-get", "2026-09-20T23:30:00.000Z"),
+      rejected("users-get")
+    );
+    const { db, created } = fakeDb();
+
+    const result = await aggregateErrors(db, config, window);
+
+    expect(result.incidentsCreated).toBe(1);
+    expect(created).toHaveLength(1);
+    expect(created[0]).toMatchObject({
+      functionName: "cloud-run-platform-quota",
+      errorType: "QuotaError",
+      signalSource: "platform-quota",
+      occurrenceCount: 4,
+      errorDetail: "In this window: 4 rejected requests across 3 functions: billing_sync, orders-create, users-get",
+    });
+    expect(String(created[0]?.errorMessage)).toContain("run.googleapis.com/cpu_allocation");
+    expect(String(created[0]?.fingerprint)).toMatch(/^pq-[0-9a-f]{16}$/);
+    expect(created[0]).not.toHaveProperty("stackTrace");
+  });
+
+  it("leaves every other error with its own incident", async () => {
+    entries.splice(0, entries.length, rejected("orders-create"), entry("Error: validation failed"));
+    const { db, created } = fakeDb();
+
+    await aggregateErrors(db, config, window);
+
+    expect(created.map((c) => [c.functionName, c.signalSource])).toEqual(
+      expect.arrayContaining([
+        ["cloud-run-platform-quota", "platform-quota"],
+        ["lookup", undefined],
+      ])
+    );
+    expect(created).toHaveLength(2);
+  });
+
+  it("does not open a Monitoring-only incident per function for the same rejected requests", async () => {
+    entries.splice(0, entries.length, rejected("orders-create"), rejected("billing_sync"));
+    const monitored = testConfig({ projectId: "p", watchedProjectId: "watched-app-1", monitoringEnabled: true });
+    const series = (name: string, count: number) => ({
+      resource: { labels: { service_name: name } },
+      points: [{ interval: { startTime: window.start.toISOString(), endTime: window.end.toISOString() }, value: { int64Value: String(count) } }],
+    });
+    const reader: MonitoringReader = {
+      listTimeSeries: async (req) => ({
+        series: req.filter.includes("run.googleapis.com") ? ([series("orders-create", 1), series("billing-sync", 1), series("checkout", 2)] as never[]) : [],
+      }),
+    };
+    const { db, created } = fakeDb();
+
+    const result = await aggregateErrors(db, monitored, window, { monitoring: reader });
+
+    // The two rejected functions annotate the quota incident; only checkout, which logged nothing, opens its own.
+    expect(created.map((c) => c.functionName).sort()).toEqual(["checkout", "cloud-run-platform-quota"]);
+    expect(result.monitoring).toMatchObject({ observations: 3, annotated: 1, monitoringOnly: 1 });
+    expect(created.find((c) => c.signalSource === "platform-quota")).toMatchObject({ monitoringCount: 2 });
+  });
+});
+
 describe("aggregateErrors: the Cloud Monitoring signal (#19)", () => {
   const monitored = testConfig({ projectId: "p", watchedProjectId: "watched-app-1", monitoringEnabled: true });
   const failures = (name: string, count: number) => ({

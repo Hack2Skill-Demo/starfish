@@ -37,9 +37,10 @@ export interface Incident {
   /**
    * `monitoring`: a Monitoring-only incident (#19), opened because Cloud Monitoring counted failed
    * invocations of a function that wrote no ERROR log in that window. `overflow`: a function's log errors past the
-   * per-window cap on new incidents, folded into one record (#303). Absent means Cloud Logging.
+   * per-window cap on new incidents, folded into one record (#303). `platform-quota`: Cloud Run's project quota
+   * rejections across every function, folded into one record per quota metric. Absent means Cloud Logging.
    */
-  signalSource?: "log" | "monitoring" | "overflow";
+  signalSource?: "log" | "monitoring" | "overflow" | "platform-quota";
   /** Failed invocations Cloud Monitoring counted for this incident's function, summed over the windows read (#19). */
   monitoringCount?: number;
 }
@@ -146,9 +147,10 @@ export interface StoredIncident {
    * `monitoring` for a Monitoring-only incident (#19): its fingerprint lives in a namespace of its own
    * (`fingerprintOf`), so it never merges with a log-derived incident. Absent means Cloud Logging.
    * `overflow` (#303): a high-cardinality overflow incident, the log errors of one function and UTC day past the
-   * per-window cap on new incidents; its own namespace too (`ovf-`).
+   * per-window cap on new incidents; its own namespace too (`ovf-`). `platform-quota`: Cloud Run's project quota
+   * rejections across every function, one incident per quota metric (ingest/platformQuota.ts); namespace `pq-`.
    */
-  signalSource?: "log" | "monitoring" | "overflow";
+  signalSource?: "log" | "monitoring" | "overflow" | "platform-quota";
   /**
    * Failed invocations Cloud Monitoring counted for this incident's function, summed over the ingest
    * windows that folded a reading in (#19). On a log incident it is an annotation (the function's
