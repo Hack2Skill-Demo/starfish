@@ -62,6 +62,14 @@ describe("SignIn: the demo view link", () => {
     expect(screen.getAllByText("They are in our slides.", { exact: false })).toHaveLength(1);
   });
 
+  it("tells a visitor without the details they can still look around, with less to see", () => {
+    renderSignIn({});
+    expect(screen.getByText(/look around in the view-only demo/)).toHaveTextContent("fewer details");
+
+    renderSignIn({ user: operator, roles: ["operator"], role: "operator" });
+    expect(screen.getAllByText(/look around in the view-only demo/)).toHaveLength(1);
+  });
+
   it("remembers that the visitor chose the demo view, so the app does not ask them to sign in", async () => {
     renderSignIn({ enterAsGuest: async () => true });
     await userEvent.setup().click(screen.getByRole("button", { name: "See the demo view" }));

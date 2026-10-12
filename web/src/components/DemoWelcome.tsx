@@ -1,6 +1,8 @@
 /**
  * The public demo's welcome guide (#12): three short steps on what Starfish is, how an incident moves through it, and
- * where to look. It opens by itself once per browser and from the header any time (StarfishLayout).
+ * where to look. It opens by itself once per tab and from the header any time (StarfishLayout). Its last
+ * step offers "Don't show this again", kept in this browser only (`setWelcomeDismissed`): ticked, it stops opening by
+ * itself, however the guide is then closed.
  *
  * A guest who did not choose the view-only demo (made a guest on arrival) is asked to sign in, and told where the
  * sign-in details are (`signInHint`, never the credentials). One who chose it, or a signed-in visitor, is not asked.
@@ -11,7 +13,7 @@ import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { useLocation, useNavigate } from "react-router";
 import { ExternalLink, LogIn, X } from "lucide-react";
 import { Button } from "./ui/Button";
-import { markGuestViewChosen, signInHint } from "../lib/demoGuide";
+import { isWelcomeDismissed, markGuestViewChosen, setWelcomeDismissed, signInHint } from "../lib/demoGuide";
 
 const FLOW: { name: string; text: string }[] = [
   {
@@ -53,6 +55,7 @@ export function DemoWelcome({
   onClose: () => void;
 }) {
   const [step, setStep] = useState(0);
+  const [dontShowAgain, setDontShowAgain] = useState(isWelcomeDismissed);
   const titleId = useId();
   const panel = useRef<HTMLDivElement>(null);
   const navigate = useNavigate();
@@ -89,6 +92,10 @@ export function DemoWelcome({
   const signIn = () => {
     onClose();
     navigate("/signin", { state: { from: location } });
+  };
+  const toggleDontShowAgain = (checked: boolean) => {
+    setDontShowAgain(checked);
+    setWelcomeDismissed(checked);
   };
   const continueViewOnly = () => {
     markGuestViewChosen();
@@ -225,11 +232,22 @@ export function DemoWelcome({
         </div>
 
         <div className="flex flex-wrap items-center justify-between gap-3 border-t border-gray-200 px-6 py-4 dark:border-gray-700">
-          <div>
+          <div className="flex flex-wrap items-center gap-3">
             {step > 0 && (
               <Button variant="secondary" size="sm" onClick={() => setStep(step - 1)}>
                 Back
               </Button>
+            )}
+            {last && (
+              <label className="inline-flex cursor-pointer items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
+                <input
+                  type="checkbox"
+                  checked={dontShowAgain}
+                  onChange={(e) => toggleDontShowAgain(e.target.checked)}
+                  className="h-4 w-4 rounded border-gray-300 accent-brand-700 dark:border-gray-600"
+                />
+                Don't show this again
+              </label>
             )}
           </div>
           <div className="flex flex-wrap gap-2">
