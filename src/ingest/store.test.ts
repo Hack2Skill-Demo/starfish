@@ -187,6 +187,23 @@ describe("upsertIncident", () => {
     expect(writes[0]).toMatchObject({ op: "set", id: "new-doc" });
   });
 
+  it("accrues the same bug under another wrapper onto the incident, keeping the message it was opened with (#318)", async () => {
+    const core = 'Value for argument "data" is not a valid Firestore document. Cannot use "undefined" as a Firestore value (found in field "couponCode").';
+    const opened = `Unhandled error Error: ${core}\n    at validateUserInput (/workspace/lib/orders/createOrder.js:58:11)`;
+    const { db, writes, wheres } = fakeDb([
+      { id: "open", data: stored("2026-09-19T00:00:00.000Z", { functionName: "orders-createorder", errorMessage: opened }) },
+    ]);
+    const rethrow = { ...input, functionName: "orders-createorder", errorMessage: `Error: orders-createOrder failed: ${core}` };
+
+    const outcome = await upsertIncident(db, STORE, rethrow, Timestamp.now());
+
+    expect(wheres()).toContainEqual(["fingerprint", "==", computeErrorFingerprint("orders-createorder", opened)]);
+    expect(outcome).toBe("updated");
+    expect(writes[0]).toMatchObject({ op: "update", id: "open" });
+    expect(isSentinel(writes[0]?.data.occurrenceCount, FieldValue.increment(4))).toBe(true);
+    expect(writes[0]?.data.errorMessage).toBeUndefined();
+  });
+
   it("does not undo a triage decision on recurrence", async () => {
     const { db, writes } = fakeDb([{ id: "a", data: stored("2026-09-19T00:00:00.000Z") }]);
     await upsertIncident(db, STORE, input, Timestamp.now());

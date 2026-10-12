@@ -19,6 +19,8 @@
  * task timeout with nothing recorded. In both cases a scheduler sees the exit; the UI would show the
  * previous run as the latest, which is what the "alert when scheduled ingestion stops" criterion on #6 is for.
  */
+// First, so its uptime mark is taken before any other module's code runs (#275, src/startupLog.ts).
+import { logStartup } from "./startupLog.js";
 import { initializeApp } from "firebase-admin/app";
 import { getFirestore } from "firebase-admin/firestore";
 import { loadConfig } from "./config.js";
@@ -26,10 +28,8 @@ import { RuntimeConfigLoader } from "./runtimeSettings.js";
 import { runIngest } from "./ingest/run.js";
 import { syncRecentPublicView } from "./publicViewStore.js";
 
-// #275: Cloud Run executions spend ~2 minutes before any work. Static imports are loaded before this line runs, so its
-// time minus the uptime is when node started: set against the execution's creation time, it says whether the wait is
-// before the process (Cloud Run) or in loading modules (the image).
-console.log(`ingest starting: modules loaded, process up ${process.uptime().toFixed(1)}s`);
+// #275: where the ~2 minutes before any work go. Also the run's first line: the rest is printed when it ends.
+logStartup("ingest");
 const config = loadConfig();
 initializeApp({ projectId: config.projectId });
 const db = getFirestore(config.databaseId);

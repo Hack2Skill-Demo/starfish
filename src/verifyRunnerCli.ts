@@ -4,9 +4,13 @@
  * could not do its job (the agent then treats the run as a runner failure and retries the cycle), 0 when it wrote a
  * result, whatever that result says about the patch.
  */
+// First, so its uptime mark is taken before any other module's code runs (#275, src/startupLog.ts).
+import { logStartup } from "./startupLog.js";
 import { loadVerifyRunnerRequest } from "./config.js";
 import { runVerifier } from "./agent/verifyRunner.js";
 
+// #275: how long the job takes to start, Cloud Run's side against loading modules.
+logStartup("verify-runner");
 const uid = process.getuid?.();
 console.log(`verify-runner: starting as uid ${uid ?? "unknown"}`);
 const request = loadVerifyRunnerRequest();

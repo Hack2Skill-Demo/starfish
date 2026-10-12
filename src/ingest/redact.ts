@@ -265,6 +265,40 @@ export function clipWellFormed(text: string, max: number): string {
   return sliceWellFormed(toWellFormed(redactPii(String(text))), max);
 }
 
+/**
+ * The first `max` characters of `text`, redacted (#18). Redacting after the cut, as `x.slice(0, n)` then a redaction
+ * does, missed a token the cut shortened below its pattern's length (`ghp_` + 12 characters, an `AKIA` id cut to 10):
+ * a cut keeps a secret's prefix, so every other pattern still matches, but the length rules do not. So when it cuts,
+ * this drops the last run of non-space characters, the only place such a fragment can be. `redact` is the redaction
+ * to apply (a caller that also removes its own token passes its own); bounded before redacting.
+ */
+export function redactHead(text: string, max: number, redact: (s: string) => string = redactPii): string {
+  const s = String(text ?? "");
+  if (s.length <= max) return redact(s);
+  return redact(s.slice(0, max)).replace(/\S+$/, "");
+}
+
+const ORPHAN_KEY_END_RE = /^[\s\S]*-----END [A-Z ]*PRIVATE KEY-----/;
+
+/**
+ * The last `max` characters of `text`, redacted (#18): for a command's output, where the end is what matters. Cutting
+ * first and redacting the cut, as the verify paths did, kept what a cut left of a secret that straddled it, which no
+ * pattern knows any more: a private key's body and END line without its BEGIN, a token without its `ghp_` prefix or its
+ * `Bearer `. So this redacts a window twice as wide as what it keeps and keeps the window's tail: a secret across the
+ * second cut was seen whole. When the window itself starts at a cut (`text` is longer than it, or `startsAtCut`: the
+ * caller already kept only the tail of a stream), what that cut left can still reach the kept tail, so this drops the
+ * kept tail's first line (a fragment of a one-line secret) and everything up to a private key's END line whose BEGIN is
+ * gone (a key whose BEGIN is there was already redacted whole). Bounded before redacting: linear in `max`, not `text`.
+ */
+export function redactTail(text: string, max: number, startsAtCut = false): string {
+  const s = String(text ?? "");
+  const window = s.slice(-2 * max);
+  const kept = redactPii(window).slice(-max);
+  if (!startsAtCut && s.length === window.length) return kept;
+  const nl = kept.indexOf("\n");
+  return (nl === -1 ? "" : kept.slice(nl + 1)).replace(ORPHAN_KEY_END_RE, SECRET_MARKER);
+}
+
 /** Redact then bound, in that order. */
 export function sanitize(text: string | undefined, max = MAX_TEXT_LEN): string | undefined {
   if (text == null) return undefined;

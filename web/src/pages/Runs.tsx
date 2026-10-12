@@ -24,7 +24,7 @@ import { formatDateTime, formatRelativeTime } from "../lib/formatters";
 import { useEnvironment } from "../lib/useSettings";
 import { TICK_MS, useNow } from "../lib/useNow";
 import { getIncident, type IncidentRow } from "../lib/incidents";
-import { CYCLE_LIMIT, CYCLE_LIMIT_MAX, readCycle, subscribeCycles, subscribeEvents } from "../lib/runs";
+import { CYCLE_LIMIT, CYCLE_LIMIT_MAX, EVENT_LIMIT, readCycle, subscribeCycles, subscribeEvents } from "../lib/runs";
 import {
   PATH_LABELS,
   indexRuntimeView,
@@ -386,12 +386,23 @@ function RunList({
 
 function RunDetail({ cycle, incident, environment, now }: { cycle: CycleRow; incident?: IncidentRow; environment: string; now: number }) {
   const [events, setEvents] = useState<EventRow[] | null>(null);
+  // The run has more events than the page reads (#326): only its newest EVENT_LIMIT are drawn, and the page says so.
+  const [eventsCapped, setEventsCapped] = useState(false);
   const [failed, setFailed] = useState(false);
 
   useEffect(() => {
     setEvents(null);
+    setEventsCapped(false);
     setFailed(false);
-    return subscribeEvents(cycle.id, environment, (rows) => setEvents(rows), () => setFailed(true));
+    return subscribeEvents(
+      cycle.id,
+      environment,
+      (rows, capped) => {
+        setEvents(rows);
+        setEventsCapped(capped);
+      },
+      () => setFailed(true)
+    );
   }, [cycle.id, environment]);
 
   const status = runStatus(cycle, now);
@@ -526,6 +537,12 @@ function RunDetail({ cycle, incident, environment, now }: { cycle: CycleRow; inc
           <p className="text-sm text-gray-600 dark:text-gray-400">Loading steps…</p>
         ) : (
           <>
+            {eventsCapped && (
+              <p className="text-sm text-gray-700 dark:text-gray-300" data-testid="events-capped">
+                Showing the newest {EVENT_LIMIT} events of this run; older ones are not drawn, so earlier rounds may be
+                missing or counted short.
+              </p>
+            )}
             <StepTrack steps={water.steps.filter((s) => !s.side)} clock={trackClock} handoff={handoff} />
             <SideSteps steps={water.steps.filter((s) => s.side)} />
             <TimeBar

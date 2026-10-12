@@ -9,7 +9,7 @@
  * parses what it gets back: every field is typed, bounded, and (for the result) bound to the SHA-256 of the exact
  * patch the agent sent, so a result for another patch, a malformed one, or an oversized one is refused.
  */
-import { redactPii } from "../ingest/redact.js";
+import { redactHead, redactTail } from "../ingest/redact.js";
 import { MAX_CHANGED_FILES, MAX_OUTPUT_CHARS, type VerifyResult, type VerifyRule, type VerifyStatus } from "./verifyGate.js";
 
 /** Thrown for anything wrong with the runner's request or result, or for the runner not answering. Never holds a URL. */
@@ -137,14 +137,14 @@ export function parseRunnerResult(text: string, expectedPatchSha256: string, bas
   return {
     status,
     rule,
-    // Bound BEFORE redacting: `redactPii` is superlinear on a long run of word characters (100 KB takes ~10 s), and
-    // this text comes from a process that ran untrusted code.
-    reason: redactPii(v.reason.slice(0, 500)),
+    // Bound BEFORE redacting: this text comes from a process that ran untrusted code, and redaction's cost grows with it
+    // (#96). Each helper also drops what its cut could have left of a secret (#18).
+    reason: redactHead(v.reason, 500),
     patchSha256: expectedPatchSha256,
     ...(baseRevision !== undefined && { baseRevision }),
-    changedFiles: v.changedFiles.map((f) => redactPii(f.slice(0, 500))),
+    changedFiles: v.changedFiles.map((f) => redactHead(f, 500)),
     ...(exitCode !== undefined && { exitCode }),
-    output: redactPii(v.output.slice(-MAX_OUTPUT_CHARS)),
+    output: redactTail(v.output, MAX_OUTPUT_CHARS),
     durationMs,
   };
 }

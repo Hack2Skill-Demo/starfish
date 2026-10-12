@@ -400,9 +400,18 @@ as the store bounds them), recomputes each changed record's fingerprint (the sto
 text, so otherwise the next occurrence would fork a duplicate), removes the stale incident
 key, and is safe to re-run (`scrub.test.ts`, `scrub.emulator.test.ts`). Run it before real
 data is exposed to anyone. It does not touch Firestore exports or backups, logs, or anything
-outside the incident collection, and it finds only what the pattern list finds. The one
-Slack message (`needs a human`) is built from redacted, bounded, plain-text fields and tested for seeded credentials; there is no
-issue/PR-text allowlist beyond the PR opener's own bounded fields, so that surface is still to be built (issue #18).
+outside the incident collection, and it finds only what the pattern list finds. Cycles and their run events are
+not scrubbed: they were redacted on write from the start, and guests never read them (a verify event's `output` written
+before text was redacted ahead of being cut may hold a fragment of a secret, readable by operators only). Neither
+`pnpm scrub --apply` nor `pnpm public-view --apply` has been run on the demo project yet.
+
+**Every outbound text is a fixed template over named, redacted, bounded fields (#18).** Both Slack messages (`needs a
+human` and the `#ops-alerts` new-incident message), the GitHub issue, the pull request, the merge commit, the evidence
+comment and the revert PR are built that way, and a whole-cycle emulator test seeds credentials and an email into the
+incident, the source, the verify output and the model's words and asserts none reaches any of them, a prompt, the cycle
+or its events. Twilio texts carry only a link built from a plain id, or a code. Text cut to a bound is redacted BEFORE
+the cut (`redactTail` / `redactHead` in `src/ingest/redact.ts`): cut first, a secret straddling the cut lost the prefix
+its pattern needs and survived.
 
 **What a guest reads is an allowlist (#18).** A guest (an anonymous session on the public demo) never reads a stored
 incident, cycle or run event. For each one in a public environment (`STARFISH_PUBLIC_ENVIRONMENTS`, `demo` by default)

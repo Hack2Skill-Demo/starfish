@@ -49,7 +49,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { StarfishConfig } from "../config.js";
 import type { IndexEvidence, PullRequestRequest } from "../agent/loop.js";
-import { redactPii } from "../ingest/redact.js";
+import { redactHead, redactPii, redactTail } from "../ingest/redact.js";
 import { incidentUrl, runUrl } from "./links.js";
 
 export type GithubPrConfig = Pick<
@@ -269,8 +269,28 @@ const noRefs = (text: string) =>
     .replace(/#(?=\d)/g, "#\u200b")
     .replace(/\b(GH)-(?=\d)/gi, "$1\u200b-");
 const noUrl = (text: string) => text.replace(/:\/\//g, ":\u200b//");
-/** One line of free text for a title or a commit message: plain text, so no markdown escaping, but no references. */
-const plainLine = (text: string, max: number) => noUrl(noRefs(oneLine(text, max)));
+const ELLIPSIS = "…";
+/**
+ * One line of free text for a title or a commit message's title line: plain text, so no markdown escaping, but no
+ * references (#140). Cut for a person to read (#327): text that does not fit is cut at the last word boundary within `max`
+ * and ends in `…`, never mid-word ("…, causing a Typ"). The result, `…` included, is at most `max` characters. References
+ * and URLs are broken BEFORE the cut, so the zero-width spaces count toward the budget and the cut can only drop a suffix
+ * of already-broken text: it cannot leave a live `#123`. With no space in the second half of the budget (one long
+ * token), it is a hard cut plus `…`. Bodies and safety bounds keep `clip`'s plain cut.
+ */
+export function titleLine(text: string, max: number): string {
+  const line = noUrl(noRefs(redactPii(String(text ?? "")).replace(/\s+/g, " ").trim()));
+  if (line.length <= max) return line;
+  if (max < 2) return line.slice(0, Math.max(0, max));
+  const room = max - ELLIPSIS.length;
+  // A space at index `room` means the first `room` characters end on a whole word.
+  const space = line.lastIndexOf(" ", room);
+  let kept = space >= Math.floor(room / 2) ? line.slice(0, space) : line.slice(0, room);
+  // Never leave half a surrogate pair, nor a dangling separator before the ellipsis.
+  if (/[\ud800-\udbff]$/.test(kept)) kept = kept.slice(0, -1);
+  kept = kept.replace(/[\s,;:]+$/, "");
+  return `${kept}${ELLIPSIS}`;
+}
 const code = (text: string, max: number) => oneLine(text, max).replace(/`/g, "");
 /**
  * Free text from an incident or the model, made inert in markdown: GitHub would otherwise notify whoever an `@name` or
@@ -320,7 +340,7 @@ function fitBody(head: string[], footer: string[]): string {
 /** The pull request's title and body. Redacted and bounded; fenced text cannot close its own fence. */
 export function pullRequestText(req: PullRequestRequest): { title: string; body: string } {
   if (req.index) return indexPullRequestText(req, req.index);
-  const title = `Starfish: ${plainLine(req.rootCause, 70) || "proposed fix"}`;
+  const title = `Starfish: ${titleLine(req.rootCause, 70) || "proposed fix"}`;
   const lines: string[] = [
     "## What",
     "",
@@ -341,7 +361,7 @@ export function pullRequestText(req: PullRequestRequest): { title: string; body:
     if (verify.changedFiles.length > MAX_FILES_IN_BODY) lines.push(`- … and ${verify.changedFiles.length - MAX_FILES_IN_BODY} more`);
   }
   if (verify && verify.output.trim() !== "") {
-    lines.push("", "Output (tail):", "", "```", fence(clip(verify.output.slice(-MAX_OUTPUT_IN_BODY), MAX_OUTPUT_IN_BODY)), "```");
+    lines.push("", "Output (tail):", "", "```", fence(redactTail(verify.output, MAX_OUTPUT_IN_BODY)), "```");
   }
   lines.push("", "## Adversarial review", "");
   if (req.review) {
@@ -384,7 +404,7 @@ export function indexRootCause(index: Pick<IndexEvidence, "collectionGroup" | "f
  * query passes), what merging does (only the file changes), and what a deploy of the file would do.
  */
 export function indexPullRequestText(req: PullRequestRequest, index: IndexEvidence): { title: string; body: string } {
-  const title = `Starfish: ${plainLine(indexRootCause(index), 70)}`;
+  const title = `Starfish: ${titleLine(indexRootCause(index), 70)}`;
   const where = `\`${code(index.project, 40)}\` / \`${code(index.database, 70)}\``;
   const lines: string[] = [
     "## What",
@@ -434,7 +454,7 @@ const issueMarker = (cycleId: string) => `<!-- ${ISSUE_MARKER_PREFIX}${cycleId} 
 
 /** The issue's title and body. Redacted and bounded; incident text cannot close a fence or add a link. */
 export function issueText(req: IssueRequest): { title: string; body: string } {
-  const title = `[Starfish] ${plainLine(req.functionName, 60) || "unknown function"}: ${plainLine(req.errorType, 40) || "error"}`;
+  const title = `[Starfish] ${titleLine(req.functionName, 60) || "unknown function"}: ${titleLine(req.errorType, 40) || "error"}`;
   const lines: string[] = [
     "## What is failing",
     "",
@@ -617,7 +637,7 @@ export function createGithubClient(cfg: GithubPrConfig, deps: GithubPrDeps): Git
   }
 
   function failure(status: number, headers: Headers, json: unknown): GithubError {
-    const message = scrub(String((json as { message?: unknown } | null)?.message ?? "no message").slice(0, 300));
+    const message = redactHead(String((json as { message?: unknown } | null)?.message ?? "no message"), 300, scrub);
     if (status === 401) return new GithubError("unauthorized", `GitHub refused the token (it may have expired): ${message}`, status);
     if (status === 429 || (status === 403 && (headers.get("x-ratelimit-remaining") === "0" || headers.get("retry-after") !== null))) {
       return new GithubError("rate-limited", `GitHub rate limit reached: ${message}`, status);
@@ -722,7 +742,7 @@ export function createGithubClient(cfg: GithubPrConfig, deps: GithubPrDeps): Git
         await removeBranch(branch);
       }
 
-      await git(["commit", "--quiet", "--no-gpg-sign", "-m", `Starfish: ${plainLine(req.rootCause, 70) || "proposed fix"}\n\nRun: ${code(req.cycleId, 128)}\nPatch SHA-256: ${req.patchSha256}`]);
+      await git(["commit", "--quiet", "--no-gpg-sign", "-m", `Starfish: ${titleLine(req.rootCause, 70) || "proposed fix"}\n\nRun: ${code(req.cycleId, 128)}\nPatch SHA-256: ${req.patchSha256}`]);
       await git(["push", "--quiet", "origin", pushRefspec(branch)]);
       return (await git(["rev-parse", "HEAD"])).trim();
     } finally {
@@ -745,7 +765,8 @@ export function createGithubClient(cfg: GithubPrConfig, deps: GithubPrDeps): Git
   const MAX_CHECKS = 100;
   const MAX_CHECK_PAGES = 5;
   const MAX_ANNOTATIONS = 20;
-  const bounded = (v: unknown, max: number) => scrub(typeof v === "string" ? v.slice(0, max) : "");
+  /** Text GitHub sent (a check run's output, an annotation): cut, then scrubbed, dropping what the cut left of a secret (#18). */
+  const bounded = (v: unknown, max: number) => (typeof v === "string" ? redactHead(v, max, scrub) : "");
 
   async function pushPatchBranch(req: PatchBranchRequest): Promise<{ branch: string; commit: string }> {
     const branch = checked(req);
@@ -903,7 +924,7 @@ export function createGithubClient(cfg: GithubPrConfig, deps: GithubPrDeps): Git
     const r = await call("PUT", `/repos/${cfg.githubRepo}/pulls/${number}/merge`, {
       merge_method: "squash",
       sha,
-      commit_title: plainLine(message.title, 100) || `Starfish: merge #${number}`,
+      commit_title: titleLine(message.title, 100) || `Starfish: merge #${number}`,
       commit_message: noUrl(noRefs(clip(message.body, 2000))),
     });
     if (r.status === 200) {
@@ -942,7 +963,8 @@ export function createGithubClient(cfg: GithubPrConfig, deps: GithubPrDeps): Git
 
   async function commentOnPullRequest(cycleId: string, number: number, body: string): Promise<void> {
     await readPullRequest(cycleId, number); // refuses a pull request that is not this cycle's
-    const r = await call("POST", `/repos/${cfg.githubRepo}/issues/${number}/comments`, { body: body.slice(0, MAX_BODY) });
+    // Redacted here too, at the edge, whatever the caller already did (#18).
+    const r = await call("POST", `/repos/${cfg.githubRepo}/issues/${number}/comments`, { body: redactHead(body, MAX_BODY, scrub) });
     if (r.status !== 201) throw failure(r.status, r.headers, r.json);
   }
 

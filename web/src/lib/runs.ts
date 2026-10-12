@@ -4,14 +4,26 @@
  * `firestore.rules` lets operators, and guests on the demo environment, read both; nobody in the
  * browser writes. Both queries filter on `environment`, which the rules need before they will serve a
  * guest a list. The cycle list is newest-update first and needs the composite index in
- * firestore.indexes.json; a cycle's events are few, so they are read in full and put in order here.
+ * firestore.indexes.json; a cycle's events are read newest first, up to EVENT_LIMIT, and put in order here.
  * The Overview's feed reads the newest events across cycles with a collection-group query.
  *
  * A guest reads the trimmed copies instead (`dataSource`, #18): the cycles' copies with the same queries, and the run
- * events' copies from one flat collection, by `cycleId` for a run and newest first for the feed. The copies keep the
+ * events' copies from one flat collection, by `cycleId` for a run and newest first for both. The copies keep the
  * stored field names, so the same parsers read them.
  */
-import { collection, collectionGroup, doc, getDoc, limit, onSnapshot, orderBy, query, where, type Unsubscribe } from "firebase/firestore";
+import {
+  collection,
+  collectionGroup,
+  doc,
+  getDoc,
+  limit,
+  onSnapshot,
+  orderBy,
+  query,
+  where,
+  type QueryDocumentSnapshot,
+  type Unsubscribe,
+} from "firebase/firestore";
 import { firestore } from "./firebase";
 import { webConfig } from "./config";
 import { dataSource } from "./dataSource";
@@ -22,7 +34,10 @@ import { latestActivity, parseActivity, parsePublicActivity, type ActivityRow } 
 export const CYCLE_LIMIT = 50;
 /** The most the list ever reads: "Show older runs" grows the read, so it has a ceiling too. firestore.rules refuses a guest's query above 500 (guestList). */
 export const CYCLE_LIMIT_MAX = 500;
-/** Events read for one cycle: a cycle is a handful of stages, so this is a ceiling, not a window. */
+/**
+ * Events drawn for one cycle: its newest this many (#326). Most runs are a handful of stages; a long escalation, many
+ * reopenings or retries can pass it, and the Runs page then says the older ones are not drawn.
+ */
 export const EVENT_LIMIT = 200;
 
 /** The newest `max` cycles (bounded by CYCLE_LIMIT_MAX), live; `capped` when there may be older ones. */
@@ -50,38 +65,54 @@ export function subscribeCycles(
   );
 }
 
+/**
+ * A run's newest EVENT_LIMIT events, live, handed over in sequence order; `capped` when the run has older events that are not read (#326).
+ *
+ * The read is newest first by `seq`, which every writer sets (src/agent/cycle.ts, src/seedDemo.ts, and the guest copy,
+ * src/publicView.ts `toPublicEvent`), so a run with more events than the limit keeps its latest ones, the round the page
+ * draws. Read by document id alone (no order), Firestore returned the OLDEST ones and the latest steps went missing. It
+ * asks for one more than it keeps, so `capped` means older events exist, not that a run happens to hold exactly the
+ * limit. Each shape needs its composite index in firestore.indexes.json (`events`: environment, seq desc;
+ * starfish_public_events: cycleId, environment, seq desc); without it Firestore refuses the query and onError fires.
+ */
 export function subscribeEvents(
   cycleId: string,
   environment: string,
-  onData: (rows: EventRow[]) => void,
+  onData: (rows: EventRow[], capped: boolean) => void,
   onError: (err: Error) => void
 ): Unsubscribe {
   const source = dataSource();
+  const deliver = (docs: QueryDocumentSnapshot[], parse: (d: QueryDocumentSnapshot) => EventRow | null) =>
+    onData(
+      docs
+        .slice(0, EVENT_LIMIT)
+        .flatMap((d) => parse(d) ?? [])
+        .sort((a, b) => a.seq - b.seq),
+      docs.length > EVENT_LIMIT
+    );
   if (source.publicEvents) {
-    // A guest: the copies of this run's events, one flat collection keyed `{cycleId}_{seq}` (equality only: no index).
+    // A guest: the copies of this run's events, one flat collection keyed `{cycleId}_{seq}`.
     const prefix = `${cycleId}_`;
-    const q = query(collection(firestore(), source.publicEvents), where("cycleId", "==", cycleId), where("environment", "==", environment), limit(EVENT_LIMIT));
+    const q = query(
+      collection(firestore(), source.publicEvents),
+      where("cycleId", "==", cycleId),
+      where("environment", "==", environment),
+      orderBy("seq", "desc"),
+      limit(EVENT_LIMIT + 1)
+    );
     return onSnapshot(
       q,
-      (snap) =>
-        onData(
-          snap.docs
-            .flatMap((d) => (d.id.startsWith(prefix) ? (parseEvent(d.id.slice(prefix.length), d.data()) ?? []) : []))
-            .sort((a, b) => a.seq - b.seq)
-        ),
+      (snap) => deliver(snap.docs, (d) => (d.id.startsWith(prefix) ? parseEvent(d.id.slice(prefix.length), d.data()) : null)),
       onError
     );
   }
   const q = query(
     collection(firestore(), webConfig().cycleCollection, cycleId, "events"),
     where("environment", "==", environment),
-    limit(EVENT_LIMIT)
+    orderBy("seq", "desc"),
+    limit(EVENT_LIMIT + 1)
   );
-  return onSnapshot(
-    q,
-    (snap) => onData(snap.docs.flatMap((d) => parseEvent(d.id, d.data()) ?? []).sort((a, b) => a.seq - b.seq)),
-    onError
-  );
+  return onSnapshot(q, (snap) => deliver(snap.docs, (d) => parseEvent(d.id, d.data())), onError);
 }
 
 /** Events in the Overview's feed. */

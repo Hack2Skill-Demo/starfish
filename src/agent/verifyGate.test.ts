@@ -358,6 +358,22 @@ describe("verifyPatch: the command's world", () => {
     expect(r.output.length).toBeLessThanOrEqual(MAX_OUTPUT_CHARS);
   });
 
+  it("keeps no part of a secret the tail's cut runs through (#18)", async () => {
+    // A private key whose BEGIN line falls 12 characters before the kept tail, and a token the cut enters 10 characters in.
+    // Cut first and redacted after, the key's body and the token's remainder survived with nothing left to match them.
+    const body = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCSECRETBODY"; // 41 characters
+    const pem = `printf '%s\\n' '-----BEGIN PRIVATE KEY-----' '${body}' '-----END PRIVATE KEY-----'`;
+    const token = SEEDED_SECRETS.github!; // 44 characters
+    for (const [print, after, fragment] of [
+      [pem, MAX_OUTPUT_CHARS - (28 - 12) - (body.length + 1) - 26 - 1, body.slice(-12)],
+      [`echo ${token}`, MAX_OUTPUT_CHARS - (token.length + 1 - 10) - 1, token.slice(10)],
+    ] as const) {
+      const r = await verify(goodPatch(), cfg({ verifyCommand: `${print}; head -c ${after} /dev/zero | tr '\\0' 'y'; echo; grep -q new greeting.txt` }));
+      expect(r.status).toBe("passed");
+      expect(r.output).not.toContain(fragment);
+    }
+  });
+
   it("keeps the reason free of patch text", async () => {
     const r = await verify(diffOf({ [`.github/${SEEDED_SECRETS.github}.yml`]: "x\n" }));
     expect(r.reason).not.toContain(SEEDED_SECRETS.github);

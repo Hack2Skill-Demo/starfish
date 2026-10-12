@@ -23,6 +23,8 @@
  * or name and then rethrown), with its counts and, from STARFISH_AGENT_SCHEDULE, how often it runs. A pass refused by
  * the first preflight, or killed by its task timeout, records nothing; the UI then shows the agent as not running.
  */
+// First, so its uptime mark is taken before any other module's code runs (#275, src/startupLog.ts).
+import { logStartup } from "./startupLog.js";
 import { randomUUID } from "node:crypto";
 import { hostname } from "node:os";
 import { Logging } from "@google-cloud/logging";
@@ -62,10 +64,8 @@ import { createTwilioClient } from "./oncall/twilio.js";
 import { syncRecentPublicView } from "./publicViewStore.js";
 
 const startedAt = new Date();
-// #275: Cloud Run executions spend ~2 minutes before any work. Static imports are loaded before this line runs, so its
-// time minus the uptime is when node started: set against the execution's creation time, it says whether the wait is
-// before the process (Cloud Run) or in loading modules (the image).
-console.log(`agent starting: modules loaded, process up ${process.uptime().toFixed(1)}s`);
+// #275: where the ~2 minutes before any work go.
+logStartup("agent");
 const base = loadConfig();
 const token = loadGithubToken();
 const slackOnCall = loadSlackOnCallWebhook();

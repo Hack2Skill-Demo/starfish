@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { SEEDED_SECRETS } from "./testSecrets.js";
-import { redactPii, redactCredentials, sanitize, isSensitiveKey, sliceWellFormed, truncate, clipWellFormed } from "./redact.js";
+import { redactPii, redactCredentials, sanitize, isSensitiveKey, sliceWellFormed, truncate, clipWellFormed, redactHead, redactTail } from "./redact.js";
 
 describe("redactCredentials", () => {
   for (const [name, secret] of Object.entries(SEEDED_SECRETS)) {
@@ -200,6 +200,66 @@ describe("redaction time", () => {
     const out = redactPii(`${"y".repeat(100_000)} password=hunter2 mail ops@example.com ${"a-".repeat(50_000)}`);
     expect(out).not.toContain("hunter2");
     expect(out).not.toContain("ops@example.com");
+  });
+});
+
+describe("redactHead and redactTail: a cut never keeps part of a secret (#18)", () => {
+  /** The part of a secret that identifies it: its longest run without whitespace. */
+  const core = (secret: string) => secret.split(/\s+/).sort((a, b) => b.length - a.length)[0]!;
+  /** Does `out` hold 8 or more characters in a row of the secret's core? */
+  const leaks = (out: string, secret: string) => {
+    const c = core(secret);
+    for (let i = 0; i + 8 <= c.length; i++) if (out.includes(c.slice(i, i + 8))) return true;
+    return false;
+  };
+  const many = `${SEEDED_SECRETS.github}\n`.repeat(40);
+
+  for (const [name, secret] of Object.entries(SEEDED_SECRETS)) {
+    it(`redactHead: a cut anywhere inside a ${name} keeps none of it`, () => {
+      const lead = "call failed at step 3:\n";
+      for (let k = 1; k < secret.length; k++) {
+        const out = redactHead(`${lead}${secret} and then more`, lead.length + k);
+        expect(leaks(out, secret), `cut after ${k}: ${JSON.stringify(out)}`).toBe(false);
+        expect(out.startsWith("call failed at step")).toBe(true);
+      }
+    });
+
+    it(`redactTail: a cut anywhere inside a ${name} keeps none of it`, () => {
+      const lead = "first line\n";
+      const text = `${lead}${secret}\n${".".repeat(200)}\n`;
+      for (let k = 1; k < secret.length; k++) {
+        // The kept tail starts inside the secret: the window it was redacted in held all of it.
+        const out = redactTail(text, text.length - lead.length - k);
+        expect(leaks(out, secret), `cut after ${k}: ${JSON.stringify(out)}`).toBe(false);
+        // The text already started inside it (what a stream's bounded buffer keeps): its first line is dropped.
+        const fromCut = redactTail(`${secret.slice(k)}\n${many}`, 10_000, true);
+        expect(leaks(fromCut, secret), `stream cut after ${k}: ${JSON.stringify(fromCut)}`).toBe(false);
+      }
+    });
+  }
+
+  it("redactTail: a secret cut by the window's own edge stays out even when redaction shrinks what follows", () => {
+    const body = "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVow".padEnd(38, "Q");
+    const pem = `-----BEGIN ${"PRIVATE KEY"}-----\n${"Zm9v".repeat(50)}\n${body}\n-----END ${"PRIVATE KEY"}-----\n`;
+    const text = `${pem}${many}`;
+    // The window (twice what is kept) starts inside the key, and the 40 tokens after it shrink to 18 characters each.
+    for (const max of [100, 150, 400, 900]) {
+      const out = redactTail(text, max);
+      expect(out).not.toContain(body.slice(-8));
+      expect(out).not.toContain("Zm9vZm9v");
+      expect(out).not.toContain("-----END");
+      expect(out).not.toContain(SEEDED_SECRETS.github);
+      expect(out.length).toBeLessThanOrEqual(max);
+    }
+  });
+
+  it("are the plain redaction when nothing is cut, and bounded when something is", () => {
+    const text = `boom ${SEEDED_SECRETS.github} jane.roe@example.com`;
+    expect(redactHead(text, 1000)).toBe(redactPii(text));
+    expect(redactTail(text, 1000)).toBe(redactPii(text));
+    expect(redactHead("a ".repeat(5000), 100).length).toBeLessThanOrEqual(100);
+    expect(redactTail("a\n".repeat(5000), 100).length).toBeLessThanOrEqual(100);
+    expect(redactTail("tail", 10)).toBe("tail");
   });
 });
 

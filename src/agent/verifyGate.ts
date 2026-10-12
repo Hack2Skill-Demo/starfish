@@ -35,7 +35,7 @@ import { cp, lstat, mkdir, mkdtemp, readdir, readFile, readlink, rm } from "node
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadVerifyCommandBasics, type StarfishConfig } from "../config.js";
-import { redactPii } from "../ingest/redact.js";
+import { redactPii, redactTail } from "../ingest/redact.js";
 
 export type VerifyConfig = Pick<StarfishConfig, "verifyCommand" | "verifyTimeoutSeconds" | "patchExcludedPaths">;
 
@@ -199,7 +199,7 @@ function run(
   command: string,
   args: string[],
   opts: { cwd: string; env: NodeJS.ProcessEnv; stdin?: string; timeoutMs: number; runAs?: { uid: number; gid: number } }
-): Promise<{ code: number | null; timedOut: boolean; output: string }> {
+): Promise<{ code: number | null; timedOut: boolean; output: string; cut: boolean }> {
   return new Promise((resolve) => {
     // Own process group, so a timeout kills everything the command started, not only the shell.
     const child = spawn(command, args, {
@@ -210,9 +210,13 @@ function run(
       ...(opts.runAs && { uid: opts.runAs.uid, gid: opts.runAs.gid }),
     });
     let output = "";
+    // Whether `output` starts at a cut: `tail` must then treat its first line as a possible fragment of a secret (#18).
+    let cut = false;
     let timedOut = false;
     const keep = (chunk: Buffer) => {
-      output = (output + chunk.toString("utf8")).slice(-MAX_OUTPUT_CHARS * 2);
+      const all = output + chunk.toString("utf8");
+      if (all.length > MAX_OUTPUT_CHARS * 2) cut = true;
+      output = all.slice(-MAX_OUTPUT_CHARS * 2);
     };
     child.stdout.on("data", keep);
     child.stderr.on("data", keep);
@@ -232,7 +236,7 @@ function run(
     // already wrote, then are destroyed. A process that escaped the group is NOT killed: this is not a sandbox.
     let settled = false;
     let grace: NodeJS.Timeout | undefined;
-    const settle = (result: { code: number | null; timedOut: boolean; output: string }) => {
+    const settle = (result: { code: number | null; timedOut: boolean; output: string; cut: boolean }) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
@@ -241,20 +245,21 @@ function run(
       child.stderr.destroy();
       resolve(result);
     };
-    child.on("error", (err) => settle({ code: null, timedOut: false, output: `${output}\n${err.name}` }));
+    child.on("error", (err) => settle({ code: null, timedOut: false, output: `${output}\n${err.name}`, cut }));
     child.on("exit", (code) => {
       // The command finished on its own (or was killed): a timer firing during the grace must not call it a timeout.
       clearTimeout(timer);
-      grace = setTimeout(() => settle({ code, timedOut, output }), EXIT_GRACE_MS);
+      grace = setTimeout(() => settle({ code, timedOut, output, cut }), EXIT_GRACE_MS);
     });
-    child.on("close", (code) => settle({ code, timedOut, output }));
+    child.on("close", (code) => settle({ code, timedOut, output, cut }));
   });
 }
 
 /** How long the output pipes may stay open after the command itself has exited. */
 const EXIT_GRACE_MS = 1000;
 
-const tail = (text: string) => redactPii(text.slice(-MAX_OUTPUT_CHARS));
+/** The output's redacted tail. Redacted before it is cut, so a secret across the cut is not half kept (#18). */
+const tail = (ran: { output: string; cut: boolean }) => redactTail(ran.output, MAX_OUTPUT_CHARS, ran.cut);
 
 export async function verifyPatch(req: VerifyRequest): Promise<VerifyResult> {
   const started = Date.now();
@@ -296,7 +301,7 @@ export async function verifyPatch(req: VerifyRequest): Promise<VerifyResult> {
     const env = scrubbedEnv(home, req.extraEnv ?? {});
     const applied = await run("git", ["apply", "--whitespace=nowarn", "-"], { cwd: tree, env, stdin: req.patch, timeoutMs: 30_000 });
     if (applied.code !== 0) {
-      return done("rejected", "patch-does-not-apply", "The patch does not apply to the checkout.", { output: tail(applied.output) });
+      return done("rejected", "patch-does-not-apply", "The patch does not apply to the checkout.", { output: tail(applied) });
     }
 
     let after: Map<string, Entry>;
@@ -362,7 +367,7 @@ async function runCommand(tree: string, env: NodeJS.ProcessEnv, req: Pick<Verify
     timeoutMs: req.config.verifyTimeoutSeconds * 1000,
     ...(req.runAs && { runAs: req.runAs }),
   });
-  const output = tail(ran.output);
+  const output = tail(ran);
   if (ran.timedOut) {
     return done("timeout", "command-timeout", `The verify command did not finish in ${req.config.verifyTimeoutSeconds} seconds.`, { output });
   }
