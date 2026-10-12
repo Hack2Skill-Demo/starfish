@@ -5,8 +5,9 @@
  *
  * No command palette or breadcrumbs: with two sections they would not earn their keep.
  *
- * A build for the public demo (#12) also carries the welcome guide (components/DemoWelcome.tsx): it opens by itself the
- * first time in a browser, and from the header's help button any time. A guest gets the guest bar under every page.
+ * A build for the public demo (#12) also carries the welcome guide (components/DemoWelcome.tsx): it opens by itself once
+ * per tab until the visitor ticks "Don't show this again" on its last step, and from the header's help
+ * button any time. A guest gets the guest bar under every page.
  */
 import { useState } from "react";
 import { Outlet, NavLink, Link, useLocation, useNavigate } from "react-router";
@@ -17,7 +18,7 @@ import { useEnvironment } from "../lib/useSettings";
 import { StarfishLogo } from "./StarfishLogo";
 import { menuItems, visibleMenuItems, activeMenuItem } from "./menuConfig";
 import { offersGuestView } from "../lib/dataSource";
-import { hasChosenGuestView, hasSeenWelcome, markWelcomeSeen } from "../lib/demoGuide";
+import { hasChosenGuestView, markWelcomeShownThisSession, shouldAutoOpenWelcome } from "../lib/demoGuide";
 import { DemoWelcome } from "../components/DemoWelcome";
 import { GuestBar } from "../components/GuestBar";
 
@@ -41,7 +42,7 @@ export function StarfishLayout() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [l2Collapsed, setL2Collapsed] = useState(readCollapsed);
   const demoGuide = offersGuestView();
-  const [welcomeOpen, setWelcomeOpen] = useState(() => demoGuide && !hasSeenWelcome());
+  const [welcomeOpen, setWelcomeOpen] = useState(() => demoGuide && shouldAutoOpenWelcome());
   // Read on each render: the guide's "Continue view-only" sets it, and its close re-renders the layout.
   const askToSignIn = guest && !hasChosenGuestView();
 
@@ -61,7 +62,7 @@ export function StarfishLayout() {
   };
 
   const closeWelcome = () => {
-    markWelcomeSeen();
+    markWelcomeShownThisSession();
     setWelcomeOpen(false);
   };
 

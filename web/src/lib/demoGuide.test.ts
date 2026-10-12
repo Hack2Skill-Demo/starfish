@@ -3,19 +3,45 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({ hint: "" }));
 vi.mock("./config", () => ({ webConfig: () => ({ demoSignInHint: mocks.hint }) }));
 
-import { hasChosenGuestView, hasSeenWelcome, markGuestViewChosen, markWelcomeSeen, signInHint } from "./demoGuide";
+import {
+  hasChosenGuestView,
+  isWelcomeDismissed,
+  markGuestViewChosen,
+  markWelcomeShownThisSession,
+  setWelcomeDismissed,
+  shouldAutoOpenWelcome,
+  signInHint,
+} from "./demoGuide";
 
 describe("demoGuide", () => {
-  beforeEach(() => localStorage.clear());
+  beforeEach(() => {
+    localStorage.clear();
+    sessionStorage.clear();
+  });
   afterEach(() => vi.restoreAllMocks());
 
-  it("remembers that the guide was seen and that the demo view was chosen, separately", () => {
-    expect(hasSeenWelcome()).toBe(false);
-    expect(hasChosenGuestView()).toBe(false);
-    markWelcomeSeen();
-    expect(hasSeenWelcome()).toBe(true);
+  it("opens the guide by itself once per tab until Don't show this again is ticked", () => {
+    expect(shouldAutoOpenWelcome()).toBe(true);
+    markWelcomeShownThisSession();
+    expect(shouldAutoOpenWelcome()).toBe(false);
+    // A new tab (sessionStorage empty) opens it again: closing it is not "don't show again".
+    sessionStorage.clear();
+    expect(shouldAutoOpenWelcome()).toBe(true);
+    setWelcomeDismissed(true);
+    expect(isWelcomeDismissed()).toBe(true);
+    expect(shouldAutoOpenWelcome()).toBe(false);
+    // Unticking it forgets the choice.
+    setWelcomeDismissed(false);
+    expect(isWelcomeDismissed()).toBe(false);
+    expect(shouldAutoOpenWelcome()).toBe(true);
+  });
+
+  it("keeps Don't show this again and the demo view choice separately", () => {
+    setWelcomeDismissed(true);
     expect(hasChosenGuestView()).toBe(false);
     markGuestViewChosen();
+    expect(hasChosenGuestView()).toBe(true);
+    setWelcomeDismissed(false);
     expect(hasChosenGuestView()).toBe(true);
   });
 
@@ -26,8 +52,14 @@ describe("demoGuide", () => {
     vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
       throw new Error("blocked");
     });
-    expect(() => markWelcomeSeen()).not.toThrow();
-    expect(hasSeenWelcome()).toBe(false);
+    vi.spyOn(Storage.prototype, "removeItem").mockImplementation(() => {
+      throw new Error("blocked");
+    });
+    expect(() => markWelcomeShownThisSession()).not.toThrow();
+    expect(() => setWelcomeDismissed(true)).not.toThrow();
+    expect(() => setWelcomeDismissed(false)).not.toThrow();
+    expect(isWelcomeDismissed()).toBe(false);
+    expect(shouldAutoOpenWelcome()).toBe(true);
   });
 
   it("uses the deployment's hint, else a generic line", () => {

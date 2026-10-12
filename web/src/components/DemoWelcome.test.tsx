@@ -2,7 +2,7 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { hasChosenGuestView } from "../lib/demoGuide";
+import { hasChosenGuestView, isWelcomeDismissed, setWelcomeDismissed } from "../lib/demoGuide";
 import { DemoWelcome } from "./DemoWelcome";
 
 vi.mock("../lib/config", () => ({ webConfig: () => ({ demoSignInHint: "They are in our slides." }) }));
@@ -42,6 +42,35 @@ describe("DemoWelcome", () => {
     await user.click(screen.getByRole("button", { name: "Next" }));
     await user.click(screen.getByRole("button", { name: "Start exploring" }));
     expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("offers Don't show this again only on the last step, and remembers it in this browser", async () => {
+    const user = userEvent.setup();
+    const onClose = renderGuide({ guest: false, askToSignIn: false });
+    expect(screen.queryByRole("checkbox", { name: "Don't show this again" })).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Next" }));
+    expect(screen.queryByRole("checkbox", { name: "Don't show this again" })).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Next" }));
+    const box = screen.getByRole("checkbox", { name: "Don't show this again" });
+    expect(box).not.toBeChecked();
+    await user.click(box);
+    expect(isWelcomeDismissed()).toBe(true);
+    await user.click(box);
+    expect(isWelcomeDismissed()).toBe(false);
+    await user.click(box);
+    // Closing with the X keeps the choice, like Start exploring.
+    await user.click(screen.getByRole("button", { name: "Close the guide" }));
+    expect(onClose).toHaveBeenCalled();
+    expect(isWelcomeDismissed()).toBe(true);
+  });
+
+  it("shows the box ticked when the guide is reopened after Don't show this again", async () => {
+    setWelcomeDismissed(true);
+    const user = userEvent.setup();
+    renderGuide({ guest: false, askToSignIn: false });
+    await user.click(screen.getByRole("button", { name: "Next" }));
+    await user.click(screen.getByRole("button", { name: "Next" }));
+    expect(screen.getByRole("checkbox", { name: "Don't show this again" })).toBeChecked();
   });
 
   it("shows the demo's own link on the last step", async () => {

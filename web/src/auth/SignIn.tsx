@@ -3,7 +3,8 @@
  * Auth; the route guard resolves roles and routes the operator on from here.
  * On the public demo it also offers the guest view (#12), for a visitor who
  * lands here (after signing out, or from a guest's "Sign in" link) without an account.
- * There it also says where the sign-in details are (`signInHint`, never the credentials), and choosing the
+ * There it also says where the sign-in details are (`signInHint`, never the credentials) and that a visitor without
+ * them can still look around in the view-only demo, with fewer details and features, and choosing the
  * demo view is remembered (`markGuestViewChosen`) so the app stops asking that visitor to sign in.
  */
 import { useEffect, useState } from "react";
@@ -114,6 +115,13 @@ export function SignIn() {
             {offersGuestView() && (
               <p className="mb-6 rounded-lg border border-gray-200 bg-gray-50 p-4 text-sm text-gray-700 dark:border-gray-700 dark:bg-gray-900/40 dark:text-gray-300">
                 <span className="font-medium text-gray-900 dark:text-white">Public demo.</span> {signInHint()}
+                {(guest || !user) && (
+                  <span className="mt-2 block">
+                    No sign-in details? You can still look around in the view-only demo below. It shows fewer details
+                    (no stack traces, error detail, Gemini's reasoning or patches) and none of the triage or admin
+                    actions.
+                  </span>
+                )}
               </p>
             )}
 
