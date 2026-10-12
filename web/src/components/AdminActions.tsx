@@ -12,6 +12,7 @@ import { Button } from "./ui/Button";
 import { toast } from "./ui/toast";
 import { useAuth } from "../auth/authCore";
 import { webConfig } from "../lib/config";
+import { markAgentStartRequested } from "../lib/agentStart";
 import { appAdminApi, retireIncident, runAgentNow, runIngestNow, type AdminApiDeps, type IngestSummary } from "../lib/adminApi";
 
 /** True when this viewer should see the admin controls. */
@@ -59,11 +60,13 @@ export function RunIngestButton({ api = appAdminApi, onDone }: { api?: () => Adm
 
 /**
  * Starts one agent pass (#276): the pass the schedule runs, started now, with the same switches and caps. The answer is
- * only that it started; the Runs page shows what it does as the engine records it, so nothing here is refreshed.
+ * only that it started; the Runs page shows what it does as the engine records it. The agent's status is told a start was
+ * requested, so it says so and watches the record until the pass shows (`lib/agentStart.ts`), with no page refresh.
  */
 export function RunAgentButton({ api = appAdminApi }: { api?: () => AdminApiDeps }) {
   const show = useAdminControls();
   const [busy, setBusy] = useState(false);
+  const queryClient = useQueryClient();
   if (!show) return null;
 
   const click = async () => {
@@ -75,6 +78,8 @@ export function RunAgentButton({ api = appAdminApi }: { api?: () => AdminApiDeps
       return;
     }
     toast.success("Agent pass started. It runs in its own job and takes a few minutes; its runs appear here as it records them.");
+    markAgentStartRequested();
+    await queryClient.invalidateQueries({ queryKey: ["engine", "agentPass"] });
   };
 
   return (

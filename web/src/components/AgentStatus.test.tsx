@@ -13,6 +13,7 @@ vi.mock("../lib/engineStatus", async (orig) => ({
 }));
 
 import { AgentStatus } from "./AgentStatus";
+import { markAgentStartRequested, resetAgentStartRequested } from "../lib/agentStart";
 
 const pass = (over: Partial<AgentRunRecord> = {}): AgentRunRecord => ({
   environment: "demo",
@@ -44,12 +45,13 @@ describe("AgentStatus (#274)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.inProgress = null;
+    resetAgentStartRequested();
   });
 
-  it("says the agent is running, when its last pass finished, what it did and when the next is expected", async () => {
+  it("says a healthy agent between passes is waiting (not running), when its last pass finished, what it did and when the next is expected", async () => {
     mocks.read.mockResolvedValue(pass({ intervalMinutes: 60 }));
     renderStatus();
-    expect(await screen.findByText("Agent running")).toBeInTheDocument();
+    expect(await screen.findByText("Agent waiting")).toBeInTheDocument();
     const line = screen.getByTestId("agent-status");
     expect(line).toHaveTextContent("last pass 10 minutes ago (dry run): 2 candidates, 1 run");
     expect(line).toHaveTextContent("next pass expected in 46 minutes");
@@ -58,7 +60,7 @@ describe("AgentStatus (#274)", () => {
   it("promises no next pass when it does not know its schedule", async () => {
     mocks.read.mockResolvedValue(pass());
     renderStatus();
-    await screen.findByText("Agent running");
+    await screen.findByText("Agent waiting");
     expect(screen.getByTestId("agent-status")).not.toHaveTextContent("next pass");
   });
 
@@ -95,12 +97,12 @@ describe("AgentStatus (#274)", () => {
   it("says why a pass started nothing, and flags a capped scan", async () => {
     mocks.read.mockResolvedValue(pass({ skipped: "automation-disabled", considered: 0, ran: 0 }));
     const { unmount } = renderStatus();
-    await screen.findByText("Agent running");
+    await screen.findByText("Agent waiting");
     expect(screen.getByTestId("agent-status")).toHaveTextContent("automation is off: no run started");
     unmount();
     mocks.read.mockResolvedValue(pass({ scanCapped: true }));
     renderStatus();
-    expect(await screen.findByText("Agent running, scan capped")).toBeInTheDocument();
+    expect(await screen.findByText("Agent waiting, last scan capped")).toBeInTheDocument();
     expect(screen.getByTestId("agent-status")).toHaveTextContent("older open incidents wait for a later pass");
   });
 
@@ -111,7 +113,7 @@ describe("AgentStatus (#274)", () => {
         <AgentStatus environment="demo" variant="card" />
       </QueryClientProvider>
     );
-    expect(await screen.findByText("Agent running")).toBeInTheDocument();
+    expect(await screen.findByText("Agent waiting")).toBeInTheDocument();
     const card = screen.getByTestId("agent-status");
     expect(card).toHaveTextContent("Last pass 10 minutes ago (dry run): 2 candidates, 1 run.");
     expect(card).toHaveTextContent("Next pass expected in 45 minutes");
@@ -138,7 +140,7 @@ describe("AgentStatus (#274)", () => {
         <AgentStatus environment="demo" variant="card" />
       </QueryClientProvider>
     );
-    expect(await screen.findByText("Agent pass in progress")).toBeInTheDocument();
+    expect(await screen.findByText("Agent running")).toBeInTheDocument();
     const card = screen.getByTestId("agent-status");
     expect(card).toHaveTextContent("Started 40 seconds ago");
     expect(card).toHaveTextContent("Runs it starts appear below as they start");
@@ -151,9 +153,47 @@ describe("AgentStatus (#274)", () => {
     mocks.read.mockResolvedValue(null);
     mocks.inProgress = { environment: "demo", since: new Date(Date.now() - 10_000) };
     renderStatus();
-    expect(await screen.findByText("Agent pass in progress")).toBeInTheDocument();
+    expect(await screen.findByText("Agent running")).toBeInTheDocument();
     expect(screen.getByTestId("agent-status")).toHaveTextContent("started 10 seconds ago");
     expect(screen.getByTestId("agent-status")).not.toHaveTextContent("nothing has said");
+  });
+
+  it("after Run agent now, says a start was requested, in blue, until the pass records its start (no refresh)", async () => {
+    mocks.read.mockResolvedValue(pass({ intervalMinutes: 60 }));
+    markAgentStartRequested(Date.now() - 5_000);
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <AgentStatus environment="demo" variant="card" />
+      </QueryClientProvider>
+    );
+    expect(await screen.findByText("Agent starting")).toBeInTheDocument();
+    const card = screen.getByTestId("agent-status");
+    expect(card).toHaveTextContent("Requested 5 seconds ago");
+    expect(card).toHaveTextContent("Start requested: waiting for its job to come up");
+    expect(screen.getByRole("img", { name: "A pass is under way" })).toBeInTheDocument();
+  });
+
+  it("drops the request once the record shows a pass since it", async () => {
+    mocks.read.mockResolvedValue(pass({ intervalMinutes: 60 }));
+    mocks.inProgress = { environment: "demo", since: new Date(Date.now() - 2_000) };
+    markAgentStartRequested(Date.now() - 5_000);
+    renderStatus();
+    expect(await screen.findByText("Agent running")).toBeInTheDocument();
+    expect(screen.queryByText("Agent starting")).toBeNull();
+  });
+
+  it("ignores a request a pass already answered: a pass that started after it and ended is waiting again", async () => {
+    mocks.read.mockResolvedValue(pass({ startedAt: new Date(Date.now() - 2 * 60_000), finishedAt: new Date(Date.now() - 1_000), intervalMinutes: 60 }));
+    markAgentStartRequested(Date.now() - 3 * 60_000);
+    renderStatus();
+    expect(await screen.findByText("Agent waiting")).toBeInTheDocument();
+  });
+
+  it("still says starting when the pass that ended since the request had started before it", async () => {
+    mocks.read.mockResolvedValue(pass({ startedAt: new Date(Date.now() - 10 * 60_000), finishedAt: new Date(Date.now() - 1_000), intervalMinutes: 60 }));
+    markAgentStartRequested(Date.now() - 3 * 60_000);
+    renderStatus();
+    expect(await screen.findByText("Agent starting")).toBeInTheDocument();
   });
 
   it("says when a started pass never recorded its end", async () => {
@@ -173,7 +213,7 @@ describe("AgentStatus (#274)", () => {
   it("says a due pass is waiting to start, rather than 'just now'", async () => {
     mocks.read.mockResolvedValue(pass({ startedAt: new Date(Date.now() - 60 * 60_000 - 20_000), finishedAt: new Date(Date.now() - 59 * 60_000), intervalMinutes: 60 }));
     const { unmount } = renderStatus();
-    await screen.findByText("Agent running");
+    await screen.findByText("Agent waiting");
     expect(screen.getByTestId("agent-status")).toHaveTextContent("next pass due now, waiting for it to start");
     unmount();
     render(
@@ -181,7 +221,7 @@ describe("AgentStatus (#274)", () => {
         <AgentStatus environment="demo" variant="card" />
       </QueryClientProvider>
     );
-    await screen.findByText("Agent running");
+    await screen.findByText("Agent waiting");
     expect(screen.getByTestId("agent-status")).toHaveTextContent("Next pass due now");
     expect(screen.getByTestId("agent-status")).toHaveTextContent("Waiting for it to start");
   });

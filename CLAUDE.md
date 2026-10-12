@@ -437,8 +437,10 @@ React 19, Vite, Tailwind 4, react-router, TanStack Query; Starfish's own theme i
   own status from `{runCollection}/agent_last_run` (#274, `components/AgentStatus.tsx`), judged the same way ("capped" = the
   candidate scan hit its cap), with the next pass from `STARFISH_AGENT_SCHEDULE` (set by the deploy script from
   `AGENT_SCHEDULE`; the cadence script does not change the agent's tick) and "No agent pass recorded yet" until one is.
-  Between records it says what the agent is doing (`agentActivity`): a pass in progress (its `runningSince` mark, with a
-  sliding bar and the seconds since it started), one that started longer ago than the stale threshold and never ended,
+  Between records it says what the agent is doing (`agentActivity`): a pass in progress ("Agent running", in blue: its
+  `runningSince` mark, with a sliding bar and the seconds since it started; between passes a healthy agent is "Agent
+  waiting", with an hourglass), a start an admin's "Run agent now" asked for that has not shown yet ("Agent starting",
+  `lib/agentStart.ts`, this tab only, watched so it shows with no refresh), one that started longer ago than the stale threshold and never ended,
   or one due that has not started; it re-reads the record every 5 s while one is in progress or due (15 minutes at most
   for a due one), else every minute. Built and unit-tested.
 - **Config:** `web/src/lib/config.ts` is the only reader of `import.meta.env`. The Firebase
