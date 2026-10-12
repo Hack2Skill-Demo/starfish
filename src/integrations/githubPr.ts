@@ -49,7 +49,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { StarfishConfig } from "../config.js";
 import type { IndexEvidence, PullRequestRequest } from "../agent/loop.js";
-import { redactPii } from "../ingest/redact.js";
+import { redactHead, redactPii, redactTail } from "../ingest/redact.js";
 import { incidentUrl, runUrl } from "./links.js";
 
 export type GithubPrConfig = Pick<
@@ -361,7 +361,7 @@ export function pullRequestText(req: PullRequestRequest): { title: string; body:
     if (verify.changedFiles.length > MAX_FILES_IN_BODY) lines.push(`- … and ${verify.changedFiles.length - MAX_FILES_IN_BODY} more`);
   }
   if (verify && verify.output.trim() !== "") {
-    lines.push("", "Output (tail):", "", "```", fence(clip(verify.output.slice(-MAX_OUTPUT_IN_BODY), MAX_OUTPUT_IN_BODY)), "```");
+    lines.push("", "Output (tail):", "", "```", fence(redactTail(verify.output, MAX_OUTPUT_IN_BODY)), "```");
   }
   lines.push("", "## Adversarial review", "");
   if (req.review) {
@@ -637,7 +637,7 @@ export function createGithubClient(cfg: GithubPrConfig, deps: GithubPrDeps): Git
   }
 
   function failure(status: number, headers: Headers, json: unknown): GithubError {
-    const message = scrub(String((json as { message?: unknown } | null)?.message ?? "no message").slice(0, 300));
+    const message = redactHead(String((json as { message?: unknown } | null)?.message ?? "no message"), 300, scrub);
     if (status === 401) return new GithubError("unauthorized", `GitHub refused the token (it may have expired): ${message}`, status);
     if (status === 429 || (status === 403 && (headers.get("x-ratelimit-remaining") === "0" || headers.get("retry-after") !== null))) {
       return new GithubError("rate-limited", `GitHub rate limit reached: ${message}`, status);
@@ -765,7 +765,8 @@ export function createGithubClient(cfg: GithubPrConfig, deps: GithubPrDeps): Git
   const MAX_CHECKS = 100;
   const MAX_CHECK_PAGES = 5;
   const MAX_ANNOTATIONS = 20;
-  const bounded = (v: unknown, max: number) => scrub(typeof v === "string" ? v.slice(0, max) : "");
+  /** Text GitHub sent (a check run's output, an annotation): cut, then scrubbed, dropping what the cut left of a secret (#18). */
+  const bounded = (v: unknown, max: number) => (typeof v === "string" ? redactHead(v, max, scrub) : "");
 
   async function pushPatchBranch(req: PatchBranchRequest): Promise<{ branch: string; commit: string }> {
     const branch = checked(req);
@@ -962,7 +963,8 @@ export function createGithubClient(cfg: GithubPrConfig, deps: GithubPrDeps): Git
 
   async function commentOnPullRequest(cycleId: string, number: number, body: string): Promise<void> {
     await readPullRequest(cycleId, number); // refuses a pull request that is not this cycle's
-    const r = await call("POST", `/repos/${cfg.githubRepo}/issues/${number}/comments`, { body: body.slice(0, MAX_BODY) });
+    // Redacted here too, at the edge, whatever the caller already did (#18).
+    const r = await call("POST", `/repos/${cfg.githubRepo}/issues/${number}/comments`, { body: redactHead(body, MAX_BODY, scrub) });
     if (r.status !== 201) throw failure(r.status, r.headers, r.json);
   }
 

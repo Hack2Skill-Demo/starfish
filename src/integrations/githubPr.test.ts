@@ -600,6 +600,19 @@ describe("createGithubClient: the CI-backed verify step", () => {
     expect(a[0]!.message.length).toBeLessThanOrEqual(400);
     await expect(client().annotations(0)).rejects.toMatchObject({ rule: "invalid-request" });
   });
+
+  it("keeps no part of a secret its bound cuts through (#18)", async () => {
+    // The bound of 400 falls 11 characters into each token: cut first and redacted after, what was left was too short
+    // for its pattern, and was kept.
+    for (const secret of [SEEDED_SECRETS.github!, SEEDED_SECRETS.awsId!, SEEDED_SECRETS.stripe!]) {
+      const message = `${"word ".repeat(77)}abc ${secret} after`;
+      expect(message.indexOf(secret)).toBe(389);
+      api.annotations = () => ({ status: 200, json: [{ path: "src/a.ts", start_line: 4, annotation_level: "failure", message }] });
+      const a = await client().annotations(11);
+      expect(a[0]!.message).not.toContain(secret.slice(0, 11));
+      expect(a[0]!.message).toMatch(/^word word/);
+    }
+  });
 });
 
 const issueRequest = (over: Partial<IssueRequest> = {}): IssueRequest => ({
