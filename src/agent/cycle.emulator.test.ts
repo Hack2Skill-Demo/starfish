@@ -522,3 +522,73 @@ describe("reconsidering a declined cycle (#8)", () => {
     expect((await cycle()).startDays).toEqual(["2026-10-04", "2026-10-05"]);
   });
 });
+
+describe("retrying a cycle that ended waiting-human, on a person's request (#317)", () => {
+  const incidents = () => `${cfg.cycleCollection}_incidents`;
+  const policy = () => ({ incidentCollection: incidents(), reconsiderCooldownMinutes: 30, reconsiderMaxPerDay: 3, reconsiderBurstOccurrences: 20 });
+  const setIncident = (data: Record<string, unknown>) =>
+    db.collection(incidents()).doc(key.incidentId).set({ environment: "demo", status: "new", occurrenceCount: 5, ...data });
+  const mins = (m: number) => at(m * 60);
+
+  /** A fix the gate refused: the issue filed, the team alerted, a person told, then the cycle waits for them. */
+  async function refusedFix() {
+    await setIncident({});
+    const r = await acquireLease(db, cfg, key, "a", t0);
+    if (!r.acquired) throw new Error("setup");
+    await recordEvent(db, cfg, r.cycleId, "a", t0, { stage: "triage", type: "decision", summary: "act", record: { decision: "act" } });
+    await recordEvent(db, cfg, r.cycleId, "a", t0, { stage: "issue", type: "opened", summary: "Issue #7 filed", record: { state: "opened", number: 7, url: "https://x/7" } });
+    await recordEvent(db, cfg, r.cycleId, "a", t0, { stage: "alert", type: "sent", summary: "The team was alerted", record: { state: "sent", attempts: 1 } });
+    await recordEvent(db, cfg, r.cycleId, "a", t0, { stage: "verify", type: "rejected", summary: "The patch does not apply", record: { status: "rejected", rule: "patch-does-not-apply" } });
+    await recordEvent(db, cfg, r.cycleId, "a", t0, { stage: "notify", type: "sent", summary: "A person was told", record: { state: "sent", attempts: 1 } });
+    await finishCycle(db, cfg, r.cycleId, "a", at(1), "waiting-human", "verify-patch-does-not-apply", "human");
+  }
+
+  it("without a request it stays closed, however often it is asked", async () => {
+    await refusedFix();
+    for (const m of [5, 60, 600]) {
+      expect(await acquireLease(db, cfg, key, "b", mins(m), { reconsider: policy() })).toEqual({ acquired: false, reason: "waiting-human" });
+    }
+    expect((await cycle()).state).toBe("waiting-human");
+  });
+
+  it("reopens the same cycle on a request, and keeps the issue, the alert and the message already sent", async () => {
+    await refusedFix();
+    await setIncident({ retriageRequestedAt: mins(2) });
+    const r = await acquireLease(db, cfg, key, "b", mins(3), { reconsider: policy() });
+    expect(r).toMatchObject({ acquired: true, cycleId: "inc1_r0", attempt: 1, resumed: false, reconsidered: "operator" });
+    const c = await cycle();
+    expect(c).toMatchObject({ state: "running", owner: "b", reconsiderCount: 1, reconsideredBecause: "operator", modelCalls: 0, revisions: 0 });
+    // What was already done is not done twice: the loop reuses the issue and never resends a recorded delivery.
+    expect(c.summary.issue).toMatchObject({ state: "opened", number: 7 });
+    expect(c.summary.alert).toMatchObject({ state: "sent" });
+    expect(c.summary.notify).toMatchObject({ state: "sent" });
+    // What the refused attempt concluded is cleared so the retry decides afresh; it is in the events and `history`.
+    expect(c.summary.verify).toBeUndefined();
+    expect(c.outcome).toBeUndefined();
+    expect(c.history).toHaveLength(1);
+  });
+
+  it("is idempotent: the same request does not reopen it a second time, and the same state is reached again", async () => {
+    await refusedFix();
+    await setIncident({ retriageRequestedAt: mins(2) });
+    const r = await acquireLease(db, cfg, key, "b", mins(3), { reconsider: policy() });
+    if (!r.acquired) throw new Error("setup");
+    // The retry ends the way the first attempt did (nothing in Starfish changed): the same state and outcome.
+    await finishCycle(db, cfg, r.cycleId, "b", mins(4), "waiting-human", "verify-patch-does-not-apply", "human");
+    expect((await cycle())).toMatchObject({ state: "waiting-human", outcome: "verify-patch-does-not-apply" });
+    // The request that caused the retry is older than this settle: it is spent. Only a new one starts it again.
+    expect(await acquireLease(db, cfg, key, "c", mins(5), { reconsider: policy() })).toEqual({ acquired: false, reason: "waiting-human" });
+    await setIncident({ retriageRequestedAt: mins(6) });
+    expect(await acquireLease(db, cfg, key, "c", mins(7), { reconsider: policy() })).toMatchObject({ acquired: true, reconsidered: "operator" });
+    expect((await cycle()).reconsiderCount).toBe(2);
+  });
+
+  it("never reopens over an ignored or resolved incident, or one whose pull request is open", async () => {
+    await refusedFix();
+    await setIncident({ status: "resolved", retriageRequestedAt: mins(2) });
+    expect(await acquireLease(db, cfg, key, "b", mins(3), { reconsider: policy() })).toEqual({ acquired: false, reason: "waiting-human" });
+    await setIncident({ retriageRequestedAt: mins(2) });
+    await db.collection(cfg.cycleCollection).doc("inc1_r0").update({ "summary.pr": { opened: true, number: 9 } });
+    expect(await acquireLease(db, cfg, key, "b", mins(3), { reconsider: policy() })).toEqual({ acquired: false, reason: "waiting-human" });
+  });
+});

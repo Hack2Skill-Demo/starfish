@@ -76,11 +76,47 @@ describe("reconsiderTrigger", () => {
     expect(trigger(declined(), undefined)).toBeNull();
   });
 
-  it("only a declined cycle of the incident's current recurrence", () => {
-    for (const state of ["running", "done", "waiting-human", "failed"]) {
+  it("only a declined cycle of the incident's current recurrence (a waiting-human one only on a request, below)", () => {
+    for (const state of ["running", "done", "failed"]) {
       expect(trigger(declined({ state }), { ...baseIncident, retriageRequestedAt: at(1) })).toBeNull();
     }
     expect(trigger(declined(), { ...baseIncident, recurrenceCount: 1, retriageRequestedAt: at(1) })).toBeNull();
+  });
+
+  describe("a cycle that ended waiting-human (a retry on a person's request)", () => {
+    const waiting = (over: Record<string, unknown> = {}) => ({
+      state: "waiting-human",
+      recurrence: 0,
+      updatedAt: at(30),
+      outcome: "verify-patch-does-not-apply",
+      decision: { at: at(40), rule: "model-act", occurrenceCount: 5, causeClass: causeClass(baseIncident) },
+      summary: { issue: { state: "opened", number: 7 }, notify: { state: "sent" } },
+      ...over,
+    });
+
+    it("is reopened by a request made after it settled, and by nothing else", () => {
+      expect(trigger(waiting(), { ...baseIncident, retriageRequestedAt: at(1) })).toBe("operator");
+      // No request, or one from before it settled (already answered by it): the same replay, so the same result.
+      expect(trigger(waiting())).toBeNull();
+      expect(trigger(waiting(), { ...baseIncident, retriageRequestedAt: at(60) })).toBeNull();
+      // Not a burst, not a new cause, not a correction: a person was told, and only a person starts it over.
+      expect(trigger(waiting(), { ...baseIncident, occurrenceCount: 500, errorCode: "X", correctedLevel: "fix", correctedBy: "u1", correctedAt: at(1) })).toBeNull();
+    });
+
+    it("a request counts once: reopening writes the cycle, so the same request is then older than it", () => {
+      const asked = { ...baseIncident, retriageRequestedAt: at(10) };
+      expect(trigger(waiting({ updatedAt: at(20) }), asked)).toBe("operator");
+      expect(trigger(waiting({ updatedAt: at(5) }), asked)).toBeNull();
+    });
+
+    it("is capped per day, never over a closed or retired incident, and never over its pull request", () => {
+      const asked = { ...baseIncident, retriageRequestedAt: at(1) };
+      const used = waiting({ reconsideredAt: [at(60), at(120), at(180)] });
+      expect(trigger(used, asked)).toBeNull();
+      expect(trigger(waiting(), { ...asked, status: "resolved" })).toBeNull();
+      expect(trigger(waiting(), { ...asked, retired: true })).toBeNull();
+      expect(trigger(waiting({ summary: { pr: { opened: true, number: 9 } } }), asked)).toBeNull();
+    });
   });
 
   it("a decline kept before decisions were recorded has no baseline: only an operator can reopen it", () => {
