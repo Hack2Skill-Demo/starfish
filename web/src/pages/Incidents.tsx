@@ -44,6 +44,7 @@ import { EmptyState } from "../components/ui/EmptyState";
 import PageMeta from "../components/PageMeta";
 import SettingsUnavailableNotice from "../components/SettingsUnavailableNotice";
 import { EngineStatus } from "../components/EngineStatus";
+import { DemoAppLink } from "../components/DemoAppLink";
 import { RunIngestButton } from "../components/AdminActions";
 import { toast } from "../components/ui/toast";
 import { useAuth } from "../auth/authCore";
@@ -293,6 +294,8 @@ export default function Incidents() {
         </div>
 
         {ready && <EngineStatus environment={environment} />}
+
+        <DemoAppLink />
 
         {data?.capped && (
           <div className="flex items-start gap-3 rounded-lg border border-warning-200 bg-warning-50 p-4 text-sm text-warning-800 dark:border-warning-900/40 dark:bg-warning-900/10 dark:text-warning-300">

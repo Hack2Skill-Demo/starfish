@@ -10,7 +10,14 @@ Named for the animal that regrows what it loses.
 
 ## Try the live demo
 
-### **[ocean-starfish.web.app](https://ocean-starfish.web.app)**
+The demo has two sites: Starfish itself, and the shop it watches.
+
+| | Live site | Source |
+|---|---|---|
+| **Starfish**, the operator UI: incidents, runs, settings | **[ocean-starfish.web.app](https://ocean-starfish.web.app)** | [Hack2Skill-Demo/starfish](https://github.com/Hack2Skill-Demo/starfish) (this repo) |
+| **Demo Shop**, the app Starfish watches: synthetic customers order from it around the clock, and its **Lab** page breaks one part of it on purpose so you can watch Starfish respond | **[hack2skill-demo.web.app](https://hack2skill-demo.web.app)** | [Hack2Skill-Demo/demo-app](https://github.com/Hack2Skill-Demo/demo-app) |
+
+The shop sits behind an access code, which the team issues. Starfish needs none to look:
 
 - **No account needed to look.** Opening the link puts you in a read-only view of a live
   deployment that watches a demo project.
