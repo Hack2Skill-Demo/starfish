@@ -6,13 +6,13 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { parseCycle, parseEvent, type CycleRow, type EventRow } from "../lib/runsModel";
 
 type CyclesCb = (rows: CycleRow[], capped: boolean) => void;
-type EventsCb = (rows: EventRow[]) => void;
+type EventsCb = (rows: EventRow[], capped: boolean) => void;
 
 const mocks = vi.hoisted(() => ({
   env: { environment: "demo", ready: true, settingsUnavailable: false },
   cyclesCb: undefined as undefined | ((rows: unknown[], capped: boolean) => void),
   cyclesErr: undefined as undefined | ((e: Error) => void),
-  eventsCb: undefined as undefined | ((rows: unknown[]) => void),
+  eventsCb: undefined as undefined | ((rows: unknown[], capped?: boolean) => void),
   unsubCycles: vi.fn(),
   unsubEvents: vi.fn(),
   subscribedEvents: [] as string[],
@@ -45,6 +45,7 @@ vi.mock("../lib/runs", async (orig) => ({
 }));
 
 import Runs from "./Runs";
+import { EVENT_LIMIT } from "../lib/runs";
 
 const ts = (ms: number) => ({ toDate: () => new Date(ms) });
 const now = Date.now();
@@ -403,6 +404,17 @@ describe("Runs page", () => {
     expect(screen.queryByTestId("run-rounds")).toBeNull();
     expect(screen.queryByRole("list", { name: "Earlier rounds" })).toBeNull();
     expect(screen.getByRole("region", { name: "Pipeline" })).toHaveTextContent("from start to the last update");
+  });
+
+  it("says when a run has more events than it draws, and only then (#326)", () => {
+    renderRuns();
+    act(() => mocks.cyclesCb!([cycle("inc-a_r0", { state: "waiting-human", path: "human", leaseExpiresAt: null })], false));
+    act(() => mocks.eventsCb!([event(1, "triage", "decision", "Act", 50_000)], false));
+    expect(screen.queryByTestId("events-capped")).toBeNull();
+    act(() => mocks.eventsCb!([event(301, "escalation", "called", "Called the primary", 40_000)], true));
+    const note = screen.getByTestId("events-capped");
+    expect(note).toHaveTextContent(`Showing the newest ${EVENT_LIMIT} events of this run; older ones are not drawn`);
+    expect(screen.getByRole("region", { name: "Pipeline" })).toContainElement(note);
   });
 
   it("does not link a pull request URL that isn't https", () => {
