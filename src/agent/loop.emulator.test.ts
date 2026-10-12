@@ -12,8 +12,8 @@ import { deleteApp, initializeApp } from "firebase-admin/app";
 import { getFirestore } from "firebase-admin/firestore";
 import type { Firestore } from "firebase-admin/firestore";
 import { giveUpStrandedCycles, runCycle, type LoopDeps, type LoopSubject, type PullRequestRequest } from "./loop.js";
-import type { AlertRequest, NotifyRequest } from "../integrations/slack.js";
-import type { IssueRequest } from "../integrations/githubPr.js";
+import { buildNeedsHumanMessage, buildNewIncidentMessage, type AlertRequest, type NotifyRequest } from "../integrations/slack.js";
+import { issueText, pullRequestText, type IssueRequest } from "../integrations/githubPr.js";
 import { acquireLease } from "./cycle.js";
 import { findStrandedCycles, selectCandidates } from "./pass.js";
 import { FIX_SYSTEM, FOUND_BY_NAME_NOTE } from "./fixer.js";
@@ -191,21 +191,25 @@ describe("runCycle: the whole way through", () => {
 });
 
 describe("runCycle: seeded secrets stay out of everything that leaves the process (#18)", () => {
-  const all = Object.values(SEEDED_SECRETS);
-  /** The seeded values and the fragments of them that would still identify a leak. */
-  const leaked = (text: string) => all.filter((secret) => text.includes(secret));
+  const EMAIL = "jane.roe@example.com";
+  const all = [...Object.values(SEEDED_SECRETS), EMAIL];
+  /** The seeded values (a multi-line one by its first line, which is how it shows in JSON) found in `text`. */
+  const leaked = (text: string) => all.filter((secret) => text.includes(secret.split("\n")[0]!));
+  const UI = "https://starfish.example.test";
 
   it("keeps every seeded credential out of the prompts, the stored records and the pull request payload", async () => {
     const S = SEEDED_SECRETS;
     const leakyIncident: Incident = {
       ...incident,
-      message: `Cannot use undefined as a Firestore value; header ${S.bearerHeader}; key ${S.google}`,
+      message: `Cannot use undefined as a Firestore value; header ${S.bearerHeader}; key ${S.google}; user ${EMAIL}`,
       errorDetail: `upstream said ${S.stripe} and ${S.awsId}`,
       stackTrace: `Error at createOrder\n  token=${S.jwt}\n  hook ${S.slackHook}`,
     };
     const opened: PullRequestRequest[] = [];
+    const issues: IssueRequest[] = [];
+    const alerts: AlertRequest[] = [];
     const model = scripted({
-      triage: [{ ...act, reasoning: `saw ${S.github} in the log`, suspectedCause: `url had ${S.githubPat}` }],
+      triage: [{ ...act, reasoning: `saw ${S.github} in the log for ${EMAIL}`, suspectedCause: `url had ${S.githubPat}` }],
       // The first patch fails the gate, so the verify output is fed back to the fixer on the second call.
       fix: [
         fixOf(BAD_PATCH, { rootCause: `first try ${S.slack}` }),
@@ -213,7 +217,10 @@ describe("runCycle: seeded secrets stay out of everything that leaves the proces
       ],
       review: [{ attacks: [{ attack: `Probe ${S.stripe}`, outcome: "held", detail: `Held; output had ${S.github}` }] }],
     });
-    const base = deps(model, {}, opened);
+    const base = deps(model, {
+      openIssue: async (req) => (issues.push(req), { number: 5, url: "https://example.test/issues/5" }),
+      alert: async (req) => (alerts.push(req), { state: "sent" as const, attempts: 1 }),
+    }, opened);
     const r = await runCycle(
       {
         ...base,
@@ -239,6 +246,39 @@ describe("runCycle: seeded secrets stay out of everything that leaves the proces
     // What the pull request opener is handed. The patch is a diff of the repository's own files and goes only to a
     // pull request in that repository (the fixer refuses a patch that ADDS a credential shape); everything else is text.
     expect(leaked(JSON.stringify({ ...opened[0], patch: undefined }))).toEqual([]);
+    // What actually leaves for GitHub and Slack: the text each request is turned into (#18).
+    expect(leaked(JSON.stringify(pullRequestText({ ...opened[0]!, patch: "" })))).toEqual([]);
+    expect(issues).toHaveLength(1);
+    expect(leaked(JSON.stringify(issueText({ ...issues[0]!, uiBaseUrl: UI })))).toEqual([]);
+    expect(alerts).toHaveLength(1);
+    expect(leaked(JSON.stringify(buildNewIncidentMessage(alerts[0]!, UI)))).toEqual([]);
+  });
+
+  it("keeps them out of the needs-a-human message, its issue and the run when a person is told instead (#18)", async () => {
+    const S = SEEDED_SECRETS;
+    const leakyIncident: Incident = {
+      ...incident,
+      message: `Translation API disabled for key ${S.google}, caller ${EMAIL}`,
+      errorDetail: `Authorization: ${S.bearerHeader} ${S.awsId}`,
+      stackTrace: `Error\n  at ${S.slackHook}\n  ${S.pem}`,
+    };
+    const notified: NotifyRequest[] = [];
+    const issues: IssueRequest[] = [];
+    const model = scripted({ triage: [{ decision: "notify", reasoning: `Enable the API; the log showed ${S.github} and ${EMAIL}`, suspectedCause: `key ${S.stripe}` }] });
+    const base = deps(model, {
+      openIssue: async (req) => (issues.push(req), { number: 5, url: "https://example.test/issues/5" }),
+      notify: async (req) => (notified.push(req), { state: "sent" as const, attempts: 1 }),
+    });
+    const loaded = await base.load("inc1");
+    const r = await runCycle({ ...base, load: async () => ({ ...loaded!, subject: { incident: leakyIncident, status: "new" } }) }, key);
+    expect(r).toMatchObject({ kind: "finished", state: "waiting-human" });
+    expect(leaked(model.calls.map((c) => c.prompt).join("\n"))).toEqual([]);
+    expect(notified).toHaveLength(1);
+    expect(leaked(JSON.stringify(buildNeedsHumanMessage(notified[0]!, UI)))).toEqual([]);
+    expect(issues).toHaveLength(1);
+    expect(leaked(JSON.stringify(issueText({ ...issues[0]!, uiBaseUrl: UI })))).toEqual([]);
+    expect(leaked(JSON.stringify(await cycleDoc()))).toEqual([]);
+    expect(leaked(JSON.stringify(await events()))).toEqual([]);
   });
 });
 
