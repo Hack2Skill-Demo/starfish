@@ -3,9 +3,9 @@
  *
  * The fixer is shown file text with no line numbers and asked to write a unified diff, so the `@@ -a,b +c,d @@`
  * headers are the model's own arithmetic, and it writes the file headers as it sees fit. The first live fix attempts
- * (2026-10-12) were refused four times by the verify gate with "does not apply". Reproduced against the real model and
- * the real file, the cause was the file headers: `--- functions/src/orders/createOrder.ts` with no `a/` or `b/`, which
- * `git apply` reads as `src/orders/createOrder.ts` (it strips one leading directory) and cannot find.
+ * (2026-10-12) were refused four times by the verify gate with "does not apply". Reproduced against the live model and a
+ * real checkout, the cause was the file headers: `--- functions/src/orders/handler.ts` (for example) with no `a/` or `b/`, which
+ * `git apply` reads as `src/orders/handler.ts` (it strips one leading directory) and cannot find.
  *
  * This keeps what the model decided (which lines are context, which are removed, which are added) and rebuilds what
  * it only guessed: the `a/` and `b/` on a path it shown a file by, and where each hunk sits in the file and how many
