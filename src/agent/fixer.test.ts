@@ -49,6 +49,27 @@ function stub(response: unknown) {
 }
 
 describe("proposeFix: the outcomes", () => {
+  it("puts the model's hunks where their text is in the file, so a miscounted header does not reach the gate (#317)", async () => {
+    const source = ["const a = 1;", "await ref.set({ couponCode: input.couponCode });", "const b = 2;", ""].join("\n");
+    const miscounted = [
+      "--- a/functions/src/orders/createOrder.ts",
+      "+++ b/functions/src/orders/createOrder.ts",
+      "@@ -57,9 +57,9 @@", // not where it is, and not how many lines it spans
+      " const a = 1;",
+      "-await ref.set({ couponCode: input.couponCode });",
+      "+await ref.set({ couponCode: input.couponCode ?? null });",
+      " const b = 2;",
+      "",
+    ].join("\n");
+    const r = await proposeFix(
+      request({ files: [{ path: "functions/src/orders/createOrder.ts", content: source }] }),
+      stub(answer({ patch: miscounted })).ask
+    );
+    expect(r.outcome).toBe("proposed");
+    expect(r.patch).toContain("@@ -1,3 +1,3 @@");
+    expect(r.patch).toContain("+await ref.set({ couponCode: input.couponCode ?? null });");
+  });
+
   it("proposes a patch with the cause, the risk and the alternatives it rejected", async () => {
     const r = await proposeFix(request(), stub(answer()).ask);
     expect(r).toMatchObject({
