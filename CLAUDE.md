@@ -252,7 +252,7 @@ src/
                    cooldown + cap per 24 h; never over ignored/resolved.
                    cycle.ts reopens the same cycle in the lease transaction, so still one issue and one PR per recurrence.
                    A WAITING-HUMAN cycle (a person was told) is reopened only on an operator's `retriageRequestedAt` (the Runs
-                   page's "Retry this run"), never over an open PR: for a result Starfish itself got wrong (#317). It reuses
+                   page's "Retry with agent"), never over an open PR: for a result Starfish itself got wrong (#317). It reuses
                    the recorded issue, alert and message, so a retry files and sends nothing twice, and without a new request
                    (or a change in Starfish) it ends where it did. Emulator-tested; not yet run on the demo project
   agent/assemble.ts  one incident's inputs: shallow clone at a pinned revision, counter-check, samples, files the incident's OWN
@@ -386,7 +386,9 @@ collection-group query over `events`, with its own rule and index; a guest's rea
 `web/src/lib/runs.ts`; the waterfall logic is pure in `runsModel.ts`: a step with no event is "not
 reached", a cycle whose lease ran out is not "in progress"; the step log sits under the track, newest first, with triage's
 suspected cause and the filed issue's link in their own entries, #279; a run reopened after a decline is drawn from its
-latest reopening, says which round it is, and lists what the earlier rounds ended on, #285), an **incident evidence** page (`/incidents/:id`, `lib/evidence.ts`: only stored records, never a placeholder result; an operator's "Correct triage", the feedback engine, `components/CorrectionControl.tsx`, `lib/correctionWrite.ts`), and a **Settings** page: the Gemini, GitHub and Slack connections, the rules and feedback engines' card (GitHub and Slack read `{runCollection}/integrations`, the agent's own report of what it holds: "configured", never "connected", and "not connected yet" until the agent has run and reported), an
+latest reopening, says which round it is, and lists every step each earlier round reached, #285; a step this round did not
+reach that an earlier one did stays on the track, marked with that round's outcome; a step whose outcome means it went
+wrong unexpectedly (`failedUnexpectedly`: an error, a timeout, a failed delivery; never a rejection or a block) is red), an **incident evidence** page (`/incidents/:id`, `lib/evidence.ts`: only stored records, never a placeholder result; an operator's "Correct triage", the feedback engine, `components/CorrectionControl.tsx`, `lib/correctionWrite.ts`), and a **Settings** page: the Gemini, GitHub and Slack connections, the rules and feedback engines' card (GitHub and Slack read `{runCollection}/integrations`, the agent's own report of what it holds: "configured", never "connected", and "not connected yet" until the agent has run and reported), an
 admin editor for the runtime settings (`src/runtimeSettings.ts` reads what it saves; Class rules is the rules engine; operators and guests see the same
 settings read-only, `SettingsReadOnly`, from the operator copy), and, for admins only, **On-call** (#37,
 `pages/OnCallEditor.tsx`, `lib/onCallWrite.ts`): the people (numbers shown masked, typed in but never read back), the
@@ -437,8 +439,10 @@ React 19, Vite, Tailwind 4, react-router, TanStack Query; Starfish's own theme i
   own status from `{runCollection}/agent_last_run` (#274, `components/AgentStatus.tsx`), judged the same way ("capped" = the
   candidate scan hit its cap), with the next pass from `STARFISH_AGENT_SCHEDULE` (set by the deploy script from
   `AGENT_SCHEDULE`; the cadence script does not change the agent's tick) and "No agent pass recorded yet" until one is.
-  Between records it says what the agent is doing (`agentActivity`): a pass in progress (its `runningSince` mark, with a
-  sliding bar and the seconds since it started), one that started longer ago than the stale threshold and never ended,
+  Between records it says what the agent is doing (`agentActivity`): a pass in progress ("Agent running", in blue: its
+  `runningSince` mark, with a sliding bar and the seconds since it started; between passes a healthy agent is "Agent
+  waiting", with an hourglass), a start an admin's "Run agent now" asked for that has not shown yet ("Agent starting",
+  `lib/agentStart.ts`, this tab only, watched so it shows with no refresh), one that started longer ago than the stale threshold and never ended,
   or one due that has not started; it re-reads the record every 5 s while one is in progress or due (15 minutes at most
   for a due one), else every minute. Built and unit-tested.
 - **Config:** `web/src/lib/config.ts` is the only reader of `import.meta.env`. The Firebase

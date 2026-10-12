@@ -10,7 +10,7 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useQueries } from "@tanstack/react-query";
 import { Link, useSearchParams } from "react-router";
-import { Check, CircleDot, Copy, CornerDownRight, ExternalLink, FileText, GitMerge, GitPullRequest, GitPullRequestClosed, RotateCcw, Square, Workflow } from "lucide-react";
+import { Check, CircleDot, Copy, CornerDownRight, ExternalLink, FileText, GitMerge, GitPullRequest, GitPullRequestClosed, CirclePlay, Square, Workflow, X } from "lucide-react";
 import PageMeta from "../components/PageMeta";
 import SettingsUnavailableNotice from "../components/SettingsUnavailableNotice";
 import StoreReadHint from "../components/StoreReadHint";
@@ -48,6 +48,7 @@ import {
   triageFinding,
   triageDecision,
   triageRule,
+  isReached,
   type CycleRow,
   type EventRow,
   type RunStatus,
@@ -472,10 +473,11 @@ function RunDetail({ cycle, incident, environment, now }: { cycle: CycleRow; inc
             <button
               type="button"
               onClick={toggleReplay}
+              title="Plays back on this page the steps this run recorded. It runs nothing: Retry with agent does."
               className="inline-flex min-h-11 items-center gap-2 rounded-lg border border-gray-200 px-4 text-sm font-medium text-gray-900 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-100 dark:hover:bg-gray-700"
             >
-              {replaying ? <Square className="h-4 w-4" aria-hidden /> : <RotateCcw className="h-4 w-4" aria-hidden />}
-              {replaying ? "Stop replay" : "Replay this run"}
+              {replaying ? <Square className="h-4 w-4" aria-hidden /> : <CirclePlay className="h-4 w-4" aria-hidden />}
+              {replaying ? "Stop replay" : "Watch replay"}
             </button>
           )}
           {canRetry && <RetryRunButton incidentId={cycle.incidentId} />}
@@ -728,14 +730,43 @@ function RunTiles({ cycles, params, capped, shown }: { cycles: CycleRow[]; param
   );
 }
 
+/** What a reached step ended in: "Done: proposed", or "Failed: error" for an unexpected failure. */
+function stepVerdict(step: Pick<Step, "status" | "outcome">): string {
+  return `${step.status === "failed" ? "Failed" : "Done"}${step.outcome ? `: ${step.outcome}` : ""}`;
+}
+
 /** The line under a step on the track: what it ended in and how long it took, or how long it has been running. */
 function stepLine(step: Step, clock: number): string {
   if (step.status === "running") return step.since ? `Running · ${formatClock(clock - step.since.getTime())}` : "Running";
-  if (step.status === "not-reached") return "Not reached";
-  return `Done${step.outcome ? `: ${step.outcome}` : ""}${step.durationMs !== undefined ? ` · ${formatDuration(step.durationMs)}` : ""}`;
+  if (step.status === "not-reached") {
+    // Reached by an earlier round of a reopened run: say where it got then, not that it never ran.
+    const e = step.earlier;
+    return e ? `Not reached this round · round ${e.round}: ${e.failed ? "failed" : "done"}${e.outcome ? ` (${e.outcome})` : ""}` : "Not reached";
+  }
+  return `${stepVerdict(step)}${step.durationMs !== undefined ? ` · ${formatDuration(step.durationMs)}` : ""}`;
 }
 
-function StepNode({ status }: { status: StepStatus }) {
+function StepNode({ step }: { step: Step }) {
+  const { status } = step;
+  if (status === "failed") {
+    return (
+      <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-error-600 text-white dark:bg-error-400 dark:text-gray-950">
+        <X className="h-4 w-4" strokeWidth={3} aria-hidden />
+      </span>
+    );
+  }
+  if (status === "not-reached" && step.earlier) {
+    // Reached in an earlier round: a ring in that round's colour, with its mark inside, so it is not read as never run.
+    return step.earlier.failed ? (
+      <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border-2 border-dashed border-error-500 text-error-600 dark:border-error-400 dark:text-error-400">
+        <X className="h-3.5 w-3.5" strokeWidth={3} aria-hidden />
+      </span>
+    ) : (
+      <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border-2 border-dashed border-brand-400 text-brand-600 dark:border-brand-500 dark:text-brand-400">
+        <Check className="h-3.5 w-3.5" strokeWidth={3} aria-hidden />
+      </span>
+    );
+  }
   if (status === "done") {
     return (
       <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-brand-700 text-white dark:bg-brand-400 dark:text-gray-950">
@@ -757,13 +788,17 @@ function StepNode({ status }: { status: StepStatus }) {
 /** The line into a step: solid once it happened, pulsing while it runs, dashed while it is not reached. */
 const RAIL: Record<StepStatus, string> = {
   done: "h-0.5 bg-brand-600 dark:bg-brand-400",
+  failed: "h-0.5 bg-error-500 dark:bg-error-400",
   running: "h-0.5 bg-info-500 motion-safe:animate-pulse dark:bg-info-400",
   "not-reached": "border-t-2 border-dashed border-gray-300 dark:border-gray-600",
 };
 
-/** The loop's stages in order. Only a step a worker is on right now spins; a step with no event is "not reached". */
+/**
+ * The loop's stages in order. Only a step a worker is on right now spins; a step with no event is "not reached" (with
+ * where an earlier round got, when one reached it); a step that went wrong unexpectedly is red with a cross.
+ */
 function StepTrack({ steps, clock, handoff }: { steps: Step[]; clock: number; handoff?: string }) {
-  const lastDone = steps.map((s) => s.status).lastIndexOf("done");
+  const lastDone = steps.map(isReached).lastIndexOf(true);
   return (
     <div className="overflow-x-auto pb-1">
       <ol aria-label="Steps" className="flex min-w-[34rem]">
@@ -772,14 +807,20 @@ function StepTrack({ steps, clock, handoff }: { steps: Step[]; clock: number; ha
           return (
             <li key={step.stage} data-step={step.stage} data-status={step.status} className="flex min-w-0 flex-1 flex-col gap-1">
               <div className="mb-1.5 flex items-center" aria-hidden>
-                <StepNode status={step.status} />
+                <StepNode step={step} />
                 {next && <span className={`mx-2 flex-1 rounded ${RAIL[next.status]}`} />}
               </div>
               <span className={`pr-3 text-sm font-semibold ${step.status === "not-reached" ? "text-gray-600 dark:text-gray-400" : "text-gray-900 dark:text-white"}`}>
                 {step.title}
               </span>
               <span
-                className={`pr-3 text-xs ${step.status === "running" ? "font-medium tabular-nums text-info-800 dark:text-info-400" : "text-gray-600 dark:text-gray-400"}`}
+                className={`pr-3 text-xs ${
+                  step.status === "running"
+                    ? "font-medium tabular-nums text-info-800 dark:text-info-400"
+                    : step.status === "failed"
+                      ? "font-medium text-error-700 dark:text-error-400"
+                      : "text-gray-600 dark:text-gray-400"
+                }`}
                 title={step.status === "running" ? "Counted from when the step before ended: the engine records a step's end, not its start" : undefined}
               >
                 {stepLine(step, clock)}
@@ -806,8 +847,13 @@ function SideSteps({ steps }: { steps: Step[] }) {
       <span className="text-gray-600 dark:text-gray-400">Also recorded:</span>
       <ul aria-label="Also recorded" className="flex flex-wrap gap-2">
         {steps.map((s) => (
-          <li key={s.stage} className="inline-flex items-center gap-1.5 rounded-full bg-gray-100 px-2.5 py-1 font-medium text-gray-700 dark:bg-gray-700 dark:text-gray-200">
-            <Check className="h-3 w-3" aria-hidden />
+          <li
+            key={s.stage}
+            className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 font-medium ${
+              s.status === "failed" ? "bg-error-50 text-error-700 dark:bg-error-500/15 dark:text-error-400" : "bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-200"
+            }`}
+          >
+            {s.status === "failed" ? <X className="h-3 w-3" aria-hidden /> : <Check className="h-3 w-3" aria-hidden />}
             {s.title}
             {s.outcome ? `: ${s.outcome}` : ""}
           </li>
@@ -825,9 +871,12 @@ const SEGMENT_COLORS = [
   "bg-brand-300 dark:bg-brand-200",
 ];
 
+/** A step's segment on the time bar: red for one that failed unexpectedly, else the next colour in turn. */
+const segmentColor = (s: Step, i: number): string => (s.status === "failed" ? "bg-error-500 dark:bg-error-400" : SEGMENT_COLORS[i % SEGMENT_COLORS.length]!);
+
 /** Where the run's time went: one segment per recorded step, and the running one growing while a worker holds it. */
 function TimeBar({ water, live, clock, label }: { water: Waterfall; live: boolean; clock: number; label?: string }) {
-  const done = water.steps.filter((s) => s.status === "done" && !s.side && s.width !== undefined && s.durationMs !== undefined);
+  const done = water.steps.filter((s) => isReached(s) && !s.side && s.width !== undefined && s.durationMs !== undefined);
   const running = water.steps.find((s) => s.status === "running");
   if (done.length === 0 && !running) return null;
   const span = water.endMs - water.startMs;
@@ -843,7 +892,7 @@ function TimeBar({ water, live, clock, label }: { water: Waterfall; live: boolea
       </p>
       <div role="img" aria-label={`Time per step: ${parts.join(", ")}`} className="flex h-2.5 gap-0.5 overflow-hidden rounded-full bg-gray-200 dark:bg-gray-700">
         {done.map((s, i) => (
-          <span key={s.stage} className={SEGMENT_COLORS[i % SEGMENT_COLORS.length]} style={{ flexBasis: `${Math.max(s.width! * 100, 0.75).toFixed(2)}%` }} />
+          <span key={s.stage} className={segmentColor(s, i)} style={{ flexBasis: `${Math.max(s.width! * 100, 0.75).toFixed(2)}%` }} />
         ))}
         {running && (
           <span className="bg-info-500 motion-safe:animate-pulse dark:bg-info-400" style={{ flexBasis: `${Math.max(runningShare * 100, 0.75).toFixed(2)}%` }} />
@@ -852,7 +901,7 @@ function TimeBar({ water, live, clock, label }: { water: Waterfall; live: boolea
       <ul className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-gray-600 dark:text-gray-400" aria-hidden>
         {done.map((s, i) => (
           <li key={s.stage} className="inline-flex items-center gap-1.5">
-            <span className={`h-2.5 w-2.5 rounded-sm ${SEGMENT_COLORS[i % SEGMENT_COLORS.length]}`} />
+            <span className={`h-2.5 w-2.5 rounded-sm ${segmentColor(s, i)}`} />
             {s.title} <span className="tabular-nums text-gray-900 dark:text-gray-100">{formatDuration(s.durationMs!)}</span>
           </li>
         ))}
@@ -895,8 +944,8 @@ function GitHubRef({ url, what, repo, number, icon }: { url: string; what: strin
  * What each step said and when, newest first: the step in progress on top, then the latest finished one, so what is
  * happening now sits right under the track without scrolling. Triage's entry carries
  * its suspected cause and whose words they are; the issue's and the pull request's carry their links, each only once its
- * own step happened. For a reopened run (#285) these are its latest round's steps, and what each earlier round ended on
- * follows, newest first.
+ * own step happened. For a reopened run (#285) these are its latest round's steps, and every step each earlier round
+ * reached follows, newest round first: a review that ran in round 1 before a retry is still in the log.
  */
 function StepLog({
   steps,
@@ -922,8 +971,8 @@ function StepLog({
           <li key={step.stage} className="py-2">
             <div className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5">
               <span className="text-sm font-medium text-gray-900 dark:text-white">{step.title}</span>
-              <span className="text-xs text-gray-600 dark:text-gray-400">
-                {step.status === "running" ? "In progress" : `Done${step.outcome ? `: ${step.outcome}` : ""}`}
+              <span className={`text-xs ${step.status === "failed" ? "font-medium text-error-700 dark:text-error-400" : "text-gray-600 dark:text-gray-400"}`}>
+                {step.status === "running" ? "In progress" : stepVerdict(step)}
               </span>
               {step.at && (
                 <span className="ml-auto text-xs text-gray-600 dark:text-gray-400">
@@ -971,16 +1020,23 @@ function StepLog({
           <ol aria-label="Earlier rounds" className="mt-1 divide-y divide-gray-100 dark:divide-gray-700">
             {[...earlier].reverse().map((r) => (
               <li key={r.round} className="py-2">
-                <div className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5">
-                  <span className="text-sm font-medium text-gray-900 dark:text-white">{r.title}</span>
-                  <span className="text-xs text-gray-600 dark:text-gray-400">
-                    Round {r.round} of {rounds} · Done{r.outcome ? `: ${r.outcome}` : ""}
-                  </span>
-                  <span className="ml-auto text-xs text-gray-600 dark:text-gray-400">
-                    {formatDateTime(r.at)} · {formatDuration(r.durationMs)} into that round
-                  </span>
-                </div>
-                {r.summary && <p className="mt-0.5 whitespace-pre-wrap break-words text-sm text-gray-700 dark:text-gray-300">{r.summary}</p>}
+                <p className="text-xs font-medium text-gray-600 dark:text-gray-400">
+                  Round {r.round} of {rounds} · ended on {r.title.toLowerCase()} · {formatDuration(r.durationMs)} long
+                </p>
+                <ol aria-label={`Round ${r.round}`} className="mt-1 space-y-1.5 border-l-2 border-gray-100 pl-3 dark:border-gray-700">
+                  {r.steps.map((step) => (
+                    <li key={step.stage}>
+                      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5">
+                        <span className="text-sm font-medium text-gray-900 dark:text-white">{step.title}</span>
+                        <span className={`text-xs ${step.failed ? "font-medium text-error-700 dark:text-error-400" : "text-gray-600 dark:text-gray-400"}`}>
+                          {stepVerdict({ status: step.failed ? "failed" : "done", ...(step.outcome && { outcome: step.outcome }) })}
+                        </span>
+                        <span className="ml-auto text-xs text-gray-600 dark:text-gray-400">{formatDateTime(step.at)}</span>
+                      </div>
+                      {step.summary && <p className="mt-0.5 whitespace-pre-wrap break-words text-sm text-gray-700 dark:text-gray-300">{step.summary}</p>}
+                    </li>
+                  ))}
+                </ol>
               </li>
             ))}
           </ol>
