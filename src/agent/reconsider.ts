@@ -5,7 +5,7 @@
  * reopened only when something changed AFTER the decision:
  *
  *   operator   an operator asked for a retriage (`retriageRequestedAt` on the incident, later than the decision; an
- *              operator's write of it is allowed by firestore.rules, but no UI sends it yet);
+ *              operator's write of it is allowed by firestore.rules; the Runs page's "Retry this run" sends it);
  *   corrected  an operator corrected the incident (src/triageRules.ts, `correctedAt` later than the decision) to a level
  *              above noise: the person says the decline went too far. Like `operator`, it does not wait for the cooldown;
  *   burst      the incident's occurrences grew by at least `reconsiderBurstOccurrences` since the decision;
@@ -20,6 +20,12 @@
  * the stop; an operator's retriage request does not wait: a person asked), and a cycle is reconsidered at most
  * `reconsiderMaxPerDay` times in any 24 hours, whoever asks. An incident that is not open, or is retired, is never reconsidered: an operator's resolve or
  * ignore always wins. The daily cycle cap (pass.ts) bounds the spend on top of this.
+ *
+ * A cycle that ended `waiting-human` is reopened ONLY on an operator's request: the same `retriageRequestedAt`, later
+ * than the cycle's last write. It is for a result Starfish itself got wrong (a fix refused by its own gate for a reason
+ * that has since been fixed in Starfish); the new consideration starts from triage again and, being the same cycle, it
+ * files no second issue, sends no second alert or message, and opens no second pull request: those are recorded on the
+ * cycle and are reused. Nothing else reopens it: a burst or a new cause is not a reason to redo what a person was told.
  *
  * Pure functions: cycle.ts applies them inside the transaction that reopens the cycle, pass.ts to pick candidates.
  */
@@ -81,18 +87,30 @@ export function stoppedByClose(cycle: Record<string, unknown>): boolean {
 }
 
 /**
- * Why the declined cycle `cycle` should be triaged again now, given the incident document `incident` as stored, or null.
- * Only a `declined` cycle qualifies. A decline with no `decision` has no evidence baseline to compare the burst and cause
+ * Why the declined (or, on a person's request, waiting-human) cycle `cycle` should be triaged again now, given the incident document `incident` as stored, or null.
+ * Only a `declined` cycle qualifies on evidence; a `waiting-human` one only on an operator's request. A decline with no `decision` has no evidence baseline to compare the burst and cause
  * triggers against: it is reconsidered on an operator's request, or, when the loop stopped it because the incident was
  * closed, once the incident is open again (`reopened`, after the cooldown, #227).
  */
 export function reconsiderTrigger(cycle: Record<string, unknown>, incident: Record<string, unknown> | undefined, policy: ReconsiderPolicy, now: Date): ReconsiderTrigger | null {
-  if (cycle.state !== "declined" || incident === undefined) return null;
+  if ((cycle.state !== "declined" && cycle.state !== "waiting-human") || incident === undefined) return null;
   if (incident.retired === true || !(OPEN_INCIDENT_STATUSES as readonly string[]).includes(String(incident.status))) return null;
   // The cycle is this recurrence's: a regression since has its own cycle.
   const recurrence = typeof incident.recurrenceCount === "number" ? incident.recurrenceCount : 0;
   if (typeof cycle.recurrence === "number" && cycle.recurrence !== recurrence) return null;
   if (recentReconsiderations(cycle, now).length >= policy.reconsiderMaxPerDay) return null;
+
+  // A person was told: only a person's request starts it over. Their request counts when it came after the cycle last
+  // settled, which is also what makes it once-only: reopening writes the cycle, so the same request is not later again.
+  if (cycle.state === "waiting-human") {
+    // A pull request opened for this recurrence is its one: starting over could not be told from a second one.
+    const summary = (cycle.summary ?? undefined) as Record<string, unknown> | undefined;
+    const pr = (summary?.pr ?? undefined) as Record<string, unknown> | undefined;
+    if (pr?.opened === true) return null;
+    const asked = ms(incident.retriageRequestedAt);
+    const settled = ms(cycle.updatedAt);
+    return asked !== undefined && settled !== undefined && asked > settled && asked <= now.getTime() ? "operator" : null;
+  }
 
   const decision = (cycle.decision ?? undefined) as Record<string, unknown> | undefined;
   const decidedAt = ms(decision?.at) ?? ms(cycle.updatedAt);

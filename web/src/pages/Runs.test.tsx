@@ -26,6 +26,7 @@ vi.mock("../lib/incidents", () => ({ getIncident: mocks.getIncident }));
 vi.mock("../components/EngineStatus", () => ({ EngineStatus: ({ environment }: { environment: string }) => <div data-testid="engine">{environment}</div> }));
 // The button decides for itself who sees it (AdminActions.test.tsx); here only that the page offers it.
 vi.mock("../components/AdminActions", () => ({ RunAgentButton: () => <button type="button">Run agent now</button> }));
+vi.mock("../components/RetryRunButton", () => ({ RetryRunButton: ({ incidentId }: { incidentId: string }) => <button type="button">Retry this run ({incidentId})</button> }));
 vi.mock("../components/AgentStatus", () => ({ AgentStatus: ({ environment }: { environment: string }) => <div data-testid="agent">{environment}</div> }));
 vi.mock("../lib/runs", async (orig) => ({
   ...(await orig<typeof import("../lib/runs")>()),
@@ -610,6 +611,27 @@ describe("Runs page", () => {
     expect(steps.querySelector('[data-step="fix"]')?.getAttribute("data-status")).toBe("not-reached");
     await userEvent.click(within(detail).getByRole("button", { name: "Stop replay" }));
     expect(steps.querySelector('[data-step="fix"]')?.getAttribute("data-status")).toBe("done");
+  });
+
+  it("offers a retry on a run a person was told about, on an open incident, and on a declined one; not on a live run or a closed incident", async () => {
+    mocks.getIncident.mockResolvedValue({ id: "inc-a", functionName: "orders-createorder", errorType: "DatabaseError", errorMessage: "x", status: "new" });
+    renderRuns();
+    act(() => mocks.cyclesCb!([cycle("inc-a_r0", { state: "waiting-human", leaseExpiresAt: null, path: "human" })], false));
+    act(() => mocks.eventsCb!([event(1, "triage", "decision", "Act", 50_000)]));
+    expect(await screen.findByRole("button", { name: "Retry this run (inc-a)" })).toBeInTheDocument();
+    act(() => mocks.cyclesCb!([cycle("inc-a_r0", { state: "declined", leaseExpiresAt: null, path: "decline" })], false));
+    expect(await screen.findByRole("button", { name: "Retry this run (inc-a)" })).toBeInTheDocument();
+    act(() => mocks.cyclesCb!([cycle("inc-a_r0")], false));
+    expect(screen.queryByRole("button", { name: /Retry this run/ })).toBeNull();
+  });
+
+  it("offers no retry once the incident is resolved, or a pull request is open", async () => {
+    mocks.getIncident.mockResolvedValue({ id: "inc-a", functionName: "orders-createorder", errorType: "DatabaseError", errorMessage: "x", status: "resolved" });
+    renderRuns();
+    act(() => mocks.cyclesCb!([cycle("inc-a_r0", { state: "waiting-human", leaseExpiresAt: null, path: "human" })], false));
+    act(() => mocks.eventsCb!([event(1, "triage", "decision", "Act", 50_000)]));
+    await screen.findByRole("region", { name: "Run detail" });
+    expect(screen.queryByRole("button", { name: /Retry this run/ })).toBeNull();
   });
 
   it("offers no replay while a worker holds the run", () => {

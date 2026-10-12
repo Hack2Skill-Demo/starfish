@@ -170,8 +170,8 @@ export async function acquireLease(db: Firestore, cfg: CycleConfig, key: CycleKe
 
     const d = snap.data() as Record<string, unknown>;
     const state = d.state as CycleState;
-    if (state === "declined" && reconsider && incidentRef) {
-      // Read in this transaction (and only for a declined cycle, so an ordinary acquire never holds the incident that
+    if ((state === "declined" || state === "waiting-human") && reconsider && incidentRef) {
+      // Read in this transaction (and only for a declined or waiting-human cycle, so an ordinary acquire never holds the incident that
       // ingest writes): a concurrent operator ignore, or a second worker, cannot both pass the check and reopen.
       const incidentSnap = await tx.get(incidentRef);
       const trigger = reconsiderTrigger(d, incidentSnap.data(), reconsider, now);
@@ -206,7 +206,9 @@ export async function acquireLease(db: Firestore, cfg: CycleConfig, key: CycleKe
           "summary.fix": FieldValue.delete(),
           "summary.verify": FieldValue.delete(),
           "summary.review": FieldValue.delete(),
-          "summary.notify": FieldValue.delete(),
+          // A person was told once for this recurrence: a retry of a waiting-human cycle does not tell them again. A
+          // declined one never reached a person, so its (absent or dry-run) record goes with the rest.
+          ...(state === "declined" && { "summary.notify": FieldValue.delete() }),
           updatedAt: Timestamp.fromDate(now),
         });
         return { acquired: true, cycleId: id, attempt: 1, resumed: false, leaseExpiresAt: new Date(expires), reconsidered: trigger, modelCalls: 0, revisions: 0 };

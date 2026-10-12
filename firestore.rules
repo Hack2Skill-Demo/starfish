@@ -129,8 +129,8 @@ service cloud.firestore {
               ? request.resource.data.resolvedAt == request.time
               : !('resolvedAt' in request.resource.data));
 
-      // A retriage request (#8): ask the agent to triage a declined incident again
-      // (src/agent/reconsider.ts). Only the request's time, the server's, and who
+      // A retriage request (#8, #317): ask the agent to run an incident's declined, or waiting-for-a-person,
+      // cycle again (src/agent/reconsider.ts). Only the request's time, the server's, and who
       // asked, the caller: nothing about the incident itself, and only on an open,
       // unretired one, so it can never reopen what an operator resolved or ignored.
       // The engine still bounds how often it acts on one (a cap per 24 hours).

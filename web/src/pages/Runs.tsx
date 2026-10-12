@@ -16,6 +16,7 @@ import SettingsUnavailableNotice from "../components/SettingsUnavailableNotice";
 import StoreReadHint from "../components/StoreReadHint";
 import { AgentStatus } from "../components/AgentStatus";
 import { RunAgentButton } from "../components/AdminActions";
+import { RetryRunButton } from "../components/RetryRunButton";
 import { Badge } from "../components/ui/Badge";
 import { SyntheticBadge } from "../components/SyntheticBadge";
 import { EmptyState } from "../components/ui/EmptyState";
@@ -405,6 +406,14 @@ function RunDetail({ cycle, incident, environment, now }: { cycle: CycleRow; inc
   const replayAt = replay ? startMs + Math.max(0, clock - replay.startMs) * replay.speed : null;
   const replaying = replay !== null && replayAt !== null && replayAt < lastMs;
   const canReplay = !status.live && events !== null && spanMs > 0;
+  // A run a person was told about, or that was declined, on an open incident, and with no pull request of its own: the
+  // engine reopens that same run on request (src/agent/reconsider.ts), so it files and sends nothing twice.
+  const canRetry =
+    (cycle.state === "waiting-human" || cycle.state === "declined") &&
+    !status.live &&
+    incident !== undefined &&
+    ["new", "acknowledged", "logged", "recurred"].includes(incident.status) &&
+    prLink(cycle) === undefined;
   const toggleReplay = () =>
     setReplay(replaying ? null : { startMs: Date.now(), speed: spanMs > 90_000 ? Math.ceil(spanMs / 60_000) : 1 });
   const asLive: CycleRow | null =
@@ -469,6 +478,7 @@ function RunDetail({ cycle, incident, environment, now }: { cycle: CycleRow; inc
               {replaying ? "Stop replay" : "Replay this run"}
             </button>
           )}
+          {canRetry && <RetryRunButton incidentId={cycle.incidentId} />}
           <Link
             to={`/incidents/${encodeURIComponent(cycle.incidentId)}`}
             className="inline-flex min-h-11 items-center gap-2 rounded-lg border border-gray-200 px-4 text-sm font-medium text-gray-900 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-100 dark:hover:bg-gray-700"

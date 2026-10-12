@@ -250,7 +250,11 @@ src/
   agent/reconsider.ts  when a DECLINED cycle is triaged again (#8): an operator's `retriageRequestedAt`, a burst, or a new
                    structural cause since the recorded decision, or an incident closed mid-cycle and reopened (#227);
                    cooldown + cap per 24 h; never over ignored/resolved.
-                   cycle.ts reopens the same cycle in the lease transaction, so still one issue and one PR per recurrence
+                   cycle.ts reopens the same cycle in the lease transaction, so still one issue and one PR per recurrence.
+                   A WAITING-HUMAN cycle (a person was told) is reopened only on an operator's `retriageRequestedAt` (the Runs
+                   page's "Retry this run"), never over an open PR: for a result Starfish itself got wrong (#317). It reuses
+                   the recorded issue, alert and message, so a retry files and sends nothing twice, and without a new request
+                   (or a change in Starfish) it ends where it did. Emulator-tested; not yet run on the demo project
   agent/assemble.ts  one incident's inputs: shallow clone at a pinned revision, counter-check, samples, files the incident's OWN
                    stack trace names (never a sample's: a recent log entry is attacker-influenceable, #304);
                    when no frame names a repository file, the one file exporting the function's name (#259,
