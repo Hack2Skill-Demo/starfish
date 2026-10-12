@@ -5,25 +5,25 @@ import { dirname, join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import { normalizePatch } from "./patchNormalize.js";
 
-// The lines around the planted fault in a real checkout: the first live fix attempt (2026-10-12) proposed a change here
-// and the gate refused it with "does not apply" (#317).
-const PATH = "functions/src/orders/createOrder.ts";
+// Invented code with the shape of the case that mattered: a handler writes an optional field as `undefined`, and the
+// model's fix is one changed line. The first live fix attempts (2026-10-12) were refused as "does not apply" (#317).
+const PATH = "app/src/orders/place.ts";
 const SOURCE = [
-  "      const ref = db.collection('orders').doc();",
-  "      const now = Timestamp.now();",
+  "      const ref = store.collection('invoices').doc();",
+  "      const now = clock.now();",
   "      tx.set(ref, {",
-  "        customerId,",
-  "        lines,",
+  "        accountId,",
+  "        items,",
   "        ...totals,",
-  "        couponCode: parsed.couponCode,",
-  "        // Kept so the nightly backfill can recompute the discount if a total ever drifts.",
-  "        couponPercentOff: coupon?.percentOff ?? null,",
-  "        giftCardCode: totals.giftCardCents > 0 ? parsed.giftCardCode : null,",
-  "        giftWrap: parsed.giftWrap,",
-  "        giftNote: parsed.giftNote,",
-  "        fulfillment: parsed.fulfillment,",
-  "        tags: parsed.tags,",
-  "        status: 'placed',",
+  "        promoCode: input.promoCode,",
+  "        // Kept so the nightly job can recompute the discount if a total ever drifts.",
+  "        promoPercent: promo?.percent ?? null,",
+  "        voucherCode: totals.voucherCents > 0 ? input.voucherCode : null,",
+  "        wrapped: input.wrapped,",
+  "        note: input.note,",
+  "        delivery: input.delivery,",
+  "        labels: input.labels,",
+  "        state: 'open',",
   "      });",
   "",
 ].join("\n");
@@ -55,33 +55,33 @@ describe("normalizePatch (#317)", () => {
       `--- a/${PATH}`,
       `+++ b/${PATH}`,
       "@@ -4,7 +4,7 @@",
-      "         customerId,",
-      "         lines,",
+      "         accountId,",
+      "         items,",
       "         ...totals,",
-      "-        couponCode: parsed.couponCode,",
-      "+        couponCode: parsed.couponCode ?? null,",
-      "         // Kept so the nightly backfill can recompute the discount if a total ever drifts.",
-      "         couponPercentOff: coupon?.percentOff ?? null,",
-      "         giftCardCode: totals.giftCardCents > 0 ? parsed.giftCardCode : null,",
+      "-        promoCode: input.promoCode,",
+      "+        promoCode: input.promoCode ?? null,",
+      "         // Kept so the nightly job can recompute the discount if a total ever drifts.",
+      "         promoPercent: promo?.percent ?? null,",
+      "         voucherCode: totals.voucherCents > 0 ? input.voucherCode : null,",
       "",
     ].join("\n");
     expect(gitAccepts(good, { [PATH]: SOURCE })).toBe(true);
     const out = normalizePatch(good, files);
     expect(gitAccepts(out, { [PATH]: SOURCE })).toBe(true);
-    expect(out).toContain("+        couponCode: parsed.couponCode ?? null,");
+    expect(out).toContain("+        promoCode: input.promoCode ?? null,");
   });
 
   it("puts a/ and b/ on bare file headers: the patch the live model wrote on 2026-10-12", () => {
     // Verbatim shape of the model's answer for the coupon-less checkout: right hunk, no a/ or b/ on the paths. git
-    // strips one leading directory, looks for src/orders/createOrder.ts, and refuses it as not applying.
+    // strips one leading directory, looks for src/orders/place.ts, and refuses it as not applying.
     const live = [
       `--- ${PATH}`,
       `+++ ${PATH}`,
       "@@ -4,3 +4,3 @@",
       "         ...totals,",
-      "-        couponCode: parsed.couponCode,",
-      "+        couponCode: parsed.couponCode ?? null,",
-      "         // Kept so the nightly backfill can recompute the discount if a total ever drifts.",
+      "-        promoCode: input.promoCode,",
+      "+        promoCode: input.promoCode ?? null,",
+      "         // Kept so the nightly job can recompute the discount if a total ever drifts.",
       "",
     ].join("\n");
     expect(gitAccepts(live, { [PATH]: SOURCE })).toBe(false);
@@ -93,7 +93,7 @@ describe("normalizePatch (#317)", () => {
   it("puts b/ on a new file's bare path and leaves already-prefixed paths alone", () => {
     const fresh = ["--- /dev/null", "+++ functions/test/new.test.ts", "@@ -0,0 +1,1 @@", "+one", ""].join("\n");
     expect(normalizePatch(fresh, files)).toContain("+++ b/functions/test/new.test.ts\n");
-    const prefixed = [`--- a/${PATH}`, `+++ b/${PATH}`, "@@ -4,1 +4,1 @@", "         customerId,", ""].join("\n");
+    const prefixed = [`--- a/${PATH}`, `+++ b/${PATH}`, "@@ -4,1 +4,1 @@", "         accountId,", ""].join("\n");
     expect(normalizePatch(prefixed, files)).toContain(`--- a/${PATH}\n+++ b/${PATH}\n`);
     expect(normalizePatch(prefixed, files)).not.toContain("a/a/");
   });
@@ -104,9 +104,9 @@ describe("normalizePatch (#317)", () => {
       `+++ b/${PATH}`,
       "@@ -61,5 +61,5 @@", // the model guessed 61; the lines are at 4
       "         ...totals,",
-      "-        couponCode: parsed.couponCode,",
-      "+        couponCode: parsed.couponCode ?? null,",
-      "         // Kept so the nightly backfill can recompute the discount if a total ever drifts.",
+      "-        promoCode: input.promoCode,",
+      "+        promoCode: input.promoCode ?? null,",
+      "         // Kept so the nightly job can recompute the discount if a total ever drifts.",
       "",
     ].join("\n");
     expect(gitAccepts(wrong, { [PATH]: SOURCE })).toBe(false);
@@ -180,9 +180,9 @@ describe("normalizePatch (#317)", () => {
 
   it("never changes a line the model added", () => {
     const out = normalizePatch(
-      [`--- a/${PATH}`, `+++ b/${PATH}`, "@@ -61,3 +61,3 @@", "         ...totals,", "-        couponCode: parsed.couponCode,", "+        couponCode: parsed.couponCode ?? null, // x", ""].join("\n"),
+      [`--- a/${PATH}`, `+++ b/${PATH}`, "@@ -61,3 +61,3 @@", "         ...totals,", "-        promoCode: input.promoCode,", "+        promoCode: input.promoCode ?? null, // x", ""].join("\n"),
       files
     );
-    expect(out).toContain("+        couponCode: parsed.couponCode ?? null, // x\n");
+    expect(out).toContain("+        promoCode: input.promoCode ?? null, // x\n");
   });
 });
