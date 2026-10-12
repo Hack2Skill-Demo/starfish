@@ -360,7 +360,30 @@ describe("scripts/deploy-web.sh", () => {
       expect(r.status).not.toBe(0);
       expect(r.out).toContain("could not read Hosting site star-proj-starfish, and the reply was not a 404");
       expect(r.out).toContain("roles/firebasehosting.admin");
+      expect(r.out).toContain("(HTTP Error: 403, The caller does not have permission)");
       expect(r.calls.some((c) => /apps:list|apps:create|sites:create|deploy --only/.test(c))).toBe(false);
+    });
+
+    // #284: the CLI said what to do and the script hid it, suggesting `firebase login`, which answers "Already logged in".
+    it("outside a dry run, prints the CLI's own error for an expired session and says firebase login --reauth", () => {
+      const expired = JSON.stringify({ status: "error", error: "Authentication Error: Your credentials are no longer valid. Please run firebase login --reauth\n\nFor CI servers and headless environments, generate a new token." });
+      const r = deploy({ PROJECT_ID: "star-proj" }, { siteError: expired, google: deployed() });
+      expect(r.status).not.toBe(0);
+      expect(r.out).toContain("(Authentication Error: Your credentials are no longer valid. Please run firebase login --reauth For CI servers");
+      expect(r.out).toContain("run firebase login --reauth");
+      expect(r.out).not.toContain("firebase login?");
+      expect(r.out).toContain("roles/firebasehosting.admin");
+      expect(r.calls.some((c) => /apps:list|apps:create|sites:create|deploy --only/.test(c))).toBe(false);
+    });
+
+    it("outside a dry run, bounds the CLI's error to one line of 300 characters, and shows a reply that is not JSON as it is", () => {
+      const long = JSON.stringify({ status: "error", error: `HTTP Error: 500, ${"x".repeat(1000)}` });
+      const r = deploy({ PROJECT_ID: "star-proj" }, { siteError: long, google: deployed() });
+      expect(r.status).not.toBe(0);
+      const shown = /not a 404 \(([^)]*)\)/.exec(r.out)?.[1];
+      expect(shown).toBe(`HTTP Error: 500, ${"x".repeat(1000)}`.slice(0, 300));
+      const plain = deploy({ PROJECT_ID: "star-proj" }, { siteError: "Error: socket hang up\n", google: deployed() });
+      expect(plain.out).toContain("not a 404 (Error: socket hang up)");
     });
 
     it("outside a dry run, a 404 is a missing site: it goes on to Starfish's web app", () => {
@@ -369,6 +392,7 @@ describe("scripts/deploy-web.sh", () => {
       expect(r.status).not.toBe(0); // the stub refuses apps:list, as Actions' deployer does
       expect(r.calls.some((c) => c.includes("apps:list WEB"))).toBe(true);
       expect(r.out).toContain("create and link the site once from a terminal");
+      expect(r.out).toContain("could not list the web apps of star-proj (no reply): from a terminal, an expired Firebase session");
     });
 
     it("refuses a site reply it cannot parse rather than guessing", () => {
