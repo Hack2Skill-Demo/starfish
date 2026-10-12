@@ -29,7 +29,7 @@ describe("RetryRunButton", () => {
   it("asks for the incident's retry once, as the signed-in operator", async () => {
     const ask = vi.fn().mockResolvedValue(undefined);
     renderWith(<RetryRunButton incidentId="inc-a" ask={ask} />, ["operator"]);
-    await userEvent.click(screen.getByRole("button", { name: "Retry this run" }));
+    await userEvent.click(screen.getByRole("button", { name: "Retry with agent" }));
     await waitFor(() => expect(screen.getByRole("button", { name: "Retry requested" })).toBeDisabled());
     expect(ask).toHaveBeenCalledTimes(1);
     expect(ask).toHaveBeenCalledWith("inc-a", "u1");
@@ -39,9 +39,9 @@ describe("RetryRunButton", () => {
   it("says so when the request is refused, and can be tried again", async () => {
     const ask = vi.fn().mockRejectedValue(new Error("permission-denied"));
     renderWith(<RetryRunButton incidentId="inc-a" ask={ask} />, ["operator"]);
-    await userEvent.click(screen.getByRole("button", { name: "Retry this run" }));
+    await userEvent.click(screen.getByRole("button", { name: "Retry with agent" }));
     await waitFor(() => expect(mocks.toast.error).toHaveBeenCalled());
-    expect(screen.getByRole("button", { name: "Retry this run" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Retry with agent" })).toBeEnabled();
   });
 
   it("is not offered to a visitor with no role or no session", () => {

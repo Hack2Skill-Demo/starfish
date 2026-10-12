@@ -1,11 +1,11 @@
 /**
- * "Retry this run": asks the agent to run a finished incident's cycle again, with the engine as it is now. Only for a
+ * "Retry with agent": asks the agent to run a finished incident's cycle again, with the engine as it is now. Only for a
  * run a person was told about or that was declined, on an open incident; for anyone with a role (the rules check the
  * role again). The retry is idempotent: the same cycle is reused, so it files no second issue, sends no second alert or
  * message and opens no second pull request. It is a request: it runs on the next agent pass.
  */
 import { useState } from "react";
-import { RotateCw } from "lucide-react";
+import { Bot } from "lucide-react";
 import { Button } from "./ui/Button";
 import { toast } from "./ui/toast";
 import { useAuth } from "../auth/authCore";
@@ -37,7 +37,7 @@ export function RetryRunButton({ incidentId, ask = requestRetriage }: { incident
       aria-busy={state === "busy"}
       title="Runs this again with the engine as it is now. The same run is reused: no second issue, alert, message or pull request."
     >
-      <RotateCw className="h-4 w-4" aria-hidden /> {state === "requested" ? "Retry requested" : state === "busy" ? "Requesting…" : "Retry this run"}
+      <Bot className="h-4 w-4" aria-hidden /> {state === "requested" ? "Retry requested" : state === "busy" ? "Requesting…" : "Retry with agent"}
     </Button>
   );
 }

@@ -26,7 +26,7 @@ vi.mock("../lib/incidents", () => ({ getIncident: mocks.getIncident }));
 vi.mock("../components/EngineStatus", () => ({ EngineStatus: ({ environment }: { environment: string }) => <div data-testid="engine">{environment}</div> }));
 // The button decides for itself who sees it (AdminActions.test.tsx); here only that the page offers it.
 vi.mock("../components/AdminActions", () => ({ RunAgentButton: () => <button type="button">Run agent now</button> }));
-vi.mock("../components/RetryRunButton", () => ({ RetryRunButton: ({ incidentId }: { incidentId: string }) => <button type="button">Retry this run ({incidentId})</button> }));
+vi.mock("../components/RetryRunButton", () => ({ RetryRunButton: ({ incidentId }: { incidentId: string }) => <button type="button">Retry with agent ({incidentId})</button> }));
 vi.mock("../components/AgentStatus", () => ({ AgentStatus: ({ environment }: { environment: string }) => <div data-testid="agent">{environment}</div> }));
 vi.mock("../lib/runs", async (orig) => ({
   ...(await orig<typeof import("../lib/runs")>()),
@@ -355,11 +355,45 @@ describe("Runs page", () => {
     const log = within(screen.getByRole("list", { name: "Step log" })).getAllByRole("listitem");
     expect(log).toHaveLength(1);
     expect(log[0]).toHaveTextContent("third reason");
-    const earlier = within(screen.getByRole("list", { name: "Earlier rounds" })).getAllByRole("listitem");
+    const earlier = [...screen.getByRole("list", { name: "Earlier rounds" }).querySelectorAll(":scope > li")];
     expect(earlier.map((li) => li.textContent)).toEqual([expect.stringContaining("Round 2 of 3"), expect.stringContaining("Round 1 of 3")]);
     expect(earlier[0]).toHaveTextContent("second reason");
-    expect(earlier[0]).toHaveTextContent("10 s into that round");
+    expect(earlier[0]).toHaveTextContent("ended on triage · 10 s long");
     expect(earlier[1]).toHaveTextContent("first reason");
+  });
+
+  it("keeps a step an earlier round reached on the track, and a step that failed unexpectedly in red, both in the step log", () => {
+    const HOUR = 3_600_000;
+    renderRuns();
+    act(() =>
+      mocks.cyclesCb!(
+        [cycle("inc-a_r0", { state: "waiting-human", path: "human", leaseExpiresAt: null, createdAt: ts(now - 2 * HOUR), updatedAt: ts(now - HOUR + 6000) })],
+        false
+      )
+    );
+    act(() =>
+      mocks.eventsCb!([
+        event(1, "triage", "decision", "first", 2 * HOUR - 1000),
+        event(2, "fix", "proposed", "patch", 2 * HOUR - 2000),
+        event(3, "verify", "passed", "green", 2 * HOUR - 3000),
+        event(4, "review", "error", "The reviewer returned nothing usable.", 2 * HOUR - 4000),
+        event(5, "cycle", "reconsidered", "Retried at an operator's request", HOUR),
+        event(6, "triage", "decision", "again", HOUR - 1000),
+        event(7, "fix", "proposed", "patch again", HOUR - 2000),
+        event(8, "verify", "rejected", "The patch does not apply to the checkout.", HOUR - 3000),
+        event(9, "notify", "failed", "Slack refused the message.", HOUR - 4000),
+      ])
+    );
+    const steps = screen.getByRole("list", { name: "Steps" });
+    const review = steps.querySelector('[data-step="review"]')!;
+    expect(review).toHaveAttribute("data-status", "not-reached");
+    expect(review).toHaveTextContent("Not reached this round · round 1: failed (error)");
+    expect(screen.getByRole("list", { name: "Also recorded" })).toHaveTextContent("Tell a person: failed");
+    const log = within(screen.getByRole("list", { name: "Step log" })).getAllByRole("listitem");
+    expect(log[0]).toHaveTextContent("Tell a personFailed: failed");
+    const round1 = within(screen.getByRole("list", { name: "Round 1" })).getAllByRole("listitem");
+    expect(round1[0]).toHaveTextContent("Adversarial reviewFailed: error");
+    expect(round1[0]).toHaveTextContent("The reviewer returned nothing usable.");
   });
 
   it("says nothing about rounds for a run that was never reopened", () => {
@@ -603,7 +637,7 @@ describe("Runs page", () => {
     act(() => mocks.cyclesCb!([cycle("inc-a_r0", { state: "waiting-human", leaseExpiresAt: null, path: "human" })], false));
     act(() => mocks.eventsCb!([event(1, "triage", "decision", "Act", 50_000), event(2, "fix", "declined", "No fix", 20_000)]));
     const detail = screen.getByRole("region", { name: "Run detail" });
-    await userEvent.click(within(detail).getByRole("button", { name: "Replay this run" }));
+    await userEvent.click(within(detail).getByRole("button", { name: "Watch replay" }));
     expect(within(detail).getByText("Replaying")).toBeInTheDocument();
     expect(screen.getByTestId("run-summary")).toHaveTextContent(/^Replaying the recorded run\./);
     const steps = within(detail).getByRole("list", { name: "Steps" });
@@ -618,11 +652,11 @@ describe("Runs page", () => {
     renderRuns();
     act(() => mocks.cyclesCb!([cycle("inc-a_r0", { state: "waiting-human", leaseExpiresAt: null, path: "human" })], false));
     act(() => mocks.eventsCb!([event(1, "triage", "decision", "Act", 50_000)]));
-    expect(await screen.findByRole("button", { name: "Retry this run (inc-a)" })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Retry with agent (inc-a)" })).toBeInTheDocument();
     act(() => mocks.cyclesCb!([cycle("inc-a_r0", { state: "declined", leaseExpiresAt: null, path: "decline" })], false));
-    expect(await screen.findByRole("button", { name: "Retry this run (inc-a)" })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Retry with agent (inc-a)" })).toBeInTheDocument();
     act(() => mocks.cyclesCb!([cycle("inc-a_r0")], false));
-    expect(screen.queryByRole("button", { name: /Retry this run/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Retry with agent/ })).toBeNull();
   });
 
   it("offers no retry once the incident is resolved, or a pull request is open", async () => {
@@ -631,13 +665,13 @@ describe("Runs page", () => {
     act(() => mocks.cyclesCb!([cycle("inc-a_r0", { state: "waiting-human", leaseExpiresAt: null, path: "human" })], false));
     act(() => mocks.eventsCb!([event(1, "triage", "decision", "Act", 50_000)]));
     await screen.findByRole("region", { name: "Run detail" });
-    expect(screen.queryByRole("button", { name: /Retry this run/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Retry with agent/ })).toBeNull();
   });
 
   it("offers no replay while a worker holds the run", () => {
     renderRuns();
     act(() => mocks.cyclesCb!([cycle("inc-a_r0")], false));
     act(() => mocks.eventsCb!([event(1, "triage", "decision", "Act", 30_000)]));
-    expect(screen.queryByRole("button", { name: "Replay this run" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Watch replay" })).toBeNull();
   });
 });

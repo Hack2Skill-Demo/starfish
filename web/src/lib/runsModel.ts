@@ -419,7 +419,36 @@ export function runFilter(params: URLSearchParams): RunFilter | null {
 /** `cycle` events are the loop's own bookkeeping (started, stopped, budget), shown as notes. */
 const NOTE_STAGE = "cycle";
 
-export type StepStatus = "done" | "running" | "not-reached";
+/**
+ * `failed`: the step's last event says it went wrong in a way the run did not choose: an error, a timeout, a delivery
+ * that failed. Not a judgement the step made: a verify gate that rejected a patch, a review that blocked it or a fix that
+ * declined are `done`, since that is the step doing its job. A failed step was reached all the same.
+ */
+export type StepStatus = "done" | "failed" | "running" | "not-reached";
+
+/** A step that has an event: done or failed. */
+export const isReached = (s: Pick<Step, "status">): boolean => s.status === "done" || s.status === "failed";
+
+/**
+ * The outcomes that mean a step failed unexpectedly, per stage, as the loop writes them (src/agent/loop.ts): the fixer
+ * or the reviewer that answered nothing usable (`error`), a verify that ran out of time, an issue, alert or message
+ * that could not be delivered. Any other stage's `error` too. Never `failed` alone: the verify gate's `failed` is the
+ * tests failing, and the "fails before" run's `failed` is the evidence it looks for.
+ */
+const UNEXPECTED: Record<string, readonly string[]> = {
+  fix: ["error"],
+  verify: ["timeout"],
+  review: ["error"],
+  issue: ["failed"],
+  alert: ["failed"],
+  notify: ["failed"],
+  escalation: ["failed", "error"],
+};
+
+export function failedUnexpectedly(stage: string, outcome: string | undefined): boolean {
+  if (outcome === undefined) return false;
+  return (UNEXPECTED[stage] ?? ["error"]).includes(outcome);
+}
 
 export interface Step {
   stage: string;
@@ -439,6 +468,11 @@ export interface Step {
   since?: Date;
   /** Recorded beside the loop's own stages (the issue, the alert, telling a person...): not on the run's track. */
   side?: true;
+  /**
+   * A step this round did not reach that an earlier round of a reopened run did (#285): where it got then, so the track
+   * does not read as though it never ran.
+   */
+  earlier?: EarlierStep;
   /** Position on the run's time axis, as fractions of the whole. */
   offset?: number;
   width?: number;
@@ -450,7 +484,19 @@ export interface Step {
  */
 const REOPENED_TYPE = "reconsidered";
 
-/** The step an earlier round of a reopened run ended on (#285). */
+/** One step an earlier round of a reopened run reached: its last event in that round. */
+export interface EarlierStep {
+  round: number;
+  stage: string;
+  title: string;
+  outcome?: string;
+  summary?: string;
+  at: Date;
+  /** Its outcome is one that means it went wrong (`failedUnexpectedly`). */
+  failed: boolean;
+}
+
+/** The step an earlier round of a reopened run ended on (#285), and every step it reached. */
 export interface EarlierRound {
   /** 1 for the run's first round. */
   round: number;
@@ -461,6 +507,8 @@ export interface EarlierRound {
   at: Date;
   /** From that round's start (the cycle's start, or the reopening before it) to the event. */
   durationMs: number;
+  /** Every step the round reached, each by its last event in the round, newest first. */
+  steps: EarlierStep[];
 }
 
 export interface Waterfall {
@@ -520,9 +568,25 @@ export function buildWaterfall(cycle: CycleRow, events: readonly EventRow[], now
   const createdMs = cycle.createdAt.getTime();
   const earlier: EarlierRound[] = reopenings.flatMap((reopening, r): EarlierRound[] => {
     const before = reopenings[r - 1];
-    const last = ordered.filter((e) => e.stage !== NOTE_STAGE && e.seq < reopening.seq && (!before || e.seq > before.seq)).pop();
+    const inRound = ordered.filter((e) => e.stage !== NOTE_STAGE && e.seq < reopening.seq && (!before || e.seq > before.seq));
+    const last = inRound[inRound.length - 1];
     if (!last) return [];
     const began = before ? before.at.getTime() : createdMs;
+    const lastOf = new Map<string, EventRow>();
+    for (const e of inRound) lastOf.set(e.stage, e);
+    const steps = [...lastOf.values()]
+      .sort((a, b) => b.seq - a.seq)
+      .map(
+        (e): EarlierStep => ({
+          round: r + 1,
+          stage: e.stage,
+          title: titleOf(e.stage),
+          ...(e.type && { outcome: e.type }),
+          ...(e.summary && { summary: e.summary }),
+          at: e.at,
+          failed: failedUnexpectedly(e.stage, e.type),
+        })
+      );
     return [
       {
         round: r + 1,
@@ -532,9 +596,13 @@ export function buildWaterfall(cycle: CycleRow, events: readonly EventRow[], now
         ...(last.summary && { summary: last.summary }),
         at: last.at,
         durationMs: Math.max(0, last.at.getTime() - began),
+        steps,
       },
     ];
   });
+  // The latest earlier round that reached each stage: shown on a step this round has not reached.
+  const reachedBefore = new Map<string, EarlierStep>();
+  for (const round of earlier) for (const step of round.steps) reachedBefore.set(step.stage, step);
 
   const known: string[] = (isIndexCycle(cycle) || byStage.has("index") ? INDEX_STAGES : KNOWN_STAGES).map((s) => s.stage);
   const extra = [...byStage.keys()].filter((s) => !known.includes(s));
@@ -555,9 +623,10 @@ export function buildWaterfall(cycle: CycleRow, events: readonly EventRow[], now
   const steps: Step[] = stages.map((stage, i) => {
     const evs = byStage.get(stage);
     if (!evs) {
+      const before = reachedBefore.get(stage);
       return i === runningIdx
         ? { stage, title: titleOf(stage), status: "running", since: new Date(previousEnd) }
-        : { stage, title: titleOf(stage), status: "not-reached" };
+        : { stage, title: titleOf(stage), status: "not-reached", ...(before && { earlier: before }) };
     }
     const side = i >= known.length;
     const last = evs[evs.length - 1]!;
@@ -567,7 +636,7 @@ export function buildWaterfall(cycle: CycleRow, events: readonly EventRow[], now
     return {
       stage,
       title: titleOf(stage),
-      status: "done",
+      status: failedUnexpectedly(stage, last.type) ? "failed" : "done",
       ...(last.type && { outcome: last.type }),
       ...(last.summary && { summary: last.summary }),
       at: last.at,
@@ -598,7 +667,7 @@ export function runSummary(cycle: CycleRow, steps: readonly Step[], nowMs: numbe
   const running = steps.find((s) => s.status === "running");
   if (running) return `Working on ${running.title.toLowerCase()} now.`;
   if (cycle.state === "running") return "No worker holds this run right now; the next pass picks it up.";
-  const lastDone = [...steps].reverse().find((s) => s.status === "done" && !s.side);
+  const lastDone = [...steps].reverse().find((s) => isReached(s) && !s.side);
   // The step a path is named for needs no "after" (a pull request opened after the pull request step).
   const ownStep = (cycle.path === "pr" && lastDone?.stage === "pr") || (cycle.path === "index" && lastDone?.stage === "index");
   const after = lastDone && !ownStep ? ` after ${lastDone.title.toLowerCase()}${lastDone.outcome ? ` (${lastDone.outcome})` : ""}` : "";
@@ -736,6 +805,6 @@ export function formatDuration(ms: number): string {
  * stages plus any optional ones this run recorded; a step in flight or never reached is not counted as done.
  */
 export function progressText(steps: readonly Pick<Step, "status">[]): string {
-  const done = steps.filter((s) => s.status === "done").length;
+  const done = steps.filter(isReached).length;
   return `${done} of ${steps.length} steps recorded`;
 }
