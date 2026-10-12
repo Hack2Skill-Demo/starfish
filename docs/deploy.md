@@ -534,7 +534,10 @@ URL, built in as `VITE_STARFISH_ADMIN_API_URL`: without it an admin sees no "Run
 `STARFISH_WEB_STALE_MINUTES` (`VITE_STARFISH_STALE_MINUTES`, when the ingest's and the agent's status lines call a run or pass stopped; unset = 90)
 and, for the public demo, `STARFISH_WEB_DEMO_SIGNIN_HINT` (`VITE_STARFISH_DEMO_SIGNIN_HINT`: one line saying where a visitor
 finds the sign-in details, e.g. "They are in our presentation slides.", shown on the sign-in page and in the welcome guide;
-never the credentials themselves, since it ships in the bundle; unset = "Use the email and password you were given.").
+never the credentials themselves, since it ships in the bundle; unset = "Use the email and password you were given."),
+and `STARFISH_WEB_DEMO_APP_URL` (`VITE_STARFISH_DEMO_APP_URL`: the watched demo app's Lab, an https URL such as
+`https://hack2skill-demo.web.app/#lab`, linked from the Incidents page; unset = no link, so deleting the variable and
+re-running the workflow takes it down).
 Anonymous sign-in is **not** turned on by the workflow: it is project-wide (see `setup.md`). Input: `dry_run`.
 
 ### App Check and the uptime check (#12)

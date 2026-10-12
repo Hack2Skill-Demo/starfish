@@ -132,5 +132,8 @@ jobs:
           # Optional, the public demo only: where a visitor finds the sign-in details, shown on the sign-in page and in
           # the welcome guide (never the credentials: it ships in the bundle). Empty = a generic line.
           VITE_STARFISH_DEMO_SIGNIN_HINT: ${{ vars.STARFISH_WEB_DEMO_SIGNIN_HINT }}
+          # Optional, the public demo only: the watched demo app's Lab (an https URL), linked from the Incidents page.
+          # Empty = no link; delete the variable and re-run this workflow to take the link down.
+          VITE_STARFISH_DEMO_APP_URL: ${{ vars.STARFISH_WEB_DEMO_APP_URL }}
           DRY_RUN: ${{ inputs.dry_run && '1' || '0' }}
         run: scripts/deploy-web.sh

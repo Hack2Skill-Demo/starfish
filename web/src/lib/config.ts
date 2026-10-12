@@ -157,6 +157,11 @@ export interface WebConfig {
    * credentials themselves. "" = the guide's generic wording.
    */
   demoSignInHint: string;
+  /**
+   * The public demo only: the page of the app Starfish watches where a visitor breaks it on purpose (the demo shop's
+   * Lab). The Incidents page links to it. "" = no link: a private deployment, or the demo once the event is over.
+   */
+  demoAppUrl: string;
 }
 
 /**
@@ -209,6 +214,22 @@ export function normalizeAdminApiUrl(raw: string | undefined): string {
   return `${url.origin}${url.pathname.replace(/\/+$/, "")}`;
 }
 
+/**
+ * The demo app's link, or "" for no link. https only (the value ends up in an href), and never one carrying credentials;
+ * a path and a fragment are kept, so the link can open a page of the app (`#lab`).
+ */
+export function normalizeDemoAppUrl(raw: string | undefined): string {
+  if (!raw?.trim()) return "";
+  let url: URL;
+  try {
+    url = new URL(raw.trim());
+  } catch {
+    return "";
+  }
+  if (url.protocol !== "https:" || url.username || url.password) return "";
+  return url.href;
+}
+
 let cached: WebConfig | undefined;
 let inflight: Promise<WebConfig> | undefined;
 
@@ -247,6 +268,7 @@ export function bootstrapWebConfig(
         useEmulators: env.VITE_USE_EMULATORS === "1",
         appCheck: readAppCheckConfig(env),
         demoSignInHint: (env.VITE_STARFISH_DEMO_SIGNIN_HINT ?? "").trim().slice(0, 300),
+        demoAppUrl: normalizeDemoAppUrl(env.VITE_STARFISH_DEMO_APP_URL),
       };
       return cached;
     },

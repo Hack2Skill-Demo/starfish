@@ -3,6 +3,7 @@ import {
   FIREBASE_INIT_PATH,
   bootstrapWebConfig,
   normalizeAdminApiUrl,
+  normalizeDemoAppUrl,
   readAppCheckConfig,
   resolveFirebaseConfig,
   webConfig,
@@ -215,6 +216,17 @@ describe("normalizeAdminApiUrl", () => {
   it("shows nothing for a missing, malformed or credentialed value", () => {
     for (const bad of [undefined, "", "not a url", "ftp://x.example", "https://u:p@x.example", "https://x.example/?a=1"]) {
       expect(normalizeAdminApiUrl(bad)).toBe("");
+    }
+  });
+});
+
+describe("normalizeDemoAppUrl", () => {
+  it("keeps an https URL with its path and fragment", () => {
+    expect(normalizeDemoAppUrl(" https://shop.example/#lab ")).toBe("https://shop.example/#lab");
+  });
+  it("shows no link for a missing, malformed, non-https or credentialed value", () => {
+    for (const bad of [undefined, "", "  ", "not a url", "http://shop.example", "javascript:alert(1)", "https://u:p@shop.example"]) {
+      expect(normalizeDemoAppUrl(bad)).toBe("");
     }
   });
 });

@@ -377,7 +377,7 @@ The operator UI: sign-in, an auth provider with race guards, a two-level layout,
 page (the landing page; counts of stored records only, `lib/overviewModel.ts`; "healed on its own" is only an index run
 the engine recorded healed, `isHealedRun`; its activity feed is a
 collection-group query over `events`, with its own rule and index; a guest's reads `starfish_public_events`), the
-**Incidents** page (under each error, the incident's current run: its state, triage's reason and a link to it, `lib/useIncidentRuns.ts`), a **Runs** page (live subscription to `{cycleCollection}` and its events,
+**Incidents** page (under each error, the incident's current run: its state, triage's reason and a link to it, `lib/useIncidentRuns.ts`; with `VITE_STARFISH_DEMO_APP_URL`, a link to the demo app's Lab, `components/DemoAppLink.tsx`), a **Runs** page (live subscription to `{cycleCollection}` and its events,
 `web/src/lib/runs.ts`; the waterfall logic is pure in `runsModel.ts`: a step with no event is "not
 reached", a cycle whose lease ran out is not "in progress"; the step log sits under the track, newest first, with triage's
 suspected cause and the filed issue's link in their own entries, #279; a run reopened after a decline is drawn from its
