@@ -293,7 +293,7 @@ src/
   agent/automationSwitch.ts  the kill switch: reads the runtime settings fresh each time the loop asks; fails closed
   agent/reviewer.ts  stage 4: attacks the verified patch; verdict computed from outcomes in code, bound
                    to the patch hash the gate tested. Run by `pnpm agent` (deployed; not yet reached on a real incident)
-  agent/verifyGate.ts  stage 3: apply a patch in a scratch copy, judge the tree that results, run the
+  agent/verifyGate.ts  stage 3 (its output redacted before it is cut, `redactTail` in ingest/redact.ts, #18): apply a patch in a scratch copy, judge the tree that results, run the
                    configured command with a scrubbed env. Not a sandbox; run by `pnpm agent` (deployed; not yet reached on a real incident)
   agent/trigger.ts  an admin's "Run agent now" (#276): the admin check, an audit entry BEFORE the start, then `agent/agentJob.ts`
                    starts the DEPLOYED agent job once (Cloud Run `jobs.run`, no override): the pass a tick runs, same switches,
