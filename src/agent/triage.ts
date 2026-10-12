@@ -59,6 +59,7 @@ export type TriageRule =
   | "model-output-invalid"
   | "monitoring-only-no-cause"
   | "high-cardinality-overflow"
+  | "platform-quota"
   | "rule-cap"
   | "correction-cap";
 
@@ -299,6 +300,19 @@ export async function triageIncident(subject: TriageSubject, ask: AskJson = askJ
       "notify",
       "high-cardinality-overflow",
       "This function logged more distinct errors than the per-window cap allows, and the rest were folded into this one incident. That is a flood or an error that echoes its input, not one cause a fix can aim at: a human should look.",
+      undefined,
+      undefined,
+      cap
+    );
+  }
+
+  // A consolidated Cloud Run quota incident (ingest/platformQuota.ts) is the project's quota, exhausted across every
+  // function: requests were rejected before any code ran, so no change to the code fixes it. A person looks.
+  if (subject.incident.signalSource === "platform-quota") {
+    return result(
+      "notify",
+      "platform-quota",
+      "The project exceeded a Cloud Run quota, and requests to its functions were rejected before any of them ran. That is one project-wide event, not a defect in a function: a human should look at the quota or at what spent it (often a deploy rolling many revisions at once).",
       undefined,
       undefined,
       cap

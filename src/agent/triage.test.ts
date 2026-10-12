@@ -270,6 +270,14 @@ describe("triageIncident: a Monitoring-only incident (#19)", () => {
     expect(calls).toHaveLength(0);
   });
 
+  it("hands a consolidated Cloud Run quota incident to a person without asking the model: no code change fixes it", async () => {
+    const { ask, calls } = stub(act);
+    const r = await triageIncident({ incident: incident({ signalSource: "platform-quota" }), status: "new" }, ask);
+    expect(r).toMatchObject({ decision: "notify", rule: "platform-quota" });
+    expect(r.mergeCase).toBeUndefined();
+    expect(calls).toHaveLength(0);
+  });
+
   it("turns a model's act into notify: a count of failures is not cause evidence", async () => {
     const { ask } = stub(act);
     const r = await triageIncident({ incident: monitoringOnly(), status: "new" }, ask);

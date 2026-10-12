@@ -12,11 +12,18 @@ import type { StarfishConfig } from "../config.js";
 import { buildLogFilter, parseLogEntry, type ParsedLogEntry, type RawLogEntry } from "./parseLogEntry.js";
 import type { EntryReader } from "./counterCheck.js";
 import { detectErrorType, extractErrorCode, detectService } from "./classify.js";
-import { canonicalFunctionName, fingerprintOfLogEntry } from "./fingerprint.js";
+import { canonicalFunctionName, fingerprintOf, fingerprintOfLogEntry } from "./fingerprint.js";
 import { createRestMonitoringReader, readMonitoringFailures, type MonitoringObservation, type MonitoringReader } from "./monitoring.js";
 import { sanitize } from "./redact.js";
 import { upsertIncident, type IncidentInput, type UpsertOutcome } from "./store.js";
 import { narrowWindow, type IngestWindow } from "./window.js";
+import {
+  describePlatformQuotaImpact,
+  parsePlatformQuotaRejection,
+  PLATFORM_QUOTA_ERROR_TYPE,
+  PLATFORM_QUOTA_FUNCTION,
+  platformQuotaMessage,
+} from "./platformQuota.js";
 
 /**
  * Entries asked for per page (#296). Pages are read by hand and each is reduced to parsed entries before the next is
@@ -136,15 +143,23 @@ export const MONITORING_ONLY_ERROR_TYPE = "UnloggedFailure";
  * failure belongs to. A log incident from an EARLIER window is not annotated; this window's failures
  * without a log then open a Monitoring-only incident, which is the conservative direction (an extra
  * incident, never a hidden failure).
+ *
+ * `quotaCovered` (canonical function name -> the quota incidents it was folded into, platformQuota.ts): a function
+ * with no log input of its own but with Cloud Run quota rejections in this window counts as logged, and its reading
+ * annotates the quota incident. Its rejected requests are what Monitoring counted; a real failure of that function in
+ * the same window is then seen only on the quota incident, and opens its own incident in a window without the quota event.
  */
 export function correlateMonitoring(
   logInputs: IncidentInput[],
   observations: readonly MonitoringObservation[],
   config: Pick<StarfishConfig, "environment" | "servicePatterns">,
-  windowId: string
+  windowId: string,
+  quotaCovered: ReadonlyMap<string, IncidentInput[]> = new Map()
 ): { monitoringOnly: IncidentInput[]; annotated: number } {
-  const byFunction = new Map<string, IncidentInput[]>();
+  const byFunction = new Map<string, IncidentInput[]>(quotaCovered);
   for (const input of logInputs) {
+    // The quota incidents are reached through `quotaCovered`, by the functions they hold, never by their own name.
+    if (input.signalSource === "platform-quota") continue;
     const key = canonicalFunctionName(input.functionName);
     byFunction.set(key, [...(byFunction.get(key) ?? []), input]);
   }
@@ -219,8 +234,17 @@ export async function aggregateErrors(
 
   // Group by fingerprint before writing anything.
   const grouped = new Map<string, { input: IncidentInput }>();
+  // Per consolidated quota incident (keyed like `grouped`): the functions Cloud Run rejected and how many requests.
+  const quotaImpact = new Map<string, { functions: Set<string>; rejected: number }>();
 
   for (const parsed of read.parsed) {
+    // A project-level Cloud Run quota rejection is one event, not one per function: folded into one incident per
+    // quota metric (see platformQuota.ts), whose detail lists the functions.
+    const quota = parsePlatformQuotaRejection(parsed.errorMessage);
+    if (quota) {
+      foldPlatformQuota(grouped, quotaImpact, parsed, quota.metric, config, window);
+      continue;
+    }
 
     // Group on the SANITIZED message — the one the store fingerprints and keeps.
     // Grouping on the raw text split "No user for alice@x.com" and "No user for
@@ -271,6 +295,11 @@ export async function aggregateErrors(
     });
   }
 
+  for (const [fingerprint, impact] of quotaImpact) {
+    const quotaInput = grouped.get(fingerprint)!.input;
+    quotaInput.errorDetail = sanitize(describePlatformQuotaImpact(impact.functions, impact.rejected));
+  }
+
   // The Monitoring signal is read even when the logs were empty: a function that failed without an
   // ERROR log is exactly what it is for. Only for a window that is going to be written (a narrowed
   // read returned above), so its readings are folded in once, under this window's id.
@@ -283,7 +312,7 @@ export async function aggregateErrors(
     if (observations === null) {
       result.monitoring = { observations: 0, annotated: 0, monitoringOnly: 0, unavailable: true };
     } else {
-      const { monitoringOnly, annotated } = correlateMonitoring(queue, observations, config, window.id);
+      const { monitoringOnly, annotated } = correlateMonitoring(queue, observations, config, window.id, quotaCovered(quotaImpact, grouped));
       queue.push(...monitoringOnly);
       result.monitoring = { observations: observations.length, annotated, monitoringOnly: monitoringOnly.length, unavailable: false };
     }
@@ -352,6 +381,72 @@ export async function aggregateErrors(
   }
 
   return result;
+}
+
+/**
+ * Folds one Cloud Run quota rejection into its metric's consolidated input (platformQuota.ts), opening it on the first.
+ * Nothing of the entry but its time, project and function id is kept: the message is fixed text naming the metric
+ * (it keys the fingerprint), and a stack or cause belongs to Google's front end, not to the function.
+ */
+function foldPlatformQuota(
+  grouped: Map<string, { input: IncidentInput }>,
+  impact: Map<string, { functions: Set<string>; rejected: number }>,
+  parsed: ParsedLogEntry,
+  metric: string,
+  config: Pick<StarfishConfig, "environment">,
+  window: IngestWindow
+): void {
+  const errorMessage = platformQuotaMessage(metric);
+  const fingerprint = fingerprintOf(PLATFORM_QUOTA_FUNCTION, errorMessage, "platform-quota");
+  const seen = impact.get(fingerprint) ?? { functions: new Set<string>(), rejected: 0 };
+  seen.functions.add(parsed.functionName);
+  seen.rejected += 1;
+  impact.set(fingerprint, seen);
+
+  const found = grouped.get(fingerprint);
+  if (found) {
+    found.input.occurrenceCount += 1;
+    if (parsed.timestamp < found.input.firstOccurredAt) found.input.firstOccurredAt = parsed.timestamp;
+    if (parsed.timestamp > found.input.lastOccurredAt) found.input.lastOccurredAt = parsed.timestamp;
+    return;
+  }
+  grouped.set(fingerprint, {
+    input: {
+      functionName: PLATFORM_QUOTA_FUNCTION,
+      // A project-wide event: no one service's.
+      service: null,
+      environment: config.environment,
+      errorType: PLATFORM_QUOTA_ERROR_TYPE,
+      errorMessage,
+      occurrenceCount: 1,
+      firstOccurredAt: parsed.timestamp,
+      lastOccurredAt: parsed.timestamp,
+      ...(parsed.sourceProjectId !== undefined && { sourceProjectId: parsed.sourceProjectId }),
+      signalSource: "platform-quota",
+      windowId: window.id,
+    },
+  });
+}
+
+/**
+ * The functions whose errors this window were folded into a quota incident, each with those incidents (by canonical
+ * function name): `correlateMonitoring` annotates them with the function's Monitoring readings instead of opening a
+ * Monitoring-only incident per function for the same rejected requests, the fan-out the fold exists to prevent.
+ */
+function quotaCovered(
+  impact: ReadonlyMap<string, { functions: Set<string> }>,
+  grouped: ReadonlyMap<string, { input: IncidentInput }>
+): Map<string, IncidentInput[]> {
+  const covered = new Map<string, IncidentInput[]>();
+  for (const [fingerprint, { functions }] of impact) {
+    const input = grouped.get(fingerprint)!.input;
+    for (const fn of functions) {
+      const key = canonicalFunctionName(fn);
+      const list = covered.get(key) ?? [];
+      if (!list.includes(input)) covered.set(key, [...list, input]);
+    }
+  }
+  return covered;
 }
 
 /** The errorType of a high-cardinality overflow incident (#303): many distinct errors of one function, folded. */

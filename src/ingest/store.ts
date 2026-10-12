@@ -93,9 +93,10 @@ export interface IncidentInput {
   windowId?: string;
   /**
    * `monitoring` for a Monitoring-only incident (#19): fingerprinted in its own namespace
-   * (`fingerprintOf`), so it never accrues onto, or is accrued onto by, a log-derived incident.
+   * (`fingerprintOf`), so it never accrues onto, or is accrued onto by, a log-derived incident. `overflow` (#303) and
+   * `platform-quota` (ingest/platformQuota.ts) have namespaces of their own too.
    */
-  signalSource?: "monitoring" | "overflow";
+  signalSource?: "monitoring" | "overflow" | "platform-quota";
   /**
    * Cloud Monitoring readings for this function in the same window (#19). On a log incident they
    * annotate it; on a Monitoring-only one they are its evidence. Folded in once per window, like the
