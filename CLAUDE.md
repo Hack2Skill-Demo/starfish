@@ -140,7 +140,9 @@ src/
   ingest/          Cloud Logging → classified, fingerprinted, deduped incidents
     parseLogEntry  parse + noise suppression + the shared log filter
     classify       error type (source class > code > HTTP status > keywords), service
-    fingerprint    sha256(canonical functionName : first 100 chars of the normalized message);
+    fingerprint    sha256(canonical functionName : first 100 chars of the normalized error core: leading wrappers
+                   `Unhandled error`, `<Name>Error:` and the function's own `<fn> failed:` stripped, so one bug logged in two
+                   shapes is one incident, #318);
                    volatile ids/paths/timestamps/counts are collapsed first. Monitoring-only (`mon-`),
                    high-cardinality overflow (`ovf-`, its fixed per-day message hashed unnormalized) and consolidated Cloud Run
                    quota (`pq-`) have their own namespaces
@@ -263,6 +265,9 @@ src/
   scoreboard/      the results format (strict parser), the metrics (ratios keep numerator and denominator; an error or timeout counts
                    against the agent; each path apart) and the Markdown table: `pnpm scoreboard`. `replay.ts`/`corpus.ts` (`pnpm replay`) run
                    the loop's own stages over a frozen corpus with hidden evaluators and write a results file; no real run recorded
+  startupLog.ts    one JSON line as each deployed CLI starts (ingest, agent, admin API, verify runner): its uptime when its
+                   code starts and once its modules have loaded, to tell Cloud Run's start delay from module loading (#275);
+                   not yet read from a deployed run
   agentCli.ts      `pnpm agent`: one pass. Dry run by default; refuses to start until STARFISH_VERIFY_ISOLATION is set
                    (`in-process` is not a sandbox; `github-actions` = the target's own CI judges a pushed starfish/<cycle>
                    branch, the demo's choice; `cloud-run-job` hands the source + patch to a separate job whose service
@@ -328,7 +333,8 @@ src/
                    message (`loadSlackAlertsWebhook`, `summary.alert`). Run by `pnpm agent`; never run against real Slack
   integrations/githubPr.ts  the pull-request opener (#17): idempotent by cycle id, pushes only
                    starfish/<id>, does not merge itself, token only in git's environment. Also files the incident's issue
-                   (`openIssue`: idempotent by a marker, label `starfish`, a failure recorded on the cycle), and reads one of its PRs
+                   (`openIssue`: idempotent by a marker, label `starfish`, a failure recorded on the cycle; titles, PR, issue and
+                   commit, are cut at a word with `…` within their budget, references broken first, `titleLine`, #327), and reads one of its PRs
                    back (`readPullRequest`: refuses one not from starfish/<cycle> in the repo, or not into the configured base). For #9 only: squash-merges
                    one of its PRs at an exact head (`mergePullRequest`), comments on it, and opens the revert of its own
                    merge commit on starfish/revert-<cycle> (`openRevertPullRequest`). Never run against real
@@ -382,7 +388,8 @@ The operator UI: sign-in, an auth provider with race guards, a two-level layout,
 page (the landing page; counts of stored records only, `lib/overviewModel.ts`; "healed on its own" is only an index run
 the engine recorded healed, `isHealedRun`; its activity feed is a
 collection-group query over `events`, with its own rule and index; a guest's reads `starfish_public_events`), the
-**Incidents** page (under each error, the incident's current run: its state, triage's reason and a link to it, `lib/useIncidentRuns.ts`; with `VITE_STARFISH_DEMO_APP_URL`, a link to the demo app's Lab, `components/DemoAppLink.tsx`), a **Runs** page (live subscription to `{cycleCollection}` and its events,
+**Incidents** page (under each error, the incident's current run: its state, triage's reason and a link to it, `lib/useIncidentRuns.ts`; with `VITE_STARFISH_DEMO_APP_URL`, a link to the demo app's Lab, `components/DemoAppLink.tsx`), a **Runs** page (live subscription to `{cycleCollection}` and its newest 200 events, read newest first by `seq`; a run
+with more says older ones are not drawn, #326,
 `web/src/lib/runs.ts`; the waterfall logic is pure in `runsModel.ts`: a step with no event is "not
 reached", a cycle whose lease ran out is not "in progress"; the step log sits under the track, newest first, with triage's
 suspected cause and the filed issue's link in their own entries, #279; a run reopened after a decline is drawn from its
