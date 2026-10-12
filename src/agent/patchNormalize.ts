@@ -2,15 +2,17 @@
  * Makes a model-written unified diff something `git apply` can read (#317).
  *
  * The fixer is shown file text with no line numbers and asked to write a unified diff, so the `@@ -a,b +c,d @@`
- * headers are the model's own arithmetic. They are often wrong while the lines of the change itself are right; the
- * first live fix attempt (2026-10-12) was rejected twice by the verify gate with "does not apply".
+ * headers are the model's own arithmetic, and it writes the file headers as it sees fit. The first live fix attempts
+ * (2026-10-12) were refused four times by the verify gate with "does not apply". Reproduced against the real model and
+ * the real file, the cause was the file headers: `--- functions/src/orders/createOrder.ts` with no `a/` or `b/`, which
+ * `git apply` reads as `src/orders/createOrder.ts` (it strips one leading directory) and cannot find.
  *
  * This keeps what the model decided (which lines are context, which are removed, which are added) and rebuilds what
- * it only guessed: where each hunk sits in the file and how many lines it spans. Each hunk is found in the file by its
- * old-side text; a hunk that is not found exactly once, in order, leaves the whole file's section untouched for the
- * gate to refuse as before. It never invents a change: every `+` line is the model's, every context and `-` line is
- * rewritten from the file itself, and the verify gate still judges the result. Pure; it neither throws nor reads
- * anything but its arguments.
+ * it only guessed: the `a/` and `b/` on a path it shown a file by, and where each hunk sits in the file and how many
+ * lines it spans. Each hunk is found in the file by its old-side text; a hunk that is not found exactly once, in order,
+ * leaves the file's hunks untouched for the gate to refuse as before. It never invents a change: every `+` line is the
+ * model's, every context and `-` line is rewritten from the file itself, and the verify gate still judges the result.
+ * Pure; it neither throws nor reads anything but its arguments.
  */
 
 export interface SourceFile {
@@ -124,6 +126,22 @@ function locate(file: string[], old: string[], from: number, near: number): numb
   return -1;
 }
 
+/**
+ * The section's `---` / `+++` lines in git's own form. A path the model wrote bare (`functions/x.ts`) that names a file
+ * it was shown gets `a/` and `b/`: without them git drops the first directory and looks for a file that is not there.
+ * A new file's bare `+++` path gets `b/`. A path that already has them, or that names nothing shown, is left alone.
+ */
+function gitHeader(section: Section, shown: ReadonlyMap<string, string>): string[] {
+  return section.header.map((line) => {
+    const minus = line.startsWith("--- ");
+    if (!minus && !line.startsWith("+++ ")) return line;
+    const raw = (line.slice(4).split("\t")[0] ?? "").trim();
+    if (raw === "" || raw === "/dev/null" || /^[ab]\//.test(raw)) return line;
+    if (shown.has(raw) || (!minus && section.isNew)) return (minus ? "--- a/" : "+++ b/") + raw;
+    return line;
+  });
+}
+
 /** `start,count` as git writes it: a count of 1 is left off. */
 const range = (start: number, count: number) => (count === 1 ? `${start}` : `${start},${count}`);
 
@@ -184,13 +202,15 @@ export function normalizePatch(patch: string, files: readonly SourceFile[]): str
 
   const out: string[] = [];
   sections.forEach((sec, i) => {
+    const fixed: Section = { ...sec, header: gitHeader(sec, byPath) };
     let rebuilt: string[] | undefined;
-    if (sec.isNew) rebuilt = recountNew(sec);
-    else if (sec.path !== null && byPath.has(sec.path)) {
-      const lines = fileLines(byPath.get(sec.path) as string);
-      if (lines !== undefined) rebuilt = rebuild(sec, lines);
+    if (fixed.isNew) rebuilt = recountNew(fixed);
+    else if (fixed.path !== null && byPath.has(fixed.path)) {
+      const lines = fileLines(byPath.get(fixed.path) as string);
+      if (lines !== undefined) rebuilt = rebuild(fixed, lines);
     }
-    out.push(...(rebuilt ?? (original[i] as string[])));
+    // Left as written, apart from the file headers, when a hunk cannot be placed.
+    out.push(...(rebuilt ?? [...fixed.header, ...(original[i] as string[]).slice(sec.header.length)]));
   });
   return out.join("\n") + "\n";
 }

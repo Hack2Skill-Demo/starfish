@@ -189,8 +189,9 @@ src/
                    and the emulator; not yet run on a real incident. `scoreboard/feedbackCorpus.ts` = `pnpm feedback-corpus`
   agent/fixer.ts   stage 2: minimal patch or honest decline from a stubbed-testable model call;
                    fails closed, redacts both ways. The model's hunks are put where their text is in the files it was shown
-                   (`patchNormalize.ts`: it never invents a change, and a hunk it cannot find leaves the file's section as written
-                   for the gate to refuse; #317). Run by `pnpm agent` (deployed: declined 2026-10-08, #259; 2026-10-12 proposed a
+                   (`patchNormalize.ts`: it puts `a/` and `b/` on the bare file headers the model writes, which was the live
+                   cause of "does not apply"; it never invents a change, and a hunk it cannot find leaves the file's hunks as
+                   written for the gate to refuse; #317). Run by `pnpm agent` (deployed: declined 2026-10-08, #259; 2026-10-12 proposed a
                    patch for demo-app and the verify gate refused it as not applying, twice, #317)
   agent/cycle.ts   cycle per (incident, recurrence), transactional lease with fencing, append-only run events
                    (redacted), the cycle's run record (summary.<stage>, path) and its model-call and revision counts (#182); infrastructure errors throw, logical refusals are returned. Run by `pnpm agent` (deployed to the demo project, dry run)

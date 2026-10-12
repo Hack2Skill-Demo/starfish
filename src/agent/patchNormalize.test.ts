@@ -71,6 +71,33 @@ describe("normalizePatch (#317)", () => {
     expect(out).toContain("+        couponCode: parsed.couponCode ?? null,");
   });
 
+  it("puts a/ and b/ on bare file headers: the patch the live model wrote on 2026-10-12", () => {
+    // Verbatim shape of the model's answer for the coupon-less checkout: right hunk, no a/ or b/ on the paths. git
+    // strips one leading directory, looks for src/orders/createOrder.ts, and refuses it as not applying.
+    const live = [
+      `--- ${PATH}`,
+      `+++ ${PATH}`,
+      "@@ -4,3 +4,3 @@",
+      "         ...totals,",
+      "-        couponCode: parsed.couponCode,",
+      "+        couponCode: parsed.couponCode ?? null,",
+      "         // Kept so the nightly backfill can recompute the discount if a total ever drifts.",
+      "",
+    ].join("\n");
+    expect(gitAccepts(live, { [PATH]: SOURCE })).toBe(false);
+    const out = normalizePatch(live, files);
+    expect(out).toContain(`--- a/${PATH}\n+++ b/${PATH}\n`);
+    expect(gitAccepts(out, { [PATH]: SOURCE })).toBe(true);
+  });
+
+  it("puts b/ on a new file's bare path and leaves already-prefixed paths alone", () => {
+    const fresh = ["--- /dev/null", "+++ functions/test/new.test.ts", "@@ -0,0 +1,1 @@", "+one", ""].join("\n");
+    expect(normalizePatch(fresh, files)).toContain("+++ b/functions/test/new.test.ts\n");
+    const prefixed = [`--- a/${PATH}`, `+++ b/${PATH}`, "@@ -4,1 +4,1 @@", "         customerId,", ""].join("\n");
+    expect(normalizePatch(prefixed, files)).toContain(`--- a/${PATH}\n+++ b/${PATH}\n`);
+    expect(normalizePatch(prefixed, files)).not.toContain("a/a/");
+  });
+
   it("repairs wrong hunk positions and counts, the model's usual arithmetic slip", () => {
     const wrong = [
       `--- a/${PATH}`,
