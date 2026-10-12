@@ -27,6 +27,7 @@ import { askJson } from "../vertex.js";
 import { clipWellFormed, redactCredentials, redactPii, sanitize } from "../ingest/redact.js";
 import { renderForTriage } from "./triage.js";
 import { MAX_REVIEW_PATCH_CHARS } from "./reviewer.js";
+import { normalizePatch } from "./patchNormalize.js";
 import type { AskJson, TriageSubject } from "./triage.js";
 
 export interface SourceFile {
@@ -168,10 +169,13 @@ export async function proposeFix(req: FixRequest, ask: AskJson = askJson): Promi
   // No patch is the model saying it lacks the context. That is an answer, not a failure.
   if (a.patch.trim() === "") return { outcome: "declined", rule: "fixer-declined", rootCause: clip(a.rootCause) };
 
-  if (Buffer.byteLength(a.patch) > MAX_FIX_PATCH_BYTES) return error("patch-too-large", "The proposed patch is larger than the limit.");
   if (!looksLikeUnifiedDiff(a.patch)) return error("patch-malformed", "The proposed patch is not a unified diff.");
+  // The model counts hunk lines without line numbers, and miscounts (#317). Its hunks are put where their text is in the
+  // files it was shown; this is the patch the gate, the floor and the reviewer all see, and so the one that is hashed.
+  const patch = normalizePatch(a.patch, req.files);
+  if (Buffer.byteLength(patch) > MAX_FIX_PATCH_BYTES) return error("patch-too-large", "The proposed patch is larger than the limit.");
   // Only what the patch ADDS counts: context lines are the repository's own, which the caller already vets.
-  const added = a.patch.split("\n").filter((l) => l.startsWith("+") && !l.startsWith("+++")).join("\n");
+  const added = patch.split("\n").filter((l) => l.startsWith("+") && !l.startsWith("+++")).join("\n");
   if (redactCredentials(added) !== added) {
     return error("patch-contains-secret-shape", "The proposed patch contains credential-shaped text, so it was dropped.");
   }
@@ -180,7 +184,7 @@ export async function proposeFix(req: FixRequest, ask: AskJson = askJson): Promi
     outcome: "proposed",
     rule: "fixer-proposed",
     rootCause: clip(a.rootCause),
-    patch: a.patch,
+    patch,
     testAdded: a.testAdded,
     risk: clip(a.risk),
     rejectedAlternatives: alternatives.slice(0, MAX_ALTERNATIVES).map((x) => clip(x as string, 400)),

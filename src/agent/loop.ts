@@ -782,7 +782,14 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
         stage: "verify",
         type: verified.status,
         summary: verified.reason,
-        data: { rule: verified.rule, patchSha256: verified.patchSha256, files: verified.changedFiles.length, exitCode: verified.exitCode ?? null },
+        data: {
+          rule: verified.rule,
+          patchSha256: verified.patchSha256,
+          files: verified.changedFiles.length,
+          exitCode: verified.exitCode ?? null,
+          // Why a patch was refused (`git apply`'s own words, already redacted): without it a rejection cannot be explained (#317).
+          ...(verified.status !== "passed" && verified.output.trim() !== "" && { output: clipWellFormed(verified.output.trim(), 300) }),
+        },
         record: {
           status: verified.status,
           rule: verified.rule,
