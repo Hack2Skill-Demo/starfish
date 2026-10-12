@@ -107,13 +107,80 @@ export function canonicalFunctionName(functionName: string): string {
     .replace(/_/g, "-");
 }
 
+/** At most this many wrappers are taken off one message (`Unhandled error Error: fn failed: ...` is three). */
+const MAX_ERROR_WRAPPERS = 8;
+/** Firebase's `Unhandled error` log line, which prints the thrown error after it (`Unhandled error Error: ...`). */
+const UNHANDLED_ERROR_WRAPPER_RE = /^\s*unhandled error:?\s+/i;
 /**
- * Stable dedup key for an error.
+ * A JavaScript error's name as `String(err)` and a stack's first line print it: `Error: `, `TypeError: `,
+ * `FirebaseError: `. Case-sensitive on purpose: a class name, not the word "error" in prose (`Request error: ...`
+ * and `Errors: ...` are left alone).
+ */
+const ERROR_NAME_WRAPPER_RE = /^\s*(?:[A-Z][A-Za-z0-9_$]*)?Error:\s+/;
+/** `<token> failed: `, stripped only when the token IS the function's own name (checked by the caller). */
+const FUNCTION_FAILED_WRAPPER_RE = /^\s*([A-Za-z0-9_.-]+) failed:\s+/i;
+
+/**
+ * The error's core text: `errorMessage` with the known WRAPPER prefixes taken off its start (#318). One failure
+ * is often logged twice in two shapes, e.g. Firebase's
+ *   `Unhandled error Error: Value for argument "data" is not a valid Firestore document. ...`
+ * and the handler's own rethrow
+ *   `Error: orders-createOrder failed: Value for argument "data" is not a valid Firestore document. ...`
+ * The wrappers are the volatile part; hashing them gave one bug two fingerprints, two incidents, two cycles and two
+ * competing PRs. Stripped, both read `Value for argument "data" ...`, which is also what an unwrapped log of the same
+ * error reads.
+ *
+ * The wrappers, only at the START of the message, repeatedly (at most {@link MAX_ERROR_WRAPPERS}):
+ *   - `Unhandled error ` (also `Unhandled error: `), any case;
+ *   - an error name and a colon: `Error: `, `TypeError: `, `FirebaseError: ` (a capitalised identifier ending
+ *     in `Error`, then whitespace);
+ *   - `<function> failed: `, only when `<function>` is this incident's own function under its canonical spelling
+ *     (`orders-createOrder` for `orders-createorder`). Any other `x failed: ` (`Upload failed: timeout`,
+ *     `order 1001 failed: ...`, another function's name) is ordinary text and is kept, so two distinct failures
+ *     never merge.
+ * A wrapper is never taken when nothing but whitespace would remain (`Error: ` alone keeps its text).
+ *
+ * A message with no wrapper comes back unchanged, so its fingerprint is byte-identical to before #318. The text
+ * considered is first cut to the same {@link NORMALIZE_INPUT_CAP} {@link normalizeErrorMessage} reads, which
+ * bounds the work. Only the fingerprint uses this: the stored message keeps the text as logged, for display.
+ */
+export function errorCore(errorMessage: string, functionName: string): string {
+  let text = String(errorMessage ?? "").substring(0, NORMALIZE_INPUT_CAP);
+  const fn = canonicalFunctionName(functionName);
+  for (let i = 0; i < MAX_ERROR_WRAPPERS; i += 1) {
+    const prefix = wrapperPrefix(text, fn);
+    if (prefix === undefined || text.slice(prefix).trim() === "") break;
+    text = text.slice(prefix);
+  }
+  return text;
+}
+
+/** The length of the one wrapper `text` starts with, or undefined when it starts with none. */
+function wrapperPrefix(text: string, canonicalFn: string): number | undefined {
+  const plain = UNHANDLED_ERROR_WRAPPER_RE.exec(text) ?? ERROR_NAME_WRAPPER_RE.exec(text);
+  if (plain) return plain[0].length;
+  const failed = FUNCTION_FAILED_WRAPPER_RE.exec(text);
+  return failed && canonicalFn !== "" && canonicalFunctionName(failed[1]!) === canonicalFn ? failed[0].length : undefined;
+}
+
+/** sha256 of the canonical function name and the first 100 characters of the normalized text, 16 hex characters. */
+function hashNormalized(functionName: string, text: string): string {
+  const normalizedFn = canonicalFunctionName(functionName);
+  const normalizedMessage = normalizeErrorMessage(text).substring(0, FINGERPRINT_MESSAGE_CHARS);
+  return createHash("sha256")
+    .update(`${normalizedFn}:${normalizedMessage}`)
+    .digest("hex")
+    .substring(0, 16);
+}
+
+/**
+ * Stable dedup key for a log error.
  *
  * Derived from the canonical function name plus the first 100 characters of the
- * NORMALIZED message (see {@link normalizeErrorMessage}), so the same recurring
- * failure hashes identically across runs whatever per-occurrence ids, paths,
- * timestamps or counts its message embeds. Normalization runs BEFORE the 100-char
+ * NORMALIZED core of the message (see {@link errorCore} and {@link normalizeErrorMessage}),
+ * so the same recurring failure hashes identically across runs whatever per-occurrence ids,
+ * paths, timestamps or counts its message embeds, and whichever wrapper (`Unhandled error`,
+ * `Error: `, `<function> failed: `) it was logged under. Normalization runs BEFORE the 100-char
  * cut: a volatile token's length varies, so cutting the raw text first would put the
  * boundary in a different place for each variant.
  *
@@ -121,12 +188,7 @@ export function canonicalFunctionName(functionName: string): string {
  * Firestore, where a legacy or malformed row must not crash a whole batch.
  */
 export function computeErrorFingerprint(functionName: string, errorMessage: string): string {
-  const normalizedFn = canonicalFunctionName(functionName);
-  const normalizedMessage = normalizeErrorMessage(errorMessage).substring(0, FINGERPRINT_MESSAGE_CHARS);
-  return createHash("sha256")
-    .update(`${normalizedFn}:${normalizedMessage}`)
-    .digest("hex")
-    .substring(0, 16);
+  return hashNormalized(functionName, errorCore(errorMessage, functionName));
 }
 
 /**
@@ -186,7 +248,9 @@ function overflowFingerprint(functionName: string, errorMessage: string): string
  */
 export function fingerprintOf(functionName: string, errorMessage: string, signalSource?: unknown): string {
   if (signalSource === "overflow") return overflowFingerprint(functionName, errorMessage);
-  const base = computeErrorFingerprint(functionName, errorMessage);
-  if (signalSource === "monitoring") return `${MONITORING_FINGERPRINT_PREFIX}${base}`;
-  return signalSource === "platform-quota" ? `${PLATFORM_QUOTA_FINGERPRINT_PREFIX}${base}` : base;
+  // The namespaced records hash their fixed message as it always was: no wrapper is ever stripped from it (#318),
+  // so no Monitoring-only or quota incident's fingerprint moves.
+  if (signalSource === "monitoring") return `${MONITORING_FINGERPRINT_PREFIX}${hashNormalized(functionName, errorMessage)}`;
+  if (signalSource === "platform-quota") return `${PLATFORM_QUOTA_FINGERPRINT_PREFIX}${hashNormalized(functionName, errorMessage)}`;
+  return computeErrorFingerprint(functionName, errorMessage);
 }

@@ -192,6 +192,18 @@ describe("fetchRecentErrorSamples", () => {
     expect(await fetchRecentErrorSamples(logging, source, "ordersCreate", fp, { nowMs })).toHaveLength(1);
   });
 
+  it("takes the same bug logged under another wrapper as a sample of the incident (#318)", async () => {
+    // Stored from Firebase's `Unhandled error` line; the handler's own rethrow is the same incident.
+    const fp = fingerprintOf("ordersCreate", sanitize(`Unhandled error Error: ${MESSAGE}`) ?? "");
+    const logging = serving([
+      entry(`Error: ordersCreate failed: ${MESSAGE}`, "at create (/app/src/orders.ts:10:5)"),
+      entry(`Error: billing failed: ${MESSAGE}`, "at bill (/app/src/billing.ts:1:1)"),
+    ]);
+    const samples = await fetchRecentErrorSamples(logging, source, "ordersCreate", fp, { nowMs });
+    // Another function's name in the wrapper is text, not a wrapper: not this incident.
+    expect(samples?.map((s) => s.stack)).toEqual(["at create (/app/src/orders.ts:10:5)"]);
+  });
+
   it("reads one bounded page, newest first, and stops at three samples", async () => {
     const logging = serving(Array.from({ length: 80 }, () => entry(MESSAGE, "at create (/app/src/orders.ts:10:5)")));
     const samples = await fetchRecentErrorSamples(logging, source, "ordersCreate", FP, { nowMs });
