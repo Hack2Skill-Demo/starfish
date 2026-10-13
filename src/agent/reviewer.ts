@@ -23,7 +23,7 @@
  * model in its tests.
  */
 import { createHash } from "node:crypto";
-import { askJson } from "../vertex.js";
+import { askJson, modelCallFailure } from "../vertex.js";
 import { clipWellFormed, redactCredentials, redactPii } from "../ingest/redact.js";
 import { renderForTriage } from "./triage.js";
 import type { AskJson } from "./triage.js";
@@ -188,8 +188,8 @@ export async function reviewPatch(req: ReviewRequest, ask: AskJson = askJson): P
   try {
     raw = await ask<unknown>(renderForReview(req), REVIEW_SYSTEM, REVIEW_SCHEMA);
   } catch (err) {
-    // An error's message can quote what it was sent, so only its name is kept.
-    return none("model-call-failed", `The model call failed (${err instanceof Error ? err.name : "unknown error"}).`);
+    // An error's message can quote what it was sent, so only names and codes are kept (#334).
+    return none("model-call-failed", modelCallFailure(err));
   }
 
   const parsed = parseAttacks(raw);

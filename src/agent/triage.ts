@@ -38,7 +38,7 @@
  * Run by the agent job (`pnpm agent`), and not on Google's Agent Development Kit yet: this is the stage's
  * contract, testable with a stubbed model, so the orchestration can be put around it.
  */
-import { askJson } from "../vertex.js";
+import { askJson, modelCallFailure } from "../vertex.js";
 import { clipWellFormed, sanitize } from "../ingest/redact.js";
 import type { ErrorLogSample } from "../ingest/counterCheck.js";
 import { OPEN_INCIDENT_STATUSES, type Incident, type IncidentStatus } from "../types.js";
@@ -352,8 +352,8 @@ export async function triageIncident(subject: TriageSubject, ask: AskJson = askJ
       cases.length > 0 ? triageSchemaWithMergeCase(cases) : TRIAGE_SCHEMA
     );
   } catch (err) {
-    // An error's message can quote the incident text it was given, so only its name is kept.
-    return result("error", "model-call-failed", `The model call failed (${err instanceof Error ? err.name : "unknown error"}).`, undefined, undefined, cap);
+    // An error's message can quote the incident text it was given, so only names and codes are kept (#334).
+    return result("error", "model-call-failed", modelCallFailure(err), undefined, undefined, cap);
   }
 
   const answer = parseModelAnswer(raw);
