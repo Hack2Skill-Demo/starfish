@@ -1,9 +1,21 @@
 # UI mockups
 
-> **Status: designed, not built.** These are design mockups of the operator UI Starfish is
-> heading toward, and of the demo. Of everything shown here, only the incidents table
-> (`web/src/pages/Incidents.tsx`), sign-in and the descriptive settings page exist today. The
-> data on every screen is illustrative, not real.
+> **Status: design mockups, partly built.** These are the designs of the operator UI and the demo, drawn before the
+> pages were built. The data on every screen is illustrative, not real, and no screen here is a capture of the product:
+> for that, see the README's captures of the public demo (`docs/screenshots/`). Where a page is now built, it differs
+> from its mockup; the table below says which screens have a built page and how they differ.
+
+| Mockup | Built page | How the built page differs |
+|---|---|---|
+| **Overview** | `web/src/pages/Overview.tsx`, the landing page | Counts and medians of stored records only, never an accuracy score, with the engine's and the agent's status lines; "healed on its own" counts only index runs the engine recorded healed, and none has been. |
+| **Live runs** | `web/src/pages/Runs.tsx` (the Runs page) | A run list beside a dark hero card for the chosen run, a horizontal track of steps and a text step log under it, each step marked with who did it. No per-step time axis or rich per-step cards (log excerpt, issue card, Slack preview) as drawn. The deploy and recovery steps are not built, and no missing-index run has gone through the real system. |
+| **Incident story** | `web/src/pages/IncidentDetail.tsx` (`/incidents/:id`, the evidence page) | One page of stored records (detected, recount, triage, fix, verify, review, PR), not a step-by-step story; it keeps the patch's SHA-256, not its text, and links to the PR's diff. |
+| **Incidents** | `web/src/pages/Incidents.tsx` | Under each error, the agent's run for its current recurrence and its issue or PR. |
+| **Settings** (connections, engine rules, on-call) | `web/src/pages/Settings.tsx`, `SettingsEditor.tsx`, `OnCallEditor.tsx` | Connections read the agent's own report ("configured", never "connected"); the rules and feedback engines' card and the runtime settings editor; On-call for admins only. |
+| **Slack and GitHub** | The messages and the issue and PR bodies the agent writes (`src/integrations/`) | Fixed templates over redacted fields. Both Slack messages posted for real since 2026-10-11, issues and PRs opened on real GitHub since 2026-10-12; the merge, evidence comment and revert never run against real GitHub. `#ops-log` ("Healed") is not built. |
+| **Phone escalation** | `src/oncall/` | Built, off by default, never run against real Twilio. |
+| **The demo app** (shop and Scenario lab) | The separate demo-app and demo-control repositories | Not part of this repository. |
+| **How it works** | None | A slide for the pitch, not a page. |
 
 The mockups follow the decisions already tracked in the issues:
 
@@ -48,6 +60,8 @@ The shop with each feature's broken and working states, then the Scenario lab.
 
 ### Live runs, one per MVP case
 
+The built Runs page looks different (table above); these are the designs it started from.
+
 Missing index: Starfish creates the index; the evidence PR waits for a human.
 
 ![Live runs: missing index](screens/live-runs-index.png)
@@ -68,7 +82,7 @@ Decline: a one-off transient, with the reason recorded.
 
 ![Incident story: the fix](screens/incident-story-fix.png)
 
-The incidents table exists today. In this mockup it carries demo data, and its menu shows the planned Overview, Live runs and Settings pages.
+In this mockup the incidents table carries demo data, and its menu shows the Overview, Live runs and Settings pages as they were planned; all of them are now built, and differ from these designs (table above).
 
 ![Incidents](screens/incidents.png)
 
