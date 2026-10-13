@@ -749,11 +749,4 @@ describe("Runs page", () => {
     expect(entries()[1]).toHaveTextContent("Draft a fix");
     expect(screen.getByRole("button", { name: /Oldest first/ })).toBeInTheDocument();
   });
-
-  it("says when one long step is drawn shortened on the time axis", () => {
-    renderRuns();
-    act(() => mocks.cyclesCb!([cycle("inc-a_r0", { state: "waiting-human", path: "human", leaseExpiresAt: null, createdAt: ts(now - 3_700_000), updatedAt: ts(now - 1000) })], false));
-    act(() => mocks.eventsCb!([event(1, "triage", "decision", "Act", 175_000), event(2, "fix", "proposed", "A guard", 135_000), event(3, "review", "block", "No", 1000)]));
-    expect(screen.getByTestId("axis-shortened")).toHaveTextContent("Triage's 58 min 45 s is drawn shortened on the time axis");
-  });
 });

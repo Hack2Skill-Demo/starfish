@@ -400,9 +400,8 @@ reached", a cycle whose lease ran out is not "in progress"; a dark hero card ope
 newest first (oldest first on request), with triage's
 suspected cause and the filed issue's link in their own entries, #279, and each step's recorded details (triage's level
 among the four, the fix's risk and rejected alternatives, the gate's checks, the review's attacks; `lib/runStepDetail.ts`,
-only when the record is that step's own) and its bar on the run's time axis, one step of over 60% drawn shortened and said so
-(`timeAxis`), ticked along the top with a line down through every step like a browser's network waterfall (`axisTicks`); each
-step wears the mark of who did it: Starfish's for triage, Gemini's for the fix, GitHub's for the issue (and for verify only when
+only when the record is that step's own; no time axis beside them: the column was too narrow to read); each
+step wears the mark of who did it: Starfish's for triage, Gemini's for the fix, GitHub's for the issue, the pull request and the merge (and for verify only when
 the record says GitHub's checks judged it, `judgedOnGitHub`), Slack's for its messages; a run reopened after a decline is drawn from its
 latest reopening, says which round it is, and lists every step each earlier round reached, #285; a step this round did not
 reach that an earlier one did stays on the track, marked with that round's outcome; a step whose outcome means it went
