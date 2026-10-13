@@ -332,7 +332,7 @@ src/
                    candidate when the admin lists the reserved `missing-index` merge case. Run by
                    `pnpm agent`; tested against fakes and the emulator, never run against Google
   integrations/slack.ts  Slack delivery (#17): one "needs a human" message through an incoming webhook, from redacted plain-text
-                   fields; bounded retries, a failed delivery is a recorded result (`summary.notify`), a dry run sends nothing; the webhook
+                   fields, with what the person can do now (`src/handoff.ts`, shared with the Runs page); bounded retries, a failed delivery is a recorded result (`summary.notify`), a dry run sends nothing; the webhook
                    (a secret, `loadSlackOnCallWebhook`) never appears in a result. Also the optional #ops-alerts "new incident"
                    message (`loadSlackAlertsWebhook`, `summary.alert`). Run by `pnpm agent`; both messages posted to real Slack since 2026-10-11 (#330)
   integrations/githubPr.ts  the pull-request opener (#17): idempotent by cycle id, pushes only
@@ -395,7 +395,9 @@ the engine recorded healed, `isHealedRun`; its activity feed is a
 collection-group query over `events`, with its own rule and index; a guest's reads `starfish_public_events`), the
 **Incidents** page (under each error, the incident's current run: its state, triage's reason and a link to it, `lib/useIncidentRuns.ts`; with `VITE_STARFISH_DEMO_APP_URL`, a link to the demo app's Lab, `components/DemoAppLink.tsx`), a **Runs** page (live subscription to `{cycleCollection}` and its newest 200 events, read newest first by `seq`; a run
 with more says older ones are not drawn, #326,
-`web/src/lib/runs.ts`; the waterfall logic is pure in `runsModel.ts`: a step with no event is "not
+`web/src/lib/runs.ts`; a run waiting for the person it told, on an open incident, gets a "What you can do now" card
+(`components/HandoffCard.tsx`: acknowledge, fix and resolve, retry, correct triage, ignore, each beside its control; the
+same list `src/handoff.ts` puts in the Slack "needs a human" message); the waterfall logic is pure in `runsModel.ts`: a step with no event is "not
 reached", a cycle whose lease ran out is not "in progress"; the hero card's corner button shows the run full width (the run
 list hidden; only while a run is shown), kept per browser like the sidebar's collapse; a dark hero card opens the run (the error, its count, how far it got, the actions); the step log sits under the track,
 newest first (oldest first on request), with triage's

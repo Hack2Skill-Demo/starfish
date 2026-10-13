@@ -27,6 +27,14 @@ vi.mock("../components/EngineStatus", () => ({ EngineStatus: ({ environment }: {
 // The button decides for itself who sees it (AdminActions.test.tsx); here only that the page offers it.
 vi.mock("../components/AdminActions", () => ({ RunAgentButton: () => <button type="button">Run agent now</button> }));
 vi.mock("../components/RetryRunButton", () => ({ RetryRunButton: ({ incidentId }: { incidentId: string }) => <button type="button">Retry with agent ({incidentId})</button> }));
+// The card's own behaviour is HandoffCard.test.tsx; here only when the page shows it, and that the retry moves into it.
+vi.mock("../components/HandoffCard", () => ({
+  HandoffCard: ({ incidentId, path, canRetry }: { incidentId: string; path: string; canRetry: boolean }) => (
+    <section aria-label="What you can do now" data-path={path}>
+      {canRetry && <button type="button">Retry with agent ({incidentId})</button>}
+    </section>
+  ),
+}));
 vi.mock("../components/AgentStatus", () => ({ AgentStatus: ({ environment }: { environment: string }) => <div data-testid="agent">{environment}</div> }));
 vi.mock("../lib/runs", async (orig) => ({
   ...(await orig<typeof import("../lib/runs")>()),
@@ -679,6 +687,31 @@ describe("Runs page", () => {
     act(() => mocks.eventsCb!([event(1, "triage", "decision", "Act", 50_000)]));
     await screen.findByRole("region", { name: "Run detail" });
     expect(screen.queryByRole("button", { name: /Retry with agent/ })).toBeNull();
+  });
+
+  it("says what a person can do on a run that told one, while the incident is open; not on a dry-run draft or a closed incident", async () => {
+    mocks.getIncident.mockResolvedValue({ id: "inc-a", functionName: "orders-getorder", errorType: "UnknownError", errorMessage: "x", status: "new" });
+    renderRuns();
+    act(() => mocks.cyclesCb!([cycle("inc-a_r0", { state: "waiting-human", leaseExpiresAt: null, path: "human" })], false));
+    act(() => mocks.eventsCb!([event(1, "notify", "sent", "A person was told", 50_000)]));
+    const card = await screen.findByRole("region", { name: "What you can do now" });
+    expect(card).toHaveAttribute("data-path", "human");
+    // The retry sits in the card, once, not also on the hero.
+    expect(screen.getAllByRole("button", { name: /Retry with agent/ })).toHaveLength(1);
+    act(() => mocks.cyclesCb!([cycle("inc-a_r0", { state: "waiting-human", leaseExpiresAt: null, path: "draft" })], false));
+    expect(screen.queryByRole("region", { name: "What you can do now" })).toBeNull();
+    act(() => mocks.cyclesCb!([cycle("inc-a_r0", { state: "declined", leaseExpiresAt: null, path: "decline" })], false));
+    expect(screen.queryByRole("region", { name: "What you can do now" })).toBeNull();
+  });
+
+  it("does not say what a person can do once the incident is closed", async () => {
+    mocks.getIncident.mockResolvedValue({ id: "inc-a", functionName: "orders-getorder", errorType: "UnknownError", errorMessage: "x", status: "ignored" });
+    renderRuns();
+    act(() => mocks.cyclesCb!([cycle("inc-a_r0", { state: "waiting-human", leaseExpiresAt: null, path: "notify" })], false));
+    act(() => mocks.eventsCb!([event(1, "notify", "sent", "A person was told", 50_000)]));
+    // The incident has been read once its name shows.
+    await screen.findAllByText("orders-getorder");
+    expect(screen.queryByRole("region", { name: "What you can do now" })).toBeNull();
   });
 
   it("offers no replay while a worker holds the run", () => {

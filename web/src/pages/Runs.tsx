@@ -8,7 +8,7 @@
  * like a quiet day. On the demo project it runs hourly since 2026-10-07 (in dry run until 2026-10-10).
  */
 import { useEffect, useMemo, useState, type ComponentType, type ReactNode } from "react";
-import { useQueries } from "@tanstack/react-query";
+import { useQueries, useQueryClient } from "@tanstack/react-query";
 import { Link, useSearchParams } from "react-router";
 import {
   ArrowDownUp,
@@ -44,6 +44,7 @@ import StoreReadHint from "../components/StoreReadHint";
 import { AgentStatus } from "../components/AgentStatus";
 import { RunAgentButton } from "../components/AdminActions";
 import { RetryRunButton } from "../components/RetryRunButton";
+import { HandoffCard } from "../components/HandoffCard";
 import { Badge, type BadgeTone } from "../components/ui/Badge";
 import { SyntheticBadge } from "../components/SyntheticBadge";
 import { EmptyState } from "../components/ui/EmptyState";
@@ -532,6 +533,11 @@ function RunDetail({
   const failure = incident?.errorMessage ? failureView(incident.errorMessage, incident.errorDetail) : null;
   // A run that ended with a person: drawn as a branch off the last step of its track that has an event.
   const handoff = !asLive && !status.live && cycle.state !== "running" && (cycle.path === "human" || cycle.path === "notify") ? PATH_LABELS[cycle.path] : undefined;
+  // A person was told and the run waits for them: say what they can do, beside the control that does it. Only once the
+  // incident is read and open: resolved or ignored, there is nothing left to choose.
+  const handoffPath = handoff && cycle.state === "waiting-human" && (cycle.path === "human" || cycle.path === "notify") ? cycle.path : undefined;
+  const showHandoff = handoffPath !== undefined && incident !== undefined && ["new", "acknowledged", "logged", "recurred"].includes(incident.status);
+  const queryClient = useQueryClient();
 
   return (
     <section aria-label="Run detail" className="min-w-0 space-y-4">
@@ -556,7 +562,7 @@ function RunDetail({
         }
         actions={
           <>
-            {canRetry && <RetryRunButton incidentId={cycle.incidentId} />}
+            {canRetry && !showHandoff && <RetryRunButton incidentId={cycle.incidentId} />}
             {canReplay && (
               <button
                 type="button"
@@ -587,6 +593,17 @@ function RunDetail({
           </>
         }
       />
+
+      {showHandoff && handoffPath && incident && (
+        <HandoffCard
+          path={handoffPath}
+          incidentId={cycle.incidentId}
+          incident={incident}
+          issueUrl={issue?.url}
+          canRetry={canRetry}
+          onChanged={() => void queryClient.invalidateQueries({ queryKey: ["run-incident", environment, cycle.incidentId] })}
+        />
+      )}
 
       <div className="space-y-6 rounded-xl border border-gray-200 bg-white p-5 sm:p-6 dark:border-gray-700 dark:bg-gray-800">
         <section aria-label="Pipeline" className="space-y-4">

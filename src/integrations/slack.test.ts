@@ -51,6 +51,16 @@ describe("buildNeedsHumanMessage", () => {
     }
   });
 
+  it("says what the person can do now: take it, fix it, retry, correct, or ignore", () => {
+    const text = JSON.stringify(buildNeedsHumanMessage({ ...req, path: "human", issueUrl: "https://github.com/acme/shop/issues/9" }, UI));
+    expect(text).toContain("What you can do:");
+    for (const title of ["Take it", "Fix it yourself", "Let Starfish try again", "Starfish judged it wrong?", "Not worth fixing?"]) expect(text).toContain(title);
+    expect(text).toContain("Start from the GitHub issue");
+    expect(JSON.stringify(buildNeedsHumanMessage(req, UI))).toContain("Deal with the cause");
+    // No issue filed: the steps point at the evidence page instead of an issue that does not exist.
+    expect(JSON.stringify(buildNeedsHumanMessage({ ...req, path: "human" }, UI))).toContain("the incident's evidence page");
+  });
+
   it("tells a notify cycle from one where a fix was tried", () => {
     expect(buildNeedsHumanMessage(req, UI).text).toContain("No code change helps");
     expect(buildNeedsHumanMessage({ ...req, path: "human" }, UI).text).toContain("tried a fix");
