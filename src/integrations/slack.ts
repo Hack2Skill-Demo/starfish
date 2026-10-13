@@ -83,6 +83,15 @@ const clip = (text: string, max: number): string => {
   return clean.length > max ? `${clean.slice(0, max - 1)}…` : clean;
 };
 
+/**
+ * How often the incident failed, for both messages (#328): " once", " 12 times", or nothing when the stored incident has no
+ * count (never "0 times", and never "1 times").
+ */
+export function howOften(count: number | null): string {
+  if (count === null) return "";
+  return count === 1 ? " once" : ` ${count} times`;
+}
+
 export interface SlackPayload {
   text: string;
   mrkdwn: false;
@@ -107,7 +116,7 @@ export function buildNeedsHumanMessage(req: NotifyRequest, uiBaseUrl: string): S
       : `Needs a human: ${what}. Starfish tried a fix and could not finish it.`;
   const blocks: unknown[] = [
     { type: "header", text: plain(req.path === "notify" ? "Needs a human" : "Needs a human: fix not finished") },
-    { type: "section", text: plain(`${clip(req.functionName, MAX_FIELD)} failed${req.occurrenceCount === null ? "" : ` ${req.occurrenceCount} times`}.\n${clip(req.reason, MAX_REASON)}`) },
+    { type: "section", text: plain(`${clip(req.functionName, MAX_FIELD)} failed${howOften(req.occurrenceCount)}.\n${clip(req.reason, MAX_REASON)}`) },
     {
       type: "section",
       fields: [
@@ -212,7 +221,7 @@ export function buildNewIncidentMessage(req: AlertRequest, uiBaseUrl: string): S
   const next = req.path === "act" ? "Starfish is drafting a fix; it stops at a pull request." : "No code change helps; a person is being told.";
   const blocks: unknown[] = [
     { type: "header", text: plain("New incident") },
-    { type: "section", text: plain(`${clip(req.functionName, MAX_FIELD)} failed${req.occurrenceCount === null ? "" : ` ${req.occurrenceCount} times`}.\n${clip(req.reason, MAX_REASON)}`) },
+    { type: "section", text: plain(`${clip(req.functionName, MAX_FIELD)} failed${howOften(req.occurrenceCount)}.\n${clip(req.reason, MAX_REASON)}`) },
     {
       type: "section",
       fields: [plain(`Service: ${clip(req.service, 80)}`), plain(`Error type: ${clip(req.errorType, 60)}`), plain(`Next: ${next}`)],

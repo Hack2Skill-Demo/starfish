@@ -1,7 +1,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
-import { buildNeedsHumanMessage, buildNewIncidentMessage, createSlackAlerter, createSlackNotifier, deliverToSlack, slackEscape, type AlertRequest, type NotifyRequest } from "./slack.js";
+import { buildNeedsHumanMessage, buildNewIncidentMessage, createSlackAlerter, createSlackNotifier, deliverToSlack, howOften, slackEscape, type AlertRequest, type NotifyRequest } from "./slack.js";
 import { SEEDED_SECRETS } from "../ingest/testSecrets.js";
 
 const req: NotifyRequest = {
@@ -26,6 +26,15 @@ describe("buildNeedsHumanMessage", () => {
     expect(text).toContain("Cloud Translation API is disabled");
     expect(text).toContain("https://starfish.example/incidents/inc1");
     expect(text).toContain("https://starfish.example/runs?run=inc1_r0");
+  });
+
+  it("says once for one occurrence, never \"1 times\" (#328)", () => {
+    expect(howOften(1)).toBe(" once");
+    expect(howOften(2)).toBe(" 2 times");
+    expect(howOften(null)).toBe("");
+    const once = JSON.stringify(buildNeedsHumanMessage({ ...req, occurrenceCount: 1 }, UI));
+    expect(once).toContain("invoices-renderPdf failed once.");
+    expect(once).not.toContain("1 times");
   });
 
   it("never says an incident failed zero times when its count is unknown", () => {
@@ -102,6 +111,12 @@ describe("buildNewIncidentMessage (#ops-alerts)", () => {
     path: "act",
     reason: "A null customer reaches the total.",
   };
+
+  it("says once for one occurrence (#328)", () => {
+    const text = JSON.stringify(buildNewIncidentMessage({ ...alert, occurrenceCount: 1 }, UI));
+    expect(text).toContain("orders-create failed once.");
+    expect(text).not.toContain("1 times");
+  });
 
   it("says what is new, what Starfish will do next, and links to the incident, the run and the issue", () => {
     const m = buildNewIncidentMessage({ ...alert, issueUrl: "https://github.com/acme/shop/issues/9" }, UI);
