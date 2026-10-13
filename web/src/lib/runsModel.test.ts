@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   ago,
   timeAxis,
+  axisTicks,
   buildWaterfall,
   prStateView,
   formatClock,
@@ -669,6 +670,40 @@ describe("the run's summary, its error, and the list's strip", () => {
   });
 });
 
+
+describe("axisTicks", () => {
+  const linear = (start: number, end: number) => (ms: number) => (ms - start) / (end - start);
+
+  it("ticks a round step that fits at most four times, the unit on the last label only", () => {
+    const end = 40 * 60_000;
+    const ticks = axisTicks(0, end, linear(0, end));
+    expect(ticks.map((t) => t.label)).toEqual(["0", "10", "20", "30", "40 min"]);
+    expect(ticks.map((t) => t.at)).toEqual([0, 0.25, 0.5, 0.75, 1]);
+  });
+
+  it("uses seconds for a short run and hours for a long one", () => {
+    expect(axisTicks(0, 45_000, linear(0, 45_000)).map((t) => t.label)).toEqual(["0", "15", "30", "45 s"]);
+    expect(axisTicks(0, 7 * 3_600_000, linear(0, 7 * 3_600_000)).map((t) => t.label)).toEqual(["0", "2", "4", "6 h"]);
+  });
+
+  it("places the ticks by the axis it is given, and drops ones too close to read on a shortened axis", () => {
+    // A triage of 54 min then 6 min of the rest: the long step is squeezed into a quarter.
+    const steps: Step[] = [
+      { stage: "triage", title: "triage", status: "done", offset: 0, width: 0.9 },
+      { stage: "fix", title: "fix", status: "done", offset: 0.9, width: 0.1 },
+    ];
+    const end = 60 * 60_000;
+    const axis = timeAxis(steps, 0, end);
+    const ticks = axisTicks(0, end, axis.at);
+    expect(ticks[0]).toEqual({ at: 0, label: "0" });
+    for (let i = 1; i < ticks.length; i++) expect(ticks[i]!.at - ticks[i - 1]!.at).toBeGreaterThanOrEqual(0.15);
+    expect(ticks[ticks.length - 1]!.label).toMatch(/ min$/);
+  });
+
+  it("draws nothing for a run with no length", () => {
+    expect(axisTicks(5, 5, () => 0)).toEqual([]);
+  });
+});
 
 describe("timeAxis", () => {
   const step = (stage: string, offset: number, width: number): Step => ({ stage, title: stage, status: "done", offset, width });

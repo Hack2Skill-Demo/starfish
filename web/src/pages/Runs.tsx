@@ -7,17 +7,15 @@
  * Where the agent job (`DEPLOY_AGENT=1`, #74) has not run, this page is empty until it does; it says so instead of looking
  * like a quiet day. On the demo project it runs hourly since 2026-10-07 (in dry run until 2026-10-10).
  */
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ComponentType, type ReactNode } from "react";
 import { useQueries } from "@tanstack/react-query";
 import { Link, useSearchParams } from "react-router";
 import {
   ArrowDownUp,
-  BellRing,
   Check,
   Circle,
   CircleDot,
   CirclePlay,
-  CodeXml,
   Copy,
   CornerDownRight,
   Database,
@@ -27,8 +25,6 @@ import {
   GitMerge,
   GitPullRequest,
   GitPullRequestClosed,
-  ListFilter,
-  Megaphone,
   Phone,
   ScanSearch,
   ShieldCheck,
@@ -36,6 +32,10 @@ import {
   Workflow,
   X,
 } from "lucide-react";
+import { GeminiMark } from "../components/GeminiMark";
+import { GithubMark } from "../components/GithubMark";
+import { SlackMark } from "../components/SlackMark";
+import { StarfishLogo } from "../layout/StarfishLogo";
 import PageMeta from "../components/PageMeta";
 import SettingsUnavailableNotice from "../components/SettingsUnavailableNotice";
 import StoreReadHint from "../components/StoreReadHint";
@@ -71,6 +71,7 @@ import {
   prLink,
   stepLogOrder,
   timeAxis,
+  axisTicks,
   triageFinding,
   triageDecision,
   triageRule,
@@ -82,7 +83,7 @@ import {
   type StepStatus,
   type Waterfall,
 } from "../lib/runsModel";
-import { LEVELS, LEVEL_SHORT, stepDetail, type ReviewAttack, type StepDetail } from "../lib/runStepDetail";
+import { LEVELS, LEVEL_SHORT, judgedOnGitHub, stepDetail, type ReviewAttack, type StepDetail } from "../lib/runStepDetail";
 
 
 export default function Runs() {
@@ -1019,16 +1020,32 @@ function verdictTone(step: Step): BadgeTone {
   return step.outcome && NO_OUTCOMES.has(step.outcome) ? "warning" : "success";
 }
 
-/** Each stage's mark on the timeline: its icon, its tile and its bar on the time axis. */
-const STAGE_LOOK: Record<string, { icon: typeof Circle; tile: string; bar: string }> = {
-  triage: { icon: ListFilter, tile: "bg-brand-50 text-brand-700 dark:bg-brand-500/15 dark:text-brand-300", bar: "bg-brand-600 dark:bg-brand-400" },
-  fix: { icon: CodeXml, tile: "bg-warning-100 text-warning-800 dark:bg-warning-500/15 dark:text-warning-300", bar: "bg-warning-500 dark:bg-warning-400" },
+/** The Starfish mark at an icon's size: the step the engine decides itself. */
+function StarfishMark({ className = "" }: { className?: string }) {
+  return (
+    <span className={`flex ${className}`}>
+      <StarfishLogo size={20} title="" />
+    </span>
+  );
+}
+
+const SERVICE_TILE = "bg-white ring-1 ring-inset ring-gray-200 dark:bg-gray-700 dark:ring-gray-600";
+
+/**
+ * Each stage's mark on the timeline: its icon, its tile and its bar on the time axis. A step done by or on a service
+ * wears that service's mark: triage is the engine's decision (Starfish; it may make no model call at all), the fix is
+ * always Gemini's, the issue is filed on GitHub, the alert and the message to a person go through Slack. Every other
+ * step, what it did; verify wears GitHub's only when the target's checks there judged it (`StageIcon`).
+ */
+const STAGE_LOOK: Record<string, { icon: ComponentType<{ className?: string }>; tile: string; bar: string }> = {
+  triage: { icon: StarfishMark, tile: "bg-brand-50 text-brand-700 dark:bg-brand-500/15 dark:text-brand-300", bar: "bg-brand-600 dark:bg-brand-400" },
+  fix: { icon: GeminiMark, tile: "bg-violet-50 dark:bg-violet-500/15", bar: "bg-violet-500 dark:bg-violet-400" },
   verify: { icon: ShieldCheck, tile: "bg-success-100 text-success-800 dark:bg-success-500/15 dark:text-success-300", bar: "bg-success-600 dark:bg-success-400" },
   review: { icon: ScanSearch, tile: "bg-gray-200 text-gray-800 dark:bg-gray-700 dark:text-gray-100", bar: "bg-gray-600 dark:bg-gray-300" },
   pr: { icon: GitPullRequest, tile: "bg-gray-900 text-white dark:bg-gray-100 dark:text-gray-900", bar: "bg-gray-900 dark:bg-gray-100" },
-  issue: { icon: CircleDot, tile: "bg-gray-900 text-white dark:bg-gray-100 dark:text-gray-900", bar: "bg-gray-900 dark:bg-gray-100" },
-  alert: { icon: Megaphone, tile: "bg-info-100 text-info-800 dark:bg-info-500/15 dark:text-info-300", bar: "bg-info-600 dark:bg-info-400" },
-  notify: { icon: BellRing, tile: "bg-info-100 text-info-800 dark:bg-info-500/15 dark:text-info-300", bar: "bg-info-600 dark:bg-info-400" },
+  issue: { icon: GithubMark, tile: "bg-gray-900 text-white dark:bg-gray-100 dark:text-gray-900", bar: "bg-gray-900 dark:bg-gray-100" },
+  alert: { icon: SlackMark, tile: SERVICE_TILE, bar: "bg-info-600 dark:bg-info-400" },
+  notify: { icon: SlackMark, tile: SERVICE_TILE, bar: "bg-info-600 dark:bg-info-400" },
   escalation: { icon: Phone, tile: "bg-info-100 text-info-800 dark:bg-info-500/15 dark:text-info-300", bar: "bg-info-600 dark:bg-info-400" },
   before: { icon: FlaskConical, tile: "bg-success-100 text-success-800 dark:bg-success-500/15 dark:text-success-300", bar: "bg-success-600 dark:bg-success-400" },
   merge: { icon: GitMerge, tile: "bg-gray-900 text-white dark:bg-gray-100 dark:text-gray-900", bar: "bg-gray-900 dark:bg-gray-100" },
@@ -1036,9 +1053,9 @@ const STAGE_LOOK: Record<string, { icon: typeof Circle; tile: string; bar: strin
 };
 const OTHER_LOOK = { icon: Circle, tile: "bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-200", bar: "bg-gray-500 dark:bg-gray-400" };
 
-function StageIcon({ step }: { step: Step }) {
+function StageIcon({ step, onGitHub }: { step: Step; onGitHub: boolean }) {
   const look = STAGE_LOOK[step.stage] ?? OTHER_LOOK;
-  const Icon = step.status === "failed" ? X : look.icon;
+  const Icon = step.status === "failed" ? X : onGitHub ? GithubMark : look.icon;
   const tile =
     step.status === "failed"
       ? "bg-error-100 text-error-700 dark:bg-error-500/15 dark:text-error-300"
@@ -1064,14 +1081,14 @@ function StepBar({ step, water, axis }: { step: Step; water: Waterfall; axis: Re
     from = water.startMs + step.offset * span;
     to = from + step.width * span;
   }
-  if (from === undefined || to === undefined) return <div className="hidden sm:block" />;
+  if (from === undefined || to === undefined) return <div className="hidden @lg:block" />;
   const left = axis.at(from) * 100;
   const width = Math.max(0, axis.at(to) * 100 - left);
   const color = step.status === "failed" ? "bg-error-500 dark:bg-error-400" : step.status === "running" ? "bg-info-500 motion-safe:animate-pulse dark:bg-info-400" : (STAGE_LOOK[step.stage] ?? OTHER_LOOK).bar;
   return (
-    <div className="hidden pt-2 sm:block" aria-hidden>
-      <div className="relative h-2 rounded-full bg-gray-100 dark:bg-gray-700">
-        <span className={`absolute inset-y-0 rounded-full ${color}`} style={{ left: `min(${left.toFixed(2)}%, calc(100% - 4px))`, width: `max(4px, ${width.toFixed(2)}%)` }} />
+    <div className="hidden pt-1.5 @lg:block" aria-hidden>
+      <div className="relative h-3">
+        <span className={`absolute inset-y-0 rounded-sm ${color}`} style={{ left: `min(${left.toFixed(2)}%, calc(100% - 4px))`, width: `max(4px, ${width.toFixed(2)}%)` }} />
         {axis.shortened === step && (
           <span
             className="absolute -inset-y-1 w-1.5 bg-white dark:bg-gray-800"
@@ -1082,6 +1099,9 @@ function StepBar({ step, water, axis }: { step: Step; water: Waterfall; axis: Re
     </div>
   );
 }
+
+/** The step log's columns: the icon, the step, and the time axis once the run's panel has room, wider when it has more. */
+const STEP_COLUMNS = "@lg:grid-cols-[2.5rem_minmax(0,1fr)_10rem] @3xl:grid-cols-[2.5rem_minmax(0,1fr)_16rem]";
 
 const CHIP = "inline-flex items-center gap-1 rounded-md bg-gray-100 px-2 py-1 text-xs font-medium text-gray-700 dark:bg-gray-700 dark:text-gray-200";
 const BODY = "break-words text-sm text-gray-700 dark:text-gray-300";
@@ -1322,9 +1342,10 @@ function Timeline({
   const { earlier, rounds } = water;
   if (steps.length === 0 && earlier.length === 0) return null;
   const axis = timeAxis(water.steps, water.startMs, water.endMs);
+  const ticks = axisTicks(water.startMs, water.endMs, axis.at);
   const span = water.endMs - water.startMs;
   return (
-    <div className="space-y-2 border-t border-gray-200 pt-5 dark:border-gray-700">
+    <div className="@container space-y-2 border-t border-gray-200 pt-5 dark:border-gray-700">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h3 className={SECTION_TITLE}>What Starfish did</h3>
@@ -1345,34 +1366,52 @@ function Timeline({
           <span className="sr-only">: show {oldestFirst ? "newest" : "oldest"} first instead</span>
         </button>
       </div>
-      <div className="hidden grid-cols-[2.5rem_minmax(0,1fr)_9rem] gap-x-4 sm:grid" aria-hidden>
-        <span className="col-start-3 flex justify-between font-mono text-xs text-gray-600 dark:text-gray-400">
-          <span>0</span>
-          <span>{formatClock(span)}</span>
+      {/* The time axis, as a browser's network waterfall draws it: ticks along the top, a line down through every step. */}
+      <div className={`hidden gap-x-4 border-b border-gray-200 pb-2 @lg:grid dark:border-gray-700 ${STEP_COLUMNS}`} aria-hidden data-testid="time-axis">
+        <span className="relative col-start-3 h-4 text-xs tabular-nums text-gray-600 dark:text-gray-400">
+          {ticks.map((t, i) => (
+            <span
+              key={i}
+              className="absolute top-0 whitespace-nowrap"
+              style={{ left: `${(t.at * 100).toFixed(2)}%`, transform: t.at > 0.85 ? "translateX(-100%)" : t.at > 0.05 ? "translateX(-50%)" : undefined }}
+            >
+              {t.label}
+            </span>
+          ))}
         </span>
       </div>
-      <ol aria-label="Step log" className="divide-y divide-gray-100 dark:divide-gray-700">
-        {steps.map((step) => (
-          <li key={step.stage} className="grid grid-cols-[2.5rem_minmax(0,1fr)] gap-x-3 py-4 sm:grid-cols-[2.5rem_minmax(0,1fr)_9rem] sm:gap-x-4">
-            <StageIcon step={step} />
-            <div className="min-w-0 space-y-2">
-              <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-                <span className="text-base font-semibold text-gray-900 dark:text-white">{step.title}</span>
-                <Badge tone={verdictTone(step)}>{step.status === "running" ? "In progress" : stepVerdict(step)}</Badge>
-                {step.at && (
-                  <span className="ml-auto text-xs text-gray-600 dark:text-gray-400">
-                    {formatDateTime(step.at)}
-                    {step.durationMs !== undefined ? ` · ${formatDuration(step.durationMs)} since the step before` : ""}
-                  </span>
-                )}
-              </div>
-              {step.summary && <p className={`whitespace-pre-wrap ${BODY}`}>{step.summary}</p>}
-              <StepDetails step={step} detail={stepDetail(step, cycle, events)} pr={pr} issue={issue} finding={finding} now={now} cycle={cycle} />
-            </div>
-            <StepBar step={step} water={water} axis={axis} />
-          </li>
-        ))}
-      </ol>
+      <div className="relative">
+        <div className="pointer-events-none absolute inset-y-0 right-0 hidden w-40 @lg:block @3xl:w-64" aria-hidden>
+          {ticks.map((t, i) => (
+            <span key={i} className="absolute inset-y-0 w-px bg-gray-100 dark:bg-gray-700/70" style={{ left: `${(t.at * 100).toFixed(2)}%` }} />
+          ))}
+        </div>
+        <ol aria-label="Step log" className="divide-y divide-gray-100 dark:divide-gray-700">
+          {steps.map((step) => {
+            const detail = stepDetail(step, cycle, events);
+            return (
+              <li key={step.stage} className={`grid grid-cols-[2.5rem_minmax(0,1fr)] gap-x-3 py-4 @lg:gap-x-4 ${STEP_COLUMNS}`}>
+                <StageIcon step={step} onGitHub={step.stage === "verify" && judgedOnGitHub(detail.verify)} />
+                <div className="min-w-0 space-y-2">
+                  <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                    <span className="text-base font-semibold text-gray-900 dark:text-white">{step.title}</span>
+                    <Badge tone={verdictTone(step)}>{step.status === "running" ? "In progress" : stepVerdict(step)}</Badge>
+                    {step.at && (
+                      <span className="ml-auto text-xs text-gray-600 dark:text-gray-400">
+                        {formatDateTime(step.at)}
+                        {step.durationMs !== undefined ? ` · ${formatDuration(step.durationMs)} since the step before` : ""}
+                      </span>
+                    )}
+                  </div>
+                  {step.summary && <p className={`whitespace-pre-wrap ${BODY}`}>{step.summary}</p>}
+                  <StepDetails step={step} detail={detail} pr={pr} issue={issue} finding={finding} now={now} cycle={cycle} />
+                </div>
+                <StepBar step={step} water={water} axis={axis} />
+              </li>
+            );
+          })}
+        </ol>
+      </div>
       {axis.shortened && (
         <p className="text-xs text-gray-600 dark:text-gray-400" data-testid="axis-shortened">
           {axis.shortened.title}&apos;s {formatDuration(axis.shortened.durationMs ?? 0)} is drawn shortened on the time axis, so the other steps can be seen. The times printed are not scaled.

@@ -37,7 +37,15 @@ export interface StepDetail {
     recount?: { count: number | null; window?: string; capped: boolean };
   };
   fix?: { risk?: string; testAdded?: boolean; alternatives: string[]; source?: string; revisions?: number };
-  verify?: { files?: number; exitCode?: number | null; rule?: string; patchSha256?: string; output?: string };
+  verify?: {
+    files?: number;
+    exitCode?: number | null;
+    rule?: string;
+    patchSha256?: string;
+    output?: string;
+    /** Where the verdict came from (`in-process`, `cloud-run-job`, `github-actions`); absent in a record written before it was kept. */
+    isolation?: string;
+  };
   review?: { held?: number; flagged?: number; broken?: number; attacks: ReviewAttack[] };
   /** An alert or a message to a person: how the delivery ended. */
   delivery?: { state?: string; attempts?: number; reason?: string };
@@ -48,6 +56,15 @@ export interface StepDetail {
 const text = (v: unknown): string | undefined => (typeof v === "string" && v.trim() !== "" ? v.trim() : undefined);
 const num = (v: unknown): number | undefined => (typeof v === "number" && Number.isFinite(v) ? v : undefined);
 const bool = (v: unknown): boolean | undefined => (typeof v === "boolean" ? v : undefined);
+
+/**
+ * Whether the target's checks on GitHub judged this verify step: `github-actions` isolation and a `command-*` rule (the
+ * checks ran on the pushed commit). A patch the local checks refused never reached GitHub; a record from before the
+ * isolation was kept says nothing either way, so neither counts.
+ */
+export function judgedOnGitHub(verify: StepDetail["verify"]): boolean {
+  return verify?.isolation === "github-actions" && verify.rule?.startsWith("command-") === true;
+}
 
 /** `prefix1`, `prefix2`... in order, stopping at the first gap: how a record keeps a list in flat values. */
 export function numbered(record: Record<string, unknown> | undefined, prefix: string): string[] {
@@ -127,6 +144,7 @@ export function stepDetail(step: Step, cycle: CycleRow, events: readonly EventRo
         ...(text(rec?.rule) && { rule: text(rec?.rule) }),
         ...(text(rec?.patchSha256) && { patchSha256: text(rec?.patchSha256) }),
         ...(output && { output }),
+        ...(text(rec?.isolation) && { isolation: text(rec?.isolation) }),
       };
     }
   }
