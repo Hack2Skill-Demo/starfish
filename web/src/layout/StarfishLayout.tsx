@@ -219,7 +219,9 @@ export function StarfishLayout() {
             </button>
           </div>
         </header>
-        <main className="flex-1 overflow-y-auto p-4 lg:p-6">
+        {/* `relative`: an absolutely positioned descendant (every `sr-only` label) otherwise takes the viewport as its
+            containing block, escapes this scroll box, and stretches the document past the shell into blank space. */}
+        <main className="relative flex-1 overflow-y-auto p-4 lg:p-6">
           <Outlet />
         </main>
         {guest && (
