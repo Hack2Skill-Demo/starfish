@@ -16,6 +16,8 @@ export interface RawLogEntry {
     logName?: string;
     resource?: { labels?: Record<string, string> };
     labels?: Record<string, string>;
+    /** The request's Cloud Trace resource name, `projects/<p>/traces/<32 hex>`, when the runtime stamped one. */
+    trace?: string;
   };
   data?: unknown;
 }
@@ -40,6 +42,8 @@ export interface ParsedLogEntry {
   serviceTag?: string;
   timestamp: Date;
   requestId?: string;
+  /** The request's Cloud Trace id (32 hex, lower case): joins the incident to every log line of that request. */
+  traceId?: string;
   tenantId?: string;
   sourceProjectId?: string;
 }
@@ -103,6 +107,21 @@ export function extractErrorDetail(raw: unknown): string | undefined {
 export function extractMessageTitle(raw: unknown): string {
   if (raw !== null && typeof raw === "object" && !Array.isArray(raw)) return extractErrorDetail(raw) ?? "";
   return String(raw);
+}
+
+const TRACE_PATH_RE = /^projects\/[^/]+\/traces\/([0-9a-f]{32})$/i;
+/** A trace id as it is kept: checked again wherever it is written or put in a link. */
+export const TRACE_ID_RE = /^[0-9a-f]{32}$/;
+
+/**
+ * The trace id from the entry's `trace` field, which Cloud Run and Cloud Functions stamp on a request's log lines (and
+ * Cloud Logging fills from a structured log's `logging.googleapis.com/trace`). Anything else is dropped, never kept as
+ * written: the id is only ever 32 hex digits, stored lower case so it matches the filter Cloud Logging compares exactly.
+ */
+export function extractTraceId(entry: RawLogEntry): string | undefined {
+  const trace = entry.metadata?.trace;
+  if (typeof trace !== "string") return undefined;
+  return TRACE_PATH_RE.exec(trace)?.[1]?.toLowerCase();
 }
 
 function extractProjectId(entry: RawLogEntry): string | undefined {
@@ -183,6 +202,7 @@ export function parseLogEntry(
     serviceTag,
     timestamp: parseTimestamp(entry.metadata?.timestamp),
     requestId: entry.metadata?.labels?.execution_id,
+    traceId: extractTraceId(entry),
     tenantId,
     sourceProjectId: extractProjectId(entry),
   };

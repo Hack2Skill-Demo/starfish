@@ -260,6 +260,10 @@ export async function aggregateErrors(
       if (parsed.timestamp < found.input.firstOccurredAt) {
         found.input.firstOccurredAt = parsed.timestamp;
       }
+      // The trace of the newest occurrence that has one: the request a person or the fixer would look at first.
+      if (parsed.traceId !== undefined && (found.input.traceId === undefined || parsed.timestamp >= found.input.lastOccurredAt)) {
+        found.input.traceId = parsed.traceId;
+      }
       if (parsed.timestamp > found.input.lastOccurredAt) {
         found.input.lastOccurredAt = parsed.timestamp;
       }
@@ -289,6 +293,7 @@ export async function aggregateErrors(
         stackTrace: sanitize(parsed.stackTrace),
         tenantId: parsed.tenantId,
         requestId: parsed.requestId,
+        traceId: parsed.traceId,
         sourceProjectId: parsed.sourceProjectId,
         windowId: window.id,
       },

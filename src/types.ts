@@ -34,6 +34,9 @@ export interface Incident {
   message?: string;
   /** PII-redacted and length-bounded. */
   stackTrace?: string;
+  /** The newest occurrence's Cloud Trace id and the project its logs were read from: for the issue's link, never the model. */
+  traceId?: string;
+  sourceProjectId?: string;
   /**
    * `monitoring`: a Monitoring-only incident (#19), opened because Cloud Monitoring counted failed
    * invocations of a function that wrote no ERROR log in that window. `overflow`: a function's log errors past the
@@ -142,6 +145,8 @@ export interface StoredIncident {
   stackTrace?: string;
   tenantId?: string;
   requestId?: string;
+  /** The newest occurrence's Cloud Trace id (32 hex, lower case), for a link to every log line of that request. */
+  traceId?: string;
   sourceProjectId?: string;
   /**
    * `monitoring` for a Monitoring-only incident (#19): its fingerprint lives in a namespace of its own

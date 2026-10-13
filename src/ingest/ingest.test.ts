@@ -96,6 +96,39 @@ describe("detectErrorType: a missing composite index (#11)", () => {
   });
 });
 
+describe("detectErrorType: Cloud Run's own failures and the source's missing_index class", () => {
+  const oom = "Memory limit of 256 MiB exceeded with 270 MiB used. Consider increasing the memory limit, see https://cloud.google.com/run/docs/configuring/memory-limits";
+  const noInstance = "The request was aborted because there was no available instance.";
+
+  it("names an out-of-memory kill and a request with no instance to serve it", () => {
+    expect(detectErrorType(oom)).toBe("OutOfMemoryError");
+    expect(detectErrorType(noInstance)).toBe("NoInstanceAvailableError");
+  });
+
+  it("checks them before the generic keywords their text could trip", () => {
+    expect(detectErrorType(`${oom} (database)`)).toBe("OutOfMemoryError");
+    expect(detectErrorType("no available instance: timeout")).toBe("NoInstanceAvailableError");
+  });
+
+  it("still yields to the source's class and a structured code", () => {
+    expect(detectErrorType(oom, { sourceErrorClass: "quota" })).toBe("QuotaError");
+    expect(detectErrorType(noInstance, { errorCode: "unavailable" })).toBe("UnavailableError");
+  });
+
+  it("does not take a memory limit that was not exceeded", () => {
+    expect(detectErrorType("Memory limit of 256 MiB set")).toBe("UnknownError");
+  });
+
+  it("keeps one fingerprint for an out-of-memory kill whatever memory it used", () => {
+    expect(computeErrorFingerprint("api", oom)).toBe(computeErrorFingerprint("api", oom.replace("270 MiB used", "301 MiB used")));
+  });
+
+  it("maps a source-tagged missing_index to MissingIndexError, not its failed-precondition code", () => {
+    expect(detectErrorType("orders query failed", { sourceErrorClass: "missing_index", errorCode: "failed-precondition" })).toBe("MissingIndexError");
+    expect(detectErrorType("orders query failed", { errorCode: "failed-precondition" })).toBe("ValidationError");
+  });
+});
+
 describe("detectErrorType preference order", () => {
   const msg = "firestore write failed";
 
@@ -170,6 +203,19 @@ describe("parseLogEntry", () => {
     expect(parsed?.httpStatus).toBe(401);
     expect(parsed?.stackTrace).toBe("at x");
     expect(parsed?.sourceProjectId).toBe("proj");
+  });
+
+  it("keeps the request's trace id from the entry's trace path, lower case", () => {
+    const id = "0123456789ABCDEF0123456789abcdef";
+    const parsed = parseLogEntry({ ...base, metadata: { ...base.metadata, trace: `projects/proj/traces/${id}` }, data: "boom" });
+    expect(parsed?.traceId).toBe(id.toLowerCase());
+  });
+
+  it("drops a trace that is not a trace resource name with a 32-hex id", () => {
+    for (const trace of ["0123456789abcdef0123456789abcdef", "projects/proj/traces/abc", "projects/proj/traces/0123456789abcdef0123456789abcdeg", "projects/p/traces/0123456789abcdef0123456789abcdef/x"]) {
+      expect(parseLogEntry({ ...base, metadata: { ...base.metadata, trace }, data: "boom" })?.traceId).toBeUndefined();
+    }
+    expect(parseLogEntry({ ...base, data: "boom" })?.traceId).toBeUndefined();
   });
 
   it("drops audit-log entries", () => {

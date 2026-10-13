@@ -699,6 +699,27 @@ describe("issueText", () => {
     expect(issueText(issueRequest({ counterCheck: { window: "24h", count: 200, capped: true } })).body).toContain("at least 200");
   });
 
+  it("shows the newest request's trace and links every line it logged, from checked ids only", () => {
+    const id = "0123456789abcdef0123456789abcdef";
+    const { body } = issueText(issueRequest({ uiBaseUrl: "", trace: { id, projectId: "app-proj", lastOccurredAt: "2026-10-12T10:00:00.000Z" } }));
+    expect(body).toContain(`- Trace: \`${id}\``);
+    const query = encodeURIComponent(`trace="projects/app-proj/traces/${id}"`);
+    expect(body).toContain(
+      `(https://console.cloud.google.com/logs/query;query=${query};cursorTimestamp=2026-10-12T10:00:00.000Z;duration=PT24H?project=app-proj)`
+    );
+
+    // No project, or one Google would not allow: the id, no link.
+    for (const projectId of [undefined, "x", "App-Proj", "evil.example/x?y=", "a)b"]) {
+      const text = issueText(issueRequest({ uiBaseUrl: "", trace: { id, ...(projectId !== undefined && { projectId }) } })).body;
+      expect(text).toContain("- Trace:");
+      expect(text).not.toContain("console.cloud.google.com");
+    }
+    // An id that is not one: neither.
+    const bad = issueText(issueRequest({ uiBaseUrl: "", trace: { id: "](https://evil.example)", projectId: "app-proj" } })).body;
+    expect(bad).not.toContain("Trace");
+    expect(bad).not.toContain("evil.example");
+  });
+
   it("redacts and bounds everything from the incident, and cannot add a link of its own", () => {
     const dirty = Object.values(SEEDED_SECRETS).join(" ");
     const { title, body } = issueText(issueRequest({ functionName: dirty, service: dirty, errorType: dirty, reason: dirty + "\n```\n[click](https://evil.example)", suspectedCause: dirty, incidentId: "a/../b" }));

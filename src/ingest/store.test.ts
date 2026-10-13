@@ -211,6 +211,30 @@ describe("upsertIncident", () => {
     expect(writes[0]?.data.errorDetail).toBe("421 too many connections");
   });
 
+  it("stores a trace id only as 32 lower-case hex digits", async () => {
+    const good = { ...input, traceId: "0123456789abcdef0123456789abcdef" };
+    const kept = fakeDb([]);
+    await upsertIncident(kept.db, STORE, good, Timestamp.now());
+    expect(kept.writes[0]?.data.traceId).toBe(good.traceId);
+
+    for (const traceId of ["0123456789ABCDEF0123456789abcdef", "abc", "0123456789abcdef0123456789abcdef\nx"]) {
+      const dropped = fakeDb([]);
+      await upsertIncident(dropped.db, STORE, { ...input, traceId }, Timestamp.now());
+      expect(dropped.writes[0]?.data).not.toHaveProperty("traceId");
+    }
+  });
+
+  it("takes a newer request's trace on accrual, never an older one from a delayed batch", async () => {
+    const traceId = "f".repeat(32);
+    const newer = fakeDb([{ id: "a", data: stored("2026-09-19T00:00:00.000Z", { lastOccurredAt: Timestamp.fromDate(new Date("2026-09-20T00:00:00.000Z")) }) }]);
+    await upsertIncident(newer.db, STORE, { ...input, traceId }, Timestamp.now());
+    expect(newer.writes[0]?.data.traceId).toBe(traceId);
+
+    const delayed = fakeDb([{ id: "a", data: stored("2026-09-19T00:00:00.000Z", { lastOccurredAt: Timestamp.fromDate(new Date("2026-09-22T00:00:00.000Z")) }) }]);
+    await upsertIncident(delayed.db, STORE, { ...input, traceId }, Timestamp.now());
+    expect(delayed.writes[0]?.data.traceId).toBeUndefined();
+  });
+
   it("stores an unattributable incident as platform", async () => {
     const { db, writes } = fakeDb([]);
     await upsertIncident(db, STORE, input, Timestamp.now());

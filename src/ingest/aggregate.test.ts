@@ -76,6 +76,28 @@ describe("aggregateErrors", () => {
     });
   });
 
+  it("keeps the newest occurrence's trace id, and any trace over none", async () => {
+    const trace = (hex: string) => `projects/app-proj/traces/${hex.repeat(32)}`;
+    const at = (timestamp: string, t?: string) => ({
+      metadata: { timestamp, resource: { labels: { function_name: "lookup" } }, ...(t !== undefined && { trace: t }) },
+      data: "lookup failed",
+    });
+    entries.splice(
+      0,
+      entries.length,
+      at("2026-09-21T00:00:02.000Z"),
+      at("2026-09-21T00:00:01.000Z", trace("a")),
+      at("2026-09-21T00:00:03.000Z", trace("b")),
+      at("2026-09-21T00:00:00.000Z", trace("c"))
+    );
+    const { db, created } = fakeDb();
+
+    await aggregateErrors(db, config, window);
+
+    expect(created).toHaveLength(1);
+    expect(created[0]).toMatchObject({ occurrenceCount: 4, traceId: "b".repeat(32) });
+  });
+
   it("counts one bug logged under two wrappers as one incident, keeping the first message seen (#318)", async () => {
     const core = 'Value for argument "data" is not a valid Firestore document. Cannot use "undefined" as a Firestore value (found in field "couponCode").';
     const at = (data: string, timestamp: string) => ({

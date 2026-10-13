@@ -56,6 +56,7 @@ import { Timestamp, FieldValue } from "firebase-admin/firestore";
 import type { DocumentReference, DocumentSnapshot, Firestore, Transaction } from "firebase-admin/firestore";
 import type { StarfishConfig } from "../config.js";
 import { fingerprintOf } from "./fingerprint.js";
+import { TRACE_ID_RE } from "./parseLogEntry.js";
 import type { MonitoringObservation } from "./monitoring.js";
 import { redactPii, sliceWellFormed } from "./redact.js";
 import { hourBucketKey, mergeOccurrenceBuckets } from "./buckets.js";
@@ -85,6 +86,8 @@ export interface IncidentInput {
   stackTrace?: string;
   tenantId?: string;
   requestId?: string;
+  /** The newest occurrence's Cloud Trace id (32 hex, lower case). Anything else is not stored. */
+  traceId?: string;
   sourceProjectId?: string;
   /**
    * The ingest window these occurrences were read from. Makes the upsert replay-safe: the
@@ -167,6 +170,12 @@ function isAfter(date: Date, stored: unknown): boolean {
   return ms == null || date.getTime() > ms;
 }
 
+/** True when `date` is no earlier than the stored timestamp, or nothing is stored. */
+function isNotBefore(date: Date, stored: unknown): boolean {
+  const ms = tsMillis(stored);
+  return ms == null || date.getTime() >= ms;
+}
+
 /** True when `date` is earlier than the stored timestamp, or nothing is stored. */
 function isBefore(date: Date, stored: unknown): boolean {
   const ms = tsMillis(stored);
@@ -227,6 +236,8 @@ function buildAccrualUpdate(data: StoredIncident, input: IncidentInput, now: Tim
     ...(input.httpStatus != null && { httpStatus: input.httpStatus }),
     ...(input.stackTrace != null && { stackTrace: input.stackTrace }),
     ...(input.tenantId != null && { tenantId: input.tenantId }),
+    // The newest request's trace: a delayed batch of older logs must not replace it with an older one.
+    ...(input.traceId != null && isNotBefore(input.lastOccurredAt, data.lastOccurredAt) && { traceId: input.traceId }),
     ...(input.sourceProjectId != null && { sourceProjectId: input.sourceProjectId }),
     // A window with Monitoring readings for this function: counted once (the window id guards a replay).
     ...(input.monitoring != null &&
@@ -306,6 +317,8 @@ function redactInput(input: IncidentInput): IncidentInput {
     ...(input.errorCode != null && { errorCode: redactShortField(input.errorCode) }),
     ...(input.tenantId != null && { tenantId: redactShortField(input.tenantId) }),
     ...(input.requestId != null && { requestId: redactShortField(input.requestId) }),
+    // Not redacted but checked: an id that is not 32 lower-case hex digits is dropped.
+    traceId: input.traceId != null && TRACE_ID_RE.test(input.traceId) ? input.traceId : undefined,
   };
 }
 
@@ -619,6 +632,7 @@ function buildNewIncident(input: IncidentInput, fingerprint: string, now: Timest
     ...(input.stackTrace != null && { stackTrace: input.stackTrace }),
     ...(input.tenantId != null && { tenantId: input.tenantId }),
     ...(input.requestId != null && { requestId: input.requestId }),
+    ...(input.traceId != null && { traceId: input.traceId }),
     ...(input.sourceProjectId != null && { sourceProjectId: input.sourceProjectId }),
     ...(input.signalSource !== undefined && { signalSource: input.signalSource }),
     ...(input.monitoring != null &&
