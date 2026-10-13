@@ -57,6 +57,7 @@ pnpm feedback-corpus -- --out=<new dir>   # operators' noise/log corrections -> 
 pnpm replay           # replay the agent's stages over a corpus into a results file (#10); --check-corpus checks the cases without a model; needs Vertex for a real run, none recorded
 pnpm escalate         # one tick of the phone escalation (#37); the agent pass runs it too; off unless STARFISH_PHONE_ESCALATION; never run against real Twilio
 pnpm scrub            # dry-run: how many stored incidents still hold a credential/email (--apply to rewrite)
+pnpm demo-users       # dry-run: the judges' sign-in accounts (operator role, random passwords printed once); --apply/--remove need --project, refuses unless STARFISH_ENV=demo; never run on a real project
 pnpm seed-demo        # dry-run: the synthetic, badged demo history (#12); --apply/--remove need --project, refuses unless STARFISH_ENV=demo
 pnpm public-view      # dry-run: the guests' trimmed copies (#18) to write or remove (--apply needs --project); never run on a real project
 bash .claude/hooks/git-branch-guard.test.sh        # hook suites

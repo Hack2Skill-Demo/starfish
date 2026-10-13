@@ -4,7 +4,7 @@ import { MemoryRouter } from "react-router";
 import { describe, expect, it, vi } from "vitest";
 import { GuestBar } from "./GuestBar";
 
-vi.mock("../lib/config", () => ({ webConfig: () => ({ demoSignInHint: "They are in our slides." }) }));
+vi.mock("../lib/config", () => ({ webConfig: () => ({ demoSignInHint: "They are in our slides.", sourceUrl: "" }) }));
 
 describe("GuestBar", () => {
   it("asks a guest who did not choose the demo view to sign in, with the hint", () => {

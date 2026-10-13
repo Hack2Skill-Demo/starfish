@@ -537,7 +537,13 @@ finds the sign-in details, e.g. "They are in our presentation slides.", shown on
 never the credentials themselves, since it ships in the bundle; unset = "Use the email and password you were given."),
 and `STARFISH_WEB_DEMO_APP_URL` (`VITE_STARFISH_DEMO_APP_URL`: the watched demo app's Lab, an https URL such as
 `https://hack2skill-demo.web.app/#lab`, linked from the Incidents page; unset = no link, so deleting the variable and
-re-running the workflow takes it down).
+re-running the workflow takes it down),
+and `STARFISH_WEB_SOURCE_URL` (`VITE_STARFISH_SOURCE_URL`: the source repository, an https URL, shown as a GitHub mark in the
+guest bar and on the sign-in page; unset = no link).
+The judges' sign-in accounts are made once, from a shell on the demo project: `STARFISH_ENV=demo pnpm demo-users -- --apply --project=<id>`
+(a dry run without `--apply`) creates `STARFISH_DEMO_USERS` as `operator` accounts, never admin, and prints each random password once.
+Put them on the slide, not in the repository; `--reset-passwords` replaces them, `--remove` deletes the accounts. Written and tested
+with fakes, not yet run on a real project.
 Anonymous sign-in is **not** turned on by the workflow: it is project-wide (see `setup.md`). Input: `dry_run`.
 
 ### App Check and the uptime check (#12)
