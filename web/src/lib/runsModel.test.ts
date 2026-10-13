@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   ago,
+  timeAxis,
   buildWaterfall,
   prStateView,
   formatClock,
@@ -26,6 +27,7 @@ import {
   triageRule,
   type CycleRow,
   type EventRow,
+  type Step,
   isReached,
   failedUnexpectedly,
 } from "./runsModel";
@@ -667,3 +669,37 @@ describe("the run's summary, its error, and the list's strip", () => {
   });
 });
 
+
+describe("timeAxis", () => {
+  const step = (stage: string, offset: number, width: number): Step => ({ stage, title: stage, status: "done", offset, width });
+
+  it("is linear when no step dwarfs the rest", () => {
+    const axis = timeAxis([step("triage", 0, 0.5), step("fix", 0.5, 0.5)], 0, 1000);
+    expect(axis.shortened).toBeUndefined();
+    expect(axis.at(250)).toBeCloseTo(0.25);
+    expect(axis.at(2000)).toBe(1);
+  });
+
+  it("draws one step of more than 60% across a quarter of the axis, and the rest across three quarters", () => {
+    // Triage 0..900 (90%), fix 900..1000.
+    const triage = step("triage", 0, 0.9);
+    const axis = timeAxis([triage, step("fix", 0.9, 0.1)], 0, 1000);
+    expect(axis.shortened).toBe(triage);
+    expect(axis.at(0)).toBe(0);
+    expect(axis.at(900)).toBeCloseTo(0.25);
+    expect(axis.at(950)).toBeCloseTo(0.625);
+    expect(axis.at(1000)).toBeCloseTo(1);
+  });
+
+  it("keeps the order of a long step in the middle", () => {
+    const axis = timeAxis([step("triage", 0, 0.05), step("fix", 0.05, 0.9), step("verify", 0.95, 0.05)], 0, 1000);
+    expect(axis.at(50)).toBeCloseTo(0.375);
+    expect(axis.at(950)).toBeCloseTo(0.625);
+    expect(axis.at(1000)).toBeCloseTo(1);
+  });
+
+  it("does not shorten a step that is all there is, nor an empty axis", () => {
+    expect(timeAxis([step("triage", 0, 0.95)], 0, 1000).shortened).toBeUndefined();
+    expect(timeAxis([], 5, 5).at(5)).toBe(0);
+  });
+});

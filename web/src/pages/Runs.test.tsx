@@ -686,4 +686,74 @@ describe("Runs page", () => {
     act(() => mocks.eventsCb!([event(1, "triage", "decision", "Act", 30_000)]));
     expect(screen.queryByRole("button", { name: "Watch replay" })).toBeNull();
   });
+
+  it("opens with the run's story on the hero card: the error, its count and how far the run got", async () => {
+    mocks.getIncident.mockResolvedValue({ id: "inc-a", functionName: "orders-createorder", errorType: "DatabaseError", errorMessage: "Cannot use undefined", status: "new", occurrenceCount: 11, service: "orders", recurrenceCount: 0 });
+    renderRuns();
+    act(() => mocks.cyclesCb!([cycle("inc-a_r0", { state: "waiting-human", leaseExpiresAt: null, path: "human" })], false));
+    act(() => mocks.eventsCb!([event(1, "triage", "decision", "Act", 50_000), event(2, "fix", "proposed", "A guard", 40_000)]));
+    expect(await screen.findByText("11 occurrences")).toBeInTheDocument();
+    const detail = screen.getByRole("region", { name: "Run detail" });
+    expect(within(detail).getByText((_, el) => el?.tagName === "P" && el.textContent === "DatabaseError · Cannot use undefined")).toBeInTheDocument();
+    expect(screen.getByText("2 of 5 steps recorded")).toBeInTheDocument();
+    expect(screen.getByTestId("run-summary")).toHaveTextContent("Handed to a person after draft a fix (proposed).");
+  });
+
+  it("says in the list how a finished run ended, and nothing of the kind for one in progress", () => {
+    renderRuns();
+    act(() => mocks.cyclesCb!([cycle("inc-a_r0", { state: "waiting-human", leaseExpiresAt: null, path: "human" }), cycle("inc-b_r0", { path: "human" })], false));
+    const list = screen.getByRole("region", { name: "Runs" });
+    expect(within(list).getAllByText("Handed to a person")).toHaveLength(1);
+  });
+
+  it("shows each step's recorded details: triage's choice among the levels, the fix's risk, the gate's checks and the review's attacks", () => {
+    renderRuns();
+    const summary = {
+      triage: { decision: "act", rule: "model-act", reason: "A field is undefined.", level: "fix", counterCount: 11, counterWindow: "24h" },
+      fix: { outcome: "proposed", risk: "Readers of giftNote", testAdded: true, alternative1: "Drop the field" },
+      verify: { status: "passed", files: 1, exitCode: 0 },
+      review: { verdict: "block", held: 2, broken: 1, attack1: "held: no note | written as null", attack2: "broken: readers | the slip prints null" },
+    };
+    act(() => mocks.cyclesCb!([cycle("inc-a_r0", { state: "waiting-human", path: "human", leaseExpiresAt: null, summary })], false));
+    act(() =>
+      mocks.eventsCb!([
+        event(1, "triage", "decision", "A field is undefined.", 50_000),
+        event(2, "fix", "proposed", "giftNote is undefined with no note", 40_000),
+        event(3, "verify", "passed", "Checks passed", 30_000),
+        event(4, "review", "block", "3 attacks tried", 20_000),
+      ])
+    );
+    const log = screen.getByRole("list", { name: "Step log" });
+    const levels = within(log).getByRole("group", { name: "How far Starfish goes" });
+    expect(within(levels).getByText("Log + fix")).toHaveAttribute("aria-current", "true");
+    expect(levels).toHaveTextContent("Noise (not chosen)");
+    expect(within(log).getByText(/Recount: 11 errors in 24h/)).toBeInTheDocument();
+    expect(within(log).getByText("Could break:").parentElement).toHaveTextContent("Readers of giftNote");
+    expect(within(log).getByText("Test added")).toBeInTheDocument();
+    expect(within(log).getByText(/1 rejected alternative/)).toBeInTheDocument();
+    expect(within(log).getByText(/The patch text is not stored/)).toBeInTheDocument();
+    expect(within(log).getByText("1 file changed")).toBeInTheDocument();
+    const attacks = within(log).getByRole("group", { name: "Attacks tried" });
+    expect(attacks).toHaveTextContent("brokenreadersthe slip prints null");
+    expect(within(log).getByText("1 broke it")).toBeInTheDocument();
+  });
+
+  it("reads oldest first on request, the step in progress last", async () => {
+    renderRuns();
+    act(() => mocks.cyclesCb!([cycle("inc-a_r0", { stage: "fix" })], false));
+    act(() => mocks.eventsCb!([event(1, "triage", "decision", "Act", 30_000)]));
+    const entries = () => within(screen.getByRole("list", { name: "Step log" })).getAllByRole("listitem");
+    expect(entries()[0]).toHaveTextContent("Draft a fix");
+    await userEvent.click(screen.getByRole("button", { name: /Newest first/ }));
+    expect(entries()[0]).toHaveTextContent("Triage");
+    expect(entries()[1]).toHaveTextContent("Draft a fix");
+    expect(screen.getByRole("button", { name: /Oldest first/ })).toBeInTheDocument();
+  });
+
+  it("says when one long step is drawn shortened on the time axis", () => {
+    renderRuns();
+    act(() => mocks.cyclesCb!([cycle("inc-a_r0", { state: "waiting-human", path: "human", leaseExpiresAt: null, createdAt: ts(now - 3_700_000), updatedAt: ts(now - 1000) })], false));
+    act(() => mocks.eventsCb!([event(1, "triage", "decision", "Act", 175_000), event(2, "fix", "proposed", "A guard", 135_000), event(3, "review", "block", "No", 1000)]));
+    expect(screen.getByTestId("axis-shortened")).toHaveTextContent("Triage's 58 min 45 s is drawn shortened on the time axis");
+  });
 });
