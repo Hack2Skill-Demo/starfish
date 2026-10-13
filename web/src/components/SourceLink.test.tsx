@@ -16,10 +16,10 @@ describe("SourceLink", () => {
   });
 
   it("links to the repository in a new tab", () => {
-    mocks.sourceUrl = "https://github.com/Hack2Skill-Demo/starfish";
+    mocks.sourceUrl = "https://github.com/example-org/starfish";
     render(<SourceLink />);
     const link = screen.getByRole("link", { name: "Source on GitHub" });
-    expect(link).toHaveAttribute("href", "https://github.com/Hack2Skill-Demo/starfish");
+    expect(link).toHaveAttribute("href", "https://github.com/example-org/starfish");
     expect(link).toHaveAttribute("target", "_blank");
     expect(link).toHaveAttribute("rel", "noreferrer");
   });
