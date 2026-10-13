@@ -62,6 +62,12 @@ const incidents = [
     occurrenceCount: 4, occurrencesByHour: bucket(30, 4), firstOccurredAt: ts(30), lastOccurredAt: ts(30), status: "ignored",
   },
   {
+    functionName: "orders-createOrder", service: "orders", errorType: "DatabaseError",
+    errorMessage: 'orders-createOrder failed: Cannot use "undefined" as a Firestore value (found in field "giftNote")',
+    occurrenceCount: 11, occurrencesByHour: bucket(1, 11), firstOccurredAt: ts(1.1), lastOccurredAt: ts(1), status: "new",
+    githubIssueNumber: 47, githubIssueUrl: "https://github.com/example/app/issues/47",
+  },
+  {
     functionName: "auth-resetPassword", service: "api", errorType: "UnavailableError", errorCode: "unavailable",
     errorMessage: "resetPassword: Sign-in is temporarily unavailable. Please try again.",
     occurrenceCount: 2, occurrencesByHour: bucket(17, 1), firstOccurredAt: ts(40), lastOccurredAt: ts(17), status: "resolved",
@@ -108,6 +114,20 @@ const cycles = [
       ["verify", "passed", "The configured command passed on the patched tree", 2.6, {}, { status: "passed", rule: "passed", patchSha256: SEED_PATCH }],
       ["review", "approved", "The reviewer found nothing it could hold against the patch", 3.4, {}, { verdict: "approved", rule: "survived", patchSha256: SEED_PATCH }],
       ["pr", "opened", "Opened a pull request", 3.9, {}, { opened: true, number: 42, url: "https://github.com/example/app/pull/42", patchSha256: SEED_PATCH }],
+    ],
+  },
+  {
+    // Handed to a person after the reviewer broke the patch: the timeline's richest case (issue, alert, attacks, message).
+    id: "seed-4_r0", state: "waiting-human", path: "human", outcome: "review-blocked", ageMin: 62,
+    events: [
+      ["cycle", "started", "Attempt 1", 0, { attempt: 1 }],
+      ["triage", "decision", "createOrder writes giftNote as undefined when the cart has no note", 58.75, { rule: "model-act", level: "fix" }, { decision: "act", rule: "model-act", level: "fix", reason: "createOrder writes giftNote as undefined when the cart has no note; Firestore rejects the write.", suspectedCause: "cart.note is optional and passed through unchanged", counterCount: 11, counterWindow: "24h", counterCapped: false, model: "gemini-2.5-pro" }],
+      ["issue", "opened", "Issue #47 filed", 58.77, {}, { state: "opened", number: 47, url: "https://github.com/example/app/issues/47" }],
+      ["alert", "sent", "The team was alerted", 58.8, {}, { state: "sent", attempts: 1 }],
+      ["fix", "proposed", "giftNote is passed through as undefined when the cart has no note", 59.4, { rule: "proposed", testAdded: true }, { outcome: "proposed", rule: "proposed", rootCause: "giftNote is passed through as undefined when the cart has no note", testAdded: true, risk: "Readers of giftNote that do not expect null", revisions: 0, source: "stack-frame", alternative1: "Drop giftNote from the write when it is empty", alternative2: "Default giftNote to an empty string" }],
+      ["verify", "passed", "The required checks passed on the patched branch", 59.45, { files: 1 }, { status: "passed", rule: "passed", patchSha256: SEED_PATCH, files: 1, exitCode: 0 }],
+      ["review", "block", "3 attacks tried", 61.73, { attacks: 3, broken: 1 }, { verdict: "block", rule: "broken", attacks: 3, held: 2, flagged: 0, broken: 1, patchSha256: SEED_PATCH, attack1: "held: A cart with no note | The order is written with giftNote: null", attack2: "held: A note of only whitespace | Stored as written, as before", attack3: "broken: Readers of giftNote | The packing slip prints the word null" }],
+      ["notify", "sent", "A person was told", 61.75, {}, { state: "sent", attempts: 1 }],
     ],
   },
 ];

@@ -476,6 +476,8 @@ export interface Step {
   /** Position on the run's time axis, as fractions of the whole. */
   offset?: number;
   width?: number;
+  /** Its last event's data, when it carried any (a guest's copy never does). */
+  data?: Flat;
 }
 
 /**
@@ -640,6 +642,7 @@ export function buildWaterfall(cycle: CycleRow, events: readonly EventRow[], now
       ...(last.type && { outcome: last.type }),
       ...(last.summary && { summary: last.summary }),
       at: last.at,
+      ...(Object.keys(last.data).length > 0 && { data: last.data }),
       ...(side && { side: true as const }),
       durationMs: end - from,
       offset: (from - startMs) / span,
@@ -655,6 +658,38 @@ export function buildWaterfall(cycle: CycleRow, events: readonly EventRow[], now
     rounds: reopenings.length + 1,
     ...(lastReopening && { reopened: { at: lastReopening.at, summary: lastReopening.summary } }),
     earlier,
+  };
+}
+
+/** The share of the timeline's axis one very long step is drawn across when the axis is shortened. */
+const SHORTENED_SHARE = 0.25;
+
+/**
+ * Where a moment falls on the timeline's axis, as a fraction of its width. Linear, unless one step took more than 60%
+ * of the run and something else happened too: that step is then drawn across a quarter of the axis, and the rest of the
+ * run across the other three quarters, so the other steps are not hairlines beside it (a triage that waited an hour for
+ * its model call and a fix of 40 s). The page says which step is drawn shortened; the times it prints are never scaled.
+ */
+export function timeAxis(steps: readonly Step[], startMs: number, endMs: number): { at: (ms: number) => number; shortened?: Step } {
+  const span = endMs - startMs;
+  const clamp = (x: number) => Math.min(1, Math.max(0, x));
+  if (!(span > 0)) return { at: () => 0 };
+  const linear = (ms: number) => clamp((ms - startMs) / span);
+  const placed = steps.filter((s) => (s.status === "done" || s.status === "failed") && s.offset !== undefined && s.width !== undefined);
+  const longest = [...placed].sort((a, b) => b.width! - a.width!)[0];
+  const others = steps.filter((s) => s !== longest && (s.status === "running" || placed.includes(s)));
+  if (!longest || longest.width! <= 0.6 || longest.width! >= 1 || others.length === 0) return { at: linear };
+  const a = startMs + longest.offset! * span;
+  const b = a + longest.width! * span;
+  const rest = span - (b - a);
+  const share = 1 - SHORTENED_SHARE;
+  return {
+    shortened: longest,
+    at: (ms) => {
+      if (ms <= a) return clamp(((ms - startMs) / rest) * share);
+      if (ms <= b) return clamp(((a - startMs) / rest) * share + ((ms - a) / (b - a)) * SHORTENED_SHARE);
+      return clamp(((a - startMs) / rest) * share + SHORTENED_SHARE + ((ms - b) / rest) * share);
+    },
   };
 }
 

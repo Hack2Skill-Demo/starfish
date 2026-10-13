@@ -396,8 +396,12 @@ collection-group query over `events`, with its own rule and index; a guest's rea
 **Incidents** page (under each error, the incident's current run: its state, triage's reason and a link to it, `lib/useIncidentRuns.ts`; with `VITE_STARFISH_DEMO_APP_URL`, a link to the demo app's Lab, `components/DemoAppLink.tsx`), a **Runs** page (live subscription to `{cycleCollection}` and its newest 200 events, read newest first by `seq`; a run
 with more says older ones are not drawn, #326,
 `web/src/lib/runs.ts`; the waterfall logic is pure in `runsModel.ts`: a step with no event is "not
-reached", a cycle whose lease ran out is not "in progress"; the step log sits under the track, newest first, with triage's
-suspected cause and the filed issue's link in their own entries, #279; a run reopened after a decline is drawn from its
+reached", a cycle whose lease ran out is not "in progress"; a dark hero card opens the run (the error, its count, how far it got, the actions); the step log sits under the track,
+newest first (oldest first on request), with triage's
+suspected cause and the filed issue's link in their own entries, #279, and each step's recorded details (triage's level
+among the four, the fix's risk and rejected alternatives, the gate's checks, the review's attacks; `lib/runStepDetail.ts`,
+only when the record is that step's own) and its bar on the run's time axis, one step of over 60% drawn shortened and said so
+(`timeAxis`); a run reopened after a decline is drawn from its
 latest reopening, says which round it is, and lists every step each earlier round reached, #285; a step this round did not
 reach that an earlier one did stays on the track, marked with that round's outcome; a step whose outcome means it went
 wrong unexpectedly (`failedUnexpectedly`: an error, a timeout, a failed delivery; never a rejection or a block) is red), an **incident evidence** page (`/incidents/:id`, `lib/evidence.ts`: only stored records, never a placeholder result; an operator's "Correct triage", the feedback engine, `components/CorrectionControl.tsx`, `lib/correctionWrite.ts`), and a **Settings** page: the Gemini, GitHub and Slack connections, the rules and feedback engines' card (GitHub and Slack read `{runCollection}/integrations`, the agent's own report of what it holds: "configured", never "connected", and "not connected yet" until the agent has run and reported), an

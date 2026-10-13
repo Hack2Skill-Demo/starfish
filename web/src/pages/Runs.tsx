@@ -1,6 +1,6 @@
 /**
- * Runs — the agent's cycles as they happen: a list of runs by day, and for the one selected its stages as a track, a
- * time bar and a log. Both are live subscriptions to what the engine writes (src/agent/cycle.ts); nothing
+ * Runs — the agent's cycles as they happen: a list of runs by day, and for the one selected a hero card, its stages as a track, a
+ * timeline of what each step did with its bar on the run's time axis. Both are live subscriptions to what the engine writes (src/agent/cycle.ts); nothing
  * here is inferred. A step with no event is "not reached", a cycle with no worker on it is not "in
  * progress" (and nothing on it animates), and nothing is drawn for a stage the loop has no code for (merge, deploy, recovery).
  *
@@ -10,14 +10,39 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useQueries } from "@tanstack/react-query";
 import { Link, useSearchParams } from "react-router";
-import { Check, CircleDot, Copy, CornerDownRight, ExternalLink, FileText, GitMerge, GitPullRequest, GitPullRequestClosed, CirclePlay, Square, Workflow, X } from "lucide-react";
+import {
+  ArrowDownUp,
+  BellRing,
+  Check,
+  Circle,
+  CircleDot,
+  CirclePlay,
+  CodeXml,
+  Copy,
+  CornerDownRight,
+  Database,
+  ExternalLink,
+  FileText,
+  FlaskConical,
+  GitMerge,
+  GitPullRequest,
+  GitPullRequestClosed,
+  ListFilter,
+  Megaphone,
+  Phone,
+  ScanSearch,
+  ShieldCheck,
+  Square,
+  Workflow,
+  X,
+} from "lucide-react";
 import PageMeta from "../components/PageMeta";
 import SettingsUnavailableNotice from "../components/SettingsUnavailableNotice";
 import StoreReadHint from "../components/StoreReadHint";
 import { AgentStatus } from "../components/AgentStatus";
 import { RunAgentButton } from "../components/AdminActions";
 import { RetryRunButton } from "../components/RetryRunButton";
-import { Badge } from "../components/ui/Badge";
+import { Badge, type BadgeTone } from "../components/ui/Badge";
 import { SyntheticBadge } from "../components/SyntheticBadge";
 import { EmptyState } from "../components/ui/EmptyState";
 import { formatDateTime, formatRelativeTime } from "../lib/formatters";
@@ -45,6 +70,7 @@ import {
   issueLink,
   prLink,
   stepLogOrder,
+  timeAxis,
   triageFinding,
   triageDecision,
   triageRule,
@@ -52,11 +78,11 @@ import {
   type CycleRow,
   type EventRow,
   type RunStatus,
-  type EarlierRound,
   type Step,
   type StepStatus,
   type Waterfall,
 } from "../lib/runsModel";
+import { LEVELS, LEVEL_SHORT, stepDetail, type ReviewAttack, type StepDetail } from "../lib/runStepDetail";
 
 
 export default function Runs() {
@@ -350,6 +376,10 @@ function RunList({
                       </span>
                       <span className="shrink-0 text-xs text-gray-600 dark:text-gray-400">{formatRelativeTime(c.updatedAt)}</span>
                     </div>
+                    {/* How a finished run ended, in the loop's own words, beside its last step. */}
+                    {c.path && !status.live && c.state !== "running" && (
+                      <p className="mt-2 text-sm font-medium text-gray-800 dark:text-gray-200">{PATH_LABELS[c.path]}</p>
+                    )}
                     {((c.stage && c.stage !== "cycle") || c.recurrence > 0) && (
                       <div className="mt-1.5 flex flex-wrap gap-x-3 text-xs text-gray-600 dark:text-gray-400">
                         {c.stage && c.stage !== "cycle" && <span>Last step: {titleOf(c.stage)}</span>}
@@ -456,177 +486,253 @@ function RunDetail({ cycle, incident, environment, now }: { cycle: CycleRow; inc
   const handoff = !asLive && !status.live && cycle.state !== "running" && (cycle.path === "human" || cycle.path === "notify") ? PATH_LABELS[cycle.path] : undefined;
 
   return (
-    <section aria-label="Run detail" className="space-y-6 rounded-xl border border-gray-200 bg-white p-5 sm:p-6 dark:border-gray-700 dark:bg-gray-800">
-      <header className="flex flex-wrap items-start gap-4">
-        <div className="min-w-0 flex-1 basis-80 space-y-2">
-          <div className="flex flex-wrap items-center gap-2">
-            <h2 className={`min-w-0 break-words text-2xl font-bold tracking-tight text-gray-900 dark:text-white ${incident ? "" : "font-mono"}`}>
-              {incident?.functionName ?? cycle.incidentId}
-            </h2>
-            <StatusBadge status={shownStatus} />
-            {cycle.synthetic && <SyntheticBadge />}
-          </div>
-          <p className="text-base text-gray-700 dark:text-gray-300" data-testid="run-summary">{summary}</p>
-          {/* A reopened run (#285): say so here, since the steps and times below are only its latest round's. */}
-          {water?.reopened && (
-            <p className="text-sm text-gray-700 dark:text-gray-300" data-testid="run-rounds">
-              <span className="font-medium text-gray-900 dark:text-gray-100">
-                Round {water.rounds}: this run was reopened {water.rounds - 1} {water.rounds - 1 === 1 ? "time" : "times"}.
-              </span>{" "}
-              Latest {formatRelativeTime(water.reopened.at, "never", now)}
-              {water.reopened.summary.replace(/[.\s]+$/, "") ? `: ${water.reopened.summary.replace(/[.\s]+$/, "")}.` : "."} The steps and times below are this round&apos;s; what the earlier
-              rounds ended on is at the end of the step log.
-            </p>
-          )}
-        </div>
-        <div className="flex flex-wrap gap-2">
-          {canReplay && (
-            <button
-              type="button"
-              onClick={toggleReplay}
-              title="Plays back on this page the steps this run recorded. It runs nothing: Retry with agent does."
-              className="inline-flex min-h-11 items-center gap-2 rounded-lg border border-gray-200 px-4 text-sm font-medium text-gray-900 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-100 dark:hover:bg-gray-700"
-            >
-              {replaying ? <Square className="h-4 w-4" aria-hidden /> : <CirclePlay className="h-4 w-4" aria-hidden />}
-              {replaying ? "Stop replay" : "Watch replay"}
-            </button>
-          )}
-          {canRetry && <RetryRunButton incidentId={cycle.incidentId} />}
-          <Link
-            to={`/incidents/${encodeURIComponent(cycle.incidentId)}`}
-            className="inline-flex min-h-11 items-center gap-2 rounded-lg border border-gray-200 px-4 text-sm font-medium text-gray-900 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-100 dark:hover:bg-gray-700"
-          >
-            <FileText className="h-4 w-4" aria-hidden />
-            Evidence for this incident
-          </Link>
-          {issue && (
-            <a
-              href={issue.url}
-              target="_blank"
-              rel="noreferrer noopener"
-              className="inline-flex min-h-11 items-center gap-2 rounded-lg border border-gray-200 px-4 text-sm font-medium text-gray-900 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-100 dark:hover:bg-gray-700"
-            >
-              <CircleDot className="h-4 w-4" aria-hidden />
-              Issue #{issue.number} <ExternalLink className="h-3.5 w-3.5" aria-hidden />
-            </a>
-          )}
-          {pr && (
-            <a
-              href={pr.url}
-              target="_blank"
-              rel="noreferrer noopener"
-              className="inline-flex min-h-11 items-center gap-2 rounded-lg border border-gray-200 px-4 text-sm font-medium text-gray-900 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-100 dark:hover:bg-gray-700"
-            >
-              <PrIcon state={pr.state} className="h-4 w-4" />
-              Pull request #{pr.number ?? ""} <ExternalLink className="h-3.5 w-3.5" aria-hidden />
-            </a>
-          )}
-        </div>
-      </header>
-
-      <section aria-label="Pipeline" className="space-y-4">
-        <div className="flex flex-wrap items-baseline justify-between gap-2">
-          <h3 className={SECTION_TITLE}>Pipeline</h3>
-          {water && <span className="text-sm text-gray-600 dark:text-gray-400">{progressText(water.steps)}</span>}
-        </div>
-        {failed ? (
-          <p role="alert" className="text-sm text-error-700 dark:text-error-400">
-            Couldn&apos;t read this run&apos;s events.
-          </p>
-        ) : !water ? (
-          <p className="text-sm text-gray-600 dark:text-gray-400">Loading steps…</p>
-        ) : (
+    <section aria-label="Run detail" className="min-w-0 space-y-4">
+      <RunHero
+        cycle={cycle}
+        incident={incident}
+        status={shownStatus}
+        summary={summary}
+        water={water}
+        now={now}
+        actions={
           <>
-            {eventsCapped && (
-              <p className="text-sm text-gray-700 dark:text-gray-300" data-testid="events-capped">
-                Showing the newest {EVENT_LIMIT} events of this run; older ones are not drawn, so earlier rounds may be
-                missing or counted short.
-              </p>
+            {canRetry && <RetryRunButton incidentId={cycle.incidentId} />}
+            {canReplay && (
+              <button
+                type="button"
+                onClick={toggleReplay}
+                title="Plays back on this page the steps this run recorded. It runs nothing: Retry with agent does."
+                className={HERO_ACTION}
+              >
+                {replaying ? <Square className="h-4 w-4" aria-hidden /> : <CirclePlay className="h-4 w-4" aria-hidden />}
+                {replaying ? "Stop replay" : "Watch replay"}
+              </button>
             )}
-            <StepTrack steps={water.steps.filter((s) => !s.side)} clock={trackClock} handoff={handoff} />
-            <SideSteps steps={water.steps.filter((s) => s.side)} />
-            <TimeBar
-              water={water}
-              live={status.live || asLive !== null}
-              clock={trackClock}
-              label={asLive && replayAt !== null ? `Replaying · ${formatClock(replayAt - startMs)} of ${formatClock(spanMs)}` : undefined}
-            />
-            {/* Under the track, not below the trace: it fills in as the track moves, live or in a replay, so the page
-                says what is happening and not only how far it got. */}
-            <StepLog steps={stepLogOrder(water.steps)} pr={pr} issue={issue} finding={finding} earlier={water.earlier} rounds={water.rounds} />
+            <Link to={`/incidents/${encodeURIComponent(cycle.incidentId)}`} className={HERO_ACTION}>
+              <FileText className="h-4 w-4" aria-hidden />
+              Evidence for this incident
+            </Link>
+            {issue && (
+              <a href={issue.url} target="_blank" rel="noreferrer noopener" className={HERO_ACTION}>
+                <CircleDot className="h-4 w-4" aria-hidden />
+                Issue #{issue.number} <ExternalLink className="h-3.5 w-3.5" aria-hidden />
+              </a>
+            )}
+            {pr && (
+              <a href={pr.url} target="_blank" rel="noreferrer noopener" className={HERO_ACTION}>
+                <PrIcon state={pr.state} className="h-4 w-4" />
+                Pull request #{pr.number ?? ""} <ExternalLink className="h-3.5 w-3.5" aria-hidden />
+              </a>
+            )}
           </>
-        )}
-      </section>
+        }
+      />
 
-      <div className="flex flex-wrap gap-6">
-        {incident && failure && <WhatFailed errorType={incident.errorType} failure={failure} />}
-        <section aria-label="Run facts" className="min-w-0 flex-[2_1_16rem] space-y-3">
-          <h3 className={SECTION_TITLE}>Run facts</h3>
-          <dl className="divide-y divide-gray-200 overflow-hidden rounded-lg border border-gray-200 text-sm dark:divide-gray-700 dark:border-gray-700">
-            <Fact label="Incident ID">
-              <span className="flex items-center justify-end gap-2">
-                <span className="break-all font-mono text-xs">{cycle.incidentId}</span>
-                <CopyButton text={cycle.incidentId} />
-              </span>
-            </Fact>
-            {cycle.path && <Fact label="Path">{PATH_LABELS[cycle.path]}</Fact>}
-            {decision && (
-              <Fact label="Decision">
-                {decision.label}
-                {decision.mergeCase && <span className="ml-1 font-mono text-xs">({decision.mergeCase})</span>}
-                {decision.heldBy && <span className="block text-xs text-gray-600 dark:text-gray-400">{decision.heldBy}</span>}
-              </Fact>
-            )}
-            {rule && (
-              <Fact label="Triage rule">
-                <span className="font-mono text-xs">{rule}</span>
-              </Fact>
-            )}
-            {cycle.outcome && (
-              <Fact label="Outcome">
-                <span className="font-mono text-xs">{cycle.outcome}</span>
-              </Fact>
-            )}
-            {indexNow && (
-              <Fact label="Index at runtime">
-                <Badge tone={indexNow.tone}>{indexNow.text}</Badge>
-                {indexNow.until && <span className="block text-xs text-gray-600 dark:text-gray-400">until {indexNow.until.toISOString()}</span>}
-              </Fact>
-            )}
-            {prNow && (
-              <Fact label="Pull request now">
-                <Badge tone={prNow.tone}>{prNow.text}</Badge>
-                {prNow.checkedAt && (
-                  <span className="block text-xs text-gray-600 dark:text-gray-400">read from GitHub {formatRelativeTime(prNow.checkedAt, "never", now)}</span>
-                )}
-              </Fact>
-            )}
-            <Fact label="Started">{formatDateTime(cycle.createdAt)}</Fact>
-            <Fact label="Attempt">{cycle.attempts}</Fact>
-          </dl>
+      <div className="space-y-6 rounded-xl border border-gray-200 bg-white p-5 sm:p-6 dark:border-gray-700 dark:bg-gray-800">
+        <section aria-label="Pipeline" className="space-y-4">
+          <h3 className={SECTION_TITLE}>Pipeline</h3>
+          {failed ? (
+            <p role="alert" className="text-sm text-error-700 dark:text-error-400">
+              Couldn&apos;t read this run&apos;s events.
+            </p>
+          ) : !water || !events ? (
+            <p className="text-sm text-gray-600 dark:text-gray-400">Loading steps…</p>
+          ) : (
+            <>
+              {eventsCapped && (
+                <p className="text-sm text-gray-700 dark:text-gray-300" data-testid="events-capped">
+                  Showing the newest {EVENT_LIMIT} events of this run; older ones are not drawn, so earlier rounds may be
+                  missing or counted short.
+                </p>
+              )}
+              <StepTrack steps={water.steps.filter((s) => !s.side)} clock={trackClock} handoff={handoff} />
+              <SideSteps steps={water.steps.filter((s) => s.side)} />
+              {/* Under the track, not below the trace: it fills in as the track moves, live or in a replay, so the page
+                  says what is happening and not only how far it got. */}
+              <Timeline
+                water={water}
+                cycle={cycle}
+                events={events}
+                live={status.live || asLive !== null}
+                clock={trackClock}
+                label={asLive && replayAt !== null ? `Replaying · ${formatClock(replayAt - startMs)} of ${formatClock(spanMs)}` : undefined}
+                pr={pr}
+                issue={issue}
+                finding={finding}
+                now={now}
+              />
+            </>
+          )}
         </section>
-      </div>
 
-      {water && water.notes.length > 0 && (
-        <div>
-          <h3 className={SECTION_TITLE}>Cycle notes</h3>
-          <ul className="mt-2 space-y-1 text-sm text-gray-700 dark:text-gray-300">
-            {water.notes.map((n) => (
-              <li key={n.id}>
-                <span className="text-xs text-gray-600 dark:text-gray-400">{formatDateTime(n.at)}</span> {n.summary}
-              </li>
-            ))}
-          </ul>
+        <div className="flex flex-wrap gap-6">
+          {incident && failure && <WhatFailed errorType={incident.errorType} failure={failure} />}
+          <section aria-label="Run facts" className="min-w-0 flex-[2_1_16rem] space-y-3">
+            <h3 className={SECTION_TITLE}>Run facts</h3>
+            <dl className="divide-y divide-gray-200 overflow-hidden rounded-lg border border-gray-200 text-sm dark:divide-gray-700 dark:border-gray-700">
+              <Fact label="Incident ID">
+                <span className="flex items-center justify-end gap-2">
+                  <span className="break-all font-mono text-xs">{cycle.incidentId}</span>
+                  <CopyButton text={cycle.incidentId} />
+                </span>
+              </Fact>
+              {cycle.path && <Fact label="Path">{PATH_LABELS[cycle.path]}</Fact>}
+              {decision && (
+                <Fact label="Decision">
+                  {decision.label}
+                  {decision.mergeCase && <span className="ml-1 font-mono text-xs">({decision.mergeCase})</span>}
+                  {decision.heldBy && <span className="block text-xs text-gray-600 dark:text-gray-400">{decision.heldBy}</span>}
+                </Fact>
+              )}
+              {rule && (
+                <Fact label="Triage rule">
+                  <span className="font-mono text-xs">{rule}</span>
+                </Fact>
+              )}
+              {cycle.outcome && (
+                <Fact label="Outcome">
+                  <span className="font-mono text-xs">{cycle.outcome}</span>
+                </Fact>
+              )}
+              {indexNow && (
+                <Fact label="Index at runtime">
+                  <Badge tone={indexNow.tone}>{indexNow.text}</Badge>
+                  {indexNow.until && <span className="block text-xs text-gray-600 dark:text-gray-400">until {indexNow.until.toISOString()}</span>}
+                </Fact>
+              )}
+              {prNow && (
+                <Fact label="Pull request now">
+                  <Badge tone={prNow.tone}>{prNow.text}</Badge>
+                  {prNow.checkedAt && (
+                    <span className="block text-xs text-gray-600 dark:text-gray-400">read from GitHub {formatRelativeTime(prNow.checkedAt, "never", now)}</span>
+                  )}
+                </Fact>
+              )}
+              <Fact label="Started">{formatDateTime(cycle.createdAt)}</Fact>
+              <Fact label="Attempt">{cycle.attempts}</Fact>
+            </dl>
+          </section>
         </div>
-      )}
-      {cycle.trimmed && (
-        <p className="border-t border-gray-200 pt-4 text-xs text-gray-600 dark:border-gray-700 dark:text-gray-400" data-testid="trimmed-note">
-          Public view: a trimmed copy of the run. The model&apos;s own words and each step&apos;s details are left out of it.
-        </p>
-      )}
+
+        {water && water.notes.length > 0 && (
+          <div>
+            <h3 className={SECTION_TITLE}>Cycle notes</h3>
+            <ul className="mt-2 space-y-1 text-sm text-gray-700 dark:text-gray-300">
+              {water.notes.map((n) => (
+                <li key={n.id}>
+                  <span className="text-xs text-gray-600 dark:text-gray-400">{formatDateTime(n.at)}</span> {n.summary}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+        {cycle.trimmed && (
+          <p className="border-t border-gray-200 pt-4 text-xs text-gray-600 dark:border-gray-700 dark:text-gray-400" data-testid="trimmed-note">
+            Public view: a trimmed copy of the run. The model&apos;s own words and each step&apos;s details are left out of it.
+          </p>
+        )}
+      </div>
     </section>
   );
 }
+
+/** A link or button on the dark hero card. */
+const HERO_ACTION =
+  "inline-flex min-h-11 items-center gap-2 rounded-lg border border-gray-600 px-4 text-sm font-medium text-white hover:bg-gray-800 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white";
+
+/** The run's story at a glance: what it is about, where it stands, how far it got, and what can be done with it. */
+function RunHero({
+  cycle,
+  incident,
+  status,
+  summary,
+  water,
+  now,
+  actions,
+}: {
+  cycle: CycleRow;
+  incident?: IncidentRow;
+  status: RunStatus;
+  summary: string;
+  water: Waterfall | null;
+  now: number;
+  actions: ReactNode;
+}) {
+  const headline = incident?.errorMessage ? splitTrace(incident.errorMessage).headline : undefined;
+  // Filled from the left in the order the steps happened (a side step such as the issue lands between the track's own),
+  // then the one in progress, then the steps not reached.
+  const all = water?.steps ?? [];
+  const track = [...[...stepLogOrder(all)].reverse(), ...all.filter((s) => s.status === "not-reached")];
+  return (
+    <div className="space-y-5 rounded-2xl bg-gray-900 p-5 text-white sm:p-7 dark:bg-gray-950 dark:ring-1 dark:ring-gray-700">
+      <div className="space-y-2">
+        <p className="text-sm text-gray-400">
+          Run for incident <span className="break-all font-mono">{cycle.incidentId}</span>
+          {cycle.recurrence > 0 && <> · recurrence {cycle.recurrence}</>} · started {formatDateTime(cycle.createdAt)}
+        </p>
+        <div className="flex flex-wrap items-center gap-3">
+          <h2 className={`min-w-0 break-words text-3xl font-bold tracking-tight text-white ${incident ? "" : "font-mono"}`}>
+            {incident?.functionName ?? cycle.incidentId}
+          </h2>
+          <StatusBadge status={status} />
+          {cycle.synthetic && <SyntheticBadge />}
+        </div>
+        <p className="text-lg text-gray-100" data-testid="run-summary">
+          {summary}
+        </p>
+        {/* A reopened run (#285): say so here, since the steps and times below are only its latest round's. */}
+        {water?.reopened && (
+          <p className="text-sm text-gray-300" data-testid="run-rounds">
+            <span className="font-semibold text-white">
+              Round {water.rounds}: this run was reopened {water.rounds - 1} {water.rounds - 1 === 1 ? "time" : "times"}.
+            </span>{" "}
+            Latest {formatRelativeTime(water.reopened.at, "never", now)}
+            {water.reopened.summary.replace(/[.\s]+$/, "") ? `: ${water.reopened.summary.replace(/[.\s]+$/, "")}.` : "."} The steps and times below are this round&apos;s; what the earlier
+            rounds ended on is at the end of the step log.
+          </p>
+        )}
+      </div>
+
+      {incident && (
+        <div className="space-y-3">
+          <p className="break-words rounded-xl bg-black/40 px-4 py-3 font-mono text-sm text-gray-100 ring-1 ring-gray-800">
+            <span className="font-semibold text-brand-300">{incident.errorType}</span>
+            {headline ? ` · ${headline}` : ""}
+          </p>
+          <p className="flex flex-wrap gap-2 text-xs">
+            {typeof incident.occurrenceCount === "number" && (
+              <span className="rounded-md bg-gray-800 px-2.5 py-1 text-gray-200">
+                {incident.occurrenceCount} {incident.occurrenceCount === 1 ? "occurrence" : "occurrences"}
+              </span>
+            )}
+            {incident.service && <span className="rounded-md bg-gray-800 px-2.5 py-1 text-gray-200">{incident.service}</span>}
+            {incident.recurrenceCount > 0 && <span className="rounded-md bg-warning-900 px-2.5 py-1 text-warning-100">Came back after a fix</span>}
+          </p>
+        </div>
+      )}
+
+      {track.length > 0 && (
+        <div className="space-y-2">
+          <div className="flex gap-1" aria-hidden>
+            {track.map((s) => (
+              <span key={s.stage} className={`h-2 flex-1 rounded-full ${HERO_SEGMENT[s.status]}`} />
+            ))}
+          </div>
+          <p className="text-sm text-gray-300">{progressText(track)}</p>
+        </div>
+      )}
+
+      <div className="flex flex-wrap gap-2">{actions}</div>
+    </div>
+  );
+}
+
+const HERO_SEGMENT: Record<StepStatus, string> = {
+  done: "bg-brand-500",
+  failed: "bg-error-500",
+  running: "bg-info-400 motion-safe:animate-pulse",
+  "not-reached": "bg-gray-700",
+};
 
 const SECTION_TITLE = "text-xs font-semibold uppercase tracking-wide text-gray-600 dark:text-gray-400";
 
@@ -880,59 +986,6 @@ function SideSteps({ steps }: { steps: Step[] }) {
   );
 }
 
-const SEGMENT_COLORS = [
-  "bg-brand-600 dark:bg-brand-400",
-  "bg-warning-500 dark:bg-warning-400",
-  "bg-success-600 dark:bg-success-400",
-  "bg-gray-500 dark:bg-gray-400",
-  "bg-brand-300 dark:bg-brand-200",
-];
-
-/** A step's segment on the time bar: red for one that failed unexpectedly, else the next colour in turn. */
-const segmentColor = (s: Step, i: number): string => (s.status === "failed" ? "bg-error-500 dark:bg-error-400" : SEGMENT_COLORS[i % SEGMENT_COLORS.length]!);
-
-/** Where the run's time went: one segment per recorded step, and the running one growing while a worker holds it. */
-function TimeBar({ water, live, clock, label }: { water: Waterfall; live: boolean; clock: number; label?: string }) {
-  const done = water.steps.filter((s) => isReached(s) && !s.side && s.width !== undefined && s.durationMs !== undefined);
-  const running = water.steps.find((s) => s.status === "running");
-  if (done.length === 0 && !running) return null;
-  const span = water.endMs - water.startMs;
-  const runningShare = running?.since ? Math.max(0, (water.endMs - running.since.getTime()) / span) : 0;
-  const parts = [...done.map((s) => `${s.title} ${formatDuration(s.durationMs!)}`), ...(running ? [`${running.title} running`] : [])];
-  return (
-    <div className="space-y-2 rounded-lg bg-gray-50 p-3 dark:bg-gray-900/40">
-      <p className="text-xs font-medium tabular-nums text-gray-900 dark:text-white">
-        {label ??
-          (live
-            ? `Running for ${formatDuration(clock - water.startMs)}${water.reopened ? " since it was reopened" : ""}`
-            : `${formatDuration(span)} from ${water.reopened ? "the latest reopening" : "start"} to the last update`)}
-      </p>
-      <div role="img" aria-label={`Time per step: ${parts.join(", ")}`} className="flex h-2.5 gap-0.5 overflow-hidden rounded-full bg-gray-200 dark:bg-gray-700">
-        {done.map((s, i) => (
-          <span key={s.stage} className={segmentColor(s, i)} style={{ flexBasis: `${Math.max(s.width! * 100, 0.75).toFixed(2)}%` }} />
-        ))}
-        {running && (
-          <span className="bg-info-500 motion-safe:animate-pulse dark:bg-info-400" style={{ flexBasis: `${Math.max(runningShare * 100, 0.75).toFixed(2)}%` }} />
-        )}
-      </div>
-      <ul className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-gray-600 dark:text-gray-400" aria-hidden>
-        {done.map((s, i) => (
-          <li key={s.stage} className="inline-flex items-center gap-1.5">
-            <span className={`h-2.5 w-2.5 rounded-sm ${segmentColor(s, i)}`} />
-            {s.title} <span className="tabular-nums text-gray-900 dark:text-gray-100">{formatDuration(s.durationMs!)}</span>
-          </li>
-        ))}
-        {running && (
-          <li className="inline-flex items-center gap-1.5">
-            <span className="h-2.5 w-2.5 rounded-sm bg-info-500 dark:bg-info-400" />
-            {running.title} <span className="font-medium text-info-800 dark:text-info-400">running</span>
-          </li>
-        )}
-      </ul>
-    </div>
-  );
-}
-
 /** GitHub's own mark for a pull request: merged, closed without merging, or open (also when never read back). */
 function PrIcon({ state, className }: { state?: "open" | "merged" | "closed"; className: string }) {
   const Icon = state === "merged" ? GitMerge : state === "closed" ? GitPullRequestClosed : GitPullRequest;
@@ -957,80 +1010,374 @@ function GitHubRef({ url, what, repo, number, icon }: { url: string; what: strin
   );
 }
 
-/**
- * What each step said and when, newest first: the step in progress on top, then the latest finished one, so what is
- * happening now sits right under the track without scrolling. Triage's entry carries
- * its suspected cause and whose words they are; the issue's and the pull request's carry their links, each only once its
- * own step happened. For a reopened run (#285) these are its latest round's steps, and every step each earlier round
- * reached follows, newest round first: a review that ran in round 1 before a retry is still in the log.
- */
-function StepLog({
-  steps,
+/** Outcomes that are a step doing its job by saying no: done, but worth a second look. */
+const NO_OUTCOMES = new Set(["block", "rejected", "declined", "decline", "failed", "unavailable", "skipped", "dry-run"]);
+
+function verdictTone(step: Step): BadgeTone {
+  if (step.status === "failed") return "error";
+  if (step.status === "running") return "info";
+  return step.outcome && NO_OUTCOMES.has(step.outcome) ? "warning" : "success";
+}
+
+/** Each stage's mark on the timeline: its icon, its tile and its bar on the time axis. */
+const STAGE_LOOK: Record<string, { icon: typeof Circle; tile: string; bar: string }> = {
+  triage: { icon: ListFilter, tile: "bg-brand-50 text-brand-700 dark:bg-brand-500/15 dark:text-brand-300", bar: "bg-brand-600 dark:bg-brand-400" },
+  fix: { icon: CodeXml, tile: "bg-warning-100 text-warning-800 dark:bg-warning-500/15 dark:text-warning-300", bar: "bg-warning-500 dark:bg-warning-400" },
+  verify: { icon: ShieldCheck, tile: "bg-success-100 text-success-800 dark:bg-success-500/15 dark:text-success-300", bar: "bg-success-600 dark:bg-success-400" },
+  review: { icon: ScanSearch, tile: "bg-gray-200 text-gray-800 dark:bg-gray-700 dark:text-gray-100", bar: "bg-gray-600 dark:bg-gray-300" },
+  pr: { icon: GitPullRequest, tile: "bg-gray-900 text-white dark:bg-gray-100 dark:text-gray-900", bar: "bg-gray-900 dark:bg-gray-100" },
+  issue: { icon: CircleDot, tile: "bg-gray-900 text-white dark:bg-gray-100 dark:text-gray-900", bar: "bg-gray-900 dark:bg-gray-100" },
+  alert: { icon: Megaphone, tile: "bg-info-100 text-info-800 dark:bg-info-500/15 dark:text-info-300", bar: "bg-info-600 dark:bg-info-400" },
+  notify: { icon: BellRing, tile: "bg-info-100 text-info-800 dark:bg-info-500/15 dark:text-info-300", bar: "bg-info-600 dark:bg-info-400" },
+  escalation: { icon: Phone, tile: "bg-info-100 text-info-800 dark:bg-info-500/15 dark:text-info-300", bar: "bg-info-600 dark:bg-info-400" },
+  before: { icon: FlaskConical, tile: "bg-success-100 text-success-800 dark:bg-success-500/15 dark:text-success-300", bar: "bg-success-600 dark:bg-success-400" },
+  merge: { icon: GitMerge, tile: "bg-gray-900 text-white dark:bg-gray-100 dark:text-gray-900", bar: "bg-gray-900 dark:bg-gray-100" },
+  index: { icon: Database, tile: "bg-brand-50 text-brand-700 dark:bg-brand-500/15 dark:text-brand-300", bar: "bg-brand-600 dark:bg-brand-400" },
+};
+const OTHER_LOOK = { icon: Circle, tile: "bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-200", bar: "bg-gray-500 dark:bg-gray-400" };
+
+function StageIcon({ step }: { step: Step }) {
+  const look = STAGE_LOOK[step.stage] ?? OTHER_LOOK;
+  const Icon = step.status === "failed" ? X : look.icon;
+  const tile =
+    step.status === "failed"
+      ? "bg-error-100 text-error-700 dark:bg-error-500/15 dark:text-error-300"
+      : step.status === "running"
+        ? "bg-info-50 text-info-800 ring-2 ring-info-300 motion-safe:animate-pulse dark:bg-info-500/15 dark:text-info-300 dark:ring-info-700"
+        : look.tile;
+  return (
+    <span className={`flex h-10 w-10 items-center justify-center rounded-xl ${tile}`} aria-hidden>
+      <Icon className="h-5 w-5" />
+    </span>
+  );
+}
+
+/** A step's bar on the run's time axis: from the step before's end to its own, or growing while a worker is on it. */
+function StepBar({ step, water, axis }: { step: Step; water: Waterfall; axis: ReturnType<typeof timeAxis> }) {
+  const span = water.endMs - water.startMs;
+  let from: number | undefined;
+  let to: number | undefined;
+  if (step.status === "running" && step.since) {
+    from = step.since.getTime();
+    to = water.endMs;
+  } else if (isReached(step) && step.offset !== undefined && step.width !== undefined) {
+    from = water.startMs + step.offset * span;
+    to = from + step.width * span;
+  }
+  if (from === undefined || to === undefined) return <div className="hidden sm:block" />;
+  const left = axis.at(from) * 100;
+  const width = Math.max(0, axis.at(to) * 100 - left);
+  const color = step.status === "failed" ? "bg-error-500 dark:bg-error-400" : step.status === "running" ? "bg-info-500 motion-safe:animate-pulse dark:bg-info-400" : (STAGE_LOOK[step.stage] ?? OTHER_LOOK).bar;
+  return (
+    <div className="hidden pt-2 sm:block" aria-hidden>
+      <div className="relative h-2 rounded-full bg-gray-100 dark:bg-gray-700">
+        <span className={`absolute inset-y-0 rounded-full ${color}`} style={{ left: `min(${left.toFixed(2)}%, calc(100% - 4px))`, width: `max(4px, ${width.toFixed(2)}%)` }} />
+        {axis.shortened === step && (
+          <span
+            className="absolute -inset-y-1 w-1.5 bg-white dark:bg-gray-800"
+            style={{ left: `${(left + width / 2).toFixed(2)}%`, transform: "skewX(-20deg)" }}
+          />
+        )}
+      </div>
+    </div>
+  );
+}
+
+const CHIP = "inline-flex items-center gap-1 rounded-md bg-gray-100 px-2 py-1 text-xs font-medium text-gray-700 dark:bg-gray-700 dark:text-gray-200";
+const BODY = "break-words text-sm text-gray-700 dark:text-gray-300";
+const ATTACK_TONE: Record<ReviewAttack["outcome"], string> = {
+  held: "text-success-700 dark:text-success-400",
+  flagged: "text-warning-700 dark:text-warning-400",
+  broken: "text-error-700 dark:text-error-400",
+};
+
+/** What a step recorded beyond its one line: only what is stored for it (runStepDetail.ts), so a copy that left it out shows nothing. */
+function StepDetails({
+  step,
+  detail,
   pr,
   issue,
   finding,
-  earlier = [],
-  rounds = 1,
+  now,
+  cycle,
 }: {
-  steps: Step[];
+  step: Step;
+  detail: StepDetail;
   pr?: ReturnType<typeof prLink>;
   issue?: ReturnType<typeof issueLink>;
   finding?: ReturnType<typeof triageFinding>;
-  earlier?: EarlierRound[];
-  rounds?: number;
+  now: number;
+  cycle: CycleRow;
 }) {
-  if (steps.length === 0 && earlier.length === 0) return null;
+  const done = isReached(step);
+  const prNow = step.stage === "pr" ? prStateView(cycle, now) : undefined;
   return (
-    <div>
-      <h3 className={SECTION_TITLE}>Step log</h3>
-      <ol aria-label="Step log" className="mt-1 divide-y divide-gray-100 dark:divide-gray-700">
-        {steps.map((step) => (
-          <li key={step.stage} className="py-2">
-            <div className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5">
-              <span className="text-sm font-medium text-gray-900 dark:text-white">{step.title}</span>
-              <span className={`text-xs ${step.status === "failed" ? "font-medium text-error-700 dark:text-error-400" : "text-gray-600 dark:text-gray-400"}`}>
-                {step.status === "running" ? "In progress" : stepVerdict(step)}
-              </span>
-              {step.at && (
-                <span className="ml-auto text-xs text-gray-600 dark:text-gray-400">
-                  {formatDateTime(step.at)}
-                  {step.durationMs !== undefined ? ` · ${formatDuration(step.durationMs)} since the step before` : ""}
+    <>
+      {step.stage === "triage" && step.status === "done" && finding && (
+        <>
+          {!step.summary && <p className={`whitespace-pre-wrap ${BODY}`}>{finding.reason}</p>}
+          {finding.suspectedCause && (
+            <p className={BODY}>
+              <span className="font-medium text-gray-900 dark:text-gray-100">Suspected cause:</span> {finding.suspectedCause}
+            </p>
+          )}
+        </>
+      )}
+      {detail.triage?.level && (
+        <div className="space-y-1.5">
+          <div role="group" aria-label="How far Starfish goes" className="flex flex-wrap gap-2">
+            {LEVELS.map((l) =>
+              l === detail.triage!.level ? (
+                <span key={l} aria-current="true" className="rounded-lg bg-brand-700 px-3 py-1.5 text-sm font-semibold text-white dark:bg-brand-400 dark:text-gray-950">
+                  {LEVEL_SHORT[l]}
                 </span>
-              )}
-            </div>
-            {step.summary && <p className="mt-0.5 whitespace-pre-wrap break-words text-sm text-gray-700 dark:text-gray-300">{step.summary}</p>}
-            {step.stage === "triage" && step.status === "done" && finding && (
+              ) : (
+                <span key={l} className="rounded-lg border border-dashed border-gray-300 px-3 py-1.5 text-sm text-gray-500 line-through dark:border-gray-600 dark:text-gray-400">
+                  {LEVEL_SHORT[l]}
+                  <span className="sr-only"> (not chosen)</span>
+                </span>
+              )
+            )}
+          </div>
+          <p className="text-xs text-gray-600 dark:text-gray-400">
+            {detail.triage.levelLabel}
+            {detail.triage.mergeCase && (
               <>
-                {!step.summary && <p className="mt-0.5 whitespace-pre-wrap break-words text-sm text-gray-700 dark:text-gray-300">{finding.reason}</p>}
-                {finding.suspectedCause && (
-                  <p className="mt-0.5 break-words text-sm text-gray-700 dark:text-gray-300">
-                    <span className="font-medium text-gray-900 dark:text-gray-100">Suspected cause:</span> {finding.suspectedCause}
-                  </p>
-                )}
-                {finding.by && (
-                  <p className="mt-0.5 text-xs text-gray-600 dark:text-gray-400">
-                    {finding.by === "model" ? (
-                      <>
-                        The model&apos;s reasoning{finding.model && <> (<span className="font-mono">{finding.model}</span>)</>}, as triage recorded it.
-                      </>
-                    ) : (
-                      <>
-                        Decided by the rule <span className="font-mono">{finding.rule}</span>, with no model call.
-                      </>
-                    )}
-                  </p>
-                )}
+                {" "}
+                (merge case <span className="font-mono">{detail.triage.mergeCase}</span>)
               </>
             )}
-            {step.stage === "issue" && step.status === "done" && issue && (
-              <GitHubRef url={issue.url} what="issue" repo={issue.repo} number={issue.number} icon={<CircleDot className="h-4 w-4 shrink-0" aria-hidden />} />
+            {detail.triage.cap &&
+              ` · Held to ${detail.triage.cap.level} by ${detail.triage.cap.by === "correction" ? "an operator's correction" : detail.triage.cap.by === "rule" ? `the admin's class rule${detail.triage.cap.rule ? ` ${detail.triage.cap.rule}` : ""}` : "a cap"}`}
+          </p>
+        </div>
+      )}
+      {detail.triage?.recount && (
+        <p className="flex flex-wrap gap-2">
+          {detail.triage.recount.count === null ? (
+            <span className={CHIP}>Recount unavailable: the evidence was missing, which triage never reads as zero</span>
+          ) : (
+            <span className={CHIP}>
+              Recount: {detail.triage.recount.capped ? "at least " : ""}
+              {detail.triage.recount.count} {detail.triage.recount.count === 1 ? "error" : "errors"}
+              {detail.triage.recount.window ? ` in ${detail.triage.recount.window}` : ""}
+            </span>
+          )}
+        </p>
+      )}
+      {step.stage === "triage" && step.status === "done" && finding?.by && (
+        <p className="text-xs text-gray-600 dark:text-gray-400">
+          {finding.by === "model" ? (
+            <>
+              The model&apos;s reasoning{finding.model && <> (<span className="font-mono">{finding.model}</span>)</>}, as triage recorded it.
+            </>
+          ) : (
+            <>
+              Decided by the rule <span className="font-mono">{finding.rule}</span>, with no model call.
+            </>
+          )}
+        </p>
+      )}
+
+      {detail.fix && (
+        <div className="space-y-1.5">
+          {detail.fix.risk && (
+            <p className={BODY}>
+              <span className="font-medium text-gray-900 dark:text-gray-100">Could break:</span> {detail.fix.risk}
+            </p>
+          )}
+          <p className="flex flex-wrap gap-2">
+            {detail.fix.testAdded !== undefined && <span className={CHIP}>{detail.fix.testAdded ? "Test added" : "No test added"}</span>}
+            {detail.fix.revisions !== undefined && detail.fix.revisions > 0 && <span className={CHIP}>Revision {detail.fix.revisions}</span>}
+            {detail.fix.source && (
+              <span className={CHIP}>
+                Source found by <span className="font-mono">{detail.fix.source}</span>
+              </span>
             )}
-            {step.stage === "pr" && step.status === "done" && pr && (
-              <GitHubRef url={pr.url} what="pull request" repo={pr.repo} number={pr.number} icon={<PrIcon state={pr.state} className="h-4 w-4 shrink-0" />} />
+          </p>
+          {detail.fix.alternatives.length > 0 && (
+            <details className="text-sm">
+              <summary className="cursor-pointer py-1 font-medium text-gray-900 dark:text-gray-100">
+                {detail.fix.alternatives.length} rejected {detail.fix.alternatives.length === 1 ? "alternative" : "alternatives"}
+              </summary>
+              <div className="mt-1 space-y-1 border-l-2 border-gray-200 pl-3 dark:border-gray-700">
+                {detail.fix.alternatives.map((a, i) => (
+                  <p key={i} className={BODY}>
+                    {a}
+                  </p>
+                ))}
+              </div>
+            </details>
+          )}
+          {detail.diffUrl ? (
+            <a href={detail.diffUrl} target="_blank" rel="noreferrer noopener" className="inline-flex items-center gap-1.5 text-sm font-medium text-brand-700 hover:underline dark:text-brand-400">
+              See the diff on GitHub <ExternalLink className="h-3 w-3" aria-hidden />
+            </a>
+          ) : (
+            <p className="text-xs text-gray-600 dark:text-gray-400">The patch text is not stored; with no pull request there is no diff to link to.</p>
+          )}
+        </div>
+      )}
+
+      {detail.verify && (
+        <div className="space-y-1.5">
+          <p className="flex flex-wrap gap-2">
+            {detail.verify.files !== undefined && (
+              <span className={CHIP}>
+                {detail.verify.files} {detail.verify.files === 1 ? "file" : "files"} changed
+              </span>
             )}
+            {detail.verify.exitCode !== undefined && detail.verify.exitCode !== null && <span className={CHIP}>Exit code {detail.verify.exitCode}</span>}
+            {detail.verify.rule && <span className={`${CHIP} font-mono`}>{detail.verify.rule}</span>}
+          </p>
+          {detail.verify.output && (
+            <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-all rounded-lg bg-gray-50 p-3 font-mono text-xs text-gray-800 dark:bg-gray-900/60 dark:text-gray-200">
+              {detail.verify.output}
+            </pre>
+          )}
+        </div>
+      )}
+
+      {detail.review && (
+        <div className="space-y-1.5">
+          <p className="flex flex-wrap gap-2">
+            {detail.review.held !== undefined && <span className={CHIP}>{detail.review.held} held</span>}
+            {detail.review.flagged !== undefined && detail.review.flagged > 0 && <span className={CHIP}>{detail.review.flagged} flagged</span>}
+            {detail.review.broken !== undefined && detail.review.broken > 0 && (
+              <span className="inline-flex items-center rounded-md bg-error-50 px-2 py-1 text-xs font-medium text-error-700 dark:bg-error-500/15 dark:text-error-300">{detail.review.broken} broke it</span>
+            )}
+          </p>
+          {detail.review.attacks.length > 0 && (
+            <div className="space-y-1.5" role="group" aria-label="Attacks tried">
+              {detail.review.attacks.map((a, i) => (
+                <div key={i} className="flex gap-3 text-sm">
+                  <span className={`w-16 shrink-0 font-semibold capitalize ${ATTACK_TONE[a.outcome]}`}>{a.outcome}</span>
+                  <span className="min-w-0 break-words text-gray-700 dark:text-gray-300">
+                    {a.attack}
+                    {a.detail && <span className="block text-gray-600 dark:text-gray-400">{a.detail}</span>}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {detail.delivery && (detail.delivery.attempts !== undefined || detail.delivery.reason) && (
+        <p className="flex flex-wrap gap-2">
+          {detail.delivery.attempts !== undefined && detail.delivery.attempts > 1 && <span className={CHIP}>{detail.delivery.attempts} attempts</span>}
+          {detail.delivery.reason && <span className={CHIP}>{detail.delivery.reason}</span>}
+        </p>
+      )}
+
+      {step.stage === "issue" && done && issue && (
+        <div className="rounded-xl border border-gray-200 px-4 py-3 dark:border-gray-700">
+          <GitHubRef url={issue.url} what="issue" repo={issue.repo} number={issue.number} icon={<CircleDot className="h-4 w-4 shrink-0" aria-hidden />} />
+        </div>
+      )}
+      {step.stage === "pr" && done && pr && (
+        <div className="flex flex-wrap items-center gap-3 rounded-xl border border-gray-200 px-4 py-3 dark:border-gray-700">
+          <GitHubRef url={pr.url} what="pull request" repo={pr.repo} number={pr.number} icon={<PrIcon state={pr.state} className="h-4 w-4 shrink-0" />} />
+          {prNow && <Badge tone={prNow.tone}>{prNow.text}</Badge>}
+        </div>
+      )}
+    </>
+  );
+}
+
+/**
+ * What Starfish did, step by step: each step with its icon, what it ended in and when, its own line, what it recorded
+ * (the decision and its alternatives, the fix's risk, the gate's checks, the review's attacks, the issue and pull
+ * request), and its bar on the run's time axis. Newest first by default, so the step in progress sits right under the
+ * track (#279); oldest first reads as the run's story. Triage's entry carries its suspected cause and whose words they
+ * are; the issue's and the pull request's carry their links, each only once its own step happened. For a reopened run
+ * (#285) these are its latest round's steps, and every step each earlier round reached follows, newest round first.
+ */
+function Timeline({
+  water,
+  cycle,
+  events,
+  live,
+  clock,
+  label,
+  pr,
+  issue,
+  finding,
+  now,
+}: {
+  water: Waterfall;
+  cycle: CycleRow;
+  events: readonly EventRow[];
+  live: boolean;
+  clock: number;
+  label?: string;
+  pr?: ReturnType<typeof prLink>;
+  issue?: ReturnType<typeof issueLink>;
+  finding?: ReturnType<typeof triageFinding>;
+  now: number;
+}) {
+  const [oldestFirst, setOldestFirst] = useState(false);
+  const newest = stepLogOrder(water.steps);
+  const steps = oldestFirst ? [...newest].reverse() : newest;
+  const { earlier, rounds } = water;
+  if (steps.length === 0 && earlier.length === 0) return null;
+  const axis = timeAxis(water.steps, water.startMs, water.endMs);
+  const span = water.endMs - water.startMs;
+  return (
+    <div className="space-y-2 border-t border-gray-200 pt-5 dark:border-gray-700">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h3 className={SECTION_TITLE}>What Starfish did</h3>
+          <p className="mt-1 text-sm font-medium tabular-nums text-gray-900 dark:text-white">
+            {label ??
+              (live
+                ? `Running for ${formatDuration(clock - water.startMs)}${water.reopened ? " since it was reopened" : ""}`
+                : `${formatDuration(span)} from ${water.reopened ? "the latest reopening" : "start"} to the last update`)}
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={() => setOldestFirst((v) => !v)}
+          className="inline-flex min-h-11 items-center gap-2 rounded-lg border border-gray-200 px-3 text-sm font-medium text-gray-900 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-100 dark:hover:bg-gray-700"
+        >
+          <ArrowDownUp className="h-4 w-4" aria-hidden />
+          {oldestFirst ? "Oldest first" : "Newest first"}
+          <span className="sr-only">: show {oldestFirst ? "newest" : "oldest"} first instead</span>
+        </button>
+      </div>
+      <div className="hidden grid-cols-[2.5rem_minmax(0,1fr)_9rem] gap-x-4 sm:grid" aria-hidden>
+        <span className="col-start-3 flex justify-between font-mono text-xs text-gray-600 dark:text-gray-400">
+          <span>0</span>
+          <span>{formatClock(span)}</span>
+        </span>
+      </div>
+      <ol aria-label="Step log" className="divide-y divide-gray-100 dark:divide-gray-700">
+        {steps.map((step) => (
+          <li key={step.stage} className="grid grid-cols-[2.5rem_minmax(0,1fr)] gap-x-3 py-4 sm:grid-cols-[2.5rem_minmax(0,1fr)_9rem] sm:gap-x-4">
+            <StageIcon step={step} />
+            <div className="min-w-0 space-y-2">
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                <span className="text-base font-semibold text-gray-900 dark:text-white">{step.title}</span>
+                <Badge tone={verdictTone(step)}>{step.status === "running" ? "In progress" : stepVerdict(step)}</Badge>
+                {step.at && (
+                  <span className="ml-auto text-xs text-gray-600 dark:text-gray-400">
+                    {formatDateTime(step.at)}
+                    {step.durationMs !== undefined ? ` · ${formatDuration(step.durationMs)} since the step before` : ""}
+                  </span>
+                )}
+              </div>
+              {step.summary && <p className={`whitespace-pre-wrap ${BODY}`}>{step.summary}</p>}
+              <StepDetails step={step} detail={stepDetail(step, cycle, events)} pr={pr} issue={issue} finding={finding} now={now} cycle={cycle} />
+            </div>
+            <StepBar step={step} water={water} axis={axis} />
           </li>
         ))}
       </ol>
+      {axis.shortened && (
+        <p className="text-xs text-gray-600 dark:text-gray-400" data-testid="axis-shortened">
+          {axis.shortened.title}&apos;s {formatDuration(axis.shortened.durationMs ?? 0)} is drawn shortened on the time axis, so the other steps can be seen. The times printed are not scaled.
+        </p>
+      )}
       {earlier.length > 0 && (
         <>
           <h4 className="mt-3 text-xs font-medium text-gray-600 dark:text-gray-400">Earlier rounds</h4>
@@ -1050,7 +1397,7 @@ function StepLog({
                         </span>
                         <span className="ml-auto text-xs text-gray-600 dark:text-gray-400">{formatDateTime(step.at)}</span>
                       </div>
-                      {step.summary && <p className="mt-0.5 whitespace-pre-wrap break-words text-sm text-gray-700 dark:text-gray-300">{step.summary}</p>}
+                      {step.summary && <p className={`mt-0.5 whitespace-pre-wrap ${BODY}`}>{step.summary}</p>}
                     </li>
                   ))}
                 </ol>
