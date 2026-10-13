@@ -32,10 +32,10 @@ function renderStatus(environment = "demo") {
 describe("EngineStatus", () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it("says the engine is running, when it last ran and what it found", async () => {
+  it("says the engine is waiting, when it last ran and what it found", async () => {
     mocks.read.mockResolvedValue(run());
     renderStatus();
-    expect(await screen.findByText("Ingest running")).toBeInTheDocument();
+    expect(await screen.findByText("Ingest waiting")).toBeInTheDocument();
     expect(screen.getByTestId("engine-status")).toHaveTextContent("2 new, 5 updated, 1 recurred");
     expect(screen.getByTestId("engine-status")).toHaveTextContent("10 minutes ago");
   });
@@ -67,7 +67,7 @@ describe("EngineStatus", () => {
   it("flags a capped read: the counts are a floor", async () => {
     mocks.read.mockResolvedValue(run({ capped: true }));
     renderStatus();
-    expect(await screen.findByText("Ingest running, read capped")).toBeInTheDocument();
+    expect(await screen.findByText("Ingest waiting, last read capped")).toBeInTheDocument();
     expect(screen.getByTestId("engine-status")).toHaveTextContent("a floor");
   });
 
@@ -91,7 +91,7 @@ describe("EngineStatus", () => {
   it("lists the runtime settings the engine could not use", async () => {
     mocks.read.mockResolvedValue(run({ problems: ["watchedProjectId must be a string"] }));
     renderStatus();
-    await screen.findByText("Ingest running");
+    await screen.findByText("Ingest waiting");
     expect(screen.getByTestId("engine-status")).toHaveTextContent("runtime settings not used: watchedProjectId must be a string");
   });
 
@@ -116,7 +116,7 @@ describe("EngineStatus", () => {
         <EngineStatus environment="demo" variant="card" />
       </QueryClientProvider>
     );
-    expect(await screen.findByText("Ingest running")).toBeInTheDocument();
+    expect(await screen.findByText("Ingest waiting")).toBeInTheDocument();
     expect(screen.getByTestId("engine-status")).toHaveTextContent("Last run 10 minutes ago: 2 new, 5 updated, 1 recurred.");
     expect(screen.getByTestId("engine-status")).toHaveTextContent("Next run expected in 45 minutes");
     expect(screen.getByRole("img", { name: "25% of the way to the next run" })).toBeInTheDocument();
@@ -129,7 +129,7 @@ describe("EngineStatus", () => {
         <EngineStatus environment="demo" variant="card" />
       </QueryClientProvider>
     );
-    expect(await screen.findByText("Ingest running")).toBeInTheDocument();
+    expect(await screen.findByText("Ingest waiting")).toBeInTheDocument();
     expect(screen.queryByRole("img")).toBeNull();
   });
 });

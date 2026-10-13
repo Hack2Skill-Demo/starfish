@@ -13,9 +13,11 @@ import { webConfig } from "../lib/config";
 import { formatRelativeTime } from "../lib/formatters";
 import { behindAfterMinutes, judgeRun, nextRunAt, readLastRun, type EngineState, type LastRun } from "../lib/engineStatus";
 
+// The ingest runs as a scheduled job and records only a finished run, so a healthy one is waiting for its next run, not
+// running (the same wording as the agent's line, AgentStatus).
 const BADGE: Record<EngineState, { tone: BadgeTone; label: string }> = {
-  ok: { tone: "success", label: "Ingest running" },
-  capped: { tone: "warning", label: "Ingest running, read capped" },
+  ok: { tone: "success", label: "Ingest waiting" },
+  capped: { tone: "warning", label: "Ingest waiting, last read capped" },
   behind: { tone: "warning", label: "Ingest falling behind" },
   stale: { tone: "warning", label: "Ingest not running" },
   failed: { tone: "error", label: "Last ingest run failed" },
