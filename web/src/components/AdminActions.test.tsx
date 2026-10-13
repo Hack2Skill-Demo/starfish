@@ -12,7 +12,9 @@ const mocks = vi.hoisted(() => ({
   retireIncident: vi.fn(),
   toast: { success: vi.fn(), error: vi.fn() },
   navigate: vi.fn(),
+  markAgentStartRequested: vi.fn(),
 }));
+vi.mock("../lib/agentStart", () => ({ markAgentStartRequested: mocks.markAgentStartRequested }));
 vi.mock("../lib/config", () => ({ webConfig: () => ({ adminApiUrl: mocks.adminApiUrl }) }));
 vi.mock("../lib/firebase", () => ({ firebaseAuth: vi.fn() }));
 vi.mock("../lib/adminApi", () => ({
@@ -102,6 +104,8 @@ describe("RunAgentButton (#276)", () => {
     expect(said).toContain("Agent pass started");
     expect(said).not.toMatch(/finished|done|complete/i);
     expect(mocks.runAgentNow).toHaveBeenCalledTimes(1);
+    // The agent's status is told, so it shows the start without a page refresh.
+    expect(mocks.markAgentStartRequested).toHaveBeenCalledTimes(1);
   });
 
   it("shows the refusal and nothing else when the start fails", async () => {
@@ -110,6 +114,7 @@ describe("RunAgentButton (#276)", () => {
     await userEvent.click(screen.getByRole("button", { name: /run agent now/i }));
     await waitFor(() => expect(mocks.toast.error).toHaveBeenCalledWith("The agent job could not be started. Check the admin service's logs."));
     expect(mocks.toast.success).not.toHaveBeenCalled();
+    expect(mocks.markAgentStartRequested).not.toHaveBeenCalled();
   });
 
   it("cannot be clicked twice while a start is in flight", async () => {

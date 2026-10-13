@@ -62,11 +62,72 @@ describe("operators read the stored documents", () => {
     expect(lastQuery().source.path).toBe("starfish_cycles");
     subscribeEvents("inc1_r0", "demo", vi.fn(), vi.fn());
     expect(lastQuery().source.path).toBe("starfish_cycles/inc1_r0/events");
+    expect(lastQuery().parts).toContainEqual({ where: ["environment", "==", "demo"] });
     subscribeLatestEvents("demo", vi.fn(), vi.fn());
     expect(lastQuery().source).toEqual({ kind: "group", path: "events" });
     fs.getDoc.mockResolvedValue({ exists: () => false });
     await readCycle("inc1_r0", "demo");
     expect(fs.doc.mock.calls.at(-1)!.slice(1)).toEqual(["starfish_cycles", "inc1_r0"]);
+  });
+});
+
+/** `n` stored events of one run, newest first, the way the query returns them (doc id = zero-padded seq). */
+const storedNewestFirst = (n: number, top: number) =>
+  Array.from({ length: n }, (_, i) => {
+    const seq = top - i;
+    return { id: String(seq).padStart(6, "0"), data: { seq, environment: "demo", stage: "escalation", type: "called", at: at(seq * 1000) } };
+  });
+
+describe("a run's events: its newest ones, and whether there are older (#326)", () => {
+  beforeEach(() => {
+    auth.currentUser = { isAnonymous: false };
+  });
+
+  it("orders by seq newest first and asks for one more than it keeps, for both operators and guests", () => {
+    for (const anonymous of [false, true]) {
+      auth.currentUser = { isAnonymous: anonymous };
+      subscribeEvents("inc1_r0", "demo", vi.fn(), vi.fn());
+      const parts = lastQuery().parts;
+      expect(parts).toContainEqual({ orderBy: ["seq", "desc"] });
+      expect(parts).toContainEqual({ limit: EVENT_LIMIT + 1 });
+      // Still within what firestore.rules serves a guest (guestList).
+      expect(EVENT_LIMIT + 1).toBeLessThanOrEqual(500);
+    }
+  });
+
+  it("a run with more events than the limit is drawn with its LATEST ones, in sequence order, and says it is capped", () => {
+    const onData = vi.fn<(rows: EventRow[], capped: boolean) => void>();
+    subscribeEvents("inc1_r0", "demo", onData, vi.fn());
+    // 250 events: the query returns seq 250..50 (the limit plus one), newest first.
+    deliver(storedNewestFirst(EVENT_LIMIT + 1, 250));
+    const [rows, capped] = onData.mock.calls[0]!;
+    expect(capped).toBe(true);
+    expect(rows).toHaveLength(EVENT_LIMIT);
+    expect(rows[0]!.seq).toBe(51);
+    expect(rows.at(-1)!.seq).toBe(250);
+    expect(rows.map((r) => r.seq)).toEqual([...rows.map((r) => r.seq)].sort((a, b) => a - b));
+  });
+
+  it("a run holding exactly the limit, or fewer, is not capped", () => {
+    for (const n of [EVENT_LIMIT, 3]) {
+      const onData = vi.fn<(rows: EventRow[], capped: boolean) => void>();
+      subscribeEvents("inc1_r0", "demo", onData, vi.fn());
+      deliver(storedNewestFirst(n, n));
+      const [rows, capped] = onData.mock.calls[0]!;
+      expect(capped).toBe(false);
+      expect(rows.map((r) => r.seq)).toEqual(Array.from({ length: n }, (_, i) => i + 1));
+    }
+  });
+
+  it("a guest's capped read keeps the newest copies too", () => {
+    auth.currentUser = { isAnonymous: true };
+    const onData = vi.fn<(rows: EventRow[], capped: boolean) => void>();
+    subscribeEvents("inc1_r0", "demo", onData, vi.fn());
+    deliver(storedNewestFirst(EVENT_LIMIT + 1, 300).map((d) => ({ id: `inc1_r0_${d.id}`, data: { ...d.data, cycleId: "inc1_r0" } })));
+    const [rows, capped] = onData.mock.calls[0]!;
+    expect(capped).toBe(true);
+    expect(rows).toHaveLength(EVENT_LIMIT);
+    expect([rows[0]!.id, rows.at(-1)!.id]).toEqual(["000101", "000300"]);
   });
 });
 

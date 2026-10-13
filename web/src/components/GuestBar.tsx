@@ -5,6 +5,7 @@
  */
 import { Link, useLocation } from "react-router";
 import { signInHint } from "../lib/demoGuide";
+import { SourceLink } from "./SourceLink";
 
 export function GuestBar({ askToSignIn, onOpenGuide }: { askToSignIn: boolean; onOpenGuide?: () => void }) {
   const location = useLocation();
@@ -20,6 +21,7 @@ export function GuestBar({ askToSignIn, onOpenGuide }: { askToSignIn: boolean; o
         )}
       </span>
       <span className="flex items-center gap-4">
+        <SourceLink />
         {onOpenGuide && (
           <button
             type="button"

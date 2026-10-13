@@ -14,6 +14,7 @@
 #                         ingest now" and "Retire". Unset or empty: both are hidden
 #   VITE_STARFISH_STALE_MINUTES  how long after the last run the engine line says "stopped". Unset or empty: 90
 #   VITE_STARFISH_DEMO_APP_URL  the public demo only: the watched demo app's Lab (https), linked from the Incidents page
+#   VITE_STARFISH_SOURCE_URL  the public demo only: the source repository (https), a GitHub mark in the guest bar and on /signin
 #   VITE_STARFISH_DEMO_SIGNIN_HINT  the public demo only: where a visitor finds the sign-in details (never the
 #                         credentials: it ships in the bundle). Unset or empty: a generic line
 #   DRY_RUN=1             print the commands instead of running them
@@ -203,6 +204,12 @@ run env "VITE_STARFISH_ENV=${VITE_STARFISH_ENV:-$STARFISH_ENV}" "VITE_STARFISH_D
 
 # Prints one field of a Firebase CLI --json reply (its `result`, as r), or nothing; fails on a reply that is not JSON.
 PICK='let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{let v;try{v=JSON.parse(s.slice(s.indexOf("{")))}catch{process.exit(2)}const x=new Function("r","return ("+process.argv[1]+")")(v.result);console.log(x==null?"":String(x))})'
+# Prints a failed Firebase CLI --json reply's `error` text (#284), else the raw reply, on one line and at most 300
+# characters: the CLI says what is wrong ("Your credentials are no longer valid. Please run firebase login --reauth").
+CLI_ERROR='let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{let t="";try{const e=JSON.parse(s.slice(s.indexOf("{"))).error;t=typeof e==="string"?e:e&&typeof e.message==="string"?e.message:""}catch{}console.log((t||s).replace(/\s+/g," ").trim().slice(0,300)||"no reply")})'
+cli_error() { printf '%s' "$1" | node -e "$CLI_ERROR" 2>/dev/null || echo "no reply"; }
+# What to do about a refused read. For a person, an expired session: `firebase login` alone answers "Already logged in".
+LOGIN_HINT="from a terminal, an expired Firebase session is the usual cause: run firebase login --reauth"
 
 # Sets APP_ID to Starfish's own web app: the one named "starfish", registered if there is none. Never another app
 # in the project (the watched app's, say): a site is linked to the app this picks.
@@ -215,7 +222,7 @@ starfish_app() {
     echo "  (could not list the project's web apps; planning as if none is named starfish)"
     APP_ID=""
   else
-    die "could not list the web apps of $PROJECT_ID: firebase login? From GitHub Actions the deployer neither lists nor registers web apps: create and link the site once from a terminal (docs/deploy.md), and Actions redeploys it from then on"
+    die "could not list the web apps of $PROJECT_ID ($(cli_error "${list:-}")): $LOGIN_HINT. From GitHub Actions the deployer neither lists nor registers web apps: create and link the site once from a terminal (docs/deploy.md), and Actions redeploys it from then on"
   fi
   if [ -n "$APP_ID" ]; then echo "  (web app starfish: $APP_ID)"; return; fi
   if [ "$DRY_RUN" = "1" ]; then
@@ -264,7 +271,7 @@ elif [ "$DRY_RUN" = "1" ]; then
 elif ! printf '%s' "${site_json:-}" | grep -Eqi '(^|[^0-9])404([^0-9]|$)|not found'; then
   # Only a 404 means "no such site". Any other failed read (a 403 from an account with no Hosting role, #265) is not
   # taken as missing: that would go on to create a site that exists, or to register a web app, and fail there instead.
-  die "could not read Hosting site $HOSTING_SITE, and the reply was not a 404: firebase login? From GitHub Actions the deployer needs roles/firebasehosting.admin (scripts/setup-github-deploy.sh, docs/deploy.md)"
+  die "could not read Hosting site $HOSTING_SITE, and the reply was not a 404 ($(cli_error "${site_json:-}")): $LOGIN_HINT. From GitHub Actions the deployer needs roles/firebasehosting.admin (scripts/setup-github-deploy.sh, docs/deploy.md)"
 fi
 
 if [ "$SITE_STATE" = "exists" ] && [ -n "$SITE_APP" ]; then

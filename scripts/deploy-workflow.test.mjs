@@ -238,6 +238,13 @@ describe(".github/workflows/deploy-web.yml", () => {
     const docs = readFileSync(new URL("../docs/deploy.md", import.meta.url), "utf8");
     expect(docs).toContain("STARFISH_WEB_DEMO_SIGNIN_HINT");
   });
+
+  it("hands the build the source repository's URL, through the environment", () => {
+    const env = code(web).split("- name: Deploy")[1] ?? "";
+    expect(env).toMatch(/^ {10}VITE_STARFISH_SOURCE_URL: \$\{\{ vars\.STARFISH_WEB_SOURCE_URL \}\}$/m);
+    const docs = readFileSync(new URL("../docs/deploy.md", import.meta.url), "utf8");
+    expect(docs).toContain("STARFISH_WEB_SOURCE_URL");
+  });
 });
 
 describe("every workflow", () => {

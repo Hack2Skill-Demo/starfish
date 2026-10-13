@@ -20,6 +20,11 @@ const SOURCE_CLASS_TO_TYPE: Record<string, string> = {
   quota: "QuotaError",
   timeout: "TimeoutError",
   unavailable: "UnavailableError",
+  // A handler that knows a query failed for want of a Firestore index says so. A deployment fault no caller can fix:
+  // without this entry it fell to its failed-precondition code and read as a ValidationError, pointing triage at the
+  // caller's input. The index path (src/agent/indexPath.ts) still needs Google's create-index URL to act, and hands the
+  // incident to a person when the error carries none.
+  missing_index: "MissingIndexError",
 };
 
 export interface ClassificationHints {
@@ -91,6 +96,12 @@ export function detectErrorType(errorMessage: string, hints?: ClassificationHint
   }
 
   const lower = errorMessage.toLowerCase();
+  // Cloud Run's own failures. The platform writes them, not a handler, so they carry no class or code, and each names
+  // its own remedy. Checked before the generic keywords, whose looser matches ("limit", a docs URL) they could trip.
+  //   "Memory limit of 256 MiB exceeded with 270 MiB used. Consider increasing the memory limit, see https://…"
+  if (lower.includes("memory limit of") && lower.includes("exceeded")) return "OutOfMemoryError";
+  //   "The request was aborted because there was no available instance."
+  if (lower.includes("no available instance")) return "NoInstanceAvailableError";
   if (
     lower.includes("unauthenticated") ||
     lower.includes("unauthorized") ||

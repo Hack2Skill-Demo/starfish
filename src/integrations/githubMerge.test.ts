@@ -15,6 +15,9 @@ import { SEEDED_SECRETS } from "../ingest/testSecrets.js";
 import { createGithubClient, type GithubPrConfig } from "./githubPr.js";
 
 const TOKEN = SEEDED_SECRETS.github!;
+const SEEDED_ALL = Object.values(SEEDED_SECRETS).join(" ");
+/** Each seeded secret's first line: a multi-line one is JSON-escaped in a request body. */
+const SEEDED_PROBES = Object.values(SEEDED_SECRETS).map((s) => s.split("\n")[0]!);
 const REPO = "acme/demo-shop";
 const GIT_ENV = { ...loadChildProcessBasics(), GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t", GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" };
 const git = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd, env: GIT_ENV, encoding: "utf8" }).trim();
@@ -151,12 +154,28 @@ describe("mergePullRequest", () => {
     expect(body.commit_message).not.toContain("#2");
     expect(body.commit_message).not.toContain("https://");
   });
+
+  it("keeps seeded secrets and addresses out of the commit title and message (#18)", async () => {
+    const dirty = `${SEEDED_ALL} ops@example.com`;
+    await client().mergePullRequest("inc1_r0", 7, HEAD, { title: `fix ${SEEDED_SECRETS.awsId}`, body: dirty });
+    const sent = JSON.stringify(requests.find((r) => r.method === "PUT")!.body);
+    for (const probe of SEEDED_PROBES) expect(sent).not.toContain(probe);
+    expect(sent).not.toContain("ops@example.com");
+  });
 });
 
 describe("commentOnPullRequest", () => {
   it("posts one comment on this cycle's pull request", async () => {
     await client().commentOnPullRequest("inc1_r0", 7, "evidence");
     expect(requests.filter((r) => r.method === "POST")).toEqual([{ method: "POST", path: `/repos/${REPO}/issues/7/comments`, body: { body: "evidence" } }]);
+  });
+  it("redacts and bounds the comment itself, whatever its caller did (#18)", async () => {
+    await client().commentOnPullRequest("inc1_r0", 7, `evidence ${SEEDED_ALL} ops@example.com ${"x ".repeat(20_000)}`);
+    const sent = (requests.find((r) => r.method === "POST")!.body as { body: string }).body;
+    for (const probe of SEEDED_PROBES) expect(sent).not.toContain(probe);
+    expect(sent).not.toContain("ops@example.com");
+    expect(sent.length).toBeLessThanOrEqual(12_000);
+    expect(sent).toMatch(/^evidence /);
   });
   it("refuses a pull request that is not this cycle's", async () => {
     await expect(client().commentOnPullRequest("other_r0", 7, "evidence")).rejects.toBeDefined();
@@ -212,6 +231,14 @@ describe("openRevertPullRequest", () => {
     expect(post).toMatchObject({ head: "starfish/revert-inc1_r0", base: "main" });
     expect(post.body).toContain("never reverts a revert");
     expect(git(bare, "rev-parse", "refs/heads/main")).toBe(git(seed, "rev-parse", "HEAD")); // main untouched
+  });
+
+  it("keeps seeded secrets and addresses out of the revert's text (#18)", async () => {
+    const merged = commitOnMain("order.js", "function get(o) {\n  if (!o) return null;\n  return o.total;\n}\n", "Starfish: merge #7");
+    await client().openRevertPullRequest({ ...revertReq(merged), reason: `It came back: ${SEEDED_ALL} ops@example.com` });
+    const sent = JSON.stringify(requests.find((q) => q.method === "POST")!.body);
+    for (const probe of SEEDED_PROBES) expect(sent).not.toContain(probe);
+    expect(sent).not.toContain("ops@example.com");
   });
 
   it("escalates instead of overwriting a later change to a file the merge touched", async () => {

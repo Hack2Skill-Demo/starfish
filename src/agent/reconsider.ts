@@ -5,7 +5,7 @@
  * reopened only when something changed AFTER the decision:
  *
  *   operator   an operator asked for a retriage (`retriageRequestedAt` on the incident, later than the decision; an
- *              operator's write of it is allowed by firestore.rules; the Runs page's "Retry this run" sends it);
+ *              operator's write of it is allowed by firestore.rules; the Runs page's "Retry with agent" sends it);
  *   corrected  an operator corrected the incident (src/triageRules.ts, `correctedAt` later than the decision) to a level
  *              above noise: the person says the decline went too far. Like `operator`, it does not wait for the cooldown;
  *   burst      the incident's occurrences grew by at least `reconsiderBurstOccurrences` since the decision;

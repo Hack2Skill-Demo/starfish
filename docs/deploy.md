@@ -159,7 +159,7 @@ write** as well as contents and pull requests. A retry after a crash or timeout 
 newest `starfish`-labelled issues in the repository's own list, not the search index, which lags) and files no second. A pull request the cycle
 opens says `Closes #N`; the Slack message links the issue. A failure to file is recorded on the cycle (`summary.issue`: `failed`, GitHub's rule)
 and the cycle goes on, because the issue is the incident's history and not a step the fix depends on. A dry run files nothing and says so.
-Tested against a fake GitHub API over local HTTP; never run against real GitHub.
+Tested against a fake GitHub API over local HTTP; filing issues on real GitHub since 2026-10-12 (#330).
 
 Starfish pushes only to branches named `starfish/<id>` and the engine checks that, but a GitHub App's
 permission cannot be limited to a branch prefix. If "Starfish can write only its own branches" is to be
@@ -537,7 +537,13 @@ finds the sign-in details, e.g. "They are in our presentation slides.", shown on
 never the credentials themselves, since it ships in the bundle; unset = "Use the email and password you were given."),
 and `STARFISH_WEB_DEMO_APP_URL` (`VITE_STARFISH_DEMO_APP_URL`: the watched demo app's Lab, an https URL such as
 `https://hack2skill-demo.web.app/#lab`, linked from the Incidents page; unset = no link, so deleting the variable and
-re-running the workflow takes it down).
+re-running the workflow takes it down),
+and `STARFISH_WEB_SOURCE_URL` (`VITE_STARFISH_SOURCE_URL`: the source repository, an https URL, shown as a GitHub mark in the
+guest bar and on the sign-in page; unset = no link).
+The judges' sign-in accounts are made once, from a shell on the demo project: `STARFISH_ENV=demo pnpm demo-users -- --apply --project=<id>`
+(a dry run without `--apply`) creates `STARFISH_DEMO_USERS` as `operator` accounts, never admin, and prints each random password once.
+Put them on the slide, not in the repository; `--reset-passwords` replaces them, `--remove` deletes the accounts. Written and tested
+with fakes, not yet run on a real project.
 Anonymous sign-in is **not** turned on by the workflow: it is project-wide (see `setup.md`). Input: `dry_run`.
 
 ### App Check and the uptime check (#12)
@@ -596,8 +602,8 @@ The agent holds those credentials, so it **never runs the target repository's co
 
 ### `github-actions`: the target's own CI is the judge
 
-> **Status: written and tested against real git, a fake GitHub API and a fake CI; never run against real GitHub or a
-> real workflow.**
+> **Status: written and tested against real git, a fake GitHub API and a fake CI; run for real on the demo project on
+> 2026-10-12, in the run that opened demo-app #41 (#330).**
 
 1. The agent runs the deterministic half of the verify gate itself, without executing anything of the patch: it must
    apply, touch no excluded path (`.github/` is one, so **a patch cannot rewrite the workflow that judges it**), add no

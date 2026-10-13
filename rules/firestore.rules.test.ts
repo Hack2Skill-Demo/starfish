@@ -999,6 +999,8 @@ describe("agent cycles and their run events", () => {
       await assertSucceeds(getDoc(doc(as(uid), "starfish_cycles/inc2_r0")));
       await assertSucceeds(getDocs(query(collection(as(uid), "starfish_cycles"), where("environment", "==", "demo"), orderBy("updatedAt", "desc"), limit(50))));
       await assertSucceeds(getDocs(query(collection(as(uid), `${CYCLE}/events`), where("environment", "==", "demo"))));
+      // The Runs page's own read of a run's events: newest first, one more than it draws (EVENT_LIMIT + 1, #326).
+      await assertSucceeds(getDocs(query(collection(as(uid), `${CYCLE}/events`), where("environment", "==", "demo"), orderBy("seq", "desc"), limit(201))));
       await assertSucceeds(getDoc(doc(as(uid), PUB_CYCLE)));
       await assertSucceeds(getDoc(doc(as(uid), PUB_EVENT)));
     }
@@ -1021,10 +1023,19 @@ describe("agent cycles and their run events", () => {
       getDocs(query(collection(guest(), "starfish_public_cycles"), where("environment", "==", "demo"), orderBy("updatedAt", "desc"), limit(50)))
     );
     expect(listed.docs.map((d) => d.id)).toEqual(["inc1_r0"]);
-    const events = await assertSucceeds(
-      getDocs(query(collection(guest(), "starfish_public_events"), where("cycleId", "==", "inc1_r0"), where("environment", "==", "demo"), limit(200)))
+    // A run's events: newest first by seq, one more than the page draws (EVENT_LIMIT + 1 in web/src/lib/runs.ts, #326).
+    await env.withSecurityRulesDisabled(async (ctx) => {
+      await setDoc(doc(ctx.firestore(), "starfish_public_events/inc1_r0_000002"), { publicView: 1, cycleId: "inc1_r0", seq: 2, environment: "demo", stage: "fix", type: "declined", at: Timestamp.now() });
+    });
+    const runEvents = (n: number) =>
+      query(collection(guest(), "starfish_public_events"), where("cycleId", "==", "inc1_r0"), where("environment", "==", "demo"), orderBy("seq", "desc"), limit(n));
+    const events = await assertSucceeds(getDocs(runEvents(201)));
+    expect(events.docs.map((d) => d.id)).toEqual(["inc1_r0_000002", "inc1_r0_000001"]);
+    // The limit is what keeps the newest: a capped read drops the oldest, not the latest.
+    expect((await assertSucceeds(getDocs(runEvents(1)))).docs.map((d) => d.id)).toEqual(["inc1_r0_000002"]);
+    await assertFails(
+      getDocs(query(collection(guest(), "starfish_public_events"), where("cycleId", "==", "inc1_r0"), where("environment", "==", "demo"), orderBy("seq", "desc")))
     );
-    expect(events.docs.map((d) => d.id)).toEqual(["inc1_r0_000001"]);
     await assertFails(getDoc(doc(guest(), "starfish_public_cycles/inc2_r0")));
     await assertFails(getDoc(doc(guest(), "starfish_public_events/inc2_r0_000001")));
     await assertFails(getDocs(collection(guest(), "starfish_public_cycles")));

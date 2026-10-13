@@ -34,6 +34,14 @@
       ]
     },
     {
+      "collectionGroup": "events",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "environment", "order": "ASCENDING" },
+        { "fieldPath": "seq", "order": "DESCENDING" }
+      ]
+    },
+    {
       "collectionGroup": "starfish_cycles",
       "queryScope": "COLLECTION",
       "fields": [
@@ -72,6 +80,15 @@
       "fields": [
         { "fieldPath": "environment", "order": "ASCENDING" },
         { "fieldPath": "at", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "starfish_public_events",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "cycleId", "order": "ASCENDING" },
+        { "fieldPath": "environment", "order": "ASCENDING" },
+        { "fieldPath": "seq", "order": "DESCENDING" }
       ]
     }
   ],

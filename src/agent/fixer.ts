@@ -23,7 +23,7 @@
  * Run by the agent job (`pnpm agent`), and not on the Agent Development Kit yet: a stage contract with a stubbed
  * model in its tests.
  */
-import { askJson } from "../vertex.js";
+import { askJson, modelCallFailure } from "../vertex.js";
 import { clipWellFormed, redactCredentials, redactPii, sanitize } from "../ingest/redact.js";
 import { renderForTriage } from "./triage.js";
 import { MAX_REVIEW_PATCH_CHARS } from "./reviewer.js";
@@ -147,8 +147,8 @@ export async function proposeFix(req: FixRequest, ask: AskJson = askJson): Promi
   try {
     raw = await ask<unknown>(renderForFix(req), FIX_SYSTEM, FIX_SCHEMA);
   } catch (err) {
-    // An error's message can quote what it was sent, so only its name is kept.
-    return error("model-call-failed", `The model call failed (${err instanceof Error ? err.name : "unknown error"}).`);
+    // An error's message can quote what it was sent, so only names and codes are kept (#334).
+    return error("model-call-failed", modelCallFailure(err));
   }
 
   const a = raw !== null && typeof raw === "object" ? (raw as Record<string, unknown>) : undefined;

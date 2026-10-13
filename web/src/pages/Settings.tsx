@@ -1,8 +1,9 @@
 /**
  * Settings — the connections Starfish is built around: Gemini, GitHub, Slack.
  *
- * Deliberately honest: GitHub and Slack have never run against the real services, so this page
- * never says "connected". The secrets are mounted on the agent job only and the browser can't read
+ * Deliberately honest: filing issues, opening pull requests and both Slack messages have run against the real services
+ * (since 2026-10-11/12, #330), but merging, fast-revert and the phone have not, and nothing checks a credential works, so
+ * this page never says "connected". The secrets are mounted on the agent job only and the browser can't read
  * them; the agent states at the start of each pass whether each is set (`lib/integrations.ts`), and
  * the page then says "configured" and when it was reported. Until the agent has reported, it says
  * "not connected yet". Gemini runs through the engine's own config (src/config.ts), which this page
@@ -53,7 +54,7 @@ export const CONNECTIONS: Connection[] = [
     reported: "github",
     purpose: "File an issue per incident, open fix PRs, and sync status back when they close.",
     detail:
-      "The pull-request opener and the incident's issue are built, tested against a local remote and a fake GitHub API, and have never run against real GitHub. Syncing status back when a PR merges or its CI finishes is not built.",
+      "Filing the incident's issue and opening the fix pull request have run against real GitHub since 2026-10-12. Each pass reads its pull requests' state and named checks back onto the run; built, not yet confirmed against real GitHub. Merging and fast-revert are built for the demo target only, off by default, and have never run against real GitHub.",
   },
   {
     name: "Slack",
@@ -62,7 +63,7 @@ export const CONNECTIONS: Connection[] = [
     reported: "slack",
     purpose: "Notify on incidents, escalate what needs a human, report what healed.",
     detail:
-      "The \"needs a human\" message is built, tested over local HTTP against a fake webhook, and has never run against real Slack. When an urgent one goes unacknowledged, the phone escalation (On-call, below, admins only) calls the on-call people through Twilio: built, tested against a fake Twilio, never run against real Twilio, off by default. The #ops-log message is not built.",
+      "The #ops-alerts \"new incident\" message and the \"needs a human\" message have been posted to real Slack since 2026-10-11. When an urgent one goes unacknowledged, the phone escalation (On-call, below, admins only) calls the on-call people through Twilio: built, tested against a fake Twilio, never run against real Twilio, off by default. The #ops-log message is not built.",
   },
   {
     name: "Rules & feedback engines",

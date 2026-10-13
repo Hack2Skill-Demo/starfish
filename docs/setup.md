@@ -42,7 +42,7 @@ the few steps only a person with the console can do.
 ## Then, in this order
 
 ```bash
-# On your machine (Node 22+, pnpm, gcloud; Docker is NOT needed)
+# On your machine (Node 22.19+, pnpm, gcloud; Docker is NOT needed)
 gcloud auth login
 gcloud auth application-default login          # for pnpm status / grant-operator
 pnpm dlx firebase-tools@14.27.0 login         # for the web deploy (the version the scripts pin)

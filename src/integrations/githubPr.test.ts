@@ -14,7 +14,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import { loadChildProcessBasics } from "../config.js";
 import { SEEDED_SECRETS } from "../ingest/testSecrets.js";
 import type { PullRequestRequest } from "../agent/loop.js";
-import { GithubError, ISSUE_LABEL, branchFor, createGithubClient, createPullRequestOpener, gitAuthEnv, indexRootCause, inert, issueText, pullRequestText, pushRefspec, type GithubPrConfig, type IssueRequest, type RunGit } from "./githubPr.js";
+import { GithubError, ISSUE_LABEL, branchFor, createGithubClient, createPullRequestOpener, gitAuthEnv, indexRootCause, inert, issueText, pullRequestText, pushRefspec, titleLine, type GithubPrConfig, type IssueRequest, type RunGit } from "./githubPr.js";
 
 const TOKEN = SEEDED_SECRETS.github!;
 const REPO = "acme/shop";
@@ -600,6 +600,19 @@ describe("createGithubClient: the CI-backed verify step", () => {
     expect(a[0]!.message.length).toBeLessThanOrEqual(400);
     await expect(client().annotations(0)).rejects.toMatchObject({ rule: "invalid-request" });
   });
+
+  it("keeps no part of a secret its bound cuts through (#18)", async () => {
+    // The bound of 400 falls 11 characters into each token: cut first and redacted after, what was left was too short
+    // for its pattern, and was kept.
+    for (const secret of [SEEDED_SECRETS.github!, SEEDED_SECRETS.awsId!, SEEDED_SECRETS.stripe!]) {
+      const message = `${"word ".repeat(77)}abc ${secret} after`;
+      expect(message.indexOf(secret)).toBe(389);
+      api.annotations = () => ({ status: 200, json: [{ path: "src/a.ts", start_line: 4, annotation_level: "failure", message }] });
+      const a = await client().annotations(11);
+      expect(a[0]!.message).not.toContain(secret.slice(0, 11));
+      expect(a[0]!.message).toMatch(/^word word/);
+    }
+  });
 });
 
 const issueRequest = (over: Partial<IssueRequest> = {}): IssueRequest => ({
@@ -686,6 +699,27 @@ describe("issueText", () => {
     expect(issueText(issueRequest({ counterCheck: { window: "24h", count: 200, capped: true } })).body).toContain("at least 200");
   });
 
+  it("shows the newest request's trace and links every line it logged, from checked ids only", () => {
+    const id = "0123456789abcdef0123456789abcdef";
+    const { body } = issueText(issueRequest({ uiBaseUrl: "", trace: { id, projectId: "app-proj", lastOccurredAt: "2026-10-12T10:00:00.000Z" } }));
+    expect(body).toContain(`- Trace: \`${id}\``);
+    const query = encodeURIComponent(`trace="projects/app-proj/traces/${id}"`);
+    expect(body).toContain(
+      `(https://console.cloud.google.com/logs/query;query=${query};cursorTimestamp=2026-10-12T10:00:00.000Z;duration=PT24H?project=app-proj)`
+    );
+
+    // No project, or one Google would not allow: the id, no link.
+    for (const projectId of [undefined, "x", "App-Proj", "evil.example/x?y=", "a)b"]) {
+      const text = issueText(issueRequest({ uiBaseUrl: "", trace: { id, ...(projectId !== undefined && { projectId }) } })).body;
+      expect(text).toContain("- Trace:");
+      expect(text).not.toContain("console.cloud.google.com");
+    }
+    // An id that is not one: neither.
+    const bad = issueText(issueRequest({ uiBaseUrl: "", trace: { id: "](https://evil.example)", projectId: "app-proj" } })).body;
+    expect(bad).not.toContain("Trace");
+    expect(bad).not.toContain("evil.example");
+  });
+
   it("redacts and bounds everything from the incident, and cannot add a link of its own", () => {
     const dirty = Object.values(SEEDED_SECRETS).join(" ");
     const { title, body } = issueText(issueRequest({ functionName: dirty, service: dirty, errorType: dirty, reason: dirty + "\n```\n[click](https://evil.example)", suspectedCause: dirty, incidentId: "a/../b" }));
@@ -738,6 +772,57 @@ describe("issue references in model text (#140)", () => {
     // Code spans are not parsed for references; everything outside them is checked.
     expect(body.replace(/`[^`]*`/g, "").match(ANY_REF_RE)).toBeNull();
     expect(body.replace(/`[^`]*`/g, "").match(CLOSING_RE)).toBeNull();
+  });
+});
+
+// #327: a real title read "Starfish: The `address` object can be undefined for pickup orders, causing a Typ".
+describe("titles cut at a word, not mid-word (#327)", () => {
+  const LONG = "The `address` object can be undefined for pickup orders, causing a TypeError when the courier view renders";
+
+  it("cuts a root cause over 70 characters at the last word boundary and ends it with an ellipsis", () => {
+    const { title } = pullRequestText(request({ rootCause: LONG }));
+    expect(title).toBe("Starfish: The `address` object can be undefined for pickup orders, causing a…");
+    expect(title.length - "Starfish: ".length).toBeLessThanOrEqual(70);
+  });
+
+  it("keeps a title that fits exactly, with no ellipsis", () => {
+    const exact = "x".repeat(40) + " " + "y".repeat(29); // 70 characters
+    expect(titleLine(exact, 70)).toBe(exact);
+    expect(titleLine(exact + "z", 70)).toBe("x".repeat(40) + "…");
+  });
+
+  it("falls back to a hard cut plus an ellipsis when there is no word boundary to cut at", () => {
+    const token = "a".repeat(200);
+    expect(titleLine(token, 70)).toBe("a".repeat(69) + "…");
+    // A space only near the start is no boundary worth keeping a stub for.
+    expect(titleLine("ab " + token, 70)).toBe(("ab " + token).slice(0, 69) + "…");
+  });
+
+  it("drops a separator left dangling before the ellipsis", () => {
+    expect(titleLine("one two three, four five", 16)).toBe("one two three…");
+  });
+
+  it("never leaves a live reference near the cut, and stays within the budget", () => {
+    for (let pad = 50; pad <= 75; pad++) {
+      for (const ref of ["#1234", "acme/shop#99", "GH-77", "https://x.example/a"]) {
+        const text = `${"w ".repeat(pad / 2)}${"v".repeat(pad % 2)} fixes ${ref} and more words after it`;
+        const cut = titleLine(text, 70);
+        expect(cut.length, text).toBeLessThanOrEqual(70);
+        expect(cut.match(ANY_REF_RE), cut).toBeNull();
+        expect(cut, cut).not.toContain("://");
+      }
+    }
+    // Hard cut through a token holding a reference: still broken.
+    for (let n = 60; n <= 70; n++) {
+      const cut = titleLine(`${"a".repeat(n)}#123456789${"b".repeat(50)}`, 70);
+      expect(cut.length).toBeLessThanOrEqual(70);
+      expect(cut.match(ANY_REF_RE), cut).toBeNull();
+    }
+  });
+
+  it("cuts the issue title's parts the same way", () => {
+    const { title } = issueText(issueRequest({ functionName: "orders " + "createOrderWithAVeryLongName ".repeat(4), errorType: "Database Error From Somewhere Deep Inside" }));
+    expect(title).toMatch(/^\[Starfish\] orders createOrderWithAVeryLongName( createOrderWithAVeryLongName)*…: Database Error From Somewhere Deep…$/);
   });
 });
 

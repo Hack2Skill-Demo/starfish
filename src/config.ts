@@ -38,6 +38,11 @@ export interface StarfishConfig {
   location: string;
   /** Gemini model used for triage, fix drafting and adversarial review. */
   model: string;
+  /**
+   * How long one model call may take before it is abandoned and the stage records a timeout (#334). Without it, Node's
+   * fetch gave up after its own 300 s and the stage said only "TypeError".
+   */
+  modelTimeoutSeconds: number;
   /** Label attached to every incident, so environments can never mix. */
   environment: string;
   /**
@@ -137,6 +142,12 @@ export interface StarfishConfig {
    * another label here also needs a matching change in firestore.rules.
    */
   publicEnvironments: string[];
+  /**
+   * The public demo's judge sign-in accounts (`pnpm demo-users`, src/demoUsers.ts): the emails it creates, each an
+   * `operator` (never admin), with a random password printed once. Only the demo environment may run it. Default three
+   * addresses on the reserved `.example` domain, which can receive no mail.
+   */
+  demoUserEmails: string[];
   /** The trimmed copies guests read (src/publicView.ts): incidents, cycles, and run events (one flat collection). */
   publicIncidentCollection: string;
   publicCycleCollection: string;
@@ -492,6 +503,7 @@ export const DEFAULT_MONITORING_SIGNALS: readonly MonitoringSignalDef[] = [
 
 /** Starfish's own service name: never ingested (see `excludedServices`). */
 export const DEFAULT_EXCLUDED_SERVICES = ["starfish"];
+export const DEFAULT_DEMO_USERS = ["judge1@demo.starfish.example", "judge2@demo.starfish.example", "judge3@demo.starfish.example"];
 
 /**
  * Never editable by a proposed patch, on top of whatever the deployment lists: secrets, CI, and the common files that
@@ -567,6 +579,7 @@ export function loadConfig(): StarfishConfig {
     // Set-but-blank is unset (#189): an empty environment label or collection name is never what was meant.
     location: textOr(process.env.STARFISH_VERTEX_LOCATION, textOr(process.env.GOOGLE_CLOUD_LOCATION, "us-central1")),
     model: textOr(process.env.STARFISH_MODEL, "gemini-3.1-pro-preview"),
+    modelTimeoutSeconds: positiveNumber(process.env.STARFISH_MODEL_TIMEOUT_SECONDS, 600, "STARFISH_MODEL_TIMEOUT_SECONDS"),
     environment: textOr(process.env.STARFISH_ENV, "dev"),
     settingsCollection: textOr(process.env.STARFISH_SETTINGS_COLLECTION, "starfish_settings"),
     incidentCollection: textOr(process.env.STARFISH_INCIDENT_COLLECTION, "incidents"),
@@ -668,6 +681,7 @@ export function loadConfig(): StarfishConfig {
     excludedServices: parseList(process.env.STARFISH_EXCLUDED_SERVICES, ",") ?? DEFAULT_EXCLUDED_SERVICES,
     cycleCollection: process.env.STARFISH_CYCLE_COLLECTION || "starfish_cycles",
     publicEnvironments: validEnvironmentLabels(parseList(process.env.STARFISH_PUBLIC_ENVIRONMENTS, ",") ?? ["demo"]),
+    demoUserEmails: parseList(process.env.STARFISH_DEMO_USERS, ",") ?? DEFAULT_DEMO_USERS,
     publicIncidentCollection: textOr(process.env.STARFISH_PUBLIC_INCIDENT_COLLECTION, "starfish_public_incidents"),
     publicCycleCollection: textOr(process.env.STARFISH_PUBLIC_CYCLE_COLLECTION, "starfish_public_cycles"),
     publicEventCollection: textOr(process.env.STARFISH_PUBLIC_EVENT_COLLECTION, "starfish_public_events"),

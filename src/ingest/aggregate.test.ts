@@ -76,6 +76,52 @@ describe("aggregateErrors", () => {
     });
   });
 
+  it("keeps the newest occurrence's trace id, and any trace over none", async () => {
+    const trace = (hex: string) => `projects/app-proj/traces/${hex.repeat(32)}`;
+    const at = (timestamp: string, t?: string) => ({
+      metadata: { timestamp, resource: { labels: { function_name: "lookup" } }, ...(t !== undefined && { trace: t }) },
+      data: "lookup failed",
+    });
+    entries.splice(
+      0,
+      entries.length,
+      at("2026-09-21T00:00:02.000Z"),
+      at("2026-09-21T00:00:01.000Z", trace("a")),
+      at("2026-09-21T00:00:03.000Z", trace("b")),
+      at("2026-09-21T00:00:00.000Z", trace("c"))
+    );
+    const { db, created } = fakeDb();
+
+    await aggregateErrors(db, config, window);
+
+    expect(created).toHaveLength(1);
+    expect(created[0]).toMatchObject({ occurrenceCount: 4, traceId: "b".repeat(32) });
+  });
+
+  it("counts one bug logged under two wrappers as one incident, keeping the first message seen (#318)", async () => {
+    const core = 'Value for argument "data" is not a valid Firestore document. Cannot use "undefined" as a Firestore value (found in field "couponCode").';
+    const at = (data: string, timestamp: string) => ({
+      metadata: { timestamp, resource: { labels: { service_name: "orders-createorder" } } },
+      data,
+    });
+    entries.splice(
+      0,
+      entries.length,
+      at(`Unhandled error Error: ${core}\n    at validateUserInput (/workspace/lib/orders/createOrder.js:58:11)`, "2026-09-21T00:00:00.000Z"),
+      at(`Error: orders-createOrder failed: ${core}\n    at /workspace/lib/orders/createOrder.js:91:13`, "2026-09-21T00:00:01.000Z"),
+      at(`Unhandled error Error: ${core}\n    at validateUserInput (/workspace/lib/orders/createOrder.js:58:11)`, "2026-09-21T00:00:02.000Z")
+    );
+    const { db, created } = fakeDb();
+
+    const result = await aggregateErrors(db, config, window);
+
+    expect(result.incidentsCreated).toBe(1);
+    expect(created).toHaveLength(1);
+    expect(created[0]).toMatchObject({ occurrenceCount: 3, errorType: "DatabaseError" });
+    expect(String(created[0]!.errorMessage)).toMatch(/^Unhandled error Error: Value for argument/);
+    expect(created[0]!.fingerprint).toBe(computeErrorFingerprint("orders-createorder", core));
+  });
+
   it("stores no seeded credential from the message, error, stack or name", async () => {
     const secrets = Object.values(SEEDED_SECRETS);
     const all = secrets.join(" ");

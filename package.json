@@ -6,7 +6,7 @@
   "type": "module",
   "packageManager": "pnpm@10.33.0",
   "engines": {
-    "node": ">=22"
+    "node": ">=22.19.0"
   },
   "scripts": {
     "prepare": "git config core.hooksPath .githooks 2>/dev/null || true",
@@ -15,6 +15,7 @@
     "scoreboard": "tsx src/scoreboardCli.ts",
     "feedback-corpus": "tsx src/feedbackCorpusCli.ts",
     "seed-demo": "tsx src/seedDemoCli.ts",
+    "demo-users": "tsx src/demoUsersCli.ts",
     "public-view": "tsx src/publicViewCli.ts",
     "replay": "tsx src/replayCli.ts",
     "ingest": "tsx src/ingestCli.ts",
@@ -38,7 +39,8 @@
     "@google-cloud/logging": "^12.1.0",
     "@google/genai": "^2.27.0",
     "firebase-admin": "^14.5.0",
-    "tsx": "^4.19.0"
+    "tsx": "^4.19.0",
+    "undici": "^8.11.2"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
@@ -51,7 +53,7 @@
     "playwright-core": "1.63.0",
     "globals": "^17.13.0",
     "typescript": "^5.6.0",
-    "typescript-eslint": "^8.71.0",
+    "typescript-eslint": "^8.71.1",
     "vitest": "^5.0.3"
   },
   "pnpm": {

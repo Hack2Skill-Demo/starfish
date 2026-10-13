@@ -26,6 +26,8 @@ import {
   triageRule,
   type CycleRow,
   type EventRow,
+  isReached,
+  failedUnexpectedly,
 } from "./runsModel";
 
 const ts = (ms: number) => ({ toDate: () => new Date(ms) });
@@ -115,13 +117,30 @@ describe("runStatus", () => {
 });
 
 describe("buildWaterfall", () => {
+  it("marks a step that went wrong unexpectedly failed, and a judgement the step made done", () => {
+    const c = cycle({ state: "waiting-human", leaseExpiresAt: null, updatedAt: new Date(T0 + 9000) });
+    const w = buildWaterfall(c, [ev("triage", "decision", 1000), ev("fix", "proposed", 2000), ev("verify", "passed", 3000), ev("review", "error", 4000)], T0 + 10_000);
+    expect(w.steps.find((s) => s.stage === "review")).toMatchObject({ status: "failed", outcome: "error" });
+    expect(isReached(w.steps.find((s) => s.stage === "review")!)).toBe(true);
+    expect(progressText(w.steps)).toBe("4 of 5 steps recorded");
+    expect(runSummary({ ...c, path: "human" }, w.steps, T0 + 10_000)).toContain("after adversarial review (error)");
+    // The gate rejecting, the tests failing, the review blocking, the fixer declining: each is the step doing its job.
+    for (const [stage, type] of [["verify", "rejected"], ["verify", "failed"], ["review", "block"], ["fix", "declined"]] as const) {
+      expect(failedUnexpectedly(stage, type)).toBe(false);
+    }
+    for (const [stage, type] of [["fix", "error"], ["verify", "timeout"], ["issue", "failed"], ["alert", "failed"], ["canary", "error"]] as const) {
+      expect(failedUnexpectedly(stage, type)).toBe(true);
+    }
+  });
+
   it("shows the Slack step, with how it went, only on a cycle that has one", () => {
     const c = cycle({ state: "waiting-human", leaseExpiresAt: null, updatedAt: new Date(T0 + 9000) });
     const without = buildWaterfall(c, [ev("triage", "decision", 5000)], T0 + 10_000);
     expect(without.steps.some((s) => s.stage === "notify")).toBe(false);
     const withIt = buildWaterfall(c, [ev("triage", "decision", 5000), ev("notify", "failed", 8000)], T0 + 10_000);
     const step = withIt.steps.find((s) => s.stage === "notify");
-    expect(step).toMatchObject({ title: "Tell a person", status: "done", outcome: "failed" });
+    // A message that could not be delivered went wrong: reached, but failed.
+    expect(step).toMatchObject({ title: "Tell a person", status: "failed", outcome: "failed" });
     const issue = buildWaterfall(c, [ev("triage", "decision", 5000), ev("issue", "opened", 6000)], T0 + 10_000).steps.find((s) => s.stage === "issue");
     expect(issue).toMatchObject({ title: "GitHub issue", status: "done", outcome: "opened" });
   });
@@ -158,16 +177,14 @@ describe("buildWaterfall", () => {
     expect(w.steps[0]).toMatchObject({ stage: "triage", status: "running" });
   });
 
-  it("times a step from the end of the one before, on the run's axis", () => {
+  it("times a step from the end of the one before", () => {
     const c = cycle({ state: "waiting-human", leaseExpiresAt: null, updatedAt: new Date(T0 + 10_000) });
     const w = buildWaterfall(c, [ev("triage", "decision", 2000), ev("fix", "proposed", 8000), ev("verify", "passed", 10_000)], T0 + 99_000);
     const [triage, fix, verify] = w.steps;
-    expect(triage).toMatchObject({ durationMs: 2000, offset: 0 });
+    expect(triage).toMatchObject({ durationMs: 2000 });
     expect(fix).toMatchObject({ durationMs: 6000 });
-    expect(fix!.offset).toBeCloseTo(0.2);
-    expect(fix!.width).toBeCloseTo(0.6);
-    expect(verify!.offset! + verify!.width!).toBeCloseTo(1);
-    // A finished run's axis ends at its last update, not at "now".
+    expect(verify).toMatchObject({ durationMs: 2000 });
+    // A finished run's span ends at its last update, not at "now".
     expect(w.endMs).toBe(T0 + 10_000);
   });
 
@@ -188,7 +205,6 @@ describe("buildWaterfall", () => {
     const w = buildWaterfall(cycle({ state: "done", leaseExpiresAt: null }), [ev("fix", "proposed", 5000), ev("triage", "decision", -3000)], T0);
     for (const s of w.steps.filter((x) => x.status === "done")) {
       expect(s.durationMs!).toBeGreaterThanOrEqual(0);
-      expect(Number.isFinite(s.offset!)).toBe(true);
     }
   });
 });
@@ -252,7 +268,6 @@ describe("small helpers", () => {
       expect(triage).toMatchObject({ status: "done", outcome: "decision", summary: "fourth reason", durationMs: 14_000 });
       expect(w.startMs).toBe(T0 + 3 * HOUR);
       expect(w.endMs - w.startMs).toBe(14_200);
-      expect(triage.offset).toBe(0);
     });
 
     it("says how many rounds there were and what the latest reopening said, in the engine's words", () => {
@@ -265,11 +280,49 @@ describe("small helpers", () => {
 
     it("keeps what each earlier round ended on, timed within its own round", () => {
       const w = buildWaterfall(declined(), events(), T0 + 9 * HOUR);
+      const round = (n: number, summary: string, atMs: number, durationMs: number) => {
+        const step = { round: n, stage: "triage", title: "Triage", outcome: "decision", summary, at: new Date(T0 + atMs) };
+        return { ...step, durationMs, steps: [{ ...step, failed: false }] };
+      };
       expect(w.earlier).toEqual([
-        { round: 1, stage: "triage", title: "Triage", outcome: "decision", summary: "first reason", at: new Date(T0 + 11_000), durationMs: 11_000 },
-        { round: 2, stage: "triage", title: "Triage", outcome: "decision", summary: "second reason", at: new Date(T0 + HOUR + 10_000), durationMs: 10_000 },
-        { round: 3, stage: "triage", title: "Triage", outcome: "decision", summary: "third reason", at: new Date(T0 + 2 * HOUR + 12_000), durationMs: 12_000 },
+        round(1, "first reason", 11_000, 11_000),
+        round(2, "second reason", HOUR + 10_000, 10_000),
+        round(3, "third reason", 2 * HOUR + 12_000, 12_000),
       ]);
+    });
+
+    // A retry (#317) of a run whose first round reached the review: the second round stops at the verify gate.
+    const retried = () => [
+      ev("triage", "decision", 1000),
+      ev("fix", "proposed", 2000),
+      ev("verify", "passed", 3000),
+      ev("review", "error", 4000, "The reviewer returned nothing usable."),
+      ev("notify", "sent", 5000),
+      ev("cycle", "reconsidered", HOUR, "Retried at an operator's request"),
+      ev("triage", "decision", HOUR + 1000),
+      ev("fix", "proposed", HOUR + 2000),
+      ev("verify", "rejected", HOUR + 3000, "The patch does not apply to the checkout."),
+    ];
+
+    it("keeps every step an earlier round reached, newest first, a failed one marked so", () => {
+      const w = buildWaterfall(cycle({ state: "waiting-human", leaseExpiresAt: null, updatedAt: new Date(T0 + HOUR + 3000) }), retried(), T0 + 2 * HOUR);
+      expect(w.earlier).toHaveLength(1);
+      expect(w.earlier[0]).toMatchObject({ round: 1, stage: "notify" });
+      expect(w.earlier[0]!.steps.map((s) => [s.stage, s.outcome, s.failed])).toEqual([
+        ["notify", "sent", false],
+        ["review", "error", true],
+        ["verify", "passed", false],
+        ["fix", "proposed", false],
+        ["triage", "decision", false],
+      ]);
+    });
+
+    it("draws a step this round did not reach with where an earlier round got, never as if it never ran", () => {
+      const w = buildWaterfall(cycle({ state: "waiting-human", leaseExpiresAt: null, updatedAt: new Date(T0 + HOUR + 3000) }), retried(), T0 + 2 * HOUR);
+      const review = w.steps.find((s) => s.stage === "review")!;
+      expect(review).toMatchObject({ status: "not-reached", earlier: { round: 1, outcome: "error", failed: true } });
+      expect(w.steps.find((s) => s.stage === "pr")!.earlier).toBeUndefined();
+      expect(w.steps.find((s) => s.stage === "verify")).toMatchObject({ status: "done", outcome: "rejected" });
     });
 
     it("shows the round in progress as triage running, not as triage done from the round before", () => {
@@ -609,4 +662,3 @@ describe("the run's summary, its error, and the list's strip", () => {
     expect(trackMarks(live, T0)).toEqual(["done", "running", "none", "none", "none"]);
   });
 });
-

@@ -6,13 +6,13 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { parseCycle, parseEvent, type CycleRow, type EventRow } from "../lib/runsModel";
 
 type CyclesCb = (rows: CycleRow[], capped: boolean) => void;
-type EventsCb = (rows: EventRow[]) => void;
+type EventsCb = (rows: EventRow[], capped: boolean) => void;
 
 const mocks = vi.hoisted(() => ({
   env: { environment: "demo", ready: true, settingsUnavailable: false },
   cyclesCb: undefined as undefined | ((rows: unknown[], capped: boolean) => void),
   cyclesErr: undefined as undefined | ((e: Error) => void),
-  eventsCb: undefined as undefined | ((rows: unknown[]) => void),
+  eventsCb: undefined as undefined | ((rows: unknown[], capped?: boolean) => void),
   unsubCycles: vi.fn(),
   unsubEvents: vi.fn(),
   subscribedEvents: [] as string[],
@@ -26,7 +26,7 @@ vi.mock("../lib/incidents", () => ({ getIncident: mocks.getIncident }));
 vi.mock("../components/EngineStatus", () => ({ EngineStatus: ({ environment }: { environment: string }) => <div data-testid="engine">{environment}</div> }));
 // The button decides for itself who sees it (AdminActions.test.tsx); here only that the page offers it.
 vi.mock("../components/AdminActions", () => ({ RunAgentButton: () => <button type="button">Run agent now</button> }));
-vi.mock("../components/RetryRunButton", () => ({ RetryRunButton: ({ incidentId }: { incidentId: string }) => <button type="button">Retry this run ({incidentId})</button> }));
+vi.mock("../components/RetryRunButton", () => ({ RetryRunButton: ({ incidentId }: { incidentId: string }) => <button type="button">Retry with agent ({incidentId})</button> }));
 vi.mock("../components/AgentStatus", () => ({ AgentStatus: ({ environment }: { environment: string }) => <div data-testid="agent">{environment}</div> }));
 vi.mock("../lib/runs", async (orig) => ({
   ...(await orig<typeof import("../lib/runs")>()),
@@ -45,6 +45,7 @@ vi.mock("../lib/runs", async (orig) => ({
 }));
 
 import Runs from "./Runs";
+import { EVENT_LIMIT } from "../lib/runs";
 
 const ts = (ms: number) => ({ toDate: () => new Date(ms) });
 const now = Date.now();
@@ -86,6 +87,7 @@ describe("Runs page", () => {
     mocks.cyclesCb = mocks.cyclesErr = mocks.eventsCb = undefined;
     mocks.env = { environment: "demo", ready: true, settingsUnavailable: false };
     mocks.getIncident.mockResolvedValue(null);
+    localStorage.removeItem("starfish.runs.listHidden");
   });
 
   it("says the settings couldn't be read, so an empty list isn't taken for a quiet day (#143)", () => {
@@ -355,11 +357,45 @@ describe("Runs page", () => {
     const log = within(screen.getByRole("list", { name: "Step log" })).getAllByRole("listitem");
     expect(log).toHaveLength(1);
     expect(log[0]).toHaveTextContent("third reason");
-    const earlier = within(screen.getByRole("list", { name: "Earlier rounds" })).getAllByRole("listitem");
+    const earlier = [...screen.getByRole("list", { name: "Earlier rounds" }).querySelectorAll(":scope > li")];
     expect(earlier.map((li) => li.textContent)).toEqual([expect.stringContaining("Round 2 of 3"), expect.stringContaining("Round 1 of 3")]);
     expect(earlier[0]).toHaveTextContent("second reason");
-    expect(earlier[0]).toHaveTextContent("10 s into that round");
+    expect(earlier[0]).toHaveTextContent("ended on triage · 10 s long");
     expect(earlier[1]).toHaveTextContent("first reason");
+  });
+
+  it("keeps a step an earlier round reached on the track, and a step that failed unexpectedly in red, both in the step log", () => {
+    const HOUR = 3_600_000;
+    renderRuns();
+    act(() =>
+      mocks.cyclesCb!(
+        [cycle("inc-a_r0", { state: "waiting-human", path: "human", leaseExpiresAt: null, createdAt: ts(now - 2 * HOUR), updatedAt: ts(now - HOUR + 6000) })],
+        false
+      )
+    );
+    act(() =>
+      mocks.eventsCb!([
+        event(1, "triage", "decision", "first", 2 * HOUR - 1000),
+        event(2, "fix", "proposed", "patch", 2 * HOUR - 2000),
+        event(3, "verify", "passed", "green", 2 * HOUR - 3000),
+        event(4, "review", "error", "The reviewer returned nothing usable.", 2 * HOUR - 4000),
+        event(5, "cycle", "reconsidered", "Retried at an operator's request", HOUR),
+        event(6, "triage", "decision", "again", HOUR - 1000),
+        event(7, "fix", "proposed", "patch again", HOUR - 2000),
+        event(8, "verify", "rejected", "The patch does not apply to the checkout.", HOUR - 3000),
+        event(9, "notify", "failed", "Slack refused the message.", HOUR - 4000),
+      ])
+    );
+    const steps = screen.getByRole("list", { name: "Steps" });
+    const review = steps.querySelector('[data-step="review"]')!;
+    expect(review).toHaveAttribute("data-status", "not-reached");
+    expect(review).toHaveTextContent("Not reached this round · round 1: failed (error)");
+    expect(screen.getByRole("list", { name: "Also recorded" })).toHaveTextContent("Tell a person: failed");
+    const log = within(screen.getByRole("list", { name: "Step log" })).getAllByRole("listitem");
+    expect(log[0]).toHaveTextContent("Tell a personFailed: failed");
+    const round1 = within(screen.getByRole("list", { name: "Round 1" })).getAllByRole("listitem");
+    expect(round1[0]).toHaveTextContent("Adversarial reviewFailed: error");
+    expect(round1[0]).toHaveTextContent("The reviewer returned nothing usable.");
   });
 
   it("says nothing about rounds for a run that was never reopened", () => {
@@ -369,6 +405,17 @@ describe("Runs page", () => {
     expect(screen.queryByTestId("run-rounds")).toBeNull();
     expect(screen.queryByRole("list", { name: "Earlier rounds" })).toBeNull();
     expect(screen.getByRole("region", { name: "Pipeline" })).toHaveTextContent("from start to the last update");
+  });
+
+  it("says when a run has more events than it draws, and only then (#326)", () => {
+    renderRuns();
+    act(() => mocks.cyclesCb!([cycle("inc-a_r0", { state: "waiting-human", path: "human", leaseExpiresAt: null })], false));
+    act(() => mocks.eventsCb!([event(1, "triage", "decision", "Act", 50_000)], false));
+    expect(screen.queryByTestId("events-capped")).toBeNull();
+    act(() => mocks.eventsCb!([event(301, "escalation", "called", "Called the primary", 40_000)], true));
+    const note = screen.getByTestId("events-capped");
+    expect(note).toHaveTextContent(`Showing the newest ${EVENT_LIMIT} events of this run; older ones are not drawn`);
+    expect(screen.getByRole("region", { name: "Pipeline" })).toContainElement(note);
   });
 
   it("does not link a pull request URL that isn't https", () => {
@@ -603,7 +650,7 @@ describe("Runs page", () => {
     act(() => mocks.cyclesCb!([cycle("inc-a_r0", { state: "waiting-human", leaseExpiresAt: null, path: "human" })], false));
     act(() => mocks.eventsCb!([event(1, "triage", "decision", "Act", 50_000), event(2, "fix", "declined", "No fix", 20_000)]));
     const detail = screen.getByRole("region", { name: "Run detail" });
-    await userEvent.click(within(detail).getByRole("button", { name: "Replay this run" }));
+    await userEvent.click(within(detail).getByRole("button", { name: "Watch replay" }));
     expect(within(detail).getByText("Replaying")).toBeInTheDocument();
     expect(screen.getByTestId("run-summary")).toHaveTextContent(/^Replaying the recorded run\./);
     const steps = within(detail).getByRole("list", { name: "Steps" });
@@ -618,11 +665,11 @@ describe("Runs page", () => {
     renderRuns();
     act(() => mocks.cyclesCb!([cycle("inc-a_r0", { state: "waiting-human", leaseExpiresAt: null, path: "human" })], false));
     act(() => mocks.eventsCb!([event(1, "triage", "decision", "Act", 50_000)]));
-    expect(await screen.findByRole("button", { name: "Retry this run (inc-a)" })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Retry with agent (inc-a)" })).toBeInTheDocument();
     act(() => mocks.cyclesCb!([cycle("inc-a_r0", { state: "declined", leaseExpiresAt: null, path: "decline" })], false));
-    expect(await screen.findByRole("button", { name: "Retry this run (inc-a)" })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Retry with agent (inc-a)" })).toBeInTheDocument();
     act(() => mocks.cyclesCb!([cycle("inc-a_r0")], false));
-    expect(screen.queryByRole("button", { name: /Retry this run/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Retry with agent/ })).toBeNull();
   });
 
   it("offers no retry once the incident is resolved, or a pull request is open", async () => {
@@ -631,13 +678,102 @@ describe("Runs page", () => {
     act(() => mocks.cyclesCb!([cycle("inc-a_r0", { state: "waiting-human", leaseExpiresAt: null, path: "human" })], false));
     act(() => mocks.eventsCb!([event(1, "triage", "decision", "Act", 50_000)]));
     await screen.findByRole("region", { name: "Run detail" });
-    expect(screen.queryByRole("button", { name: /Retry this run/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Retry with agent/ })).toBeNull();
   });
 
   it("offers no replay while a worker holds the run", () => {
     renderRuns();
     act(() => mocks.cyclesCb!([cycle("inc-a_r0")], false));
     act(() => mocks.eventsCb!([event(1, "triage", "decision", "Act", 30_000)]));
-    expect(screen.queryByRole("button", { name: "Replay this run" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Watch replay" })).toBeNull();
+  });
+
+  it("opens with the run's story on the hero card: the error, its count and how far the run got", async () => {
+    mocks.getIncident.mockResolvedValue({ id: "inc-a", functionName: "orders-createorder", errorType: "DatabaseError", errorMessage: "Cannot use undefined", status: "new", occurrenceCount: 11, service: "orders", recurrenceCount: 0 });
+    renderRuns();
+    act(() => mocks.cyclesCb!([cycle("inc-a_r0", { state: "waiting-human", leaseExpiresAt: null, path: "human" })], false));
+    act(() => mocks.eventsCb!([event(1, "triage", "decision", "Act", 50_000), event(2, "fix", "proposed", "A guard", 40_000)]));
+    expect(await screen.findByText("11 occurrences")).toBeInTheDocument();
+    const detail = screen.getByRole("region", { name: "Run detail" });
+    expect(within(detail).getByText((_, el) => el?.tagName === "P" && el.textContent === "DatabaseError · Cannot use undefined")).toBeInTheDocument();
+    expect(screen.getByText("2 of 5 steps recorded")).toBeInTheDocument();
+    expect(screen.getByTestId("run-summary")).toHaveTextContent("Handed to a person after draft a fix (proposed).");
+  });
+
+  it("says in the list how a finished run ended, and nothing of the kind for one in progress", () => {
+    renderRuns();
+    act(() => mocks.cyclesCb!([cycle("inc-a_r0", { state: "waiting-human", leaseExpiresAt: null, path: "human" }), cycle("inc-b_r0", { path: "human" })], false));
+    const list = screen.getByRole("region", { name: "Runs" });
+    expect(within(list).getAllByText("Handed to a person")).toHaveLength(1);
+  });
+
+  it("shows each step's recorded details: triage's choice among the levels, the fix's risk, the gate's checks and the review's attacks", () => {
+    renderRuns();
+    const summary = {
+      triage: { decision: "act", rule: "model-act", reason: "A field is undefined.", level: "fix", counterCount: 11, counterWindow: "24h" },
+      fix: { outcome: "proposed", risk: "Readers of giftNote", testAdded: true, alternative1: "Drop the field" },
+      verify: { status: "passed", files: 1, exitCode: 0 },
+      review: { verdict: "block", held: 2, broken: 1, attack1: "held: no note | written as null", attack2: "broken: readers | the slip prints null" },
+    };
+    act(() => mocks.cyclesCb!([cycle("inc-a_r0", { state: "waiting-human", path: "human", leaseExpiresAt: null, summary })], false));
+    act(() =>
+      mocks.eventsCb!([
+        event(1, "triage", "decision", "A field is undefined.", 50_000),
+        event(2, "fix", "proposed", "giftNote is undefined with no note", 40_000),
+        event(3, "verify", "passed", "Checks passed", 30_000),
+        event(4, "review", "block", "3 attacks tried", 20_000),
+      ])
+    );
+    const log = screen.getByRole("list", { name: "Step log" });
+    const levels = within(log).getByRole("group", { name: "How far Starfish goes" });
+    expect(within(levels).getByText("Log + fix")).toHaveAttribute("aria-current", "true");
+    expect(levels).toHaveTextContent("Noise (not chosen)");
+    expect(within(log).getByText(/Recount: 11 errors in 24h/)).toBeInTheDocument();
+    expect(within(log).getByText("Could break:").parentElement).toHaveTextContent("Readers of giftNote");
+    expect(within(log).getByText("Test added")).toBeInTheDocument();
+    expect(within(log).getByText(/1 rejected alternative/)).toBeInTheDocument();
+    expect(within(log).getByText(/The patch text is not stored/)).toBeInTheDocument();
+    expect(within(log).getByText("1 file changed")).toBeInTheDocument();
+    const attacks = within(log).getByRole("group", { name: "Attacks tried" });
+    expect(attacks).toHaveTextContent("brokenreadersthe slip prints null");
+    expect(within(log).getByText("1 broke it")).toBeInTheDocument();
+  });
+
+  it("reads oldest first on request, the step in progress last", async () => {
+    renderRuns();
+    act(() => mocks.cyclesCb!([cycle("inc-a_r0", { stage: "fix" })], false));
+    act(() => mocks.eventsCb!([event(1, "triage", "decision", "Act", 30_000)]));
+    const entries = () => within(screen.getByRole("list", { name: "Step log" })).getAllByRole("listitem");
+    expect(entries()[0]).toHaveTextContent("Draft a fix");
+    await userEvent.click(screen.getByRole("button", { name: /Newest first/ }));
+    expect(entries()[0]).toHaveTextContent("Triage");
+    expect(entries()[1]).toHaveTextContent("Draft a fix");
+    expect(screen.getByRole("button", { name: /Oldest first/ })).toBeInTheDocument();
+  });
+
+  it("shows a run full width from its card's corner, and back, remembered in this browser", async () => {
+    const view = renderRuns();
+    act(() => mocks.cyclesCb!([cycle("inc-a_r0")], false));
+    expect(screen.getByRole("region", { name: "Runs" })).toBeVisible();
+    await userEvent.click(screen.getByRole("button", { name: "Full width" }));
+    expect(screen.queryByRole("region", { name: "Runs" })).toBeNull();
+    expect(screen.getByRole("region", { name: "Run detail" })).toBeInTheDocument();
+    expect(localStorage.getItem("starfish.runs.listHidden")).toBe("1");
+
+    view.unmount();
+    renderRuns();
+    act(() => mocks.cyclesCb!([cycle("inc-a_r0")], false));
+    expect(screen.queryByRole("region", { name: "Runs" })).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: "Exit full width" }));
+    expect(screen.getByRole("region", { name: "Runs" })).toBeVisible();
+    expect(localStorage.getItem("starfish.runs.listHidden")).toBe("0");
+  });
+
+  it("keeps the run list when no run is shown, so the way back is never hidden", () => {
+    localStorage.setItem("starfish.runs.listHidden", "1");
+    mocks.readCycle.mockResolvedValue(null);
+    renderRuns("/runs?run=gone_r0");
+    act(() => mocks.cyclesCb!([cycle("inc-a_r0")], false));
+    expect(screen.getByRole("region", { name: "Runs" })).toBeVisible();
   });
 });

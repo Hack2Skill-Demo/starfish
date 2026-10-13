@@ -33,7 +33,7 @@
  */
 import { createHash } from "node:crypto";
 import type { StarfishConfig } from "../config.js";
-import { redactPii } from "../ingest/redact.js";
+import { redactHead, redactTail } from "../ingest/redact.js";
 import type { CheckAnnotation, CheckRun, GithubClient } from "../integrations/githubPr.js";
 import { MAX_OUTPUT_CHARS, verifyPatch, type VerifyRequest, type VerifyResult } from "./verifyGate.js";
 import { VerifyRunnerError } from "./verifyProtocol.js";
@@ -81,12 +81,12 @@ export function createCiVerifier(cfg: CiVerifyConfig, deps: CiVerifyDeps): (req:
     const done = (status: VerifyResult["status"], rule: VerifyResult["rule"], reason: string, output: string, exitCode: number | null): VerifyResult => ({
       status,
       rule,
-      reason: redactPii(reason.slice(0, 500)),
+      reason: redactHead(reason, 500),
       patchSha256,
       baseRevision: req.baseRevision,
       changedFiles: local.changedFiles,
       exitCode,
-      output: redactPii(output.slice(-MAX_OUTPUT_CHARS)),
+      output: redactTail(output, MAX_OUTPUT_CHARS),
       durationMs: now() - started,
     });
 

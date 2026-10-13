@@ -57,6 +57,7 @@ pnpm feedback-corpus -- --out=<new dir>   # operators' noise/log corrections -> 
 pnpm replay           # replay the agent's stages over a corpus into a results file (#10); --check-corpus checks the cases without a model; needs Vertex for a real run, none recorded
 pnpm escalate         # one tick of the phone escalation (#37); the agent pass runs it too; off unless STARFISH_PHONE_ESCALATION; never run against real Twilio
 pnpm scrub            # dry-run: how many stored incidents still hold a credential/email (--apply to rewrite)
+pnpm demo-users       # dry-run: the judges' sign-in accounts (operator role, random passwords printed once); --apply/--remove need --project, refuses unless STARFISH_ENV=demo; never run on a real project
 pnpm seed-demo        # dry-run: the synthetic, badged demo history (#12); --apply/--remove need --project, refuses unless STARFISH_ENV=demo
 pnpm public-view      # dry-run: the guests' trimmed copies (#18) to write or remove (--apply needs --project); never run on a real project
 bash .claude/hooks/git-branch-guard.test.sh        # hook suites
@@ -70,7 +71,7 @@ It writes each step's output to `.verify-logs/` and prints one line per step; on
 only the diagnostic lines. Don't run the raw commands to see a green result — the exit
 code is the result.
 
-Node 22+ (`.nvmrc`). CI runs Node 24.
+Node 22.19+ (`.nvmrc`; undici 8 needs it). CI runs Node 24.
 
 ## "Log the issue" — file only, do not implement
 
@@ -135,12 +136,16 @@ and changes to what the pitch claims.
 src/
   config.ts        every deployment-specific value, and the only process.env reader
   types.ts         Incident, StoredIncident, TriageVerdict, SpikeFixture
-  vertex.ts        Gemini on Vertex AI — structured JSON output, untrusted-data notice
+  vertex.ts        Gemini on Vertex AI — structured JSON output, untrusted-data notice; each call ends at
+                   `STARFISH_MODEL_TIMEOUT_SECONDS` (600) through its own fetch, past Node's 300 s limit, and a failed call is
+                   recorded by error and cause names/codes only, a timeout as one (`modelCallFailure`, #334)
   spike.ts         fix-quality spike over fixtures/incidents/*.json
   ingest/          Cloud Logging → classified, fingerprinted, deduped incidents
     parseLogEntry  parse + noise suppression + the shared log filter
     classify       error type (source class > code > HTTP status > keywords), service
-    fingerprint    sha256(canonical functionName : first 100 chars of the normalized message);
+    fingerprint    sha256(canonical functionName : first 100 chars of the normalized error core: leading wrappers
+                   `Unhandled error`, `<Name>Error:` and the function's own `<fn> failed:` stripped, so one bug logged in two
+                   shapes is one incident, #318);
                    volatile ids/paths/timestamps/counts are collapsed first. Monitoring-only (`mon-`),
                    high-cardinality overflow (`ovf-`, its fixed per-day message hashed unnormalized) and consolidated Cloud Run
                    quota (`pq-`) have their own namespaces
@@ -194,7 +199,7 @@ src/
                    written for the gate to refuse; #317). Run by `pnpm agent` (deployed: declined 2026-10-08, #259; 2026-10-12 proposed a
                    patch for demo-app and the verify gate refused it as not applying, twice, #317)
   agent/cycle.ts   cycle per (incident, recurrence), transactional lease with fencing, append-only run events
-                   (redacted), the cycle's run record (summary.<stage>, path) and its model-call and revision counts (#182); infrastructure errors throw, logical refusals are returned. Run by `pnpm agent` (deployed to the demo project, dry run)
+                   (redacted), the cycle's run record (summary.<stage>, path) and its model-call and revision counts (#182); infrastructure errors throw, logical refusals are returned. Run by `pnpm agent` (deployed to the demo project; dry run off since 2026-10-10)
   agent/loop.ts    one cycle: lease -> triage -> fix -> verify -> review -> PR (interface); rechecks status +
                    kill switch, one shared revision, call budget, dry run by default. Run by `pnpm agent`. Where
                    triage named a merge case auto-merge may apply to, it also runs the safety floor and the "fails
@@ -252,7 +257,7 @@ src/
                    cooldown + cap per 24 h; never over ignored/resolved.
                    cycle.ts reopens the same cycle in the lease transaction, so still one issue and one PR per recurrence.
                    A WAITING-HUMAN cycle (a person was told) is reopened only on an operator's `retriageRequestedAt` (the Runs
-                   page's "Retry this run"), never over an open PR: for a result Starfish itself got wrong (#317). It reuses
+                   page's "Retry with agent"), never over an open PR: for a result Starfish itself got wrong (#317). It reuses
                    the recorded issue, alert and message, so a retry files and sends nothing twice, and without a new request
                    (or a change in Starfish) it ends where it did. Emulator-tested; not yet run on the demo project
   agent/assemble.ts  one incident's inputs: shallow clone at a pinned revision, counter-check, samples, files the incident's OWN
@@ -263,13 +268,16 @@ src/
   scoreboard/      the results format (strict parser), the metrics (ratios keep numerator and denominator; an error or timeout counts
                    against the agent; each path apart) and the Markdown table: `pnpm scoreboard`. `replay.ts`/`corpus.ts` (`pnpm replay`) run
                    the loop's own stages over a frozen corpus with hidden evaluators and write a results file; no real run recorded
+  startupLog.ts    one JSON line as each deployed CLI starts (ingest, agent, admin API, verify runner): its uptime when its
+                   code starts and once its modules have loaded, to tell Cloud Run's start delay from module loading (#275);
+                   not yet read from a deployed run
   agentCli.ts      `pnpm agent`: one pass. Dry run by default; refuses to start until STARFISH_VERIFY_ISOLATION is set
                    (`in-process` is not a sandbox; `github-actions` = the target's own CI judges a pushed starfish/<cycle>
                    branch, the demo's choice; `cloud-run-job` hands the source + patch to a separate job whose service
-                   account holds NO roles). The agent never runs the target's code. Deployed by `DEPLOY_AGENT=1`; never run
+                   account holds NO roles). The agent never runs the target's code. Deployed by `DEPLOY_AGENT=1`; runs hourly on the demo project
   agent/verifyCi.ts  `github-actions` isolation: local gate checks (nothing executed) → push branch → wait for the NAMED check
                    runs on that exact commit (heartbeat each poll) → delete the branch IT pushed unless it passed (in a dry run, always).
-                   No check / only queued throws (cycle resumes)
+                   No check / only queued throws (cycle resumes). Run for real on demo-app 2026-10-12 (the run that opened demo-app #41)
   agent/verifyRemote.ts  the agent's side of the isolated verify: bundle → signed URLs → start the job → validated result.
                    Infra failures throw (the cycle resumes); a failed command is a result
   agent/verifyRunner.ts  the verify job's side (`src/verifyRunnerCli.ts`): fetch the bundle, run the gate, write the result.
@@ -287,9 +295,10 @@ src/
                    "pass in progress". Built, unit- and emulator-tested; not yet written by a deployed pass
   agent/automationSwitch.ts  the kill switch: reads the runtime settings fresh each time the loop asks; fails closed
   agent/reviewer.ts  stage 4: attacks the verified patch; verdict computed from outcomes in code, bound
-                   to the patch hash the gate tested. Run by `pnpm agent` (deployed; not yet reached on a real incident)
-  agent/verifyGate.ts  stage 3: apply a patch in a scratch copy, judge the tree that results, run the
-                   configured command with a scrubbed env. Not a sandbox; run by `pnpm agent` (deployed; not yet reached on a real incident)
+                   to the patch hash the gate tested. Run by `pnpm agent` (reached on a real incident 2026-10-12: the run that opened demo-app #41)
+  agent/verifyGate.ts  stage 3 (its output redacted before it is cut, `redactTail` in ingest/redact.ts, #18): apply a patch in a scratch copy, judge the tree that results, run the
+                   configured command with a scrubbed env. Not a sandbox; run by `pnpm agent` (its local checks judged real patches 2026-10-12, #317; with
+                   `github-actions` isolation the target's CI runs the command, verifyCi.ts)
   agent/trigger.ts  an admin's "Run agent now" (#276): the admin check, an audit entry BEFORE the start, then `agent/agentJob.ts`
                    starts the DEPLOYED agent job once (Cloud Run `jobs.run`, no override): the pass a tick runs, same switches,
                    caps and leases, under the agent's own account. Stubs + emulator tested, never run against real Cloud Run
@@ -325,14 +334,16 @@ src/
   integrations/slack.ts  Slack delivery (#17): one "needs a human" message through an incoming webhook, from redacted plain-text
                    fields; bounded retries, a failed delivery is a recorded result (`summary.notify`), a dry run sends nothing; the webhook
                    (a secret, `loadSlackOnCallWebhook`) never appears in a result. Also the optional #ops-alerts "new incident"
-                   message (`loadSlackAlertsWebhook`, `summary.alert`). Run by `pnpm agent`; never run against real Slack
+                   message (`loadSlackAlertsWebhook`, `summary.alert`). Run by `pnpm agent`; both messages posted to real Slack since 2026-10-11 (#330)
   integrations/githubPr.ts  the pull-request opener (#17): idempotent by cycle id, pushes only
                    starfish/<id>, does not merge itself, token only in git's environment. Also files the incident's issue
-                   (`openIssue`: idempotent by a marker, label `starfish`, a failure recorded on the cycle), and reads one of its PRs
+                   (`openIssue`: idempotent by a marker, label `starfish`, a failure recorded on the cycle; titles, PR, issue and
+                   commit, are cut at a word with `…` within their budget, references broken first, `titleLine`, #327), and reads one of its PRs
                    back (`readPullRequest`: refuses one not from starfish/<cycle> in the repo, or not into the configured base). For #9 only: squash-merges
                    one of its PRs at an exact head (`mergePullRequest`), comments on it, and opens the revert of its own
-                   merge commit on starfish/revert-<cycle> (`openRevertPullRequest`). Never run against real
-                   GitHub; run by `pnpm agent` (deployed; in dry run it files and opens nothing)
+                   merge commit on starfish/revert-<cycle> (`openRevertPullRequest`). Filing issues and opening PRs have run
+                   against real GitHub since 2026-10-12 (demo-app #41, #42); reading a PR back is not yet confirmed there, and the merge,
+                   comment and revert have never run against real GitHub (#330). Run by `pnpm agent` (in dry run it files and opens nothing)
   oncall/escalation.ts  phone escalation (#37): an urgent cycle (triage notify/act, waiting for a person) whose Slack message
                    went unacknowledged for the policy's wait -> primary, primary again after 2 min, secondary, support lead.
                    One sequence per cycle, each call claimed in a transaction (claimer, per-person daily cap) before it is
@@ -382,11 +393,20 @@ The operator UI: sign-in, an auth provider with race guards, a two-level layout,
 page (the landing page; counts of stored records only, `lib/overviewModel.ts`; "healed on its own" is only an index run
 the engine recorded healed, `isHealedRun`; its activity feed is a
 collection-group query over `events`, with its own rule and index; a guest's reads `starfish_public_events`), the
-**Incidents** page (under each error, the incident's current run: its state, triage's reason and a link to it, `lib/useIncidentRuns.ts`; with `VITE_STARFISH_DEMO_APP_URL`, a link to the demo app's Lab, `components/DemoAppLink.tsx`), a **Runs** page (live subscription to `{cycleCollection}` and its events,
+**Incidents** page (under each error, the incident's current run: its state, triage's reason and a link to it, `lib/useIncidentRuns.ts`; with `VITE_STARFISH_DEMO_APP_URL`, a link to the demo app's Lab, `components/DemoAppLink.tsx`), a **Runs** page (live subscription to `{cycleCollection}` and its newest 200 events, read newest first by `seq`; a run
+with more says older ones are not drawn, #326,
 `web/src/lib/runs.ts`; the waterfall logic is pure in `runsModel.ts`: a step with no event is "not
-reached", a cycle whose lease ran out is not "in progress"; the step log sits under the track, newest first, with triage's
-suspected cause and the filed issue's link in their own entries, #279; a run reopened after a decline is drawn from its
-latest reopening, says which round it is, and lists what the earlier rounds ended on, #285), an **incident evidence** page (`/incidents/:id`, `lib/evidence.ts`: only stored records, never a placeholder result; an operator's "Correct triage", the feedback engine, `components/CorrectionControl.tsx`, `lib/correctionWrite.ts`), and a **Settings** page: the Gemini, GitHub and Slack connections, the rules and feedback engines' card (GitHub and Slack read `{runCollection}/integrations`, the agent's own report of what it holds: "configured", never "connected", and "not connected yet" until the agent has run and reported), an
+reached", a cycle whose lease ran out is not "in progress"; the hero card's corner button shows the run full width (the run
+list hidden; only while a run is shown), kept per browser like the sidebar's collapse; a dark hero card opens the run (the error, its count, how far it got, the actions); the step log sits under the track,
+newest first (oldest first on request), with triage's
+suspected cause and the filed issue's link in their own entries, #279, and each step's recorded details (triage's level
+among the four, the fix's risk and rejected alternatives, the gate's checks, the review's attacks; `lib/runStepDetail.ts`,
+only when the record is that step's own; no time axis beside them: the column was too narrow to read); each
+step wears the mark of who did it: Starfish's for triage, Gemini's for the fix, GitHub's for the issue, the pull request and the merge (and for verify only when
+the record says GitHub's checks judged it, `judgedOnGitHub`), Slack's for its messages; a run reopened after a decline is drawn from its
+latest reopening, says which round it is, and lists every step each earlier round reached, #285; a step this round did not
+reach that an earlier one did stays on the track, marked with that round's outcome; a step whose outcome means it went
+wrong unexpectedly (`failedUnexpectedly`: an error, a timeout, a failed delivery; never a rejection or a block) is red), an **incident evidence** page (`/incidents/:id`, `lib/evidence.ts`: only stored records, never a placeholder result; an operator's "Correct triage", the feedback engine, `components/CorrectionControl.tsx`, `lib/correctionWrite.ts`), and a **Settings** page: the Gemini, GitHub and Slack connections, the rules and feedback engines' card (GitHub and Slack read `{runCollection}/integrations`, the agent's own report of what it holds: "configured", never "connected", and "not connected yet" until the agent has run and reported), an
 admin editor for the runtime settings (`src/runtimeSettings.ts` reads what it saves; Class rules is the rules engine; operators and guests see the same
 settings read-only, `SettingsReadOnly`, from the operator copy), and, for admins only, **On-call** (#37,
 `pages/OnCallEditor.tsx`, `lib/onCallWrite.ts`): the people (numbers shown masked, typed in but never read back), the
@@ -437,8 +457,10 @@ React 19, Vite, Tailwind 4, react-router, TanStack Query; Starfish's own theme i
   own status from `{runCollection}/agent_last_run` (#274, `components/AgentStatus.tsx`), judged the same way ("capped" = the
   candidate scan hit its cap), with the next pass from `STARFISH_AGENT_SCHEDULE` (set by the deploy script from
   `AGENT_SCHEDULE`; the cadence script does not change the agent's tick) and "No agent pass recorded yet" until one is.
-  Between records it says what the agent is doing (`agentActivity`): a pass in progress (its `runningSince` mark, with a
-  sliding bar and the seconds since it started), one that started longer ago than the stale threshold and never ended,
+  Between records it says what the agent is doing (`agentActivity`): a pass in progress ("Agent running", in blue: its
+  `runningSince` mark, with a sliding bar and the seconds since it started; between passes a healthy agent is "Agent
+  waiting", with an hourglass), a start an admin's "Run agent now" asked for that has not shown yet ("Agent starting",
+  `lib/agentStart.ts`, this tab only, watched so it shows with no refresh), one that started longer ago than the stale threshold and never ended,
   or one due that has not started; it re-reads the record every 5 s while one is in progress or due (15 minutes at most
   for a due one), else every minute. Built and unit-tested.
 - **Config:** `web/src/lib/config.ts` is the only reader of `import.meta.env`. The Firebase

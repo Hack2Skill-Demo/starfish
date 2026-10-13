@@ -1,11 +1,13 @@
 /**
  * The admin API service (#63, #65): `node --import tsx src/adminApiCli.ts`, what the Cloud Run service
- * `starfish-admin` runs (scripts/deploy-gcp.sh, DEPLOY_ADMIN_API=1; written and dry-run tested, never run). The rules
+ * `starfish-admin` runs (scripts/deploy-gcp.sh, DEPLOY_ADMIN_API=1; deployed to the demo project 2026-10-07, "Run ingest now" run from the UI). The rules
  * are in src/adminApi.ts; this wires them to Firebase Auth, the store and the ingest, and, when Twilio's credentials
  * are mounted, to the phone escalation's opt-in routes and Twilio's webhooks (#37; never run against real Twilio).
  * When the deploy names the agent job (`STARFISH_AGENT_JOB`), also to "Run agent now" (#276): it starts that job
  * through Cloud Run and holds none of the agent's credentials (never run against real Cloud Run).
  */
+// First, so its uptime mark is taken before any other module's code runs (#275, src/startupLog.ts).
+import { logStartup } from "./startupLog.js";
 import { randomUUID } from "node:crypto";
 import { initializeApp } from "firebase-admin/app";
 import { getAppCheck } from "firebase-admin/app-check";
@@ -26,6 +28,8 @@ import { createTwilioWebhooks } from "./oncall/webhooks.js";
 import { confirmNumber, sendConfirmationCode } from "./oncall/optIn.js";
 import { readPolicy, stepEscalation } from "./oncall/escalation.js";
 
+// #275: how long the service takes to start, Cloud Run's side against loading modules.
+logStartup("admin-api");
 const config = loadConfig();
 initializeApp({ projectId: config.projectId });
 const db = getFirestore(config.databaseId);
