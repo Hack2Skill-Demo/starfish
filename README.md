@@ -271,10 +271,24 @@ The Incidents page opens with a line saying whether the engine is running (from 
 
 The public demo needs no sign-in: a visitor is signed in anonymously and sees the Overview, the incidents and their evidence, the Runs page and a view-only Settings page, all for the `demo` environment only, with no triage buttons (#12). A guest never reads the stored incident, cycle or event documents: `firestore.rules` serve a guest only **trimmed copies** the engine writes for the `demo` environment (#18, see [Redaction limits](#redaction-limits) below), so the guest pages show no error detail, stack trace or model reasoning. That needs Anonymous sign-in enabled in the Firebase project and only `demo`-labelled data. App Check is built as an option, off unless the UI is built with a reCAPTCHA site key (`VITE_STARFISH_APPCHECK_SITE_KEY`), and enforcing it on Firestore is a console step left to a person; an optional uptime check and alert on the site come with `UPTIME_CHECK=1 scripts/deploy-web.sh`. Both are tested only with stubs and dry runs, never on a real project ([deploy.md](docs/deploy.md#app-check-and-the-uptime-check-12)). Until the agent has carried real incidents through every stage, the demo can also carry a **synthetic** evidence history: `pnpm seed-demo` (see [Synthetic demo history](#synthetic-demo-history)), every record of which the UI badges "Synthetic". A private deployment leaves Anonymous sign-in disabled and still requires an operator account.
 
-![Live runs: a missing-index fault, from first error to an evidence PR waiting for a human](docs/design/screens/live-runs-index.png)
+**What it looks like.** These are captures of the public demo's guest view, taken on 2026-10-13 (the guest view shows trimmed
+copies of the records, so error detail and the model's own words are left out):
 
-Every screen, and what each one is for: [`docs/design/mockups.md`](docs/design/mockups.md). To click
-through them, open [`docs/design/html/index.html`](docs/design/html/index.html) in a browser after cloning
+![Runs: the newest run to a pull request, with its issue and PR, and the counts of every run](docs/screenshots/runs-pull-request.png)
+
+*Runs: a run that went from triage to a pull request on the demo app (issue #48, PR #49). The merge was not made: the safety floor
+refused it and a person was told.*
+
+![Overview: what the engine and the agent are doing, and what is waiting on a person](docs/screenshots/overview.png)
+
+*Overview: the engine and agent status, and counts of stored records only.*
+
+![Incidents: production errors grouped by fingerprint, each with the agent's decision](docs/screenshots/incidents.png)
+
+*Incidents: errors grouped by fingerprint; under each, the agent's run and its issue or pull request.*
+
+Design mockups of every screen, including ones not built yet, and what each is for: [`docs/design/mockups.md`](docs/design/mockups.md).
+To click through them, open [`docs/design/html/index.html`](docs/design/html/index.html) in a browser after cloning
 (GitHub shows HTML files as source, not as pages).
 
 ## Google Cloud stack
