@@ -1,7 +1,8 @@
 /**
  * Slack delivery (#17): the "needs a human" message, posted to ONE channel through an incoming webhook.
  * A cycle that ends waiting for a person (triage said notify, the fixer declined, the verify gate or the review would
- * not pass a second time) says so in Slack with the reason and links back to the incident and its run.
+ * not pass a second time) says so in Slack with the reason, what the person can do now (src/handoff.ts), and links back
+ * to the incident and its run.
  *
  * What it will not do:
  *   - Throw. A message that cannot be delivered is a RESULT (`failed`, with a short reason), because the cycle's
@@ -31,6 +32,7 @@
  * real Slack: tested over local HTTP against a fake webhook.
  */
 import { redactPii } from "../ingest/redact.js";
+import { handoffSteps } from "../handoff.js";
 import { incidentUrl, runUrl, safeHttpsUrl } from "./links.js";
 
 /** What the message is about. Built by the loop from the cycle and the stored incident, never from raw logs. */
@@ -126,10 +128,14 @@ export function buildNeedsHumanMessage(req: NotifyRequest, uiBaseUrl: string): S
       ],
     },
   ];
+  const issueUrl = safeHttpsUrl(req.issueUrl);
+  // What the person can do now (handoff.ts, the same list the Runs page shows). Fixed text: no incident text in it.
+  const steps = handoffSteps(req.path, issueUrl !== null).map((s) => `• ${s.title}: ${s.text}`);
+  blocks.push({ type: "section", text: plain(`What you can do:\n${steps.join("\n")}`) });
   const links = [
     { label: "Open the incident", url: incidentUrl(uiBaseUrl, req.incidentId) },
     { label: "Watch the run", url: runUrl(uiBaseUrl, req.cycleId) },
-    { label: "Open the issue", url: safeHttpsUrl(req.issueUrl) },
+    { label: "Open the issue", url: issueUrl },
   ].filter((l): l is { label: string; url: string } => l.url !== null);
   if (links.length > 0) blocks.push({ type: "actions", elements: links.map((l) => ({ type: "button", text: plain(l.label), url: l.url })) });
   return { text: slackEscape(headline), mrkdwn: false, blocks };
