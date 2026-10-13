@@ -159,7 +159,7 @@ write** as well as contents and pull requests. A retry after a crash or timeout 
 newest `starfish`-labelled issues in the repository's own list, not the search index, which lags) and files no second. A pull request the cycle
 opens says `Closes #N`; the Slack message links the issue. A failure to file is recorded on the cycle (`summary.issue`: `failed`, GitHub's rule)
 and the cycle goes on, because the issue is the incident's history and not a step the fix depends on. A dry run files nothing and says so.
-Tested against a fake GitHub API over local HTTP; never run against real GitHub.
+Tested against a fake GitHub API over local HTTP; filing issues on real GitHub since 2026-10-12 (#330).
 
 Starfish pushes only to branches named `starfish/<id>` and the engine checks that, but a GitHub App's
 permission cannot be limited to a branch prefix. If "Starfish can write only its own branches" is to be
@@ -596,8 +596,8 @@ The agent holds those credentials, so it **never runs the target repository's co
 
 ### `github-actions`: the target's own CI is the judge
 
-> **Status: written and tested against real git, a fake GitHub API and a fake CI; never run against real GitHub or a
-> real workflow.**
+> **Status: written and tested against real git, a fake GitHub API and a fake CI; run for real on the demo project on
+> 2026-10-12, in the run that opened demo-app #41 (#330).**
 
 1. The agent runs the deterministic half of the verify gate itself, without executing anything of the patch: it must
    apply, touch no excluded path (`.github/` is one, so **a patch cannot rewrite the workflow that judges it**), add no
