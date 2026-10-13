@@ -473,9 +473,6 @@ export interface Step {
    * does not read as though it never ran.
    */
   earlier?: EarlierStep;
-  /** Position on the run's time axis, as fractions of the whole. */
-  offset?: number;
-  width?: number;
   /** Its last event's data, when it carried any (a guest's copy never does). */
   data?: Flat;
 }
@@ -613,7 +610,6 @@ export function buildWaterfall(cycle: CycleRow, events: readonly EventRow[], now
   const status = runStatus(cycle, nowMs);
   const startMs = lastReopening ? lastReopening.at.getTime() : createdMs;
   const endMs = Math.max(status.live ? nowMs : cycle.updatedAt.getTime(), ...ordered.map((e) => e.at.getTime()), startMs + 1);
-  const span = endMs - startMs;
 
   // Only the step right after the last one that happened can be in flight, and only while a worker holds the cycle.
   // Counted over the track's own stages only: a side stage (the issue, the alert) is listed after them, so counting it
@@ -645,8 +641,6 @@ export function buildWaterfall(cycle: CycleRow, events: readonly EventRow[], now
       ...(Object.keys(last.data).length > 0 && { data: last.data }),
       ...(side && { side: true as const }),
       durationMs: end - from,
-      offset: (from - startMs) / span,
-      width: (end - from) / span,
     };
   });
 
@@ -659,75 +653,6 @@ export function buildWaterfall(cycle: CycleRow, events: readonly EventRow[], now
     ...(lastReopening && { reopened: { at: lastReopening.at, summary: lastReopening.summary } }),
     earlier,
   };
-}
-
-/** The share of the timeline's axis one very long step is drawn across when the axis is shortened. */
-const SHORTENED_SHARE = 0.25;
-
-/**
- * Where a moment falls on the timeline's axis, as a fraction of its width. Linear, unless one step took more than 60%
- * of the run and something else happened too: that step is then drawn across a quarter of the axis, and the rest of the
- * run across the other three quarters, so the other steps are not hairlines beside it (a triage that waited an hour for
- * its model call and a fix of 40 s). The page says which step is drawn shortened; the times it prints are never scaled.
- */
-export function timeAxis(steps: readonly Step[], startMs: number, endMs: number): { at: (ms: number) => number; shortened?: Step } {
-  const span = endMs - startMs;
-  const clamp = (x: number) => Math.min(1, Math.max(0, x));
-  if (!(span > 0)) return { at: () => 0 };
-  const linear = (ms: number) => clamp((ms - startMs) / span);
-  const placed = steps.filter((s) => (s.status === "done" || s.status === "failed") && s.offset !== undefined && s.width !== undefined);
-  const longest = [...placed].sort((a, b) => b.width! - a.width!)[0];
-  const others = steps.filter((s) => s !== longest && (s.status === "running" || placed.includes(s)));
-  if (!longest || longest.width! <= 0.6 || longest.width! >= 1 || others.length === 0) return { at: linear };
-  const a = startMs + longest.offset! * span;
-  const b = a + longest.width! * span;
-  const rest = span - (b - a);
-  const share = 1 - SHORTENED_SHARE;
-  return {
-    shortened: longest,
-    at: (ms) => {
-      if (ms <= a) return clamp(((ms - startMs) / rest) * share);
-      if (ms <= b) return clamp(((a - startMs) / rest) * share + ((ms - a) / (b - a)) * SHORTENED_SHARE);
-      return clamp(((a - startMs) / rest) * share + SHORTENED_SHARE + ((ms - b) / rest) * share);
-    },
-  };
-}
-
-/** A labelled moment on the timeline's axis: where it falls, as a fraction of the axis's width, and what it reads. */
-export interface AxisTick {
-  at: number;
-  label: string;
-}
-
-/** The steps an axis is ticked at: round seconds, minutes and hours. */
-const TICK_STEPS_MS = [
-  ...[1, 2, 5, 10, 15, 30].map((s) => s * 1000),
-  ...[1, 2, 5, 10, 15, 30].map((m) => m * 60_000),
-  ...[1, 2, 3, 6, 12, 24].map((h) => h * 3_600_000),
-];
-/** Ticks closer than this share of the axis are dropped, so their labels never overlap (a shortened step crowds them). */
-const MIN_TICK_GAP = 0.15;
-
-/**
- * The time axis's ticks, the way a browser's network waterfall draws them: a round step that fits at most four times in
- * the run, each tick placed by the axis itself (so on a shortened axis they sit where those moments are drawn). Labels
- * are minutes, seconds or hours from the start, the unit only on the last ("0 10 20 30 min").
- */
-export function axisTicks(startMs: number, endMs: number, at: (ms: number) => number): AxisTick[] {
-  const span = endMs - startMs;
-  if (!(span > 0)) return [];
-  const step = TICK_STEPS_MS.find((s) => span / s <= 4) ?? Math.ceil(span / 4 / 86_400_000) * 86_400_000;
-  const [unitMs, unit] = step < 60_000 ? [1000, "s"] : step < 3_600_000 ? [60_000, "min"] : [3_600_000, "h"];
-  const kept: { at: number; t: number }[] = [];
-  for (let t = 0; t <= span; t += step) {
-    const x = at(startMs + t);
-    const last = kept[kept.length - 1];
-    if (!last || x - last.at >= MIN_TICK_GAP) kept.push({ at: x, t });
-  }
-  return kept.map(({ at: x, t }, i) => ({
-    at: x,
-    label: i > 0 && i === kept.length - 1 ? `${t / unitMs} ${unit}` : String(t / unitMs),
-  }));
 }
 
 /**

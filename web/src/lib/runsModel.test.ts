@@ -1,8 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
   ago,
-  timeAxis,
-  axisTicks,
   buildWaterfall,
   prStateView,
   formatClock,
@@ -28,7 +26,6 @@ import {
   triageRule,
   type CycleRow,
   type EventRow,
-  type Step,
   isReached,
   failedUnexpectedly,
 } from "./runsModel";
@@ -180,16 +177,14 @@ describe("buildWaterfall", () => {
     expect(w.steps[0]).toMatchObject({ stage: "triage", status: "running" });
   });
 
-  it("times a step from the end of the one before, on the run's axis", () => {
+  it("times a step from the end of the one before", () => {
     const c = cycle({ state: "waiting-human", leaseExpiresAt: null, updatedAt: new Date(T0 + 10_000) });
     const w = buildWaterfall(c, [ev("triage", "decision", 2000), ev("fix", "proposed", 8000), ev("verify", "passed", 10_000)], T0 + 99_000);
     const [triage, fix, verify] = w.steps;
-    expect(triage).toMatchObject({ durationMs: 2000, offset: 0 });
+    expect(triage).toMatchObject({ durationMs: 2000 });
     expect(fix).toMatchObject({ durationMs: 6000 });
-    expect(fix!.offset).toBeCloseTo(0.2);
-    expect(fix!.width).toBeCloseTo(0.6);
-    expect(verify!.offset! + verify!.width!).toBeCloseTo(1);
-    // A finished run's axis ends at its last update, not at "now".
+    expect(verify).toMatchObject({ durationMs: 2000 });
+    // A finished run's span ends at its last update, not at "now".
     expect(w.endMs).toBe(T0 + 10_000);
   });
 
@@ -210,7 +205,6 @@ describe("buildWaterfall", () => {
     const w = buildWaterfall(cycle({ state: "done", leaseExpiresAt: null }), [ev("fix", "proposed", 5000), ev("triage", "decision", -3000)], T0);
     for (const s of w.steps.filter((x) => x.status === "done")) {
       expect(s.durationMs!).toBeGreaterThanOrEqual(0);
-      expect(Number.isFinite(s.offset!)).toBe(true);
     }
   });
 });
@@ -274,7 +268,6 @@ describe("small helpers", () => {
       expect(triage).toMatchObject({ status: "done", outcome: "decision", summary: "fourth reason", durationMs: 14_000 });
       expect(w.startMs).toBe(T0 + 3 * HOUR);
       expect(w.endMs - w.startMs).toBe(14_200);
-      expect(triage.offset).toBe(0);
     });
 
     it("says how many rounds there were and what the latest reopening said, in the engine's words", () => {
@@ -667,74 +660,5 @@ describe("the run's summary, its error, and the list's strip", () => {
     expect(trackMarks(gap, T0)).toEqual(["done", "none", "none", "done", "none"]);
     const live = cycle({ stage: "triage", summary: { triage: { rule: "r" } } });
     expect(trackMarks(live, T0)).toEqual(["done", "running", "none", "none", "none"]);
-  });
-});
-
-
-describe("axisTicks", () => {
-  const linear = (start: number, end: number) => (ms: number) => (ms - start) / (end - start);
-
-  it("ticks a round step that fits at most four times, the unit on the last label only", () => {
-    const end = 40 * 60_000;
-    const ticks = axisTicks(0, end, linear(0, end));
-    expect(ticks.map((t) => t.label)).toEqual(["0", "10", "20", "30", "40 min"]);
-    expect(ticks.map((t) => t.at)).toEqual([0, 0.25, 0.5, 0.75, 1]);
-  });
-
-  it("uses seconds for a short run and hours for a long one", () => {
-    expect(axisTicks(0, 45_000, linear(0, 45_000)).map((t) => t.label)).toEqual(["0", "15", "30", "45 s"]);
-    expect(axisTicks(0, 7 * 3_600_000, linear(0, 7 * 3_600_000)).map((t) => t.label)).toEqual(["0", "2", "4", "6 h"]);
-  });
-
-  it("places the ticks by the axis it is given, and drops ones too close to read on a shortened axis", () => {
-    // A triage of 54 min then 6 min of the rest: the long step is squeezed into a quarter.
-    const steps: Step[] = [
-      { stage: "triage", title: "triage", status: "done", offset: 0, width: 0.9 },
-      { stage: "fix", title: "fix", status: "done", offset: 0.9, width: 0.1 },
-    ];
-    const end = 60 * 60_000;
-    const axis = timeAxis(steps, 0, end);
-    const ticks = axisTicks(0, end, axis.at);
-    expect(ticks[0]).toEqual({ at: 0, label: "0" });
-    for (let i = 1; i < ticks.length; i++) expect(ticks[i]!.at - ticks[i - 1]!.at).toBeGreaterThanOrEqual(0.15);
-    expect(ticks[ticks.length - 1]!.label).toMatch(/ min$/);
-  });
-
-  it("draws nothing for a run with no length", () => {
-    expect(axisTicks(5, 5, () => 0)).toEqual([]);
-  });
-});
-
-describe("timeAxis", () => {
-  const step = (stage: string, offset: number, width: number): Step => ({ stage, title: stage, status: "done", offset, width });
-
-  it("is linear when no step dwarfs the rest", () => {
-    const axis = timeAxis([step("triage", 0, 0.5), step("fix", 0.5, 0.5)], 0, 1000);
-    expect(axis.shortened).toBeUndefined();
-    expect(axis.at(250)).toBeCloseTo(0.25);
-    expect(axis.at(2000)).toBe(1);
-  });
-
-  it("draws one step of more than 60% across a quarter of the axis, and the rest across three quarters", () => {
-    // Triage 0..900 (90%), fix 900..1000.
-    const triage = step("triage", 0, 0.9);
-    const axis = timeAxis([triage, step("fix", 0.9, 0.1)], 0, 1000);
-    expect(axis.shortened).toBe(triage);
-    expect(axis.at(0)).toBe(0);
-    expect(axis.at(900)).toBeCloseTo(0.25);
-    expect(axis.at(950)).toBeCloseTo(0.625);
-    expect(axis.at(1000)).toBeCloseTo(1);
-  });
-
-  it("keeps the order of a long step in the middle", () => {
-    const axis = timeAxis([step("triage", 0, 0.05), step("fix", 0.05, 0.9), step("verify", 0.95, 0.05)], 0, 1000);
-    expect(axis.at(50)).toBeCloseTo(0.375);
-    expect(axis.at(950)).toBeCloseTo(0.625);
-    expect(axis.at(1000)).toBeCloseTo(1);
-  });
-
-  it("does not shorten a step that is all there is, nor an empty axis", () => {
-    expect(timeAxis([step("triage", 0, 0.95)], 0, 1000).shortened).toBeUndefined();
-    expect(timeAxis([], 5, 5).at(5)).toBe(0);
   });
 });
