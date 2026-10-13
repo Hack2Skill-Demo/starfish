@@ -12,6 +12,7 @@ import { Link, useLocation, useNavigate } from "react-router";
 import { signInWithEmailAndPassword } from "firebase/auth";
 import { Loader2, Eye, EyeOff, AlertCircle } from "lucide-react";
 import PageMeta from "../components/PageMeta";
+import { SourceLink } from "../components/SourceLink";
 import { Button } from "../components/ui/Button";
 import { firebaseAuth } from "../lib/firebase";
 import { StarfishLogo } from "../layout/StarfishLogo";
@@ -212,6 +213,9 @@ export function SignIn() {
                 <span className="mt-1 block text-xs">Read-only, no sign-in needed.</span>
               </div>
             )}
+          </div>
+          <div className="mt-4 text-center text-xs">
+            <SourceLink />
           </div>
         </div>
       </div>

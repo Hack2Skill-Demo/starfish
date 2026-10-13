@@ -90,6 +90,7 @@ export function testConfig(over: Partial<StarfishConfig> = {}): StarfishConfig {
     githubCommitEmail: "starfish@users.noreply.github.com",
     // Off in tests unless a test turns it on: the trimmed copies for guests (src/publicView.ts) live in shared collections.
     publicEnvironments: [],
+    demoUserEmails: [],
     publicIncidentCollection: "starfish_public_incidents",
     publicCycleCollection: "starfish_public_cycles",
     publicEventCollection: "starfish_public_events",

@@ -15,6 +15,7 @@
     "scoreboard": "tsx src/scoreboardCli.ts",
     "feedback-corpus": "tsx src/feedbackCorpusCli.ts",
     "seed-demo": "tsx src/seedDemoCli.ts",
+    "demo-users": "tsx src/demoUsersCli.ts",
     "public-view": "tsx src/publicViewCli.ts",
     "replay": "tsx src/replayCli.ts",
     "ingest": "tsx src/ingestCli.ts",

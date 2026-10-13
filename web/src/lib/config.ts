@@ -162,6 +162,11 @@ export interface WebConfig {
    * Lab). The Incidents page links to it. "" = no link: a private deployment, or the demo once the event is over.
    */
   demoAppUrl: string;
+  /**
+   * The public demo only: the project's source repository (https), shown as a GitHub mark in the guest bar and on the
+   * sign-in page. "" = no link.
+   */
+  sourceUrl: string;
 }
 
 /**
@@ -269,6 +274,7 @@ export function bootstrapWebConfig(
         appCheck: readAppCheckConfig(env),
         demoSignInHint: (env.VITE_STARFISH_DEMO_SIGNIN_HINT ?? "").trim().slice(0, 300),
         demoAppUrl: normalizeDemoAppUrl(env.VITE_STARFISH_DEMO_APP_URL),
+        sourceUrl: normalizeDemoAppUrl(env.VITE_STARFISH_SOURCE_URL),
       };
       return cached;
     },

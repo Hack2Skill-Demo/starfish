@@ -14,6 +14,7 @@
 #                         ingest now" and "Retire". Unset or empty: both are hidden
 #   VITE_STARFISH_STALE_MINUTES  how long after the last run the engine line says "stopped". Unset or empty: 90
 #   VITE_STARFISH_DEMO_APP_URL  the public demo only: the watched demo app's Lab (https), linked from the Incidents page
+#   VITE_STARFISH_SOURCE_URL  the public demo only: the source repository (https), a GitHub mark in the guest bar and on /signin
 #   VITE_STARFISH_DEMO_SIGNIN_HINT  the public demo only: where a visitor finds the sign-in details (never the
 #                         credentials: it ships in the bundle). Unset or empty: a generic line
 #   DRY_RUN=1             print the commands instead of running them

@@ -137,6 +137,12 @@ export interface StarfishConfig {
    * another label here also needs a matching change in firestore.rules.
    */
   publicEnvironments: string[];
+  /**
+   * The public demo's judge sign-in accounts (`pnpm demo-users`, src/demoUsers.ts): the emails it creates, each an
+   * `operator` (never admin), with a random password printed once. Only the demo environment may run it. Default three
+   * addresses on the reserved `.example` domain, which can receive no mail.
+   */
+  demoUserEmails: string[];
   /** The trimmed copies guests read (src/publicView.ts): incidents, cycles, and run events (one flat collection). */
   publicIncidentCollection: string;
   publicCycleCollection: string;
@@ -492,6 +498,7 @@ export const DEFAULT_MONITORING_SIGNALS: readonly MonitoringSignalDef[] = [
 
 /** Starfish's own service name: never ingested (see `excludedServices`). */
 export const DEFAULT_EXCLUDED_SERVICES = ["starfish"];
+export const DEFAULT_DEMO_USERS = ["judge1@demo.starfish.example", "judge2@demo.starfish.example", "judge3@demo.starfish.example"];
 
 /**
  * Never editable by a proposed patch, on top of whatever the deployment lists: secrets, CI, and the common files that
@@ -668,6 +675,7 @@ export function loadConfig(): StarfishConfig {
     excludedServices: parseList(process.env.STARFISH_EXCLUDED_SERVICES, ",") ?? DEFAULT_EXCLUDED_SERVICES,
     cycleCollection: process.env.STARFISH_CYCLE_COLLECTION || "starfish_cycles",
     publicEnvironments: validEnvironmentLabels(parseList(process.env.STARFISH_PUBLIC_ENVIRONMENTS, ",") ?? ["demo"]),
+    demoUserEmails: parseList(process.env.STARFISH_DEMO_USERS, ",") ?? DEFAULT_DEMO_USERS,
     publicIncidentCollection: textOr(process.env.STARFISH_PUBLIC_INCIDENT_COLLECTION, "starfish_public_incidents"),
     publicCycleCollection: textOr(process.env.STARFISH_PUBLIC_CYCLE_COLLECTION, "starfish_public_cycles"),
     publicEventCollection: textOr(process.env.STARFISH_PUBLIC_EVENT_COLLECTION, "starfish_public_events"),

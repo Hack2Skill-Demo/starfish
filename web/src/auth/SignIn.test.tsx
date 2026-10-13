@@ -9,7 +9,7 @@ import { hasChosenGuestView } from "../lib/demoGuide";
 
 const mocks = vi.hoisted(() => ({ environment: "demo" }));
 vi.mock("../lib/config", () => ({
-  webConfig: () => ({ environment: mocks.environment, demoSignInHint: "They are in our slides." }),
+  webConfig: () => ({ environment: mocks.environment, demoSignInHint: "They are in our slides.", sourceUrl: "" }),
 }));
 vi.mock("../lib/firebase", () => ({ firebaseAuth: () => ({}) }));
 
