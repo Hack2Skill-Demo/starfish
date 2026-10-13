@@ -87,6 +87,7 @@ describe("Runs page", () => {
     mocks.cyclesCb = mocks.cyclesErr = mocks.eventsCb = undefined;
     mocks.env = { environment: "demo", ready: true, settingsUnavailable: false };
     mocks.getIncident.mockResolvedValue(null);
+    localStorage.removeItem("starfish.runs.listHidden");
   });
 
   it("says the settings couldn't be read, so an empty list isn't taken for a quiet day (#143)", () => {
@@ -748,5 +749,24 @@ describe("Runs page", () => {
     expect(entries()[0]).toHaveTextContent("Triage");
     expect(entries()[1]).toHaveTextContent("Draft a fix");
     expect(screen.getByRole("button", { name: /Oldest first/ })).toBeInTheDocument();
+  });
+
+  it("hides the run list for a full-width run and shows it again, remembered in this browser", async () => {
+    const view = renderRuns();
+    act(() => mocks.cyclesCb!([cycle("inc-a_r0")], false));
+    expect(screen.getByRole("region", { name: "Runs" })).toBeVisible();
+    await userEvent.click(screen.getByRole("button", { name: "Hide run list" }));
+    expect(screen.queryByRole("region", { name: "Runs" })).toBeNull();
+    expect(screen.getByRole("region", { name: "Run detail" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Show run list" })).toHaveAttribute("aria-expanded", "false");
+    expect(localStorage.getItem("starfish.runs.listHidden")).toBe("1");
+
+    view.unmount();
+    renderRuns();
+    act(() => mocks.cyclesCb!([cycle("inc-a_r0")], false));
+    expect(screen.queryByRole("region", { name: "Runs" })).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: "Show run list" }));
+    expect(screen.getByRole("region", { name: "Runs" })).toBeVisible();
+    expect(localStorage.getItem("starfish.runs.listHidden")).toBe("0");
   });
 });

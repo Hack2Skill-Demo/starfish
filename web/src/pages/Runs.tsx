@@ -25,6 +25,8 @@ import {
   GitMerge,
   GitPullRequest,
   GitPullRequestClosed,
+  PanelLeftClose,
+  PanelLeftOpen,
   Phone,
   ScanSearch,
   ShieldCheck,
@@ -84,6 +86,17 @@ import {
 import { LEVELS, LEVEL_SHORT, judgedOnGitHub, stepDetail, type ReviewAttack, type StepDetail } from "../lib/runStepDetail";
 
 
+/** Whether the run list is hidden, so the selected run has the page's full width; kept per browser, like the sidebar's collapse. */
+const LIST_HIDDEN_KEY = "starfish.runs.listHidden";
+
+function readListHidden(): boolean {
+  try {
+    return localStorage.getItem(LIST_HIDDEN_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
 export default function Runs() {
   const { environment, ready, settingsUnavailable } = useEnvironment();
   const [params, setParams] = useSearchParams();
@@ -95,6 +108,18 @@ export default function Runs() {
   // snapshot answered, so the button can say it is loading. Another environment starts again from the first page.
   const [pageLimit, setPageLimit] = useState(CYCLE_LIMIT);
   const [shown, setShown] = useState(CYCLE_LIMIT);
+  const [listHidden, setListHidden] = useState(readListHidden);
+  const toggleList = () => {
+    setListHidden((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem(LIST_HIDDEN_KEY, next ? "1" : "0");
+      } catch {
+        // Private mode: the choice just won't persist.
+      }
+      return next;
+    });
+  };
   const [listEnv, setListEnv] = useState(environment);
   if (listEnv !== environment) {
     setListEnv(environment);
@@ -223,33 +248,48 @@ export default function Runs() {
                 `All runs · ${cycles.length}`
               )}
             </h2>
-            <span className="text-sm text-gray-600 dark:text-gray-400">
-              Newest first
-              {filter && (
-                <>
-                  {" · "}
-                  <Link to="/runs" className="font-medium text-brand-700 hover:underline dark:text-brand-400">
-                    Show all runs
-                  </Link>
-                </>
-              )}
-            </span>
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+              <span className="text-sm text-gray-600 dark:text-gray-400">
+                Newest first
+                {filter && (
+                  <>
+                    {" · "}
+                    <Link to="/runs" className="font-medium text-brand-700 hover:underline dark:text-brand-400">
+                      Show all runs
+                    </Link>
+                  </>
+                )}
+              </span>
+              <button
+                type="button"
+                onClick={toggleList}
+                aria-expanded={!listHidden}
+                aria-controls="run-list"
+                className="inline-flex min-h-11 items-center gap-2 rounded-lg border border-gray-200 px-3 text-sm font-medium text-gray-900 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-100 dark:hover:bg-gray-700"
+              >
+                {listHidden ? <PanelLeftOpen className="h-4 w-4" aria-hidden /> : <PanelLeftClose className="h-4 w-4" aria-hidden />}
+                {listHidden ? "Show run list" : "Hide run list"}
+              </button>
+            </div>
           </div>
           {visible && visible.length === 0 ? (
             <p className="text-sm text-gray-600 dark:text-gray-400">No recorded run matches this filter.</p>
           ) : (
-            <div className="grid grid-cols-[minmax(0,1fr)] gap-4 lg:grid-cols-[20rem_minmax(0,1fr)]">
-              <RunList
-                cycles={visible ?? []}
-                incidents={incidents}
-                capped={capped}
-                shown={shown}
-                loadingOlder={pageLimit > shown}
-                onShowOlder={pageLimit < CYCLE_LIMIT_MAX ? () => setPageLimit((n) => Math.min(n + CYCLE_LIMIT, CYCLE_LIMIT_MAX)) : undefined}
-                selectedId={selected?.id ?? null}
-                now={now}
-                onSelect={select}
-              />
+            <div className={`grid grid-cols-[minmax(0,1fr)] gap-4 ${listHidden ? "" : "lg:grid-cols-[20rem_minmax(0,1fr)]"}`}>
+              {/* Hidden, not unmounted: the toggle's aria-controls keeps its target, and showing it again is instant. */}
+              <div id="run-list" hidden={listHidden} className="min-w-0">
+                <RunList
+                  cycles={visible ?? []}
+                  incidents={incidents}
+                  capped={capped}
+                  shown={shown}
+                  loadingOlder={pageLimit > shown}
+                  onShowOlder={pageLimit < CYCLE_LIMIT_MAX ? () => setPageLimit((n) => Math.min(n + CYCLE_LIMIT, CYCLE_LIMIT_MAX)) : undefined}
+                  selectedId={selected?.id ?? null}
+                  now={now}
+                  onSelect={select}
+                />
+              </div>
               {selected ? (
                 <RunDetail key={selected.id} cycle={selected} incident={incidents.get(selected.incidentId)} environment={environment} now={now} />
               ) : (

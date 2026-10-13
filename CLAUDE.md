@@ -396,7 +396,8 @@ collection-group query over `events`, with its own rule and index; a guest's rea
 **Incidents** page (under each error, the incident's current run: its state, triage's reason and a link to it, `lib/useIncidentRuns.ts`; with `VITE_STARFISH_DEMO_APP_URL`, a link to the demo app's Lab, `components/DemoAppLink.tsx`), a **Runs** page (live subscription to `{cycleCollection}` and its newest 200 events, read newest first by `seq`; a run
 with more says older ones are not drawn, #326,
 `web/src/lib/runs.ts`; the waterfall logic is pure in `runsModel.ts`: a step with no event is "not
-reached", a cycle whose lease ran out is not "in progress"; a dark hero card opens the run (the error, its count, how far it got, the actions); the step log sits under the track,
+reached", a cycle whose lease ran out is not "in progress"; "Hide run list" gives the selected run the full width, kept per
+browser like the sidebar's collapse; a dark hero card opens the run (the error, its count, how far it got, the actions); the step log sits under the track,
 newest first (oldest first on request), with triage's
 suspected cause and the filed issue's link in their own entries, #279, and each step's recorded details (triage's level
 among the four, the fix's risk and rejected alternatives, the gate's checks, the review's attacks; `lib/runStepDetail.ts`,
