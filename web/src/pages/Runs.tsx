@@ -25,6 +25,8 @@ import {
   GitMerge,
   GitPullRequest,
   GitPullRequestClosed,
+  Maximize2,
+  Minimize2,
   Phone,
   ScanSearch,
   ShieldCheck,
@@ -84,6 +86,17 @@ import {
 import { LEVELS, LEVEL_SHORT, judgedOnGitHub, stepDetail, type ReviewAttack, type StepDetail } from "../lib/runStepDetail";
 
 
+/** Whether the selected run is shown full width, the run list hidden; kept per browser, like the sidebar's collapse. */
+const LIST_HIDDEN_KEY = "starfish.runs.listHidden";
+
+function readListHidden(): boolean {
+  try {
+    return localStorage.getItem(LIST_HIDDEN_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
 export default function Runs() {
   const { environment, ready, settingsUnavailable } = useEnvironment();
   const [params, setParams] = useSearchParams();
@@ -95,6 +108,18 @@ export default function Runs() {
   // snapshot answered, so the button can say it is loading. Another environment starts again from the first page.
   const [pageLimit, setPageLimit] = useState(CYCLE_LIMIT);
   const [shown, setShown] = useState(CYCLE_LIMIT);
+  const [listHidden, setListHidden] = useState(readListHidden);
+  const toggleList = () => {
+    setListHidden((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem(LIST_HIDDEN_KEY, next ? "1" : "0");
+      } catch {
+        // Private mode: the choice just won't persist.
+      }
+      return next;
+    });
+  };
   const [listEnv, setListEnv] = useState(environment);
   if (listEnv !== environment) {
     setListEnv(environment);
@@ -150,6 +175,8 @@ export default function Runs() {
     selectedId === null
       ? (visible?.[0] ?? null)
       : (cycles?.find((c) => c.id === selectedId) ?? (linkedAnswer && linkedAnswer !== "failed" ? linkedAnswer : null));
+  // Full width only while a run is shown: its hero holds the toggle that brings the list back.
+  const fullWidth = listHidden && selected !== null;
   const select = (id: string) => {
     const next = new URLSearchParams(params);
     next.set("run", id);
@@ -238,20 +265,30 @@ export default function Runs() {
           {visible && visible.length === 0 ? (
             <p className="text-sm text-gray-600 dark:text-gray-400">No recorded run matches this filter.</p>
           ) : (
-            <div className="grid grid-cols-[minmax(0,1fr)] gap-4 lg:grid-cols-[20rem_minmax(0,1fr)]">
-              <RunList
-                cycles={visible ?? []}
-                incidents={incidents}
-                capped={capped}
-                shown={shown}
-                loadingOlder={pageLimit > shown}
-                onShowOlder={pageLimit < CYCLE_LIMIT_MAX ? () => setPageLimit((n) => Math.min(n + CYCLE_LIMIT, CYCLE_LIMIT_MAX)) : undefined}
-                selectedId={selected?.id ?? null}
-                now={now}
-                onSelect={select}
-              />
+            <div className={`grid grid-cols-[minmax(0,1fr)] gap-4 ${fullWidth ? "" : "lg:grid-cols-[20rem_minmax(0,1fr)]"}`}>
+              {/* Hidden, not unmounted: the hero's toggle keeps its aria-controls target, and showing it again is instant. */}
+              <div id="run-list" hidden={fullWidth} className="min-w-0">
+                <RunList
+                  cycles={visible ?? []}
+                  incidents={incidents}
+                  capped={capped}
+                  shown={shown}
+                  loadingOlder={pageLimit > shown}
+                  onShowOlder={pageLimit < CYCLE_LIMIT_MAX ? () => setPageLimit((n) => Math.min(n + CYCLE_LIMIT, CYCLE_LIMIT_MAX)) : undefined}
+                  selectedId={selected?.id ?? null}
+                  now={now}
+                  onSelect={select}
+                />
+              </div>
               {selected ? (
-                <RunDetail key={selected.id} cycle={selected} incident={incidents.get(selected.incidentId)} environment={environment} now={now} />
+                <RunDetail
+                  key={selected.id}
+                  cycle={selected}
+                  incident={incidents.get(selected.incidentId)}
+                  environment={environment}
+                  now={now}
+                  fullWidth={{ on: fullWidth, toggle: toggleList }}
+                />
               ) : (
                 selectedId !== null && <LinkedRunMissing answer={linkedAnswer} />
               )}
@@ -413,7 +450,19 @@ function RunList({
   );
 }
 
-function RunDetail({ cycle, incident, environment, now }: { cycle: CycleRow; incident?: IncidentRow; environment: string; now: number }) {
+function RunDetail({
+  cycle,
+  incident,
+  environment,
+  now,
+  fullWidth,
+}: {
+  cycle: CycleRow;
+  incident?: IncidentRow;
+  environment: string;
+  now: number;
+  fullWidth: { on: boolean; toggle: () => void };
+}) {
   const [events, setEvents] = useState<EventRow[] | null>(null);
   // The run has more events than the page reads (#326): only its newest EVENT_LIMIT are drawn, and the page says so.
   const [eventsCapped, setEventsCapped] = useState(false);
@@ -493,6 +542,18 @@ function RunDetail({ cycle, incident, environment, now }: { cycle: CycleRow; inc
         summary={summary}
         water={water}
         now={now}
+        corner={
+          <button
+            type="button"
+            onClick={fullWidth.toggle}
+            aria-controls="run-list"
+            aria-label={fullWidth.on ? "Exit full width" : "Full width"}
+            title={fullWidth.on ? "Exit full width: show the run list" : "Full width: hide the run list"}
+            className="flex h-10 w-10 items-center justify-center rounded-lg text-gray-300 hover:bg-white/10 hover:text-white focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white"
+          >
+            {fullWidth.on ? <Minimize2 className="h-5 w-5" aria-hidden /> : <Maximize2 className="h-5 w-5" aria-hidden />}
+          </button>
+        }
         actions={
           <>
             {canRetry && <RetryRunButton incidentId={cycle.incidentId} />}
@@ -647,6 +708,7 @@ function RunHero({
   summary,
   water,
   now,
+  corner,
   actions,
 }: {
   cycle: CycleRow;
@@ -655,6 +717,8 @@ function RunHero({
   summary: string;
   water: Waterfall | null;
   now: number;
+  /** Sits in the card's top-right corner: the full-width toggle. */
+  corner: ReactNode;
   actions: ReactNode;
 }) {
   const headline = incident?.errorMessage ? splitTrace(incident.errorMessage).headline : undefined;
@@ -663,9 +727,10 @@ function RunHero({
   const all = water?.steps ?? [];
   const track = [...[...stepLogOrder(all)].reverse(), ...all.filter((s) => s.status === "not-reached")];
   return (
-    <div className="space-y-5 rounded-2xl bg-gray-900 p-5 text-white sm:p-7 dark:bg-gray-950 dark:ring-1 dark:ring-gray-700">
+    <div className="relative space-y-5 rounded-2xl bg-gray-900 p-5 text-white sm:p-7 dark:bg-gray-950 dark:ring-1 dark:ring-gray-700">
+      <div className="absolute right-3 top-3 sm:right-4 sm:top-4">{corner}</div>
       <div className="space-y-2">
-        <p className="text-sm text-gray-400">
+        <p className="pr-10 text-sm text-gray-400">
           Run for incident <span className="break-all font-mono">{cycle.incidentId}</span>
           {cycle.recurrence > 0 && <> · recurrence {cycle.recurrence}</>} · started {formatDateTime(cycle.createdAt)}
         </p>
