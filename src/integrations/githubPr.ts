@@ -49,8 +49,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { StarfishConfig } from "../config.js";
 import type { IndexEvidence, PullRequestRequest } from "../agent/loop.js";
+import { TRACE_ID_RE } from "../ingest/parseLogEntry.js";
 import { redactHead, redactPii, redactTail } from "../ingest/redact.js";
-import { incidentUrl, runUrl } from "./links.js";
+import { incidentUrl, runUrl, traceLogsUrl } from "./links.js";
 
 export type GithubPrConfig = Pick<
   StarfishConfig,
@@ -125,6 +126,11 @@ export interface IssueRequest {
   uiBaseUrl: string;
   /** Auto-merge is on for this repository (#9): the issue then says Starfish may merge the fix itself. */
   autoMerge?: boolean;
+  /**
+   * The newest occurrence's request: its Cloud Trace id, the project its logs are in and when it happened. The issue
+   * shows the id and links every line that request logged; an id or project that does not check out is left out.
+   */
+  trace?: { id: string; projectId?: string; lastOccurredAt?: string };
 }
 
 /** What the pull request and the issue say about merging: the truth for this repository (#9). */
@@ -471,6 +477,7 @@ export function issueText(req: IssueRequest): { title: string; body: string } {
       ? `- Independent log counter-check: ${req.counterCheck.capped ? "at least " : ""}${req.counterCheck.count} error entries for this function over ${inertLine(req.counterCheck.window, 20)}.`
       : "- Independent log counter-check: not available.",
     ...(req.suspectedCause ? [`- Suspected cause: ${inertLine(req.suspectedCause, 400)}`] : []),
+    ...(req.trace && TRACE_ID_RE.test(req.trace.id) ? [`- Trace: \`${req.trace.id}\``] : []),
     "",
     "## What Starfish will do",
     "",
@@ -482,10 +489,12 @@ export function issueText(req: IssueRequest): { title: string; body: string } {
   ];
   const incident = incidentUrl(req.uiBaseUrl, req.incidentId);
   const run = runUrl(req.uiBaseUrl, req.cycleId);
-  if (incident || run) {
+  const logs = req.trace ? traceLogsUrl(req.trace.projectId, req.trace.id, req.trace.lastOccurredAt) : null;
+  if (incident || run || logs) {
     lines.push("", "## Links", "");
     if (incident) lines.push(`- [The incident in Starfish](${incident})`);
     if (run) lines.push(`- [The run](${run})`);
+    if (logs) lines.push(`- [Everything the newest failing request logged, in Cloud Logging](${logs})`);
   }
   return { title, body: fitBody(lines, ["", `Run: \`${code(req.cycleId, 128)}\``, "", issueMarker(req.cycleId), ""]) };
 }

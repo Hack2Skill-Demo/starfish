@@ -437,6 +437,13 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
           reason,
           suspectedCause: suspectedCause ?? null,
           uiBaseUrl: cfg.uiBaseUrl,
+          ...(incident.traceId !== undefined && {
+            trace: {
+              id: incident.traceId,
+              ...(incident.sourceProjectId !== undefined && { projectId: incident.sourceProjectId }),
+              ...(incident.lastOccurredAt !== undefined && { lastOccurredAt: incident.lastOccurredAt }),
+            },
+          }),
           ...(path === "act" && mergeCase !== undefined && (await autoMergeOn(mergeCase)) && (await mergeHeldBy()) === null && { autoMerge: true }),
         });
       } catch (err) {
