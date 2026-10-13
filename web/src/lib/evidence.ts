@@ -253,6 +253,7 @@ export function buildEvidence(row: IncidentRow, cycle: CycleRow | null, nowMs = 
       ["files", "Files changed"],
       ["exitCode", "Exit code"],
       ["durationMs", "Duration (ms)"],
+      ["isolation", "Where it ran", true],
       ["baseRevision", "Tested against", true],
       ["patchSha256", "Patch SHA-256", true],
     ]),

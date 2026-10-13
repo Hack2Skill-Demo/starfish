@@ -208,7 +208,7 @@ const storedCycle = (over: Record<string, unknown> = {}): Record<string, unknown
   summary: {
     triage: { decision: "act", rule: "model-act", reason: "r", suspectedCause: "c", model: "gemini-3.1-pro-preview", counterCount: null, counterFilter: "severity>=ERROR" },
     fix: { outcome: "proposed", rule: "ok", rootCause: "missing await", testAdded: true, risk: "low", revisions: 1, alternative1: "retry" },
-    verify: { status: "passed", rule: "passed", patchSha256: "b".repeat(64), baseRevision: "c".repeat(40), files: 2, exitCode: 0, durationMs: 4200 },
+    verify: { status: "passed", rule: "passed", patchSha256: "b".repeat(64), baseRevision: "c".repeat(40), files: 2, exitCode: 0, durationMs: 4200, isolation: "github-actions" },
     review: { verdict: "approve", rule: "ok", attacks: 2, held: 2, flagged: 0, broken: 0, patchSha256: "b".repeat(64), attack1: "held: null input | fine" },
     issue: { state: "opened", number: 30, url: "https://github.com/o/r/issues/30" },
     pr: { opened: true, number: 42, url: "https://github.com/o/r/pull/42", patchSha256: "b".repeat(64) },
@@ -235,6 +235,7 @@ describe("toPublicCycle", () => {
     expect(summary.issue).toEqual({ state: "opened", number: 30, url: "https://github.com/o/r/issues/30" });
     expect(summary.triage).toEqual({ decision: "act", rule: "model-act", model: "gemini-3.1-pro-preview", counterCount: null });
     expect(summary.fix).toEqual({ outcome: "proposed", rule: "ok", testAdded: true, revisions: 1 });
+    expect(summary.verify).toMatchObject({ rule: "passed", isolation: "github-actions" });
     expect(summary.review).toEqual({ verdict: "approve", rule: "ok", attacks: 2, held: 2, flagged: 0, broken: 0, patchSha256: "b".repeat(64) });
     expect(summary.pr).toEqual({ opened: true, number: 42, url: "https://github.com/o/r/pull/42", patchSha256: "b".repeat(64) });
     expect(summary.prState).toMatchObject({ state: "merged", closedAt: null, checks: "passed" });

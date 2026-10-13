@@ -125,7 +125,7 @@ const cycles = [
       ["issue", "opened", "Issue #47 filed", 58.77, {}, { state: "opened", number: 47, url: "https://github.com/example/app/issues/47" }],
       ["alert", "sent", "The team was alerted", 58.8, {}, { state: "sent", attempts: 1 }],
       ["fix", "proposed", "giftNote is passed through as undefined when the cart has no note", 59.4, { rule: "proposed", testAdded: true }, { outcome: "proposed", rule: "proposed", rootCause: "giftNote is passed through as undefined when the cart has no note", testAdded: true, risk: "Readers of giftNote that do not expect null", revisions: 0, source: "stack-frame", alternative1: "Drop giftNote from the write when it is empty", alternative2: "Default giftNote to an empty string" }],
-      ["verify", "passed", "The required checks passed on the patched branch", 59.45, { files: 1 }, { status: "passed", rule: "passed", patchSha256: SEED_PATCH, files: 1, exitCode: 0 }],
+      ["verify", "passed", "The required checks passed on the patched branch", 59.45, { files: 1 }, { status: "passed", rule: "command-passed", patchSha256: SEED_PATCH, files: 1, exitCode: 0, isolation: "github-actions" }],
       ["review", "block", "3 attacks tried", 61.73, { attacks: 3, broken: 1 }, { verdict: "block", rule: "broken", attacks: 3, held: 2, flagged: 0, broken: 1, patchSha256: SEED_PATCH, attack1: "held: A cart with no note | The order is written with giftNote: null", attack2: "held: A note of only whitespace | Stored as written, as before", attack3: "broken: Readers of giftNote | The packing slip prints the word null" }],
       ["notify", "sent", "A person was told", 61.75, {}, { state: "sent", attempts: 1 }],
     ],

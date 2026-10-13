@@ -146,7 +146,7 @@ export interface IndexEvidence {
 
 export interface LoopDeps {
   db: Firestore;
-  config: Pick<StarfishConfig, "dryRun" | "reviewRequired" | "modelCallBudget" | "uiBaseUrl" | "model" | "incidentCollection" | "autoMergeExcludedPaths" | "mergeCases" | "classRules"> &
+  config: Pick<StarfishConfig, "dryRun" | "reviewRequired" | "modelCallBudget" | "uiBaseUrl" | "model" | "incidentCollection" | "autoMergeExcludedPaths" | "mergeCases" | "classRules" | "verifyIsolation"> &
     CycleConfig &
     VerifyConfig;
   /** This worker's identity, for the lease. */
@@ -805,6 +805,8 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
           files: verified.changedFiles.length,
           exitCode: verified.exitCode ?? null,
           durationMs: verified.durationMs,
+          // Where the verdict came from: with `github-actions` a `command-*` rule is the target's checks on GitHub.
+          isolation: cfg.verifyIsolation,
         },
       });
       if (verified.status !== "passed") {

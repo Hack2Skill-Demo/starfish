@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { numbered, parseAttack, recordIsTheStep, stepDetail } from "./runStepDetail";
+import { judgedOnGitHub, numbered, parseAttack, recordIsTheStep, stepDetail } from "./runStepDetail";
 import { parseCycle, type CycleRow, type EventRow, type Step } from "./runsModel";
 
 const ts = (ms: number) => ({ toDate: () => new Date(ms) });
@@ -79,6 +79,19 @@ describe("stepDetail", () => {
     expect(stepDetail(step("verify", T + 9000), c, events).verify).toEqual({ files: 1, exitCode: 0, rule: "passed", patchSha256: "ab" });
     const first = stepDetail(step("verify", T, { data: { output: "error: patch does not apply" } }), c, events);
     expect(first.verify).toEqual({ output: "error: patch does not apply" });
+  });
+
+  it("says GitHub judged the verify step only when the target's checks there ran on the pushed commit", () => {
+    const at = (verify: Record<string, unknown>) => stepDetail(step("verify", T), cycle({ verify }), [ev(1, "verify", T)]).verify;
+    expect(at({ rule: "command-passed", isolation: "github-actions" })).toMatchObject({ isolation: "github-actions" });
+    expect(judgedOnGitHub(at({ rule: "command-passed", isolation: "github-actions" }))).toBe(true);
+    expect(judgedOnGitHub(at({ rule: "command-failed", isolation: "github-actions" }))).toBe(true);
+    // Refused by the local checks before anything was pushed: GitHub never saw it.
+    expect(judgedOnGitHub(at({ rule: "patch-does-not-apply", isolation: "github-actions" }))).toBe(false);
+    expect(judgedOnGitHub(at({ rule: "command-passed", isolation: "cloud-run-job" }))).toBe(false);
+    // A record written before the isolation was kept says nothing either way.
+    expect(judgedOnGitHub(at({ rule: "command-passed" }))).toBe(false);
+    expect(judgedOnGitHub(undefined)).toBe(false);
   });
 
   it("reads the review's counts and attacks", () => {
