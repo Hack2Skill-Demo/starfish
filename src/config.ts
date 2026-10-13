@@ -38,6 +38,11 @@ export interface StarfishConfig {
   location: string;
   /** Gemini model used for triage, fix drafting and adversarial review. */
   model: string;
+  /**
+   * How long one model call may take before it is abandoned and the stage records a timeout (#334). Without it, Node's
+   * fetch gave up after its own 300 s and the stage said only "TypeError".
+   */
+  modelTimeoutSeconds: number;
   /** Label attached to every incident, so environments can never mix. */
   environment: string;
   /**
@@ -574,6 +579,7 @@ export function loadConfig(): StarfishConfig {
     // Set-but-blank is unset (#189): an empty environment label or collection name is never what was meant.
     location: textOr(process.env.STARFISH_VERTEX_LOCATION, textOr(process.env.GOOGLE_CLOUD_LOCATION, "us-central1")),
     model: textOr(process.env.STARFISH_MODEL, "gemini-3.1-pro-preview"),
+    modelTimeoutSeconds: positiveNumber(process.env.STARFISH_MODEL_TIMEOUT_SECONDS, 600, "STARFISH_MODEL_TIMEOUT_SECONDS"),
     environment: textOr(process.env.STARFISH_ENV, "dev"),
     settingsCollection: textOr(process.env.STARFISH_SETTINGS_COLLECTION, "starfish_settings"),
     incidentCollection: textOr(process.env.STARFISH_INCIDENT_COLLECTION, "incidents"),

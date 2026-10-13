@@ -52,6 +52,18 @@ describe("loadConfig: the projects", () => {
     expect(loadConfig().location).toBe("us-central1");
   });
 
+  it("gives each model call 600 s by default, past Node's 300 s fetch limit, and reads STARFISH_MODEL_TIMEOUT_SECONDS (#334)", () => {
+    vi.stubEnv("STARFISH_MODEL_TIMEOUT_SECONDS", "");
+    expect(loadConfig().modelTimeoutSeconds).toBe(600);
+    vi.stubEnv("STARFISH_MODEL_TIMEOUT_SECONDS", "900");
+    expect(loadConfig().modelTimeoutSeconds).toBe(900);
+  });
+
+  it.each(["0", "-5", "soon"])("refuses a model timeout of %s (#334)", (bad) => {
+    vi.stubEnv("STARFISH_MODEL_TIMEOUT_SECONDS", bad);
+    expect(() => loadConfig()).toThrow("STARFISH_MODEL_TIMEOUT_SECONDS");
+  });
+
   it("a blank region, model, environment or collection name means unset, not an empty string (#189)", () => {
     for (const k of [
       "GOOGLE_CLOUD_LOCATION",

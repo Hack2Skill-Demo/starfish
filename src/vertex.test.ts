@@ -24,10 +24,10 @@ vi.mock("@google/genai", () => ({
 // The store project and the Vertex project differ on purpose: the client must use the Vertex one.
 vi.mock("./config.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./config.js")>()),
-  loadConfig: () => ({ projectId: "store-project", vertexProjectId: "vertex-project", location: "l", model: "m" }),
+  loadConfig: () => ({ projectId: "store-project", vertexProjectId: "vertex-project", location: "l", model: "m", modelTimeoutSeconds: 600 }),
 }));
 
-const { askJson, createAskJson, UNTRUSTED_DATA_NOTICE } = await import("./vertex.js");
+const { askJson, createAskJson, modelCallFailure, modelFetch, UNTRUSTED_DATA_NOTICE } = await import("./vertex.js");
 
 /** A Firestore holding one settings document, enough for the loader's read. */
 function dbWithSettings(data: Record<string, unknown>): Firestore {
@@ -65,7 +65,7 @@ describe("askJson", () => {
   it("builds the Gemini client in the Vertex project, not the project the store lives in (#31)", async () => {
     responseText = "{}";
     await askJson("p", "s", {});
-    expect(requests).toEqual([{ client: { vertexai: true, project: "vertex-project", location: "l" }, model: "m" }]);
+    expect(requests).toEqual([{ client: expect.objectContaining({ vertexai: true, project: "vertex-project", location: "l" }), model: "m" }]);
   });
 });
 
@@ -81,7 +81,7 @@ describe("createAskJson", () => {
     await createAskJson(resolved.config)("p", "s", {});
 
     expect(requests).toEqual([
-      { client: { vertexai: true, project: "vertex-project", location: "europe-west4" }, model: "gemini-override" },
+      { client: expect.objectContaining({ vertexai: true, project: "vertex-project", location: "europe-west4" }), model: "gemini-override" },
     ]);
   });
 
@@ -93,7 +93,7 @@ describe("createAskJson", () => {
 
     await createAskJson(resolved.config)("p", "s", {});
 
-    expect(requests).toEqual([{ client: { vertexai: true, project: "elsewhere", location: "us-central1" }, model: "m" }]);
+    expect(requests).toEqual([{ client: expect.objectContaining({ vertexai: true, project: "elsewhere", location: "us-central1" }), model: "m" }]);
   });
 
   it("keeps a client per location, so a run on another region doesn't reuse the first client built", async () => {
@@ -108,5 +108,96 @@ describe("createAskJson", () => {
       ["asia-east1", "c"],
     ]);
     expect(clientOptions.filter((o) => (o as { project: string }).project === "vp")).toHaveLength(2);
+  });
+});
+
+describe("the model call's deadline (#334)", () => {
+  it("gives the client the configured deadline, and a fetch of its own so Node's 300 s limit does not cut it short", async () => {
+    responseText = "{}";
+    await createAskJson(testConfig({ vertexProjectId: "deadline", location: "l", model: "m", modelTimeoutSeconds: 900 }))("p", "s", {});
+
+    const options = clientOptions.find((o) => (o as { project: string }).project === "deadline") as {
+      httpOptions: { timeout: number; fetch: unknown };
+    };
+    expect(options.httpOptions.timeout).toBe(900_000);
+    expect(typeof options.httpOptions.fetch).toBe("function");
+  });
+
+  it("keeps a client per deadline, so a run with another deadline doesn't reuse the first client built", async () => {
+    responseText = "{}";
+    await createAskJson(testConfig({ vertexProjectId: "per-deadline", location: "l", model: "m", modelTimeoutSeconds: 60 }))("p", "s", {});
+    await createAskJson(testConfig({ vertexProjectId: "per-deadline", location: "l", model: "m", modelTimeoutSeconds: 120 }))("p", "s", {});
+
+    const timeouts = clientOptions
+      .filter((o) => (o as { project: string }).project === "per-deadline")
+      .map((o) => (o as { httpOptions: { timeout: number } }).httpOptions.timeout);
+    expect(timeouts).toEqual([60_000, 120_000]);
+  });
+});
+
+describe("modelFetch (#334)", () => {
+  async function slowServer(delayMs: number): Promise<{ url: string; close: () => void }> {
+    const { createServer } = await import("node:http");
+    const server = createServer((_req, res) => {
+      const t = setTimeout(() => res.end('{"ok":true}'), delayMs);
+      res.on("close", () => clearTimeout(t));
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const { port } = server.address() as { port: number };
+    return { url: `http://127.0.0.1:${port}/`, close: () => server.close() };
+  }
+
+  it("waits for a response that comes within the deadline", async () => {
+    const server = await slowServer(200);
+    try {
+      const res = await modelFetch(5_000)(server.url);
+      expect(await res.json()).toEqual({ ok: true });
+    } finally {
+      server.close();
+    }
+  });
+
+  it("honours the caller's abort signal, which is how the SDK's deadline ends a call", async () => {
+    const server = await slowServer(5_000);
+    try {
+      const err = await modelFetch(60_000)(server.url, { signal: AbortSignal.timeout(100) }).catch((e: unknown) => e as Error);
+      expect(err).toBeInstanceOf(Error);
+      expect(modelCallFailure(err)).toMatch(/^The model call timed out \(/);
+    } finally {
+      server.close();
+    }
+  });
+});
+
+describe("modelCallFailure (#334)", () => {
+  it("names fetch's timeout as a timeout, by the cause's name and code", () => {
+    const cause = Object.assign(new Error("Headers Timeout Error"), { name: "HeadersTimeoutError", code: "UND_ERR_HEADERS_TIMEOUT" });
+    expect(modelCallFailure(new TypeError("fetch failed", { cause }))).toBe(
+      "The model call timed out (TypeError; cause HeadersTimeoutError UND_ERR_HEADERS_TIMEOUT)."
+    );
+  });
+
+  it("names the SDK's own deadline as a timeout", () => {
+    expect(modelCallFailure(new DOMException("This operation was aborted", "AbortError"))).toBe("The model call timed out (AbortError).");
+  });
+
+  it("names any other failure by its name and its cause's, so a network failure is not read as a slow model", () => {
+    const cause = Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" });
+    expect(modelCallFailure(new TypeError("fetch failed", { cause }))).toBe("The model call failed (TypeError; cause Error ECONNREFUSED).");
+    expect(modelCallFailure(Object.assign(new Error("x"), { name: "ApiError" }))).toBe("The model call failed (ApiError).");
+  });
+
+  it("never quotes a message, and keeps only identifier-shaped names and codes", () => {
+    const err = Object.assign(new Error(`echoed ${SEEDED_SECRETS.github}`), {
+      name: `Bad ${SEEDED_SECRETS.github}`,
+      cause: { name: "x".repeat(200), code: `code ${SEEDED_SECRETS.github}` },
+    });
+    const reason = modelCallFailure(err);
+    expect(reason).not.toContain(SEEDED_SECRETS.github);
+    expect(reason).toBe("The model call failed (unknown error).");
+  });
+
+  it("says unknown for a thrown non-Error", () => {
+    expect(modelCallFailure("boom")).toBe("The model call failed (unknown error).");
   });
 });

@@ -11,6 +11,7 @@ export function testConfig(over: Partial<StarfishConfig> = {}): StarfishConfig {
     vertexProjectId: "p",
     location: "us-central1",
     model: "m",
+    modelTimeoutSeconds: 600,
     environment: "prod",
     settingsCollection: "starfish_settings",
     incidentCollection: "incidents",

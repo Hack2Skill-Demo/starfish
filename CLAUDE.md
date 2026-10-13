@@ -71,7 +71,7 @@ It writes each step's output to `.verify-logs/` and prints one line per step; on
 only the diagnostic lines. Don't run the raw commands to see a green result — the exit
 code is the result.
 
-Node 22+ (`.nvmrc`). CI runs Node 24.
+Node 22.19+ (`.nvmrc`; undici 8 needs it). CI runs Node 24.
 
 ## "Log the issue" — file only, do not implement
 
@@ -136,7 +136,9 @@ and changes to what the pitch claims.
 src/
   config.ts        every deployment-specific value, and the only process.env reader
   types.ts         Incident, StoredIncident, TriageVerdict, SpikeFixture
-  vertex.ts        Gemini on Vertex AI — structured JSON output, untrusted-data notice
+  vertex.ts        Gemini on Vertex AI — structured JSON output, untrusted-data notice; each call ends at
+                   `STARFISH_MODEL_TIMEOUT_SECONDS` (600) through its own fetch, past Node's 300 s limit, and a failed call is
+                   recorded by error and cause names/codes only, a timeout as one (`modelCallFailure`, #334)
   spike.ts         fix-quality spike over fixtures/incidents/*.json
   ingest/          Cloud Logging → classified, fingerprinted, deduped incidents
     parseLogEntry  parse + noise suppression + the shared log filter
