@@ -1,6 +1,6 @@
 /**
  * The admin API service (#63, #65): `node --import tsx src/adminApiCli.ts`, what the Cloud Run service
- * `starfish-admin` runs (scripts/deploy-gcp.sh, DEPLOY_ADMIN_API=1; written and dry-run tested, never run). The rules
+ * `starfish-admin` runs (scripts/deploy-gcp.sh, DEPLOY_ADMIN_API=1; deployed to the demo project 2026-10-07, "Run ingest now" run from the UI). The rules
  * are in src/adminApi.ts; this wires them to Firebase Auth, the store and the ingest, and, when Twilio's credentials
  * are mounted, to the phone escalation's opt-in routes and Twilio's webhooks (#37; never run against real Twilio).
  * When the deploy names the agent job (`STARFISH_AGENT_JOB`), also to "Run agent now" (#276): it starts that job

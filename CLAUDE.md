@@ -196,7 +196,7 @@ src/
                    written for the gate to refuse; #317). Run by `pnpm agent` (deployed: declined 2026-10-08, #259; 2026-10-12 proposed a
                    patch for demo-app and the verify gate refused it as not applying, twice, #317)
   agent/cycle.ts   cycle per (incident, recurrence), transactional lease with fencing, append-only run events
-                   (redacted), the cycle's run record (summary.<stage>, path) and its model-call and revision counts (#182); infrastructure errors throw, logical refusals are returned. Run by `pnpm agent` (deployed to the demo project, dry run)
+                   (redacted), the cycle's run record (summary.<stage>, path) and its model-call and revision counts (#182); infrastructure errors throw, logical refusals are returned. Run by `pnpm agent` (deployed to the demo project; dry run off since 2026-10-10)
   agent/loop.ts    one cycle: lease -> triage -> fix -> verify -> review -> PR (interface); rechecks status +
                    kill switch, one shared revision, call budget, dry run by default. Run by `pnpm agent`. Where
                    triage named a merge case auto-merge may apply to, it also runs the safety floor and the "fails
@@ -271,10 +271,10 @@ src/
   agentCli.ts      `pnpm agent`: one pass. Dry run by default; refuses to start until STARFISH_VERIFY_ISOLATION is set
                    (`in-process` is not a sandbox; `github-actions` = the target's own CI judges a pushed starfish/<cycle>
                    branch, the demo's choice; `cloud-run-job` hands the source + patch to a separate job whose service
-                   account holds NO roles). The agent never runs the target's code. Deployed by `DEPLOY_AGENT=1`; never run
+                   account holds NO roles). The agent never runs the target's code. Deployed by `DEPLOY_AGENT=1`; runs hourly on the demo project
   agent/verifyCi.ts  `github-actions` isolation: local gate checks (nothing executed) → push branch → wait for the NAMED check
                    runs on that exact commit (heartbeat each poll) → delete the branch IT pushed unless it passed (in a dry run, always).
-                   No check / only queued throws (cycle resumes)
+                   No check / only queued throws (cycle resumes). Run for real on demo-app 2026-10-12 (the run that opened demo-app #41)
   agent/verifyRemote.ts  the agent's side of the isolated verify: bundle → signed URLs → start the job → validated result.
                    Infra failures throw (the cycle resumes); a failed command is a result
   agent/verifyRunner.ts  the verify job's side (`src/verifyRunnerCli.ts`): fetch the bundle, run the gate, write the result.
@@ -292,9 +292,10 @@ src/
                    "pass in progress". Built, unit- and emulator-tested; not yet written by a deployed pass
   agent/automationSwitch.ts  the kill switch: reads the runtime settings fresh each time the loop asks; fails closed
   agent/reviewer.ts  stage 4: attacks the verified patch; verdict computed from outcomes in code, bound
-                   to the patch hash the gate tested. Run by `pnpm agent` (deployed; not yet reached on a real incident)
+                   to the patch hash the gate tested. Run by `pnpm agent` (reached on a real incident 2026-10-12: the run that opened demo-app #41)
   agent/verifyGate.ts  stage 3 (its output redacted before it is cut, `redactTail` in ingest/redact.ts, #18): apply a patch in a scratch copy, judge the tree that results, run the
-                   configured command with a scrubbed env. Not a sandbox; run by `pnpm agent` (deployed; not yet reached on a real incident)
+                   configured command with a scrubbed env. Not a sandbox; run by `pnpm agent` (its local checks judged real patches 2026-10-12, #317; with
+                   `github-actions` isolation the target's CI runs the command, verifyCi.ts)
   agent/trigger.ts  an admin's "Run agent now" (#276): the admin check, an audit entry BEFORE the start, then `agent/agentJob.ts`
                    starts the DEPLOYED agent job once (Cloud Run `jobs.run`, no override): the pass a tick runs, same switches,
                    caps and leases, under the agent's own account. Stubs + emulator tested, never run against real Cloud Run
@@ -330,15 +331,16 @@ src/
   integrations/slack.ts  Slack delivery (#17): one "needs a human" message through an incoming webhook, from redacted plain-text
                    fields; bounded retries, a failed delivery is a recorded result (`summary.notify`), a dry run sends nothing; the webhook
                    (a secret, `loadSlackOnCallWebhook`) never appears in a result. Also the optional #ops-alerts "new incident"
-                   message (`loadSlackAlertsWebhook`, `summary.alert`). Run by `pnpm agent`; never run against real Slack
+                   message (`loadSlackAlertsWebhook`, `summary.alert`). Run by `pnpm agent`; both messages posted to real Slack since 2026-10-11 (#330)
   integrations/githubPr.ts  the pull-request opener (#17): idempotent by cycle id, pushes only
                    starfish/<id>, does not merge itself, token only in git's environment. Also files the incident's issue
                    (`openIssue`: idempotent by a marker, label `starfish`, a failure recorded on the cycle; titles, PR, issue and
                    commit, are cut at a word with `…` within their budget, references broken first, `titleLine`, #327), and reads one of its PRs
                    back (`readPullRequest`: refuses one not from starfish/<cycle> in the repo, or not into the configured base). For #9 only: squash-merges
                    one of its PRs at an exact head (`mergePullRequest`), comments on it, and opens the revert of its own
-                   merge commit on starfish/revert-<cycle> (`openRevertPullRequest`). Never run against real
-                   GitHub; run by `pnpm agent` (deployed; in dry run it files and opens nothing)
+                   merge commit on starfish/revert-<cycle> (`openRevertPullRequest`). Filing issues and opening PRs have run
+                   against real GitHub since 2026-10-12 (demo-app #41, #42); reading a PR back is not yet confirmed there, and the merge,
+                   comment and revert have never run against real GitHub (#330). Run by `pnpm agent` (in dry run it files and opens nothing)
   oncall/escalation.ts  phone escalation (#37): an urgent cycle (triage notify/act, waiting for a person) whose Slack message
                    went unacknowledged for the policy's wait -> primary, primary again after 2 min, secondary, support lead.
                    One sequence per cycle, each call claimed in a transaction (claimer, per-person daily cap) before it is

@@ -52,11 +52,22 @@ beforeEach(() => {
 });
 
 describe("Settings", () => {
-  it("reports unbuilt integrations as not connected — never as working", () => {
+  it("before the agent reports, says GitHub and Slack are not connected yet, never working", () => {
     renderSettings();
     const planned = CONNECTIONS.filter((c) => c.state === "planned").map((c) => c.name);
     expect(planned).toEqual(expect.arrayContaining(["GitHub", "Slack"]));
     expect(screen.getAllByText("Not connected yet")).toHaveLength(planned.length);
+  });
+
+  it("says what has run against real GitHub and Slack, and what never has (#330)", () => {
+    const github = CONNECTIONS.find((c) => c.name === "GitHub")!;
+    expect(github.detail).toContain("have run against real GitHub since 2026-10-12");
+    expect(github.detail).toContain("Merging and fast-revert are built for the demo target only, off by default, and have never run against real GitHub");
+    expect(github.detail).not.toContain("not built");
+    const slack = CONNECTIONS.find((c) => c.name === "Slack")!;
+    expect(slack.detail).toContain("have been posted to real Slack since 2026-10-11");
+    expect(slack.detail).toContain("never run against real Twilio");
+    expect(slack.detail).not.toContain("never run against real Slack");
   });
 
   it("says the rules and feedback engines are built, and that they only hold Starfish back", () => {
