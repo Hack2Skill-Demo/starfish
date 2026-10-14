@@ -405,6 +405,24 @@ describe("runAutoMergeStep: merges only what every switch and gate allows", () =
     expect(states.find((m) => m.state === "skipped")).toMatchObject({ reason: "daily-merge-cap" });
   });
 
+  // #364: the loop records the candidate just before the cycle finishes, and a cycle can end otherwise. Its claim was
+  // refused (moveRecord wants done), read as the cap, and a person was told "Today's auto-merge cap is reached" every pass.
+  it.each(["running", "failed", "waiting-human"])("leaves a %s cycle's pending candidate alone: nothing told, merged or counted", async (state) => {
+    await seed("inc1_r0", proven(), { state });
+    const gh = fakeGithub();
+    const r = await runAutoMergeStep(mergeDeps(gh.client));
+    expect(r).toMatchObject({ considered: 0, merged: 0, skipped: 0, errors: [] });
+    expect(told).toEqual([]);
+    expect(gh.calls).toEqual([]);
+    expect((await cycle("inc1_r0")).summary.merge).toMatchObject({ state: "pending" });
+    const day = clock.toISOString().slice(0, 10);
+    expect((await db.collection(cfg.runCollection).doc(`automerge_demo_${day}`).get()).exists).toBe(false);
+    // Once it finishes, the same candidate is decided as usual.
+    await db.collection(cfg.cycleCollection).doc("inc1_r0").update({ state: "done" });
+    expect(await runAutoMergeStep(mergeDeps(gh.client))).toMatchObject({ considered: 1, merged: 1 });
+    expect(told).toEqual([]);
+  });
+
   it("re-checks the switches right before merging: an admin who just froze merging wins", async () => {
     blocked = [null, null, "merge-freeze"];
     await seed("inc1_r0");
@@ -653,5 +671,17 @@ describe("runFastRevertStep: reverts Starfish's own merge when the incident come
     const gh = fakeGithub();
     await runFastRevertStep(revertDeps(gh.client));
     expect(gh.calls).toEqual([]);
+  });
+
+  // #364: only a done cycle carries a watch (a merge moves only a done cycle's record, and done is final); anything
+  // else is not read at all, so it can never tell a person anything.
+  it("never reads a watch on a cycle that is not done", async () => {
+    await seed("inc1_r0", watching(), { state: "failed" });
+    await occurred(25);
+    clock = new Date(t0.getTime() + 30 * 60_000);
+    const gh = fakeGithub();
+    expect(await runFastRevertStep(revertDeps(gh.client))).toMatchObject({ considered: 0, opened: 0, escalated: 0 });
+    expect(gh.calls).toEqual([]);
+    expect(told).toEqual([]);
   });
 });
