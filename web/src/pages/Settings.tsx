@@ -117,7 +117,8 @@ export default function Settings() {
     queryFn: () => readIntegrations(firestore(), cfg.runCollection),
     retry: false,
   });
-  const report = reportFor(integrations.data, environment);
+  // A failed refetch keeps the last report in `data` (#195, #356): a read that failed shows none of it.
+  const report = reportFor(integrations.isError ? null : integrations.data, environment);
   const { guest, roles } = useAuth();
   return (
     <>

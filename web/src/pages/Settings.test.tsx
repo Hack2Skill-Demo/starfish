@@ -16,7 +16,11 @@ vi.mock("./OnCallEditor", () => ({ OnCallEditor: () => <div>on-call editor</div>
 
 import Settings, { CONNECTIONS } from "./Settings";
 
-function renderSettings(guest = false, role: "admin" | "operator" = "admin") {
+function renderSettings(
+  guest = false,
+  role: "admin" | "operator" = "admin",
+  client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+) {
   const ctx: StarfishAuthCtx = {
     user: { uid: "u1", isAnonymous: guest } as StarfishAuthCtx["user"],
     roles: guest ? [] : [role],
@@ -26,7 +30,6 @@ function renderSettings(guest = false, role: "admin" | "operator" = "admin") {
     guest,
     enterAsGuest: async () => false,
   };
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={client}>
       <Ctx.Provider value={ctx}>
@@ -137,6 +140,19 @@ describe("Settings", () => {
     await act(async () => {
       await new Promise((r) => setTimeout(r, 0));
     });
+    expect(screen.getAllByText("Not connected yet")).toHaveLength(2);
+  });
+
+  it("drops the last report once a later read of it fails, rather than keep saying a token is configured (#356)", async () => {
+    readIntegrations.mockResolvedValue(report({ github: true, slackAlerts: true }));
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    renderSettings(false, "admin", client);
+    expect(await screen.findByText("Token configured")).toBeInTheDocument();
+    readIntegrations.mockRejectedValue(new Error("unavailable"));
+    await act(() => client.refetchQueries({ queryKey: ["engine", "integrations"] }));
+    await waitFor(() => expect(screen.queryByText("Token configured")).toBeNull());
+    expect(screen.queryByText("Webhook configured")).toBeNull();
+    expect(screen.queryByText(/Reported by the agent/)).toBeNull();
     expect(screen.getAllByText("Not connected yet")).toHaveLength(2);
   });
 

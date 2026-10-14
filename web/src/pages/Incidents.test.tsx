@@ -383,6 +383,24 @@ describe("Incidents page", () => {
     renderPage();
     expect(await screen.findByRole("alert")).toHaveTextContent("Failed to load incidents");
   });
+
+  it("shows none of the last figures once a refetch fails (#356)", async () => {
+    mocks.listIncidents.mockResolvedValue({ rows, capped: true });
+    renderPage();
+    expect(await screen.findByText("Showing 2 incidents")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "New (1)" })).toBeInTheDocument();
+    expect(screen.getByText(/there may be more/)).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "orders" })).toBeInTheDocument();
+
+    mocks.listIncidents.mockRejectedValue(new Error("unavailable"));
+    await userEvent.click(screen.getByRole("button", { name: "Refresh" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Failed to load incidents");
+    expect(screen.queryByText(/Showing \d+ incident/)).toBeNull();
+    expect(screen.queryByRole("button", { name: /\(\d+\)/ })).toBeNull();
+    expect(screen.getByRole("button", { name: "New" })).toBeInTheDocument();
+    expect(screen.queryByText(/there may be more/)).toBeNull();
+    expect(screen.queryByRole("option", { name: "orders" })).toBeNull();
+  });
 });
 
 describe("filterRows", () => {
