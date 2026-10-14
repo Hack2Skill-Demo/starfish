@@ -109,6 +109,16 @@ describe("reconsiderTrigger", () => {
       expect(trigger(waiting({ updatedAt: at(5) }), asked)).toBeNull();
     });
 
+    it("compares the request with when the cycle settled, not its last write: an escalation event after the request does not lose it (#365)", () => {
+      const asked = { ...baseIncident, retriageRequestedAt: at(10) };
+      // Settled before the request; an escalation event appended after it moved updatedAt.
+      expect(trigger(waiting({ settledAt: at(20), updatedAt: at(5) }), asked)).toBe("operator");
+      // Settled after the request: answered already, whatever updatedAt says.
+      expect(trigger(waiting({ settledAt: at(5), updatedAt: at(20) }), asked)).toBeNull();
+      // A cycle settled before `settledAt` existed falls back to updatedAt (as before).
+      expect(trigger(waiting({ updatedAt: at(20) }), asked)).toBe("operator");
+    });
+
     it("is capped per day, never over a closed or retired incident, and never over its pull request", () => {
       const asked = { ...baseIncident, retriageRequestedAt: at(1) };
       const used = waiting({ reconsideredAt: [at(60), at(120), at(180)] });

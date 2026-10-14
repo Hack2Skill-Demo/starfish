@@ -8,7 +8,7 @@ import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { deleteApp, initializeApp } from "firebase-admin/app";
 import { getFirestore } from "firebase-admin/firestore";
 import type { Firestore } from "firebase-admin/firestore";
-import { acquireLease, countSpend, cycleId, finishCycle, recordEvent, recordPrState, releaseLease, renewLease, sanitizeEvent, type CycleConfig, type CycleKey, type PrStateRecord } from "./cycle.js";
+import { acquireLease, appendEventsInTransaction, countSpend, cycleId, finishCycle, recordEvent, recordPrState, releaseLease, renewLease, sanitizeEvent, type CycleConfig, type CycleKey, type PrStateRecord } from "./cycle.js";
 import { SEEDED_SECRETS } from "../ingest/testSecrets.js";
 import { causeClass } from "./reconsider.js";
 import { PUBLIC_VIEW_OFF } from "../testConfig.js";
@@ -581,6 +581,27 @@ describe("retrying a cycle that ended waiting-human, on a person's request (#317
     await setIncident({ retriageRequestedAt: mins(6) });
     expect(await acquireLease(db, cfg, key, "c", mins(7), { reconsider: policy() })).toMatchObject({ acquired: true, reconsidered: "operator" });
     expect((await cycle()).reconsiderCount).toBe(2);
+  });
+
+  // #365: the phone escalation (and Twilio's webhooks) append events to the waiting cycle, which moves its updatedAt. A
+  // retry asked before such an event was read as older than the cycle and lost.
+  it("still reopens on a request made before an escalation event landed on the waiting cycle (#365)", async () => {
+    await refusedFix();
+    expect((await cycle()).settledAt.toMillis()).toBe(at(1).getTime());
+    await setIncident({ retriageRequestedAt: mins(2) });
+    const ref = db.collection(cfg.cycleCollection).doc("inc1_r0");
+    const appended = await db.runTransaction(async (tx) => {
+      const d = (await tx.get(ref)).data();
+      return appendEventsInTransaction(tx, ref, d, mins(2.5), [{ stage: "escalation", type: "call-placed", summary: "Called the primary on-call" }], PUBLIC_VIEW_OFF);
+    });
+    expect(appended).toBe(true);
+    const settled = await cycle();
+    expect(settled.updatedAt.toMillis()).toBe(mins(2.5).getTime());
+    expect(settled.settledAt.toMillis()).toBe(at(1).getTime());
+    expect(await acquireLease(db, cfg, key, "b", mins(3), { reconsider: policy() })).toMatchObject({ acquired: true, reconsidered: "operator" });
+    // Still once only: the retried run settles after the request, so the same request does not start it again.
+    await finishCycle(db, cfg, "inc1_r0", "b", mins(4), "waiting-human", "verify-patch-does-not-apply", "human");
+    expect(await acquireLease(db, cfg, key, "c", mins(5), { reconsider: policy() })).toEqual({ acquired: false, reason: "waiting-human" });
   });
 
   it("never reopens over an ignored or resolved incident, or one whose pull request is open", async () => {

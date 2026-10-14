@@ -22,7 +22,8 @@
  * ignore always wins. The daily cycle cap (pass.ts) bounds the spend on top of this.
  *
  * A cycle that ended `waiting-human` is reopened ONLY on an operator's request: the same `retriageRequestedAt`, later
- * than the cycle's last write. It is for a result Starfish itself got wrong (a fix refused by its own gate for a reason
+ * than the cycle settled (`settledAt`, never its last write: the phone escalation and Twilio's webhooks append events to
+ * a waiting cycle, and a retry asked before one of those must still count, #365). It is for a result Starfish itself got wrong (a fix refused by its own gate for a reason
  * that has since been fixed in Starfish); the new consideration starts from triage again and, being the same cycle, it
  * files no second issue, sends no second alert or message, and opens no second pull request: those are recorded on the
  * cycle and are reused. Nothing else reopens it: a burst or a new cause is not a reason to redo what a person was told.
@@ -79,6 +80,15 @@ export function recentReconsiderations(cycle: Record<string, unknown>, now: Date
 }
 
 /**
+ * When the cycle last settled (millis): `settledAt`, which only the writes that end a run set (cycle.ts), or, for a cycle
+ * settled before that field existed, `updatedAt`. Not `updatedAt` first: events appended to a settled cycle (the phone
+ * escalation, Twilio's webhooks) move it without the cycle having run again (#365).
+ */
+export function settledAtMillis(cycle: Record<string, unknown>): number | undefined {
+  return ms(cycle.settledAt) ?? ms(cycle.updatedAt);
+}
+
+/**
  * A cycle the loop settled because the incident was closed under it (loop.ts `haltFor`: `incident-<status>`), not on a
  * triage decision. `incident-gone` is not one: an incident that could not be read was not closed by anyone.
  */
@@ -101,19 +111,20 @@ export function reconsiderTrigger(cycle: Record<string, unknown>, incident: Reco
   if (recentReconsiderations(cycle, now).length >= policy.reconsiderMaxPerDay) return null;
 
   // A person was told: only a person's request starts it over. Their request counts when it came after the cycle last
-  // settled, which is also what makes it once-only: reopening writes the cycle, so the same request is not later again.
+  // settled, which is also what makes it once-only: the reopened run settles again later, so the same request is not
+  // later again. Events appended since (an escalation's calls) move `updatedAt`, not the settle time.
   if (cycle.state === "waiting-human") {
     // A pull request opened for this recurrence is its one: starting over could not be told from a second one.
     const summary = (cycle.summary ?? undefined) as Record<string, unknown> | undefined;
     const pr = (summary?.pr ?? undefined) as Record<string, unknown> | undefined;
     if (pr?.opened === true) return null;
     const asked = ms(incident.retriageRequestedAt);
-    const settled = ms(cycle.updatedAt);
+    const settled = settledAtMillis(cycle);
     return asked !== undefined && settled !== undefined && asked > settled && asked <= now.getTime() ? "operator" : null;
   }
 
   const decision = (cycle.decision ?? undefined) as Record<string, unknown> | undefined;
-  const decidedAt = ms(decision?.at) ?? ms(cycle.updatedAt);
+  const decidedAt = ms(decision?.at) ?? settledAtMillis(cycle);
   if (decidedAt === undefined) return null;
 
   const requested = ms(incident.retriageRequestedAt);
