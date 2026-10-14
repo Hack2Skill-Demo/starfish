@@ -77,8 +77,13 @@ describe("HandoffCard", () => {
     unmount();
     renderWith(<HandoffCard path="human" incidentId="inc-a" incident={row("recurred")} canRetry={false} />, ["operator"]);
     expect(screen.queryByRole("button", { name: "Acknowledge" })).toBeNull();
-    expect(screen.getByText(/Only a new incident can be acknowledged; this one is recurred/)).toBeInTheDocument();
+    expect(screen.getByText(/Only a new or logged incident can be acknowledged; this one is recurred/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Mark resolved" })).toBeInTheDocument();
+  });
+
+  it("offers Acknowledge on a logged incident (the agent filed its issue; nobody has taken it yet)", () => {
+    renderWith(<HandoffCard path="human" incidentId="inc-a" incident={row("logged")} canRetry={false} />, ["operator"]);
+    expect(screen.getByRole("button", { name: "Acknowledge" })).toBeInTheDocument();
   });
 
   // #360: the steps are the role's; a guest can take none of them (no button, and firestore.rules refuses the writes).

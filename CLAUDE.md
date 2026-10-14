@@ -259,7 +259,8 @@ src/
                    merged is final; never marks an incident healed; copies the state to the incident's `githubPrState`).
                    Fake GitHub + emulator tested, never run against real GitHub
   agent/incidentLinks.ts  copies the issue and PR (number, URL, state) from the cycle onto the incident for the UI's links (#194):
-                   only those fields, only while the incident is in the cycle's recurrence; never its status
+                   only those fields, only while the incident is in the cycle's recurrence; a `new` incident becomes `logged`
+                   in the same write (any other status kept; never `resolved`), which an operator can still acknowledge
   agent/reconsider.ts  when a DECLINED cycle is triaged again (#8): an operator's `retriageRequestedAt`, a burst, or a new
                    structural cause since the recorded decision, or an incident closed mid-cycle and reopened (#227);
                    cooldown + cap per 24 h; never over ignored/resolved.

@@ -175,6 +175,8 @@ describe("nextStatus — the transitions operators may make", () => {
     ["new", "acknowledge", "acknowledged"],
     ["acknowledged", "acknowledge", null],
     ["logged", "resolve", "resolved"],
+    ["logged", "acknowledge", "acknowledged"],
+    ["logged", "reopen", null],
     ["new", "ignore", "ignored"],
     ["resolved", "reopen", null],
     ["ignored", "reopen", "new"],

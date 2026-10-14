@@ -8,7 +8,7 @@
  *
  *   /twilio/voice   the call was answered: a person hears the recording and the menu; voicemail hears a short fixed
  *                   message with no incident detail
- *   /twilio/gather  the key pressed: 1 takes it (the sequence ends; a `new` incident becomes `acknowledged`, attributed
+ *   /twilio/gather  the key pressed: 1 takes it (the sequence ends; a `new` or `logged` incident becomes `acknowledged`, attributed
  *                   to `oncall:<person id>`), 2 texts the link to the incident (the link only, and only to the number
  *                   the call was placed to while it is still confirmed), 3 passes it to the next person, nothing or a
  *                   wrong key twice moves on
@@ -154,9 +154,9 @@ export function createTwilioWebhooks(deps: TwilioWebhookDeps): (req: TwilioWebho
         const incident = c.incident.data();
         const personId = typeof c.call.personId === "string" ? c.call.personId : "unknown";
         tx.update(c.ref, { ...closeUpdate("acknowledged", now), ackBy: { personId, role: c.call.role ?? null, step }, ackAt: Timestamp.fromDate(now) });
-        // Acknowledged "as that person": a `new` incident becomes `acknowledged`, the operator transition the UI makes.
-        // Any other open status (logged, recurred) is left as it is: the UI could not make that move either.
-        if (c.incident.exists && incident?.status === "new" && incident.retired !== true) {
+        // Acknowledged "as that person": a `new` or `logged` incident becomes `acknowledged`, the operator transition the
+        // UI makes. A `recurred` one is left as it is: the UI could not make that move either.
+        if (c.incident.exists && (incident?.status === "new" || incident?.status === "logged") && incident.retired !== true) {
           tx.update(c.incident.ref, { status: "acknowledged", statusChangedBy: `oncall:${personId}`, updatedAt: Timestamp.fromDate(now) });
         }
         note([{ stage: "escalation", type: "acknowledged", summary: `The ${roleName(c.call.role)} pressed 1 and took it`, data: { step }, record: { state: "acknowledged", step } }]);

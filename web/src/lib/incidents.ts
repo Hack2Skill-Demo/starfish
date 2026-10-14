@@ -267,7 +267,8 @@ export function nextStatus(current: IncidentStatus, action: IncidentAction): Inc
   const open = current === "new" || current === "acknowledged" || current === "logged" || current === "recurred";
   switch (action) {
     case "acknowledge":
-      return current === "new" ? "acknowledged" : null;
+      // A logged incident (the agent filed its issue) is still nobody's until a person takes it.
+      return current === "new" || current === "logged" ? "acknowledged" : null;
     case "resolve":
       return open ? "resolved" : null;
     case "ignore":
