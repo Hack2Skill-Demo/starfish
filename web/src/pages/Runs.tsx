@@ -562,7 +562,7 @@ function RunDetail({
         }
         actions={
           <>
-            {canRetry && !showHandoff && <RetryRunButton incidentId={cycle.incidentId} />}
+            {canRetry && !showHandoff && <RetryRunButton incidentId={cycle.incidentId} size="md" />}
             {canReplay && (
               <button
                 type="button"

@@ -47,7 +47,6 @@ export function RunIngestButton({ api = appAdminApi, onDone }: { api?: () => Adm
     const d = describeRun(r.value);
     (d.ok ? toast.success : toast.error)(d.text);
     await queryClient.invalidateQueries({ queryKey: ["incidents"] });
-    await queryClient.invalidateQueries({ queryKey: ["engine"] });
     onDone?.();
   };
 
@@ -66,7 +65,6 @@ export function RunIngestButton({ api = appAdminApi, onDone }: { api?: () => Adm
 export function RunAgentButton({ api = appAdminApi }: { api?: () => AdminApiDeps }) {
   const show = useAdminControls();
   const [busy, setBusy] = useState(false);
-  const queryClient = useQueryClient();
   if (!show) return null;
 
   const click = async () => {
@@ -79,7 +77,6 @@ export function RunAgentButton({ api = appAdminApi }: { api?: () => AdminApiDeps
     }
     toast.success("Agent pass started. It runs in its own job and takes a few minutes; its runs appear here as it records them.");
     markAgentStartRequested();
-    await queryClient.invalidateQueries({ queryKey: ["engine", "agentPass"] });
   };
 
   return (

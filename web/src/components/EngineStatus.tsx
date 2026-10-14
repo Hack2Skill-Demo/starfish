@@ -2,16 +2,17 @@
  * One line on the Incidents and Overview pages saying whether the ingest is running: when it last ran and how
  * it went. A list that looks quiet is only good news if the engine is actually reading the logs, so
  * "no incidents" and "the engine stopped" must never look the same (issue #6). The agent pass has its own line
- * (AgentStatus, #274).
+ * (AgentStatus, #274). The record is read live, so a run's result shows the moment the ingest writes it.
  */
-import { useQuery } from "@tanstack/react-query";
 import { Activity } from "lucide-react";
 import { Badge, type BadgeTone } from "./ui/Badge";
 import { StatusCard } from "./StatusCard";
 import { firestore } from "../lib/firebase";
 import { webConfig } from "../lib/config";
 import { formatRelativeTime } from "../lib/formatters";
-import { behindAfterMinutes, judgeRun, nextRunAt, readLastRun, type EngineState, type LastRun } from "../lib/engineStatus";
+import { useNow } from "../lib/useNow";
+import { useLiveRecord } from "../lib/useLiveRecord";
+import { behindAfterMinutes, judgeRun, nextRunAt, subscribeLastRun, type EngineState, type LastRun } from "../lib/engineStatus";
 
 // The ingest runs as a scheduled job and records only a finished run, so a healthy one is waiting for its next run, not
 // running (the same wording as the agent's line, AgentStatus).
@@ -35,22 +36,20 @@ function behindText(run: LastRun, staleMinutes: number, behindMinutes: number | 
  * through its interval when it recorded one. Both say only what the last_run record says.
  */
 export function EngineStatus({ environment, variant = "line" }: { environment: string; variant?: "line" | "card" }) {
-  const query = useQuery({
-    queryKey: ["engine", "lastRun"],
-    queryFn: () => readLastRun(firestore(), webConfig().runCollection),
-    refetchInterval: 60_000,
-    retry: false,
-  });
+  const runCollection = webConfig().runCollection;
+  const record = useLiveRecord<LastRun | null>(runCollection, (onData, onError) => subscribeLastRun(firestore(), runCollection, onData, onError));
+  // A run that stops writes nothing, so the clock, not a new write, turns it "not running".
+  const nowMs = useNow();
 
   // A record that can't be read says nothing either way, so say nothing rather than guess.
-  if (query.isPending || query.isError) {
-    return query.isError ? (
+  if (record.status !== "ok") {
+    return record.status === "error" ? (
       <p className="text-xs text-gray-600 dark:text-gray-400">Ingest status unavailable.</p>
     ) : null;
   }
 
   const { engineStaleMinutes, engineBehindMinutes } = webConfig();
-  const { state, run } = judgeRun(query.data, environment, Date.now(), engineStaleMinutes, engineBehindMinutes);
+  const { state, run } = judgeRun(record.data, environment, nowMs, engineStaleMinutes, engineBehindMinutes);
   const badge = BADGE[state];
   const t = run?.totals;
   // Only while the engine looks alive: a stopped or failed engine has no "next run" worth promising.

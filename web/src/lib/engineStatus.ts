@@ -3,11 +3,14 @@
  * written by src/ingest/run.ts) and the agent pass's (`{runCollection}/agent_last_run`, src/agent/lastRun.ts, #274).
  * Both are judged by the same rules (`judgeRun`), so "running", "not running" and "failed" mean the same on each line.
  *
+ * Both are read live (a snapshot listener on the one document), so a run's start and its result show the moment the
+ * engine writes them, with no polling.
+ *
  * Only firebase/firestore and pure engine modules are imported, so the reader can be exercised without the web config.
  * The records hold counts and labels, never log text, because guests may read them (directly: they are not trimmed
  * copies, so dataSource.ts plays no part).
  */
-import { doc, getDoc, type Firestore } from "firebase/firestore";
+import { doc, onSnapshot, type DocumentData, type Firestore, type Unsubscribe } from "firebase/firestore";
 import { SETTINGS_UNUSABLE } from "../../../src/settingsSchema";
 import { behindAfterMinutes, isBehind, parseLagSeconds } from "../../../src/ingestLag";
 import { AGENT_LAST_RUN_DOC, parseAgentPassInProgress, parseAgentRunRecord, type AgentPassInProgress, type AgentRunRecord } from "../../../src/agentRunRecord";
@@ -39,10 +42,8 @@ export interface LastRun {
 const num = (v: unknown): number => (typeof v === "number" && Number.isFinite(v) ? v : 0);
 
 /** The last run, or null when none has been recorded (or the record is unusable). */
-export async function readLastRun(db: Firestore, runCollection: string): Promise<LastRun | null> {
-  const snap = await getDoc(doc(db, runCollection, LAST_RUN_DOC));
-  if (!snap.exists()) return null;
-  const d = snap.data();
+export function parseLastRun(d: DocumentData | undefined): LastRun | null {
+  if (!d) return null;
   const finished = (d.finishedAt as { toDate?: () => Date } | undefined)?.toDate?.();
   const started = (d.startedAt as { toDate?: () => Date } | undefined)?.toDate?.();
   const outcome = d.outcome;
@@ -69,6 +70,16 @@ export async function readLastRun(db: Firestore, runCollection: string): Promise
   };
 }
 
+/** `{runCollection}/last_run`, live: `onData` with each version of the record (null when there is none). */
+export function subscribeLastRun(
+  db: Firestore,
+  runCollection: string,
+  onData: (run: LastRun | null) => void,
+  onError: (err: Error) => void
+): Unsubscribe {
+  return onSnapshot(doc(db, runCollection, LAST_RUN_DOC), (snap) => onData(parseLastRun(snap.exists() ? snap.data() : undefined)), onError);
+}
+
 /** What the agent's record says (#274): its last finished pass, and a pass that has started and not yet ended. */
 export interface AgentPass {
   /** Null when no pass has been recorded (or the record is unusable). */
@@ -77,11 +88,21 @@ export interface AgentPass {
   inProgress: AgentPassInProgress | null;
 }
 
-/** The agent's record, one read for both halves. */
-export async function readAgentPass(db: Firestore, runCollection: string): Promise<AgentPass> {
-  const snap = await getDoc(doc(db, runCollection, AGENT_LAST_RUN_DOC));
-  const data = snap.exists() ? snap.data() : undefined;
-  return { run: parseAgentRunRecord(data), inProgress: parseAgentPassInProgress(data) };
+/** The agent's record, live, both halves from each version of it: a pass's start mark and its result show as they are written. */
+export function subscribeAgentPass(
+  db: Firestore,
+  runCollection: string,
+  onData: (pass: AgentPass) => void,
+  onError: (err: Error) => void
+): Unsubscribe {
+  return onSnapshot(
+    doc(db, runCollection, AGENT_LAST_RUN_DOC),
+    (snap) => {
+      const data = snap.exists() ? snap.data() : undefined;
+      onData({ run: parseAgentRunRecord(data), inProgress: parseAgentPassInProgress(data) });
+    },
+    onError
+  );
 }
 
 /**
