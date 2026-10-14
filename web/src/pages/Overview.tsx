@@ -41,6 +41,7 @@ import {
   type Ratio,
 } from "../lib/overviewModel";
 import { useEnvironment } from "../lib/useSettings";
+import { useRetryingSubscription } from "../lib/useLiveRecord";
 
 const WINDOW_HOURS = 24;
 const TICK_MS = 15_000;
@@ -59,10 +60,12 @@ export default function Overview() {
     return () => clearInterval(t);
   }, []);
 
-  useEffect(() => {
-    if (!ready) return;
-    setCycles(null);
-    setCyclesFailed(false);
+  // A listener that fails is started again after a while (#357); until a new snapshot arrives, the part says it failed.
+  useRetryingSubscription(ready ? environment : null, (onError, retrying) => {
+    if (!retrying) {
+      setCycles(null);
+      setCyclesFailed(false);
+    }
     return subscribeCycles(
       environment,
       (rows, isCapped) => {
@@ -70,23 +73,30 @@ export default function Overview() {
         setCapped(isCapped);
         setCyclesFailed(false);
       },
-      () => setCyclesFailed(true)
+      () => {
+        setCyclesFailed(true);
+        onError();
+      }
     );
-  }, [environment, ready]);
+  });
 
-  useEffect(() => {
-    if (!ready) return;
-    setActivity(null);
-    setActivityFailed(false);
+  useRetryingSubscription(ready ? environment : null, (onError, retrying) => {
+    if (!retrying) {
+      setActivity(null);
+      setActivityFailed(false);
+    }
     return subscribeLatestEvents(
       environment,
       (rows) => {
         setActivity(rows);
         setActivityFailed(false);
       },
-      () => setActivityFailed(true)
+      () => {
+        setActivityFailed(true);
+        onError();
+      }
     );
-  }, [environment, ready]);
+  });
 
   const incidents = useQuery({
     queryKey: ["overview", "incidents", environment],

@@ -50,6 +50,7 @@ import { SyntheticBadge } from "../components/SyntheticBadge";
 import { EmptyState } from "../components/ui/EmptyState";
 import { formatDateTime, formatRelativeTime } from "../lib/formatters";
 import { useEnvironment } from "../lib/useSettings";
+import { useRetryingSubscription } from "../lib/useLiveRecord";
 import { TICK_MS, useNow } from "../lib/useNow";
 import { getIncident, type IncidentRow } from "../lib/incidents";
 import { CYCLE_LIMIT, CYCLE_LIMIT_MAX, EVENT_LIMIT, readCycle, subscribeCycles, subscribeEvents } from "../lib/runs";
@@ -129,10 +130,10 @@ export default function Runs() {
     setCycles(null);
   }
 
-  useEffect(() => {
-    if (!ready) return;
-    setFailed(false);
-    // A bigger page re-subscribes; the rows already shown stay until the new snapshot replaces them.
+  // A bigger page re-subscribes; the rows already shown stay until the new snapshot replaces them. A listener that fails
+  // is started again after a while (#357), and the list says it failed until a new snapshot arrives.
+  useRetryingSubscription(ready ? JSON.stringify([environment, pageLimit]) : null, (onError, retrying) => {
+    if (!retrying) setFailed(false);
     return subscribeCycles(
       environment,
       (rows, isCapped) => {
@@ -141,10 +142,13 @@ export default function Runs() {
         setShown(pageLimit);
         setFailed(false);
       },
-      () => setFailed(true),
+      () => {
+        setFailed(true);
+        onError();
+      },
       pageLimit
     );
-  }, [environment, ready, pageLimit]);
+  });
 
   // `?path=`, `?state=` or `?heal=` narrows the list (the Overview links here). An unknown value filters nothing.
   const filter = runFilter(params);
@@ -469,20 +473,27 @@ function RunDetail({
   const [eventsCapped, setEventsCapped] = useState(false);
   const [failed, setFailed] = useState(false);
 
-  useEffect(() => {
-    setEvents(null);
-    setEventsCapped(false);
-    setFailed(false);
+  // Started again after a while when it fails (#357); the timeline says it failed until a new snapshot arrives.
+  useRetryingSubscription(JSON.stringify([cycle.id, environment]), (onError, retrying) => {
+    if (!retrying) {
+      setEvents(null);
+      setEventsCapped(false);
+      setFailed(false);
+    }
     return subscribeEvents(
       cycle.id,
       environment,
       (rows, capped) => {
         setEvents(rows);
         setEventsCapped(capped);
+        setFailed(false);
       },
-      () => setFailed(true)
+      () => {
+        setFailed(true);
+        onError();
+      }
     );
-  }, [cycle.id, environment]);
+  });
 
   const status = runStatus(cycle, now);
   // A replay plays the events the engine recorded back at their recorded pace (faster for a long run), as if a worker

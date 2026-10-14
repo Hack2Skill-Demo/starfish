@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { IncidentRow } from "../lib/incidents";
 import { parseCycle, type CycleRow } from "../lib/runsModel";
 import { parseActivity, type ActivityRow } from "../lib/overviewModel";
+import { LIVE_RETRY_MS } from "../lib/useLiveRecord";
 
 const mocks = vi.hoisted(() => ({
   env: { environment: "demo", ready: true, settingsUnavailable: false },
@@ -219,6 +220,39 @@ describe("Overview page", () => {
     expect(screen.getByTestId("kpi-Pull requests opened")).toHaveTextContent("–");
     expect(within(screen.getByRole("region", { name: "Latest runs" })).getByText("Couldn't read the runs.")).toBeInTheDocument();
     expect(within(screen.getByRole("region", { name: "What the agent did" })).getByText("Couldn't read the runs.")).toBeInTheDocument();
+  });
+
+  it("listens again a while after a listener fails, and says it failed until a new snapshot arrives (#357)", () => {
+    vi.useFakeTimers();
+    try {
+      renderPage();
+      act(() => mocks.cyclesCb!([cycle("a", { state: "waiting-human", path: "pr" })], false));
+      act(() => mocks.eventsCb!([]));
+      const [firstCycles, firstEvents] = [mocks.cyclesCb, mocks.eventsCb];
+      act(() => mocks.cyclesErr!(new Error("unavailable")));
+      act(() => mocks.eventsErr!(new Error("unavailable")));
+      const feed = screen.getByRole("region", { name: "Latest activity" });
+      expect(screen.getByTestId("headline")).toHaveTextContent("The agent's runs couldn't be read.");
+      expect(within(feed).getByRole("alert")).toHaveTextContent("Couldn't read the run events.");
+
+      act(() => vi.advanceTimersByTime(LIVE_RETRY_MS - 1));
+      expect(mocks.cyclesCb).toBe(firstCycles);
+      expect(mocks.eventsCb).toBe(firstEvents);
+      act(() => vi.advanceTimersByTime(1));
+      expect(mocks.cyclesCb).not.toBe(firstCycles);
+      expect(mocks.eventsCb).not.toBe(firstEvents);
+      expect(mocks.unsub).toHaveBeenCalledTimes(2);
+      // Started again, but nothing new read yet: still the failure, never the old rows (#195) nor "Loading…".
+      expect(screen.getByTestId("headline")).toHaveTextContent("The agent's runs couldn't be read.");
+      expect(within(feed).getByRole("alert")).toHaveTextContent("Couldn't read the run events.");
+
+      act(() => mocks.cyclesCb!([cycle("a", { state: "waiting-human", path: "pr" })], false));
+      act(() => mocks.eventsCb!([]));
+      expect(screen.getByTestId("headline")).toHaveTextContent("One run is waiting on a human.");
+      expect(within(feed).getByText("No run events are recorded for this environment.")).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("says when run counts cover only the most recent runs", () => {

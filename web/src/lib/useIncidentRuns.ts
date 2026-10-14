@@ -9,6 +9,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { readCycle, subscribeCycles } from "./runs";
 import { incidentRunView, runIdFor, type IncidentRunView } from "./incidentRun";
 import { useNow } from "./useNow";
+import { useRetryingSubscription } from "./useLiveRecord";
 import type { CycleRow } from "./runsModel";
 
 /** Runs read by id in one batch at most; batches follow until every listed incident is covered. */
@@ -35,15 +36,18 @@ export function useIncidentRuns(
   const snapshot = useRef(0);
   const listedAt = useRef(new Map<string, number>());
 
-  useEffect(() => {
-    if (!ready) return;
-    setCycles(null);
-    setFailed(false);
-    setSingle(new Map());
-    attempted.current = new Set();
-    generation.current += 1;
-    snapshot.current = 0;
-    listedAt.current = new Map();
+  // A listener that fails is started again after a while (#357): a retry keeps what this subscription knows (and its failed
+  // state, so no run is shown until a new snapshot arrives); another environment starts afresh.
+  useRetryingSubscription(ready ? environment : null, (onError, retrying) => {
+    if (!retrying) {
+      setCycles(null);
+      setFailed(false);
+      setSingle(new Map());
+      attempted.current = new Set();
+      generation.current += 1;
+      snapshot.current = 0;
+      listedAt.current = new Map();
+    }
     return subscribeCycles(
       environment,
       (rows, isCapped) => {
@@ -63,9 +67,12 @@ export function useIncidentRuns(
         setCapped(isCapped);
         setFailed(false);
       },
-      () => setFailed(true)
+      () => {
+        setFailed(true);
+        onError();
+      }
     );
-  }, [environment, ready]);
+  });
 
   const ids = useMemo(() => incidents.map((i) => runIdFor(i.id, i.recurrenceCount)), [incidents]);
 
