@@ -1,6 +1,11 @@
 # Demo app scenario catalog
 
 > **Status: proposed.** The companion to [`demo-app.md`](demo-app.md). Written 2026-10-04.
+>
+> **Since then (2026-10-14):** the stages the **Designed** status below waits for are built in Starfish (triage, rules,
+> the index heal, fix, review, Slack, calls), and triage, fix, review and Slack have run on the demo project. The Status
+> column has not been re-checked scenario by scenario since it was written: read **Designed** as "not yet asserted by
+> a scenario run", not as "not built".
 
 There are 84 scenarios (18 on built code, 62 designed, 4 gaps), and every setting and rule on the mockup's Engine, On-call and Connections screens maps to at least one. They are grouped by the part of the engine they test. Each one is a button in the Scenario lab. Each has a written expected outcome that the scenario runner checks (see [`demo-app.md`](demo-app.md)).
 
