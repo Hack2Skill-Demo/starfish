@@ -114,4 +114,8 @@ can steer it. Tracked in #37; it needs a paid telephony account, so it waits on 
 
 ### How it works
 
+Each stage and rung says what is built and what has run: every stage up to the pull request has run on the demo
+project (the pull request on real GitHub); auto-merge and fast-revert are built for the demo target and have never
+run against real GitHub; rungs 1 to 3 are planned. Re-rendered from the HTML page on 2026-10-14 (#350).
+
 ![How it works and the trust ladder](screens/how-it-works.png)

@@ -30,6 +30,9 @@ beforeAll(() => {
   git(seed, "init", "--quiet", "-b", "main");
   mkdirSync(join(seed, "src"));
   writeFileSync(join(seed, "src/orders.ts"), "export const x = 1;\n");
+  mkdirSync(join(seed, "src/lib"));
+  writeFileSync(join(seed, "src/getorder.ts"), 'import { track } from "./lib/track.js";\nimport { x } from "./orders";\nexport const getOrder = () => track(x);\n');
+  writeFileSync(join(seed, "src/lib/track.ts"), "export const track = (v: number) => v;\n");
   writeFileSync(join(seed, "src/big.ts"), "x".repeat(2000));
   writeFileSync(join(seed, "src/bin.ts"), "a\0b");
   writeFileSync(join(seed, "package.json"), "{}\n");
@@ -47,7 +50,7 @@ describe("createGitCheckout", () => {
   it("clones the base branch at its tip, lists the tracked files and cleans up", async () => {
     const co = await createGitCheckout(cfgRepo(), { env: loadChildProcessBasics(), tmpDir: scratch() })();
     expect(co.revision).toBe(tip);
-    expect(co.files.sort()).toEqual(["package.json", "src/big.ts", "src/bin.ts", "src/link.ts", "src/orders.ts"]);
+    expect(co.files.sort()).toEqual(["package.json", "src/big.ts", "src/bin.ts", "src/getorder.ts", "src/lib/track.ts", "src/link.ts", "src/orders.ts"]);
     await co.dispose();
     expect(readdirSync(scratch())).toEqual([]);
   });
@@ -117,8 +120,20 @@ describe("createLoader", () => {
     const loader = createLoader({ db: fakeDb({ i1: { ...incident, functionName: "orders-x", stackTrace: FRAMEWORK_STACK } }), config, logging: logging(), checkout: checkoutFn(), maxFileBytes: 1000 });
     const s = await loader.load("i1");
     expect(s!.files).toEqual([{ path: "src/orders.ts", content: "export const x = 1;\n" }]);
-    expect(s!.source).toEqual({ rule: "function-name", search: "found" });
+    expect(s!.source).toEqual({ rule: "function-name", search: "found", imports: 0 });
     await loader.disposeAll();
+  });
+
+  it("shows the files the found file imports after it, so a fault in a helper it calls can be fixed (#347)", async () => {
+    const loader = createLoader({ db: fakeDb({ i1: { ...incident, functionName: "orders-getOrder", stackTrace: FRAMEWORK_STACK } }), config, logging: logging(), checkout: checkoutFn(), maxFileBytes: 1000 });
+    const s = await loader.load("i1");
+    expect(s!.files.map((f) => f.path)).toEqual(["src/getorder.ts", "src/lib/track.ts", "src/orders.ts"]);
+    expect(s!.source).toEqual({ rule: "function-name", search: "found", imports: 2 });
+    await loader.disposeAll();
+    // Within the loader's own file budget.
+    const one = createLoader({ db: fakeDb({ i1: { ...incident, functionName: "orders-getOrder", stackTrace: FRAMEWORK_STACK } }), config, logging: logging(), checkout: checkoutFn(), maxFiles: 2, maxFileBytes: 1000 });
+    expect((await one.load("i1"))!.files.map((f) => f.path)).toEqual(["src/getorder.ts", "src/lib/track.ts"]);
+    await one.disposeAll();
   });
 
   it("says why the function-name search found nothing, and shows nothing then", async () => {

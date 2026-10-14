@@ -4,14 +4,14 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Starfish · How it works</title>
-<!-- Static export of the Starfish design canvas. Designed, not built: every value on this page is illustrative. -->
+<!-- Static export of the Starfish design canvas: the pitch slide. Each stage and rung says what is built and what has run (#350); "ran on the demo" = run by the deployed engine on the demo project's real logs and incidents. -->
 <link rel="preconnect" href="https://fonts.googleapis.com"><link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
 body{margin:0}
 </style>
 </head>
 <body>
-<div style="width: 1920px; height: 1080px; box-sizing: border-box; padding: 88px 96px; background: rgb(24, 24, 27); color: rgb(255, 255, 255); font-family: &quot;Plus Jakarta Sans&quot;, ui-sans-serif, system-ui, sans-serif; display: flex; flex-direction: column; gap: 64px; -webkit-font-smoothing: antialiased;">
+<div style="width: 1920px; height: 1080px; box-sizing: border-box; padding: 88px 96px; background: rgb(24, 24, 27); color: rgb(255, 255, 255); font-family: &quot;Plus Jakarta Sans&quot;, ui-sans-serif, system-ui, sans-serif; display: flex; flex-direction: column; gap: 48px; -webkit-font-smoothing: antialiased;">
 
   <div style="display: flex; align-items: center; justify-content: space-between; gap: 32px;">
     <div style="display: flex; align-items: center; gap: 28px;">
@@ -22,54 +22,64 @@ body{margin:0}
       </div>
     </div>
     <div style="display: flex; gap: 14px; font-size: 20px;">
-      <span style="display: inline-flex; align-items: center; gap: 10px; border-radius: 999px; padding: 8px 18px; background: rgba(58, 203, 139, 0.15); color: rgb(114, 226, 174);"><span style="width: 12px; height: 12px; border-radius: 999px; background: rgb(58, 203, 139);"></span>Built</span>
-      <span style="display: inline-flex; align-items: center; gap: 10px; border-radius: 999px; padding: 8px 18px; background: rgba(255, 255, 255, 0.08); color: rgb(212, 212, 216);"><span style="width: 12px; height: 12px; border-radius: 999px; border: 2px dashed rgb(161, 161, 170); box-sizing: border-box;"></span>Designed</span>
+      <span style="display: inline-flex; align-items: center; gap: 10px; border-radius: 999px; padding: 8px 18px; background: rgba(58, 203, 139, 0.15); color: rgb(114, 226, 174);"><span style="width: 12px; height: 12px; border-radius: 999px; background: rgb(58, 203, 139);"></span>Built · ran on the demo</span>
+      <span style="display: inline-flex; align-items: center; gap: 10px; border-radius: 999px; padding: 8px 18px; background: rgba(251, 122, 80, 0.12); color: rgb(255, 162, 127);"><span style="width: 12px; height: 12px; border-radius: 999px; border: 2px solid rgb(251, 122, 80); box-sizing: border-box;"></span>Built · never run for real</span>
+      <span style="display: inline-flex; align-items: center; gap: 10px; border-radius: 999px; padding: 8px 18px; background: rgba(255, 255, 255, 0.08); color: rgb(212, 212, 216);"><span style="width: 12px; height: 12px; border-radius: 999px; border: 2px dashed rgb(161, 161, 170); box-sizing: border-box;"></span>Planned</span>
     </div>
   </div>
 
   
-  <div style="display: flex; align-items: stretch; gap: 14px;">
-    <div style="flex: 1 1 0%; border-radius: 16px; background: rgb(39, 39, 42); border: 2px solid rgb(58, 203, 139); padding: 22px 20px; display: flex; flex-direction: column; gap: 10px;">
-      <span style="font-size: 16px; font-weight: 600; color: rgb(114, 226, 174);">Built</span>
+  <div style="display: flex; flex-direction: column; gap: 18px;">
+  <div style="display: flex; align-items: stretch; gap: 10px;">
+    <div style="flex: 1 1 0%; border-radius: 16px; padding: 22px 16px; display: flex; flex-direction: column; gap: 10px; background: rgb(39, 39, 42); border: 2px solid rgb(58, 203, 139);">
+      <span style="font-size: 16px; font-weight: 600; color: rgb(114, 226, 174);">Ran on the demo</span>
       <span style="font-size: 26px; font-weight: 700; line-height: 1.2;">Cloud Logging</span>
       <span style="font-size: 18px; line-height: 1.45; color: rgb(161, 161, 170);">every ERROR in the project</span>
     </div>
     <span aria-hidden="true" style="align-self: center; font-size: 34px; color: rgb(113, 113, 122);">›</span>
-    <div style="flex: 1 1 0%; border-radius: 16px; background: rgb(39, 39, 42); border: 2px solid rgb(58, 203, 139); padding: 22px 20px; display: flex; flex-direction: column; gap: 10px;">
-      <span style="font-size: 16px; font-weight: 600; color: rgb(114, 226, 174);">Built</span>
+    <div style="flex: 1 1 0%; border-radius: 16px; padding: 22px 16px; display: flex; flex-direction: column; gap: 10px; background: rgb(39, 39, 42); border: 2px solid rgb(58, 203, 139);">
+      <span style="font-size: 16px; font-weight: 600; color: rgb(114, 226, 174);">Ran on the demo</span>
       <span style="font-size: 26px; font-weight: 700; line-height: 1.2;">Incident store</span>
       <span style="font-size: 18px; line-height: 1.45; color: rgb(161, 161, 170);">fingerprint, dedupe, recount, redact</span>
     </div>
     <span aria-hidden="true" style="align-self: center; font-size: 34px; color: rgb(113, 113, 122);">›</span>
-    <div style="flex: 1 1 0%; border-radius: 16px; background: rgb(39, 39, 42); border: 2px dashed rgb(113, 113, 122); padding: 22px 20px; display: flex; flex-direction: column; gap: 10px;">
-      <span style="font-size: 16px; font-weight: 600; color: rgb(212, 212, 216);">Designed</span>
+    <div style="flex: 1 1 0%; border-radius: 16px; padding: 22px 16px; display: flex; flex-direction: column; gap: 10px; background: rgb(39, 39, 42); border: 2px solid rgb(58, 203, 139);">
+      <span style="font-size: 16px; font-weight: 600; color: rgb(114, 226, 174);">Ran on the demo</span>
       <span style="font-size: 26px; font-weight: 700; line-height: 1.2;">Gemini triage</span>
       <span style="font-size: 18px; line-height: 1.45; color: rgb(161, 161, 170);">is this actually urgent?</span>
     </div>
     <span aria-hidden="true" style="align-self: center; font-size: 34px; color: rgb(113, 113, 122);">›</span>
-    <div style="flex: 1 1 0%; border-radius: 16px; background: rgb(39, 39, 42); border: 2px dashed rgb(113, 113, 122); padding: 22px 20px; display: flex; flex-direction: column; gap: 10px;">
-      <span style="font-size: 16px; font-weight: 600; color: rgb(212, 212, 216);">Designed</span>
+    <div style="flex: 1 1 0%; border-radius: 16px; padding: 22px 16px; display: flex; flex-direction: column; gap: 10px; background: rgb(39, 39, 42); border: 2px solid rgb(58, 203, 139);">
+      <span style="font-size: 16px; font-weight: 600; color: rgb(114, 226, 174);">Ran on the demo</span>
       <span style="font-size: 26px; font-weight: 700; line-height: 1.2;">Gemini fix draft</span>
       <span style="font-size: 18px; line-height: 1.45; color: rgb(161, 161, 170);">the minimal patch</span>
     </div>
     <span aria-hidden="true" style="align-self: center; font-size: 34px; color: rgb(113, 113, 122);">›</span>
-    <div style="flex: 1 1 0%; border-radius: 16px; background: rgb(255, 244, 239); border: 2px dashed rgb(251, 122, 80); padding: 22px 20px; display: flex; flex-direction: column; gap: 10px; color: rgb(24, 24, 27);">
-      <span style="font-size: 16px; font-weight: 600; color: rgb(182, 53, 18);">Designed · not a model</span>
+    <div style="flex: 1 1 0%; border-radius: 16px; padding: 22px 16px; display: flex; flex-direction: column; gap: 10px; background: rgb(255, 244, 239); border: 2px solid rgb(58, 203, 139); color: rgb(24, 24, 27);">
+      <span style="font-size: 16px; font-weight: 600; color: rgb(21, 111, 71);">Ran on the demo</span>
       <span style="font-size: 26px; font-weight: 700; line-height: 1.2;">Verify gate</span>
-      <span style="font-size: 18px; line-height: 1.45; color: rgb(82, 82, 91);">lint · typecheck · test · build</span>
+      <span style="font-size: 18px; line-height: 1.45; color: rgb(82, 82, 91);">not a model: lint · typecheck · test · build</span>
     </div>
     <span aria-hidden="true" style="align-self: center; font-size: 34px; color: rgb(113, 113, 122);">›</span>
-    <div style="flex: 1 1 0%; border-radius: 16px; background: rgb(39, 39, 42); border: 2px dashed rgb(113, 113, 122); padding: 22px 20px; display: flex; flex-direction: column; gap: 10px;">
-      <span style="font-size: 16px; font-weight: 600; color: rgb(212, 212, 216);">Designed</span>
+    <div style="flex: 1 1 0%; border-radius: 16px; padding: 22px 16px; display: flex; flex-direction: column; gap: 10px; background: rgb(39, 39, 42); border: 2px solid rgb(58, 203, 139);">
+      <span style="font-size: 16px; font-weight: 600; color: rgb(114, 226, 174);">Ran on the demo</span>
       <span style="font-size: 26px; font-weight: 700; line-height: 1.2;">Gemini review</span>
       <span style="font-size: 18px; line-height: 1.45; color: rgb(161, 161, 170);">tries to break the fix</span>
     </div>
     <span aria-hidden="true" style="align-self: center; font-size: 34px; color: rgb(113, 113, 122);">›</span>
-    <div style="flex: 1 1 0%; border-radius: 16px; background: rgb(182, 53, 18); padding: 22px 20px; display: flex; flex-direction: column; gap: 10px;">
-      <span style="font-size: 16px; font-weight: 600; color: rgb(255, 229, 217);">Designed</span>
+    <div style="flex: 1 1 0%; border-radius: 16px; padding: 22px 16px; display: flex; flex-direction: column; gap: 10px; background: rgb(182, 53, 18); border: 2px solid rgb(182, 53, 18);">
+      <span style="font-size: 16px; font-weight: 600; color: rgb(255, 229, 217);">Ran on real GitHub</span>
       <span style="font-size: 26px; font-weight: 700; line-height: 1.2;">Pull request</span>
-      <span style="font-size: 18px; line-height: 1.45; color: rgb(255, 229, 217);">merges what it can prove, escalates the rest</span>
+      <span style="font-size: 18px; line-height: 1.45; color: rgb(255, 229, 217);">a person merges it; the rest goes to Slack</span>
     </div>
+    <span aria-hidden="true" style="align-self: center; font-size: 34px; color: rgb(113, 113, 122);">›</span>
+    <div style="flex: 1 1 0%; border-radius: 16px; padding: 22px 16px; display: flex; flex-direction: column; gap: 10px; background: rgb(39, 39, 42); border: 2px dashed rgb(251, 122, 80);">
+      <span style="font-size: 16px; font-weight: 600; color: rgb(255, 162, 127);">Never run for real</span>
+      <span style="font-size: 26px; font-weight: 700; line-height: 1.2;">Auto&#8209;merge</span>
+      <span style="font-size: 18px; line-height: 1.45; color: rgb(161, 161, 170);">an admin's merge cases on green checks, with fast&#8209;revert; demo only</span>
+    </div>
+  </div>
+  <p style="margin: 0px; font-size: 18px; color: rgb(161, 161, 170);">Ran on the demo: the demo project's real logs since 5 Oct 2026, the agent on its real incidents since 8 Oct, issues and pull requests on real GitHub since 12 Oct. Starfish has merged nothing yet.</p>
   </div>
 
   
@@ -81,23 +91,23 @@ body{margin:0}
     <div style="flex: 1 1 0%; display: flex; align-items: flex-end; gap: 14px;">
       <div style="flex: 1.4 1 0%; height: 120px; border-radius: 14px 14px 0px 0px; background: rgb(63, 63, 70); padding: 20px; box-sizing: border-box; display: flex; flex-direction: column; justify-content: space-between;">
         <span style="font-size: 20px; font-weight: 700;">Rung 0 · Human-gated</span>
-        <span style="font-size: 17px; color: rgb(212, 212, 216);">verify gate · self-review · human-gated PR</span>
+        <span style="font-size: 17px; color: rgb(212, 212, 216);">verify gate · self-review · a person merges<span style="display: block; margin-top: 8px; font-size: 15px; font-weight: 600; color: rgb(114, 226, 174);">Built · ran on the demo</span></span>
       </div>
       <div style="flex: 1 1 0%; height: 160px; border-radius: 14px 14px 0px 0px; background: rgb(63, 63, 70); opacity: 0.85; padding: 20px; box-sizing: border-box; display: flex; flex-direction: column; justify-content: space-between;">
         <span style="font-size: 20px; font-weight: 700;">Rung 1</span>
-        <span style="font-size: 17px; color: rgb(212, 212, 216);">integration re-run</span>
+        <span style="font-size: 17px; color: rgb(212, 212, 216);">integration re-run<span style="display: block; margin-top: 8px; font-size: 15px; font-weight: 600; color: rgb(161, 161, 170);">Planned</span></span>
       </div>
       <div style="flex: 1 1 0%; height: 200px; border-radius: 14px 14px 0px 0px; background: rgb(63, 63, 70); opacity: 0.7; padding: 20px; box-sizing: border-box; display: flex; flex-direction: column; justify-content: space-between;">
         <span style="font-size: 20px; font-weight: 700;">Rung 2</span>
-        <span style="font-size: 17px; color: rgb(212, 212, 216);">end-to-end flow coverage</span>
+        <span style="font-size: 17px; color: rgb(212, 212, 216);">end-to-end flow coverage<span style="display: block; margin-top: 8px; font-size: 15px; font-weight: 600; color: rgb(161, 161, 170);">Planned</span></span>
       </div>
       <div style="flex: 1 1 0%; height: 240px; border-radius: 14px 14px 0px 0px; background: rgb(63, 63, 70); opacity: 0.55; padding: 20px; box-sizing: border-box; display: flex; flex-direction: column; justify-content: space-between;">
         <span style="font-size: 20px; font-weight: 700;">Rung 3</span>
-        <span style="font-size: 17px; color: rgb(228, 228, 231);">blast-radius limits, rollback</span>
+        <span style="font-size: 17px; color: rgb(228, 228, 231);">blast-radius limits, rollback/canary<span style="display: block; margin-top: 8px; font-size: 15px; font-weight: 600; color: rgb(161, 161, 170);">Planned</span></span>
       </div>
       <div style="flex: 1 1 0%; height: 280px; border-radius: 14px 14px 0px 0px; border: 2px dashed rgb(251, 122, 80); padding: 20px; box-sizing: border-box; display: flex; flex-direction: column; justify-content: space-between;">
         <span style="font-size: 20px; font-weight: 700; color: rgb(255, 162, 127);">Rung 4</span>
-        <span style="font-size: 17px; color: rgb(228, 228, 231);">scoped auto-merge: low blast radius and proven cause. Demo project first.</span>
+        <span style="font-size: 17px; color: rgb(228, 228, 231);">scoped auto-merge: Gemini names an admin's merge case, inside the safety floor, on green checks, with fast-revert. Demo target only.<span style="display: block; margin-top: 8px; font-size: 15px; font-weight: 600; color: rgb(255, 162, 127);">Built · never run against real GitHub</span></span>
       </div>
     </div>
   </div></div>

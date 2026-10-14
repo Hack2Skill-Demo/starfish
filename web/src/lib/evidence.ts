@@ -244,6 +244,7 @@ export function buildEvidence(row: IncidentRow, cycle: CycleRow | null, nowMs = 
         ["source", "Source found by", true],
         ["sourceFiles", "Source files shown"],
         ["sourceSearch", "Function-name search", true],
+        ["sourceImports", "Files it imports shown"],
       ],
       numberedFields(rec.fix, "alternative", "Rejected alternative")
     ),

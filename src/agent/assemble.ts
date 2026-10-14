@@ -9,7 +9,7 @@
  * fails THROWS: with no source there is nothing to fix, and the cycle's lease will expire and be resumed.
  *
  * Files come only from the repository's own file list (`pathsFromStack` over the incident's own stack trace; when no frame names a repository file, the one
- * file that exports the failing function, `findSourceByFunctionName`, #259), are read as plain regular files
+ * file that exports the failing function, `findSourceByFunctionName`, #259, and after it the files it imports by a relative path, one level, #347), are read as plain regular files
  * (never a symlink, never binary, bounded), and carry whatever the repository holds: the loop's stages
  * redact them before a model sees them.
  *
@@ -30,7 +30,7 @@ import { INCIDENT_STATUSES } from "../types.js";
 import type { LoopSubject } from "./loop.js";
 import { pathsFromStack } from "./pass.js";
 import type { SourceFile } from "./fixer.js";
-import { findSourceByFunctionName, type SourceProvenance } from "./sourceByName.js";
+import { findSourceByFunctionName, followRelativeImports, MAX_FOLLOWED_IMPORTS, type SourceProvenance } from "./sourceByName.js";
 
 export interface Checkout {
   /** The working tree (no `.git` content is ever shown to a model). */
@@ -201,8 +201,16 @@ export function createLoader(deps: AssembleDeps): Loader {
           roots: deps.config.functionsSourceRoots,
           excluded: deps.config.patchExcludedPaths,
         });
-        if (byName.file) files.push(byName.file);
         provenance = { rule: byName.file ? "function-name" : "none", search: byName.outcome };
+        if (byName.file) {
+          // The helpers it calls (#347): its own relative imports, one level, after it, within the same file budget.
+          const imports = await followRelativeImports(byName.file, checkout.files, (rel) => readSource(checkout.dir, rel, maxBytes), {
+            excluded: deps.config.patchExcludedPaths,
+            max: Math.min(MAX_FOLLOWED_IMPORTS, maxFiles - 1),
+          });
+          files.push(byName.file, ...imports);
+          provenance = { ...provenance, imports: imports.length };
+        }
       }
 
       return {

@@ -76,11 +76,12 @@ describe("buildEvidence", () => {
   });
 
   it("shows which rule found the source the fixer was shown (#259)", () => {
-    const e = buildEvidence(row, cycle({ fix: { outcome: "declined", rule: "fixer-declined", rootCause: "x", source: "function-name", sourceFiles: 1, sourceSearch: "found" } }));
-    expect(stage(e, "fix").fields.filter((f) => f.label.startsWith("Source") || f.label.startsWith("Function-name"))).toEqual([
+    const e = buildEvidence(row, cycle({ fix: { outcome: "declined", rule: "fixer-declined", rootCause: "x", source: "function-name", sourceFiles: 3, sourceSearch: "found", sourceImports: 2 } }));
+    expect(stage(e, "fix").fields.filter((f) => f.label.startsWith("Source") || f.label.startsWith("Function-name") || f.label.startsWith("Files it"))).toEqual([
       { label: "Source found by", value: "function-name", mono: true },
-      { label: "Source files shown", value: "1" },
+      { label: "Source files shown", value: "3" },
       { label: "Function-name search", value: "found", mono: true },
+      { label: "Files it imports shown", value: "2" },
     ]);
   });
 

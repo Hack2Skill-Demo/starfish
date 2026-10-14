@@ -1,5 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
-import { definesExport, exportNameOf, findSourceByFunctionName, nameSearchCandidates } from "./sourceByName.js";
+import {
+  definesExport,
+  exportNameOf,
+  findSourceByFunctionName,
+  followRelativeImports,
+  MAX_FOLLOWED_IMPORTS,
+  nameSearchCandidates,
+  relativeImportsOf,
+  resolveRelativeImport,
+} from "./sourceByName.js";
 
 /** A repository as a map of path -> content; `read` returns what is there, like assemble.ts's readSource. */
 const repo = (files: Record<string, string>) => {
@@ -148,5 +157,76 @@ describe("findSourceByFunctionName", () => {
   it("passes over a file it may not read (too big, binary, a symlink) without stopping", async () => {
     const read = vi.fn(async (rel: string) => (rel === "src/a.ts" ? null : { path: rel, content: ORDERS }));
     expect(await findSourceByFunctionName("createOrder", ["src/a.ts", "src/b.ts"], read, { roots: [], excluded: [] })).toMatchObject({ outcome: "found", file: { path: "src/b.ts" } });
+  });
+});
+
+describe("relativeImportsOf (#347)", () => {
+  it("reads every relative specifier the code names, in order, each once", () => {
+    const code = [
+      'import { trackOutcome } from "./lib/track.js";',
+      'import "./side";',
+      "const db = require('../db');",
+      'const lazy = await import("./lazy");',
+      "export * from './re';",
+      'export { a } from "./lib/track.js";',
+      "import {\n  b,\n  c,\n} from './multi';",
+    ].join("\n");
+    expect(relativeImportsOf(code)).toEqual(["./lib/track.js", "./side", "../db", "./lazy", "./re", "./multi"]);
+  });
+
+  it("ignores packages, absolute paths, mismatched quotes and look-alike names", () => {
+    const code = ['import z from "zod";', 'import x from "/etc/passwd";', `import y from "./half';`, 'myfrom "./no";', 'obj.require("./no")'].join("\n");
+    expect(relativeImportsOf(code)).toEqual([]);
+  });
+});
+
+describe("resolveRelativeImport (#347)", () => {
+  const files = new Set(["functions/src/lib/track.ts", "functions/src/lib/track.js", "functions/src/util/index.ts", "functions/src/plain.js", "functions/src/db.mts"]);
+  const from = "functions/src/orders.ts";
+  it("finds the TypeScript source of an ESM `.js` specifier first, then the path as written, an extension, an index", () => {
+    expect(resolveRelativeImport(from, "./lib/track.js", files)).toBe("functions/src/lib/track.ts");
+    expect(resolveRelativeImport(from, "./lib/track", files)).toBe("functions/src/lib/track.ts");
+    expect(resolveRelativeImport(from, "./plain.js", files)).toBe("functions/src/plain.js");
+    expect(resolveRelativeImport(from, "./util", files)).toBe("functions/src/util/index.ts");
+    expect(resolveRelativeImport(from, "./db.mjs", files)).toBe("functions/src/db.mts");
+    expect(resolveRelativeImport("functions/src/lib/track.ts", "../plain", files)).toBe("functions/src/plain.js");
+  });
+  it("is null for a file the repository does not list, or a path that leaves it", () => {
+    expect(resolveRelativeImport(from, "./missing", files)).toBeNull();
+    expect(resolveRelativeImport(from, "../../../etc/passwd", files)).toBeNull();
+    expect(resolveRelativeImport("a.ts", "../a.ts", new Set(["a.ts"]))).toBeNull();
+  });
+});
+
+describe("followRelativeImports (#347)", () => {
+  const exporting = { path: "functions/src/orders.ts", content: 'import { trackOutcome } from "./lib/track.js";\nimport { secret } from "./auth/keys";\nexport const getOrder = 1;' };
+  it("shows the helpers the found file imports, one level deep, from the repository's own list", async () => {
+    const r = repo({
+      "functions/src/lib/track.ts": 'import { deep } from "./deep";\nexport function trackOutcome() {}',
+      "functions/src/lib/deep.ts": "export const deep = 1;",
+    });
+    const out = await followRelativeImports(exporting, r.paths, r.read, { excluded: [] });
+    expect(out.map((f) => f.path)).toEqual(["functions/src/lib/track.ts"]);
+    expect(r.read).not.toHaveBeenCalledWith("functions/src/lib/deep.ts");
+  });
+
+  it("never shows an excluded path, a test, a declaration, the file itself or an unreadable one", async () => {
+    const file = {
+      path: "src/a.ts",
+      content: ['import "./auth/keys";', 'import "./a.test";', 'import "./types.d";', 'import "./a";', 'import "./big";', 'import "./ok";'].join("\n"),
+    };
+    const r = repo({ "src/auth/keys.ts": "k", "src/a.test.ts": "t", "src/types.d.ts": "d", "src/a.ts": file.content, "src/ok.ts": "ok" });
+    const paths = [...r.paths, "src/big.ts"];
+    const out = await followRelativeImports(file, paths, r.read, { excluded: ["src/auth/"] });
+    expect(out.map((f) => f.path)).toEqual(["src/ok.ts"]);
+  });
+
+  it("stops at its bound", async () => {
+    const names = Array.from({ length: 8 }, (_, i) => `m${i}`);
+    const file = { path: "a.ts", content: names.map((n) => `import "./${n}";`).join("\n") };
+    const r = repo(Object.fromEntries(names.map((n) => [`${n}.ts`, n])));
+    expect((await followRelativeImports(file, r.paths, r.read, { excluded: [] })).length).toBe(MAX_FOLLOWED_IMPORTS);
+    expect((await followRelativeImports(file, r.paths, r.read, { excluded: [], max: 2 })).map((f) => f.path)).toEqual(["m0.ts", "m1.ts"]);
+    expect(await followRelativeImports(file, r.paths, r.read, { excluded: [], max: 0 })).toEqual([]);
   });
 });
