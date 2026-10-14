@@ -396,6 +396,10 @@ apparent over-engineering is scar tissue from real incidents, and the tests in
   everything stored and everything sent to the model, not just the counter-check samples
 - a log's `error` field is kept apart from its title: the title keys the fingerprint, the
   error is the cause a fixer needs
+- a stack trace the logger wrote INSIDE the message (the firebase-functions logger does, #361) is split off at its first
+  frame line: the title alone is fingerprinted, classified and shown to guests, and the frames are the incident's stack.
+  When the fingerprint code changes, `pnpm rekey` gives stored incidents the new fingerprint and key (#362; a dry run by
+  default, `pnpm rekey -- --apply --project=<id>` writes). Built and emulator-tested; never run on a real project
 
 - one redaction policy (`src/ingest/redact.ts`) covers emails, credentials and phone numbers: token
   shapes (JWTs, bearer headers, Google/GitHub/AWS/Slack/Stripe keys), private keys,

@@ -12,6 +12,7 @@
     "prepare": "git config core.hooksPath .githooks 2>/dev/null || true",
     "spike": "tsx src/spike.ts",
     "scrub": "tsx src/scrubCli.ts",
+    "rekey": "tsx src/rekeyCli.ts",
     "scoreboard": "tsx src/scoreboardCli.ts",
     "feedback-corpus": "tsx src/feedbackCorpusCli.ts",
     "seed-demo": "tsx src/seedDemoCli.ts",

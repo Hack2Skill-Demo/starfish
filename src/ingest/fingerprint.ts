@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { messageTitle } from "./messageStack.js";
 import { sanitize } from "./redact.js";
 
 /** How much of the normalized message the fingerprint hashes. */
@@ -66,8 +67,9 @@ const NUMBER_RE =
  *
  * Changing what is hashed changes the fingerprint of every message that held a
  * volatile token (or irregular whitespace), so an incident stored under the old
- * fingerprint is not matched by its next occurrence: that opens one fresh incident.
- * There is no migration.
+ * fingerprint is not matched by its next occurrence: that would open one fresh incident.
+ * After any such change, run `pnpm rekey` (src/rekey.ts, #362): it recomputes every live
+ * incident's stored fingerprint with the current code and points its incident key at it.
  */
 export function normalizeErrorMessage(errorMessage: string): string {
   return String(errorMessage ?? "")
@@ -140,12 +142,18 @@ const FUNCTION_FAILED_WRAPPER_RE = /^\s*([A-Za-z0-9_.-]+) failed:\s+/i;
  *     never merge.
  * A wrapper is never taken when nothing but whitespace would remain (`Error: ` alone keeps its text).
  *
- * A message with no wrapper comes back unchanged, so its fingerprint is byte-identical to before #318. The text
- * considered is first cut to the same {@link NORMALIZE_INPUT_CAP} {@link normalizeErrorMessage} reads, which
- * bounds the work. Only the fingerprint uses this: the stored message keeps the text as logged, for display.
+ * Before any wrapper is looked for, a stack trace the message carries is cut off (#361, `messageTitle` in
+ * messageStack.ts): only the text before its first V8 frame line (`    at fn (file:1:2)`) counts. Kept, the frames
+ * entered the hashed 100 characters whenever the core was short, so one bug logged with the app's frames and again
+ * with the logger's (`at entryFromArgs (.../firebase-functions/lib/logger/index.js:133:19)`) was two incidents.
+ * Ingest now stores the title alone (parseLogEntry.ts); this keeps a record stored before that hashing the same way.
+ *
+ * A message with no wrapper and no frame comes back unchanged, so its fingerprint is byte-identical to before #318.
+ * The title is then cut to the same {@link NORMALIZE_INPUT_CAP} {@link normalizeErrorMessage} reads, which bounds
+ * the work. Only the fingerprint uses this: the stored message keeps the text as logged, for display.
  */
 export function errorCore(errorMessage: string, functionName: string): string {
-  let text = String(errorMessage ?? "").substring(0, NORMALIZE_INPUT_CAP);
+  let text = messageTitle(String(errorMessage ?? "")).substring(0, NORMALIZE_INPUT_CAP);
   const fn = canonicalFunctionName(functionName);
   for (let i = 0; i < MAX_ERROR_WRAPPERS; i += 1) {
     const prefix = wrapperPrefix(text, fn);

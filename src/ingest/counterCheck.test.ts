@@ -204,6 +204,17 @@ describe("fetchRecentErrorSamples", () => {
     expect(samples?.map((s) => s.stack)).toEqual(["at create (/app/src/orders.ts:10:5)"]);
   });
 
+  it("matches an entry whose message carries its own stack, and gives the sample the title and the frames apart (#361)", async () => {
+    // The incident as ingest stores it now: the title alone.
+    const fp = fingerprintOf("ordersCreate", sanitize(`Unhandled error Error: ${MESSAGE}`) ?? "");
+    const withFrames = `Error: ordersCreate failed: ${MESSAGE}\n    at entryFromArgs (/workspace/node_modules/firebase-functions/lib/logger/index.js:133:19)`;
+    const logging = serving([{ metadata: { timestamp: "2026-09-20T23:00:00.000Z", resource: { labels: { function_name: "ordersCreate" } } }, data: withFrames }]);
+    const samples = await fetchRecentErrorSamples(logging, source, "ordersCreate", fp, { nowMs });
+    expect(samples).toHaveLength(1);
+    expect(samples![0]!.message).toBe(`Error: ordersCreate failed: ${MESSAGE}`);
+    expect(samples![0]!.stack).toBe(withFrames);
+  });
+
   it("reads one bounded page, newest first, and stops at three samples", async () => {
     const logging = serving(Array.from({ length: 80 }, () => entry(MESSAGE, "at create (/app/src/orders.ts:10:5)")));
     const samples = await fetchRecentErrorSamples(logging, source, "ordersCreate", FP, { nowMs });

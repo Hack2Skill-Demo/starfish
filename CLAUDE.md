@@ -57,6 +57,7 @@ pnpm feedback-corpus -- --out=<new dir>   # operators' noise/log corrections -> 
 pnpm replay           # replay the agent's stages over a corpus into a results file (#10); --check-corpus checks the cases without a model; needs Vertex for a real run, none recorded
 pnpm escalate         # one tick of the phone escalation (#37); the agent pass runs it too; off unless STARFISH_PHONE_ESCALATION; never run against real Twilio
 pnpm scrub            # dry-run: how many stored incidents still hold a credential/email (--apply to rewrite)
+pnpm rekey            # dry-run: after a fingerprint change, stored incidents whose fingerprint moved (#362); --apply needs --project; built, emulator-tested, never run on a real project
 pnpm demo-users       # dry-run: the judges' sign-in accounts (operator role, random passwords printed once); --apply/--remove need --project, refuses unless STARFISH_ENV=demo; never run on a real project
 pnpm seed-demo        # dry-run: the synthetic, badged demo history (#12); --apply/--remove need --project, refuses unless STARFISH_ENV=demo
 pnpm public-view      # dry-run: the guests' trimmed copies (#18) to write or remove (--apply needs --project); never run on a real project
@@ -141,11 +142,18 @@ src/
                    recorded by error and cause names/codes only, a timeout as one (`modelCallFailure`, #334)
   spike.ts         fix-quality spike over fixtures/incidents/*.json
   ingest/          Cloud Logging → classified, fingerprinted, deduped incidents
-    parseLogEntry  parse + noise suppression + the shared log filter
+    parseLogEntry  parse + noise suppression + the shared log filter. A message that carries its own stack (the
+                   firebase-functions logger writes one into it) is split at its first V8 frame line (`messageStack.ts`,
+                   #361): the title is the message (fingerprint, classifier and the guests' copy read it), the whole text the
+                   stack unless the entry has a stack field. Counter-check samples are split the same way
     classify       error type (source class > code > HTTP status > keywords), service
-    fingerprint    sha256(canonical functionName : first 100 chars of the normalized error core: leading wrappers
+    fingerprint    sha256(canonical functionName : first 100 chars of the normalized error core: a stack after the title
+                   cut off (#361, so a stored record still holding frames hashes like a new one), then leading wrappers
                    `Unhandled error`, `<Name>Error:` and the function's own `<fn> failed:` stripped, so one bug logged in two
-                   shapes is one incident, #318);
+                   shapes is one incident, #318). A change to it moves stored fingerprints: `pnpm rekey` (`src/rekey.ts`,
+                   #362) gives every live incident of the environment the current one and points its key at the incident
+                   the store converges on (earliest open, else latest resolved; none merged or deleted; tombstones and
+                   retired incidents kept), one transaction per fingerprint. Unit- and emulator-tested; never run on a real project;
                    volatile ids/paths/timestamps/counts are collapsed first. Monitoring-only (`mon-`),
                    high-cardinality overflow (`ovf-`, its fixed per-day message hashed unnormalized) and consolidated Cloud Run
                    quota (`pq-`) have their own namespaces
@@ -371,7 +379,8 @@ src/
                    env defaults, last-good fallback, a frozen snapshot per run
   publicView.ts    the guests' TRIMMED COPIES (#18), pure: one allowlist per kind (`toPublicIncident`, `toPublicCycle`,
                    `toPublicEvent`), every field named and its value's shape checked; only for `STARFISH_PUBLIC_ENVIRONMENTS`
-                   (default `demo`). Never detail, traces, tenant ids, the log filter, model words, patches or event data;
+                   (default `demo`). The title is its first line only (#361). Never detail, traces, tenant ids, the log filter,
+                   model words, patches or event data;
                    an event's one-line summary only for the engine-worded stages. `publicView: 1` marks a copy
   publicViewStore.ts  writes them (Admin SDK only): an event's copy in the event's own transaction (cycle.ts); an
                    incident's or cycle's refreshed after each engine write from what was committed (store.ts, cycle.ts,

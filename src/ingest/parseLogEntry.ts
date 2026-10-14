@@ -8,6 +8,7 @@
  */
 import { DEFAULT_IGNORED_MESSAGES, type StarfishConfig } from "../config.js";
 import { canonicalFunctionName } from "./fingerprint.js";
+import { messageTitle, splitMessageStack } from "./messageStack.js";
 
 /** Minimal structural shape of a Cloud Logging entry. */
 export interface RawLogEntry {
@@ -24,7 +25,9 @@ export interface RawLogEntry {
 
 export interface ParsedLogEntry {
   functionName: string;
+  /** The message's title: a message that carried a stack trace is cut at its first frame line (#361). */
   errorMessage: string;
+  /** The entry's `stack`/`stackTrace` field, else the whole message when the message carried frames (#361). */
   stackTrace?: string;
   errorName?: string;
   errorCode?: string;
@@ -176,7 +179,8 @@ export function parseLogEntry(
     // an empty-string title must still fall back.
     const detail = extractErrorDetail(json.error);
     errorMessage = json.message ? extractMessageTitle(json.message) : String(detail || JSON.stringify(data));
-    if (detail && detail !== errorMessage) errorDetail = detail;
+    // The title too: a message that carries a stack is split below, and an error equal to its title is no detail.
+    if (detail && detail !== errorMessage && detail !== messageTitle(errorMessage)) errorDetail = detail;
     const rawStack = json.stack ?? json.stackTrace;
     if (typeof rawStack === "string") stackTrace = rawStack;
     if (typeof json.errorName === "string") errorName = json.errorName;
@@ -188,7 +192,18 @@ export function parseLogEntry(
   }
 
   if (!errorMessage) return null;
+  // Read on the whole text, as the query side's `jsonPayload.message:` and `textPayload:` match it.
   if (ignoredMessages.some((m) => errorMessage.includes(m))) return null;
+
+  // A message that carries its own stack (#361): the firebase-functions logger writes `new Error(message).stack`
+  // for `logger.error("x failed: ...")`, and appends `err.stack` to `logger.error("Unhandled error", err)`. Only the
+  // title is the message (the fingerprint, the classifier and the guests' copy read it); the frames are the stack,
+  // unless the entry carried one of its own, which is kept as logged.
+  const split = splitMessageStack(errorMessage);
+  if (split.stack !== undefined) {
+    errorMessage = split.title;
+    stackTrace ??= split.stack;
+  }
 
   return {
     functionName,
