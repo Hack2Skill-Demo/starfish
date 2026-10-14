@@ -462,9 +462,10 @@ React 19, Vite, Tailwind 4, react-router, TanStack Query; Starfish's own theme i
   Between records it says what the agent is doing (`agentActivity`): a pass in progress ("Agent running", in blue: its
   `runningSince` mark, with a sliding bar and the seconds since it started; between passes a healthy agent is "Agent
   waiting", with an hourglass), a start an admin's "Run agent now" asked for that has not shown yet ("Agent starting",
-  `lib/agentStart.ts`, this tab only, watched so it shows with no refresh), one that started longer ago than the stale threshold and never ended,
-  or one due that has not started; it re-reads the record every 5 s while one is in progress or due (15 minutes at most
-  for a due one), else every minute. Built and unit-tested.
+  `lib/agentStart.ts`, this tab only, until the pass's start mark arrives), one that started longer ago than the stale threshold and never ended,
+  or one due that has not started. Both lines read their record live (a Firestore snapshot listener on the one
+  document), so a run's start and result show the moment they are written; the clock ticks every 5 s while a pass is in
+  progress, due (15 minutes at most) or requested, else every 15 s. Built and unit-tested.
 - **Config:** `web/src/lib/config.ts` is the only reader of `import.meta.env`. The Firebase
   project comes from Hosting's `/__/firebase/init.json` at startup (`VITE_FIREBASE_*` only for
   local dev); the rest from `web/.env` (`web/.env.example`).

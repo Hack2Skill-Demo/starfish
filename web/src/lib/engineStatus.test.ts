@@ -4,13 +4,30 @@ import type { Firestore } from "firebase/firestore";
 const mocks = vi.hoisted(() => ({ data: undefined as Record<string, unknown> | undefined, path: [] as string[] }));
 vi.mock("firebase/firestore", () => ({
   doc: (_db: unknown, ...segments: string[]) => ({ segments }),
-  getDoc: async (ref: { segments: string[] }) => {
+  onSnapshot: (ref: { segments: string[] }, next: (snap: unknown) => void) => {
     mocks.path = ref.segments;
-    return { exists: () => mocks.data !== undefined, data: () => mocks.data };
+    next({ exists: () => mocks.data !== undefined, data: () => mocks.data });
+    return () => {};
   },
 }));
 
-import { agentActivity, judgeAgentRun, judgeRun, nextRunAt, readAgentPass, readLastRun, type AgentRunRecord, type LastRun } from "./engineStatus";
+import {
+  agentActivity,
+  judgeAgentRun,
+  judgeRun,
+  nextRunAt,
+  subscribeAgentPass,
+  subscribeLastRun,
+  type AgentPass,
+  type AgentRunRecord,
+  type LastRun,
+} from "./engineStatus";
+
+// The record's first version, as the live listener hands it over.
+const readLastRun = (db: Firestore, runCollection: string) =>
+  new Promise<LastRun | null>((resolve, reject) => subscribeLastRun(db, runCollection, resolve, reject));
+const readAgentPass = (db: Firestore, runCollection: string) =>
+  new Promise<AgentPass>((resolve, reject) => subscribeAgentPass(db, runCollection, resolve, reject));
 import { judgeAgentRun as cliJudgeAgent, judgeRun as cliJudge, parseRunRecord } from "../../../src/status";
 import { parseAgentRunRecord } from "../../../src/agentRunRecord";
 
@@ -37,7 +54,7 @@ const run = (over: Partial<LastRun> = {}): LastRun => ({
   ...over,
 });
 
-describe("readLastRun", () => {
+describe("subscribeLastRun", () => {
   beforeEach(() => {
     mocks.data = undefined;
   });

@@ -3,13 +3,22 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentRunRecord } from "../lib/engineStatus";
 
-const mocks = vi.hoisted(() => ({ read: vi.fn(), inProgress: null as { environment: string; since: Date } | null }));
+const mocks = vi.hoisted(() => ({
+  read: vi.fn(),
+  inProgress: null as { environment: string; since: Date } | null,
+  push: (() => {}) as (p: unknown) => void,
+}));
 vi.mock("../lib/firebase", () => ({ firestore: () => ({}) }));
 vi.mock("../lib/config", () => ({ webConfig: () => ({ runCollection: "starfish_runs", engineStaleMinutes: 90 }) }));
 // `read` answers for the last finished pass, `inProgress` for a pass's start mark.
 vi.mock("../lib/engineStatus", async (orig) => ({
   ...(await orig<typeof import("../lib/engineStatus")>()),
-  readAgentPass: async (...args: unknown[]) => ({ run: await mocks.read(...args), inProgress: mocks.inProgress }),
+  subscribeAgentPass: (_db: unknown, _collection: string, onData: (p: unknown) => void, onError: (e: Error) => void) => {
+    // A listener: the record as it stands, then each version `mocks.push` hands over.
+    Promise.resolve(mocks.read()).then((run) => onData({ run, inProgress: mocks.inProgress }), onError);
+    mocks.push = onData;
+    return () => {};
+  },
 }));
 
 import { AgentStatus } from "./AgentStatus";

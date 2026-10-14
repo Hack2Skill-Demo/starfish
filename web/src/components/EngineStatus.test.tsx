@@ -6,7 +6,13 @@ import type { LastRun } from "../lib/engineStatus";
 const mocks = vi.hoisted(() => ({ read: vi.fn() }));
 vi.mock("../lib/firebase", () => ({ firestore: () => ({}) }));
 vi.mock("../lib/config", () => ({ webConfig: () => ({ runCollection: "starfish_runs", engineStaleMinutes: 90 }) }));
-vi.mock("../lib/engineStatus", async (orig) => ({ ...(await orig<typeof import("../lib/engineStatus")>()), readLastRun: mocks.read }));
+vi.mock("../lib/engineStatus", async (orig) => ({
+  ...(await orig<typeof import("../lib/engineStatus")>()),
+  subscribeLastRun: (_db: unknown, _collection: string, onData: (r: unknown) => void, onError: (e: Error) => void) => {
+    Promise.resolve(mocks.read()).then(onData, onError);
+    return () => {};
+  },
+}));
 
 import { EngineStatus } from "./EngineStatus";
 

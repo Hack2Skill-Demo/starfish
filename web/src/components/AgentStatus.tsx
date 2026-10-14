@@ -4,13 +4,13 @@
  * (EngineStatus), so the Runs page, which is about agent runs, no longer shows the ingest's status in their place.
  *
  * Between two records it also says what the agent is doing now (`agentActivity`): a pass under way (the start mark each
- * pass stamps on the record), one that started long ago and never ended, or one that is due and has not started. While
- * a pass is under way or due it reads the record every few seconds, so its start and its result show as they happen.
+ * pass stamps on the record), one that started long ago and never ended, or one that is due and has not started. The
+ * record is read live (a snapshot listener), so a pass's start and its result show the moment they are written; while
+ * a pass is under way or due the clock ticks every few seconds, so "started 40 seconds ago" moves too.
  * Between passes a healthy agent is "waiting" (an hourglass), never "running": that word, in blue, is only for a pass
- * under way. Right after an admin's "Run agent now" it says the start was requested and watches the same way until the
- * pass records its start (`lib/agentStart.ts`).
+ * under way. Right after an admin's "Run agent now" it says the start was requested until the pass records its start
+ * (`lib/agentStart.ts`).
  */
-import { useQuery } from "@tanstack/react-query";
 import { Bot, Hourglass } from "lucide-react";
 import { Badge, type BadgeTone } from "./ui/Badge";
 import { StatusCard } from "./StatusCard";
@@ -19,11 +19,12 @@ import { webConfig } from "../lib/config";
 import { formatRecentTime, formatRelativeTime } from "../lib/formatters";
 import { TICK_MS, useNow } from "../lib/useNow";
 import { useAgentStartRequestedAt } from "../lib/agentStart";
+import { useLiveRecord } from "../lib/useLiveRecord";
 import {
   agentActivity,
   judgeAgentRun,
   nextRunAt,
-  readAgentPass,
+  subscribeAgentPass,
   type AgentActivity,
   type AgentPass,
   type AgentRunRecord,
@@ -42,13 +43,16 @@ const BADGE: Record<EngineState, { tone: BadgeTone; label: string }> = {
   never: { tone: "neutral", label: "No agent pass recorded yet" },
 };
 
-/** How often the record is read, and the clock ticks, while a pass is under way or due: its start and end show within this. */
+/** How often the clock ticks while a pass is under way, due or requested: "started 40 seconds ago" moves this often. */
 export const WATCH_MS = 5_000;
-const IDLE_READ_MS = 60_000;
 const WATCH_DUE_MS = 15 * 60_000;
 // The browser's clock and the job's can differ: a pass that recorded its start this soon before the request
 // counts as the one it started.
 const REQUEST_SKEW_MS = 60_000;
+
+// The card is about the pass (the job); "In progress" below counts runs, one per incident a pass works on. A pass with no
+// incident to work on starts none, so the card can say "running" over an empty list: say so where it does.
+const NO_RUNS_YET = "A pass starts a run only for an incident it takes up, so one with nothing to work on starts none.";
 
 /** What the last pass did, in one phrase: why it failed, or what it considered and ran. */
 function lastPass(state: EngineState, run: AgentRunRecord, nowMs: number): string {
@@ -73,7 +77,7 @@ export function AgentStatus({ environment, variant = "line" }: { environment: st
   const staleMinutes = webConfig().engineStaleMinutes;
   const activityAt = (pass: AgentPass | undefined, nowMs: number): AgentActivity =>
     pass ? agentActivity(pass, judgeAgentRun(pass.run, environment, nowMs, staleMinutes), environment, nowMs, staleMinutes) : { kind: "idle" };
-  // A due pass is watched only for a while: a job that never starts should not keep every open page reading.
+  // A due pass is watched only for a while: a job that never starts should not keep every open page ticking fast.
   const requestedAt = useAgentStartRequestedAt();
   // A start this tab requested that the record does not show yet: no pass started since (a start mark, or a finished
   // pass that started after it: one that only ended since was already running), and not long ago.
@@ -87,24 +91,21 @@ export function AgentStatus({ environment, variant = "line" }: { environment: st
     const a = activityAt(pass, nowMs);
     return a.kind === "running" || (a.kind === "due" && nowMs - a.dueAt.getTime() < WATCH_DUE_MS) || awaitingStart(pass, nowMs);
   };
-  const query = useQuery({
-    queryKey: ["engine", "agentPass"],
-    queryFn: () => readAgentPass(firestore(), webConfig().runCollection),
-    refetchInterval: (q) => (watched(q.state.data) ? WATCH_MS : IDLE_READ_MS),
-    retry: false,
-  });
-  // Ticks so "started 40 seconds ago" and "due" move without a new read.
-  const nowMs = useNow(watched(query.data) ? WATCH_MS : TICK_MS);
+  const runCollection = webConfig().runCollection;
+  const record = useLiveRecord<AgentPass>(runCollection, (onData, onError) => subscribeAgentPass(firestore(), runCollection, onData, onError));
+  // Ticks so "started 40 seconds ago" and "due" move between writes.
+  const nowMs = useNow(watched(record.status === "ok" ? record.data : undefined) ? WATCH_MS : TICK_MS);
 
   // A record that can't be read says nothing either way, so say nothing rather than guess.
-  if (query.isPending || query.isError) {
-    return query.isError ? <p className="text-xs text-gray-600 dark:text-gray-400">Agent status unavailable.</p> : null;
+  if (record.status !== "ok") {
+    return record.status === "error" ? <p className="text-xs text-gray-600 dark:text-gray-400">Agent status unavailable.</p> : null;
   }
+  const pass = record.data;
 
-  const health = judgeAgentRun(query.data.run, environment, nowMs, staleMinutes);
+  const health = judgeAgentRun(pass.run, environment, nowMs, staleMinutes);
   const { state, run } = health;
-  const activity = agentActivity(query.data, health, environment, nowMs, staleMinutes);
-  const starting = activity.kind !== "running" && activity.kind !== "overrun" && awaitingStart(query.data, nowMs);
+  const activity = agentActivity(pass, health, environment, nowMs, staleMinutes);
+  const starting = activity.kind !== "running" && activity.kind !== "overrun" && awaitingStart(pass, nowMs);
   const badge =
     activity.kind === "running"
       ? { tone: "info" as const, label: "Agent running" }
@@ -156,10 +157,14 @@ export function AgentStatus({ environment, variant = "line" }: { environment: st
         icon={waiting ? <Hourglass className={`h-4 w-4 ${state === "ok" ? "text-success-700 dark:text-success-400" : "text-warning-700 dark:text-warning-400"}`} aria-hidden /> : undefined}
       >
         {starting && (
-          <p className="text-gray-700 dark:text-gray-300">Start requested: waiting for its job to come up. It shows as running once the pass records its start.</p>
+          <p className="text-gray-700 dark:text-gray-300">
+            Start requested: waiting for its job to come up. It shows as running once the pass records its start. {NO_RUNS_YET}
+          </p>
         )}
         {activity.kind === "running" && (
-          <p className="text-gray-700 dark:text-gray-300">Runs it starts appear below as they start; this card shows its result when it ends.</p>
+          <p className="text-gray-700 dark:text-gray-300">
+            Runs it starts appear below as they start; this card shows its result when it ends. {NO_RUNS_YET}
+          </p>
         )}
         {activity.kind === "overrun" && (
           <p className="text-gray-700 dark:text-gray-300">
