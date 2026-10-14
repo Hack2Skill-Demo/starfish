@@ -263,8 +263,9 @@ src/
   agent/assemble.ts  one incident's inputs: shallow clone at a pinned revision, counter-check, samples, files the incident's OWN
                    stack trace names (never a sample's: a recent log entry is attacker-influenceable, #304);
                    when no frame names a repository file, the one file exporting the function's name (#259,
-                   `agent/sourceByName.ts`, `STARFISH_FUNCTIONS_SOURCE_ROOTS`; ambiguous or capped = none), the rule kept
-                   as `summary.fix.source`; never a structural cause (`causeFrame` reads the stack alone)
+                   `agent/sourceByName.ts`, `STARFISH_FUNCTIONS_SOURCE_ROOTS`; ambiguous or capped = none), then the files it
+                   imports by a relative path, one level, within the 5-file budget (#347, `summary.fix.sourceImports`; unit-tested,
+                   not yet run on the demo project), the rule kept as `summary.fix.source`; never a structural cause (`causeFrame` reads the stack alone)
   scoreboard/      the results format (strict parser), the metrics (ratios keep numerator and denominator; an error or timeout counts
                    against the agent; each path apart) and the Markdown table: `pnpm scoreboard`. `replay.ts`/`corpus.ts` (`pnpm replay`) run
                    the loop's own stages over a frozen corpus with hidden evaluators and write a results file; no real run recorded

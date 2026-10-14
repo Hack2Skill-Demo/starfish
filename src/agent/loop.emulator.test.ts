@@ -301,8 +301,8 @@ describe("runCycle: the run record on the cycle", () => {
     const model = scripted({ triage: [act], fix: [fixOf(GOOD_PATCH)], review: [held] });
     const base = deps(model);
     const loaded = await base.load("inc1");
-    await runCycle({ ...base, load: async () => ({ ...loaded!, source: { rule: "function-name", search: "found" } }) }, key);
-    expect((await cycleDoc()).summary.fix).toMatchObject({ source: "function-name", sourceFiles: 1, sourceSearch: "found" });
+    await runCycle({ ...base, load: async () => ({ ...loaded!, source: { rule: "function-name", search: "found", imports: 0 } }) }, key);
+    expect((await cycleDoc()).summary.fix).toMatchObject({ source: "function-name", sourceFiles: 1, sourceSearch: "found", sourceImports: 0 });
     expect(model.calls.find((c) => c.stage === "fix")!.prompt).toContain(FOUND_BY_NAME_NOTE);
   });
 

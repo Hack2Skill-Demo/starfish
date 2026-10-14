@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { FIX_SCHEMA, FOUND_BY_NAME_NOTE, MAX_FILE_CHARS, MAX_FIX_PATCH_BYTES, MAX_TOTAL_SOURCE_CHARS, proposeFix, renderForFix, type FixRequest } from "./fixer.js";
+import { FIX_SCHEMA, FOUND_BY_NAME_NOTE, FOUND_BY_NAME_WITH_IMPORTS_NOTE, MAX_FILE_CHARS, MAX_FIX_PATCH_BYTES, MAX_TOTAL_SOURCE_CHARS, proposeFix, renderForFix, type FixRequest } from "./fixer.js";
 import type { AskJson } from "./triage.js";
 import { SEEDED_SECRETS } from "../ingest/testSecrets.js";
 import type { Incident } from "../types.js";
@@ -220,6 +220,18 @@ describe("what the fixer shows the model", () => {
     expect(renderForFix(request())).not.toContain(FOUND_BY_NAME_NOTE);
     // With no file shown there is nothing for the note to describe.
     expect(renderForFix(request({ sourceRule: "function-name", files: [] }))).not.toContain(FOUND_BY_NAME_NOTE);
+  });
+
+  it("says the files after the one found by name are the ones it imports, when they are shown (#347)", () => {
+    const files = [
+      { path: "functions/src/orders.ts", content: 'import { trackOutcome } from "./lib/track.js";' },
+      { path: "functions/src/lib/track.ts", content: "export function trackOutcome() {}" },
+    ];
+    const prompt = renderForFix(request({ sourceRule: "function-name", sourceImports: 1, files }));
+    expect(prompt).toContain(FOUND_BY_NAME_WITH_IMPORTS_NOTE);
+    expect(prompt).not.toContain(FOUND_BY_NAME_NOTE);
+    expect(prompt).toContain("--- functions/src/lib/track.ts ---");
+    expect(renderForFix(request({ sourceRule: "function-name", sourceImports: 0, files: files.slice(0, 1) }))).toContain(FOUND_BY_NAME_NOTE);
   });
 
   it("shows nothing beyond the files it was given", () => {

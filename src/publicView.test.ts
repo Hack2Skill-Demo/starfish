@@ -261,8 +261,8 @@ describe("toPublicCycle", () => {
   });
 
   it("keeps which rule found the fixer's source (#259): engine tokens and a count", () => {
-    const copy = toPublicCycle(storedCycle({ summary: { fix: { outcome: "declined", rule: "fixer-declined", source: "function-name", sourceFiles: 1, sourceSearch: "found" } } }), pub)!;
-    expect((copy.summary as Record<string, Record<string, unknown>>).fix).toEqual({ outcome: "declined", rule: "fixer-declined", source: "function-name", sourceFiles: 1, sourceSearch: "found" });
+    const copy = toPublicCycle(storedCycle({ summary: { fix: { outcome: "declined", rule: "fixer-declined", source: "function-name", sourceFiles: 1, sourceSearch: "found", sourceImports: 2 } } }), pub)!;
+    expect((copy.summary as Record<string, Record<string, unknown>>).fix).toEqual({ outcome: "declined", rule: "fixer-declined", source: "function-name", sourceFiles: 1, sourceSearch: "found", sourceImports: 2 });
   });
 
   it("keeps a stage that recorded only what may not be shown, so it still reads as recorded", () => {

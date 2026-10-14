@@ -22,7 +22,14 @@
  * The file found this way is evidence of a weaker kind than a stack frame, and the run record says which rule found the
  * source (loop.ts, `summary.fix.source`). It never makes the cause structural: auto-merge's `causeFrame` is computed from
  * the stack alone (autoMerge.ts), so it stays false for a file found by name.
+ *
+ * The exporting file alone is often not enough (#347): a callable that fails in a local helper it imports
+ * (`./lib/track`) shows the fixer the call, not the code, and the fixer can only decline. So the file's own RELATIVE
+ * imports are shown after it (`followRelativeImports`), one level deep, bounded, each one a file of the repository's own
+ * list that a search could have shown (code, not a test, a declaration, `node_modules` or an excluded path). The
+ * specifiers come from the repository's code, never from incident or sample text (#304).
  */
+import { posix } from "node:path";
 import type { SourceFile } from "./fixer.js";
 import { isExcludedPath } from "./verifyGate.js";
 
@@ -51,6 +58,8 @@ export type NameSearchOutcome =
 export interface SourceProvenance {
   rule: "stack" | "function-name" | "none";
   search?: NameSearchOutcome;
+  /** With `function-name`: how many of the files shown are ones the found file imports (#347), shown after it. */
+  imports?: number;
 }
 
 export interface NameSearchResult {
@@ -87,17 +96,17 @@ export function exportNameOf(functionName: string | undefined): { name: string; 
   return { name: parts[parts.length - 1]!, groups: parts.slice(0, -1) };
 }
 
+/** A file the fixer may be shown as source: code, not a test, a declaration, `node_modules` or an excluded path. */
+function isShowableCode(f: string, excluded: readonly string[]): boolean {
+  if (!CODE_EXT.test(f) || DECLARATION.test(f) || TEST_FILE.test(f)) return false;
+  const segs = f.split("/");
+  if (segs.includes("node_modules") || segs.includes("__tests__")) return false;
+  return !isExcludedPath(f, excluded);
+}
+
 /** The repository files the search may read, sorted. */
 export function nameSearchCandidates(repoFiles: readonly string[], roots: readonly string[], excluded: readonly string[]): string[] {
-  return repoFiles
-    .filter((f) => {
-      if (!CODE_EXT.test(f) || DECLARATION.test(f) || TEST_FILE.test(f)) return false;
-      const segs = f.split("/");
-      if (segs.includes("node_modules") || segs.includes("__tests__")) return false;
-      if (roots.length > 0 && !roots.some((r) => f.startsWith(`${r}/`))) return false;
-      return !isExcludedPath(f, excluded);
-    })
-    .sort();
+  return repoFiles.filter((f) => isShowableCode(f, excluded) && (roots.length === 0 || roots.some((r) => f.startsWith(`${r}/`)))).sort();
 }
 
 const escapeRe = (s: string) => s.replace(/[$]/g, "\\$");
@@ -200,4 +209,76 @@ export async function findSourceByFunctionName(
     if (grouped.length > 0) hits = grouped;
   }
   return hits.length === 1 ? { outcome: "found", file: hits[0]! } : { outcome: "ambiguous" };
+}
+
+/** The most files `followRelativeImports` adds. The loader passes what is left of its own file budget. */
+export const MAX_FOLLOWED_IMPORTS = 4;
+
+// A quoted relative specifier; `quote` is the number of its quote's group, which the closing quote must match.
+const spec = (quote: number) => String.raw`(['"])(\.{1,2}\/[^'"\n]{1,300})` + `\\${quote}`;
+/** `from "./x"` (an import or a re-export), a bare `import "./x"`, `require("./x")` and `import("./x")`. */
+const RELATIVE_SPECIFIER = new RegExp(
+  String.raw`(?<![\w$.])(?:from\s*${spec(1)}|import\s*${spec(3)}|(?:require|import)\s*\(\s*${spec(5)}\s*\))`,
+  "g"
+);
+
+/**
+ * The relative module specifiers `content` names, in order of first appearance, each once. A text scan, not a parser: a
+ * specifier in a comment or a string counts too, which can only add a file the repository's own code names, never one
+ * that does not exist (`resolveRelativeImport` checks the file list).
+ */
+export function relativeImportsOf(content: string): string[] {
+  const out: string[] = [];
+  for (const m of content.matchAll(RELATIVE_SPECIFIER)) {
+    const found = m[2] ?? m[4] ?? m[6];
+    if (found !== undefined && !out.includes(found)) out.push(found);
+  }
+  return out;
+}
+
+// A TypeScript ESM import names the compiled file (`./track.js`): its source is tried first.
+const TS_FOR_JS: Readonly<Record<string, readonly string[]>> = { ".js": [".ts", ".tsx"], ".jsx": [".tsx"], ".mjs": [".mts"], ".cjs": [".cts"] };
+const RESOLVE_EXTS = [".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"];
+
+/**
+ * The repository file a relative specifier in `fromPath` names, as Node and TypeScript would look for it: the path with
+ * a JavaScript extension swapped for its TypeScript source, then as written, then with each code extension, then as a
+ * directory's `index`. Null when it leaves the repository or names no file of `files`.
+ */
+export function resolveRelativeImport(fromPath: string, specifier: string, files: ReadonlySet<string>): string | null {
+  const base = posix.normalize(posix.join(posix.dirname(fromPath), specifier));
+  if (base === ".." || base.startsWith("../") || posix.isAbsolute(base)) return null;
+  const ext = posix.extname(base);
+  const stem = base.slice(0, base.length - ext.length);
+  const tries = [
+    ...(TS_FOR_JS[ext] ?? []).map((e) => stem + e),
+    base,
+    ...RESOLVE_EXTS.map((e) => base + e),
+    ...RESOLVE_EXTS.map((e) => `${base}/index${e}`),
+  ];
+  return tries.find((t) => files.has(t)) ?? null;
+}
+
+/**
+ * The files `file` imports by a relative path, one level deep and at most `max` of them, in the order it names them:
+ * each one a showable code file of the repository's own list, other than `file` itself, and readable (`read` returns
+ * null for one too big, binary or a symlink, which is skipped). Never throws when `read` does not.
+ */
+export async function followRelativeImports(
+  file: SourceFile,
+  repoFiles: readonly string[],
+  read: (rel: string) => Promise<SourceFile | null>,
+  opts: { excluded: readonly string[]; max?: number }
+): Promise<SourceFile[]> {
+  const max = Math.max(0, opts.max ?? MAX_FOLLOWED_IMPORTS);
+  const files = new Set(repoFiles);
+  const out: SourceFile[] = [];
+  for (const specifier of relativeImportsOf(file.content)) {
+    if (out.length >= max) break;
+    const rel = resolveRelativeImport(file.path, specifier, files);
+    if (rel === null || rel === file.path || !isShowableCode(rel, opts.excluded) || out.some((f) => f.path === rel)) continue;
+    const imported = await read(rel);
+    if (imported) out.push(imported);
+  }
+  return out;
 }

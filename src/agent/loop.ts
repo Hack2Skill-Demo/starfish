@@ -724,7 +724,13 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
       if (stop) return stop;
       await spendModelCall();
       const fix = await proposeFix(
-        { subject: loaded.subject, files: loaded.files, ...(loaded.source && { sourceRule: loaded.source.rule }), ...(feedback && { feedback }) },
+        {
+          subject: loaded.subject,
+          files: loaded.files,
+          ...(loaded.source && { sourceRule: loaded.source.rule }),
+          ...(loaded.source?.imports !== undefined && { sourceImports: loaded.source.imports }),
+          ...(feedback && { feedback }),
+        },
         deps.ask
       );
       await note({
@@ -742,6 +748,8 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
           // Which rule found the source the fixer was shown (#259): a file found by the function's name is weaker evidence.
           ...(loaded.source && { source: loaded.source.rule, sourceFiles: loaded.files.length }),
           ...(loaded.source?.search && { sourceSearch: loaded.source.search }),
+          // How many of the files shown are ones the file found by name imports (#347).
+          ...(loaded.source?.imports !== undefined && { sourceImports: loaded.source.imports }),
           ...numbered("alternative", fix.rejectedAlternatives ?? [], MAX_RECORDED_ALTERNATIVES),
         },
       });

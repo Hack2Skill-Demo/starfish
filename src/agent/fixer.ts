@@ -45,6 +45,8 @@ export interface FixRequest {
    * the one that exports the failing function; the model is told so, since the fault may lie in code that file calls.
    */
   sourceRule?: "stack" | "function-name" | "none";
+  /** With `function-name`: how many of `files`, after the first, are files it imports (#347). */
+  sourceImports?: number;
   /** From one failed verify run, when this is the revision round. */
   feedback?: { previousPatchSha256: string; verifyOutput: string };
 }
@@ -97,6 +99,10 @@ or the files that define how the project is tested or verified.`;
 export const FOUND_BY_NAME_NOTE =
   "(No stack frame named a repository file. The file below was chosen because it exports the failing function by name; the fault may be in code it calls, which you were not shown.)";
 
+/** The same, when the files it imports by a relative path are shown after it (#347). */
+export const FOUND_BY_NAME_WITH_IMPORTS_NOTE =
+  "(No stack frame named a repository file. The first file below was chosen because it exports the failing function by name; the files after it are the ones it imports by a relative path, one level deep. The fault may be in any of them, or in code they call, which you were not shown.)";
+
 export const FIX_SCHEMA = {
   type: "object",
   properties: {
@@ -112,7 +118,9 @@ export const FIX_SCHEMA = {
 /** What the model is shown. Source gets shape-only redaction: `token = getToken()` is code, not a leak. */
 export function renderForFix(req: FixRequest): string {
   const parts = [renderForTriage(req.subject), "", "SOURCE CONTEXT"];
-  if (req.sourceRule === "function-name" && req.files.length > 0) parts.push(FOUND_BY_NAME_NOTE, "");
+  if (req.sourceRule === "function-name" && req.files.length > 0) {
+    parts.push((req.sourceImports ?? 0) > 0 && req.files.length > 1 ? FOUND_BY_NAME_WITH_IMPORTS_NOTE : FOUND_BY_NAME_NOTE, "");
+  }
   let budget = MAX_TOTAL_SOURCE_CHARS;
   for (const file of req.files) {
     if (budget <= 0) break;
