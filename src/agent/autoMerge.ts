@@ -332,7 +332,8 @@ export function flat(record: Record<string, unknown>): Record<string, string | n
 
 /**
  * The finished (`done`) cycles of this environment whose `summary.<stage>.state` is one of `states`, at most `limit`.
- * Equality only: no composite index. A seeded synthetic cycle (seedDemo.ts) is never one: nothing it names exists (#192).
+ * Equality filters only, which Firestore can serve by merging single-field indexes; firestore.indexes.json also
+ * carries the (environment, state, summary.<stage>.state) composite, so the query never depends on that. A seeded synthetic cycle (seedDemo.ts) is never one: nothing it names exists (#192).
  * A cycle still running (the loop records the merge candidate just before it finishes), or one that ended otherwise, is
  * never one either: `moveRecord` refuses to move its record, and a refusal read as the daily cap told a person every
  * pass that the cap was reached (#364). A revert record is only ever written on a done cycle, and done is final.
