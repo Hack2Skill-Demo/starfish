@@ -7,6 +7,7 @@ import type { Firestore } from "firebase-admin/firestore";
 import { loadChildProcessBasics } from "../config.js";
 import { createGitCheckout, createLoader, toIncident, type CheckoutFn } from "./assemble.js";
 import { agentPreflight } from "./preflight.js";
+import { triageIncident } from "./triage.js";
 import { testConfig } from "../testConfig.js";
 import { fingerprintOf } from "../ingest/fingerprint.js";
 import { sanitize } from "../ingest/redact.js";
@@ -83,6 +84,15 @@ describe("toIncident", () => {
     const log = toIncident("b", { environment: "demo", signalSource: "other", monitoringCount: "7" });
     expect(log.signalSource).toBeUndefined();
     expect(log.monitoringCount).toBeUndefined();
+  });
+
+  it("carries every source the store writes, and only those (#363)", () => {
+    for (const source of ["log", "monitoring", "overflow", "platform-quota"]) {
+      expect(toIncident("a", { environment: "demo", signalSource: source }).signalSource).toBe(source);
+    }
+    for (const junk of ["", "Overflow", 1, null, { s: "overflow" }]) {
+      expect(toIncident("a", { environment: "demo", signalSource: junk }).signalSource).toBeUndefined();
+    }
   });
 });
 
@@ -203,6 +213,26 @@ describe("createLoader", () => {
   it("lets a failed checkout throw, so the cycle's lease expires and it is resumed", async () => {
     const loader = createLoader({ db: fakeDb({ i1: incident }), config, logging: logging(), checkout: async () => { throw new Error("clone failed"); } });
     await expect(loader.load("i1")).rejects.toThrow("clone failed");
+  });
+
+  // #363: toIncident once carried only "monitoring", so these two gates never fired in the deployed loop: an overflow
+  // incident reached the model, and a quota incident was declined `counter-check-zero` without a word.
+  it("loads an overflow and a Cloud Run quota incident with their source, so triage hands them to a person with no model call (#363)", async () => {
+    const docs = {
+      ovf: { ...incident, signalSource: "overflow", fingerprint: "ovf-abc" },
+      pq: { ...incident, functionName: "cloud-run-platform-quota", signalSource: "platform-quota", fingerprint: "pq-abc", stackTrace: "" },
+    };
+    // The counter-check finds nothing: a quota incident's pseudo-function never logs, which is what declined it before.
+    const loader = createLoader({ db: fakeDb(docs), config, logging: logging([]), checkout: checkoutFn() });
+    const ask = vi.fn(async () => { throw new Error("the model must not be asked"); });
+    for (const [id, source, rule] of [["ovf", "overflow", "high-cardinality-overflow"], ["pq", "platform-quota", "platform-quota"]] as const) {
+      const s = await loader.load(id);
+      expect(s!.subject.incident.signalSource).toBe(source);
+      const r = await triageIncident(s!.subject, ask);
+      expect(r).toMatchObject({ decision: "notify", rule });
+    }
+    expect(ask).not.toHaveBeenCalled();
+    await loader.disposeAll();
   });
 
   it("treats an unknown status as new rather than trusting it", async () => {
