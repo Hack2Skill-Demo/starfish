@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentRunRecord } from "../lib/engineStatus";
@@ -6,7 +6,7 @@ import type { AgentRunRecord } from "../lib/engineStatus";
 const mocks = vi.hoisted(() => ({
   read: vi.fn(),
   inProgress: null as { environment: string; since: Date } | null,
-  push: (() => {}) as (p: unknown) => void,
+  push: (() => {}) as (pass: unknown) => void,
 }));
 vi.mock("../lib/firebase", () => ({ firestore: () => ({}) }));
 vi.mock("../lib/config", () => ({ webConfig: () => ({ runCollection: "starfish_runs", engineStaleMinutes: 90 }) }));
@@ -14,7 +14,7 @@ vi.mock("../lib/config", () => ({ webConfig: () => ({ runCollection: "starfish_r
 vi.mock("../lib/engineStatus", async (orig) => ({
   ...(await orig<typeof import("../lib/engineStatus")>()),
   subscribeAgentPass: (_db: unknown, _collection: string, onData: (p: unknown) => void, onError: (e: Error) => void) => {
-    // A listener: the record as it stands, then each version `mocks.push` hands over.
+    // A listener: the record as it stands, then each later version `mocks.push` hands over.
     Promise.resolve(mocks.read()).then((run) => onData({ run, inProgress: mocks.inProgress }), onError);
     mocks.push = onData;
     return () => {};
@@ -233,6 +233,19 @@ describe("AgentStatus (#274)", () => {
     await screen.findByText("Agent waiting");
     expect(screen.getByTestId("agent-status")).toHaveTextContent("Next pass due now");
     expect(screen.getByTestId("agent-status")).toHaveTextContent("Waiting for it to start");
+  });
+
+  it("shows a pass's start and its result as the record changes, with no new read (live)", async () => {
+    mocks.read.mockResolvedValue(pass({ intervalMinutes: 60 }));
+    markAgentStartRequested(Date.now() - 5_000);
+    renderStatus();
+    expect(await screen.findByText("Agent starting")).toBeInTheDocument();
+    act(() => mocks.push({ run: pass({ intervalMinutes: 60 }), inProgress: { environment: "demo", since: new Date(Date.now() - 1_000) } }));
+    expect(screen.getByText("Agent running")).toBeInTheDocument();
+    act(() => mocks.push({ run: pass({ startedAt: new Date(Date.now() - 60_000), finishedAt: new Date(), considered: 3, ran: 2, intervalMinutes: 60 }), inProgress: null }));
+    expect(screen.getByText("Agent waiting")).toBeInTheDocument();
+    expect(screen.getByTestId("agent-status")).toHaveTextContent("3 candidates, 2 run");
+    expect(mocks.read).toHaveBeenCalledTimes(1);
   });
 
   it("doesn't alarm when the record can't be read", async () => {

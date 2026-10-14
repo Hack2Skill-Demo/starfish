@@ -11,7 +11,16 @@ import { toast } from "./ui/toast";
 import { useAuth } from "../auth/authCore";
 import { requestRetriage } from "../lib/incidents";
 
-export function RetryRunButton({ incidentId, ask = requestRetriage }: { incidentId: string; ask?: (incidentId: string, uid: string) => Promise<void> }) {
+export function RetryRunButton({
+  incidentId,
+  ask = requestRetriage,
+  size = "sm",
+}: {
+  incidentId: string;
+  ask?: (incidentId: string, uid: string) => Promise<void>;
+  /** `md` matches the run hero's other actions (44 px). */
+  size?: "sm" | "md";
+}) {
   const { user, roles } = useAuth();
   const [state, setState] = useState<"idle" | "busy" | "requested">("idle");
   if (!user || roles.length === 0) return null;
@@ -31,7 +40,7 @@ export function RetryRunButton({ incidentId, ask = requestRetriage }: { incident
   return (
     <Button
       variant="secondary"
-      size="sm"
+      size={size}
       onClick={click}
       disabled={state !== "idle"}
       aria-busy={state === "busy"}
