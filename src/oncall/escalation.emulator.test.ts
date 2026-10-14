@@ -485,6 +485,14 @@ describe("the call sequence", () => {
     expect(placed).toHaveLength(1);
   });
 
+  it("1: a logged incident (its issue filed) is acknowledged too", async () => {
+    await db.collection(cfg.incidentCollection).doc("inc1").update({ status: "logged", statusChangedBy: "starfish" });
+    await hook("/twilio/voice", { AnsweredBy: "human" }, 0);
+    await hook("/twilio/gather", { Digits: "1" }, 0);
+    const incident = (await db.collection(cfg.incidentCollection).doc("inc1").get()).data();
+    expect(incident).toMatchObject({ status: "acknowledged", statusChangedBy: "oncall:p1" });
+  });
+
   it("2: texts the link to the incident and nothing else of it, once, then asks again; hanging up moves on", async () => {
     const r = await hook("/twilio/gather", { Digits: "2" }, 0);
     expect(r.body).toContain("The link is on its way.");

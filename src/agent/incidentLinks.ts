@@ -6,11 +6,13 @@
  * Only those fields are written, in a transaction, and only while the incident is still in the cycle's recurrence
  * (`recurrenceCount` equals the cycle's `recurrence`, same environment): the store's recurrence update clears them
  * (src/ingest/store.ts), and a late write from the cycle of a fix that failed must not put them back on the regression.
- * The status is never touched: an issue filed is not `logged`, and a merged PR is not `resolved`.
+ * A `new` incident becomes `logged` with any of these writes (tracked on GitHub now), attributed to `starfish`; every
+ * other status is left as it is: an operator's `acknowledged` says more, a `recurred` regression is more urgent, and a
+ * closed incident stays closed. A merged PR never makes it `resolved`: only a person resolves one.
  *
  * Best effort, and never throws: the links are a convenience for the UI, and the cycle has already recorded them.
  */
-import type { Firestore } from "firebase-admin/firestore";
+import { FieldValue, type Firestore } from "firebase-admin/firestore";
 import type { StarfishConfig } from "../config.js";
 import type { PublicViewConfig } from "../publicView.js";
 import { refreshPublicIncident } from "../publicViewStore.js";
@@ -23,6 +25,9 @@ export type IncidentLink =
 
 const isNumber = (v: unknown): v is number => typeof v === "number" && Number.isInteger(v) && v > 0;
 const isUrl = (v: unknown): v is string => typeof v === "string" && /^https?:\/\//.test(v) && v.length <= 500;
+
+/** Who the status change is attributed to (`statusChangedBy`): the engine, never an operator's uid. */
+export const LOGGED_BY = "starfish";
 
 /** The link a recorded run event carries: an issue filed, or a pull request opened. Null for every other event. */
 export function linkFromEvent(event: RunEvent): IncidentLink | null {
@@ -47,17 +52,20 @@ export async function linkIncident(db: Firestore, cfg: Pick<StarfishConfig, "inc
       if (!snap.exists || d === undefined) return false;
       const recurrence = typeof d.recurrenceCount === "number" ? d.recurrenceCount : 0;
       if (d.environment !== key.environment || recurrence !== key.recurrence) return false;
+      // Tracked on GitHub now: `new` -> `logged` (the reason it is reserved), in the same write as the link. Not on a
+      // retired incident (closed for good, src/ingest/retire.ts).
+      const logged = d.status === "new" && d.retired !== true ? { status: "logged", statusChangedBy: LOGGED_BY, updatedAt: FieldValue.serverTimestamp() } : {};
       if (link.kind === "issue") {
-        tx.update(ref, { githubIssueNumber: link.number, githubIssueUrl: link.url });
+        tx.update(ref, { githubIssueNumber: link.number, githubIssueUrl: link.url, ...logged });
       } else if (link.kind === "pr") {
         // A pull request is open when it is opened; reconcile.ts records what happens to it afterwards, which a resumed
         // attempt re-linking the same PR must not overwrite.
-        tx.update(ref, { githubPrNumber: link.number, githubPrUrl: link.url, ...(d.githubPrNumber !== link.number && { githubPrState: "open" }) });
+        tx.update(ref, { githubPrNumber: link.number, githubPrUrl: link.url, ...(d.githubPrNumber !== link.number && { githubPrState: "open" }), ...logged });
       } else {
         // Written in full on every read reconcile.ts makes, so a link whose first copy failed (the open's, or an earlier
         // state's) is repaired by the next read. Never over another pull request's link.
         if (d.githubPrNumber !== undefined && d.githubPrNumber !== link.number) return false;
-        tx.update(ref, { githubPrNumber: link.number, githubPrState: link.state, ...(link.url !== undefined && isUrl(link.url) && { githubPrUrl: link.url }) });
+        tx.update(ref, { githubPrNumber: link.number, githubPrState: link.state, ...(link.url !== undefined && isUrl(link.url) && { githubPrUrl: link.url }), ...logged });
       }
       return true;
     });

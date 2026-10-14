@@ -10,6 +10,7 @@ import type { Firestore } from "firebase-admin/firestore";
 import { GithubError, type CheckRun, type PullRequestState } from "../integrations/githubPr.js";
 import { MAX_SCAN, reconcilePullRequests, selectPrCycles, type PrReader, type ReconcileConfig } from "./reconcile.js";
 import { PUBLIC_VIEW_OFF } from "../testConfig.js";
+import { linkIncident } from "./incidentLinks.js";
 
 if (!process.env.FIRESTORE_EMULATOR_HOST) {
   throw new Error("reconcile.emulator.test.ts needs the Firestore emulator: run `pnpm test:emulator`");
@@ -179,7 +180,7 @@ describe("reconcilePullRequests", () => {
     expect((await doc("a_r0")).summary.prState).toMatchObject({ checks: "not-configured", checksRequired: 0 });
   });
 
-  it("copies the PR's state onto the incident's link (#194), only for the same PR and recurrence, and never its status", async () => {
+  it("copies the PR's state onto the incident's link (#194), only for the same PR and recurrence, and keeps a status that is not new", async () => {
     const incidents = db.collection(cfg.incidentCollection);
     await incidents.doc("a").set({ environment: "demo", status: "logged", githubPrNumber: 1, githubPrState: "open" });
     await incidents.doc("b").set({ environment: "demo", status: "recurred", recurrenceCount: 1, githubPrNumber: 2, githubPrState: "open" });
@@ -206,6 +207,32 @@ describe("reconcilePullRequests", () => {
     await seed("a_r0", 1, { summary: { pr: { opened: true, number: 1, url: "https://github.com/acme/shop/pull/1" }, prState: { state: "open", checks: "pending", checkedAt: "2026-10-06T11:00:00.000Z" } } });
     const gh = fakeGithub({ 1: { state: "open" } });
     await reconcilePullRequests({ db, config: { ...cfg, verifyChecks: [] }, client: gh.client, now: () => t0 });
-    expect((await incidents.doc("a").get()).data()).toMatchObject({ githubPrNumber: 1, githubPrUrl: "https://github.com/acme/shop/pull/1", githubPrState: "open" });
+    expect((await incidents.doc("a").get()).data()).toMatchObject({ githubPrNumber: 1, githubPrUrl: "https://github.com/acme/shop/pull/1", githubPrState: "open", status: "logged", statusChangedBy: "starfish" });
+  });
+
+  it("an issue filed or a PR opened makes a new incident logged, and leaves every other status as it is", async () => {
+    const incidents = db.collection(cfg.incidentCollection);
+    const key = (incidentId: string) => ({ incidentId, environment: "demo", recurrence: 0 });
+    const statuses = ["new", "acknowledged", "logged", "recurred", "resolved", "ignored"] as const;
+    for (const status of statuses) await incidents.doc(status).set({ environment: "demo", status, statusChangedBy: "op1" });
+    for (const status of statuses) {
+      expect(await linkIncident(db, cfg, key(status), { kind: "issue", number: 5, url: "https://github.com/acme/shop/issues/5" })).toBe(true);
+    }
+    expect((await incidents.doc("new").get()).data()).toMatchObject({ status: "logged", statusChangedBy: "starfish", githubIssueNumber: 5 });
+    expect((await incidents.doc("new").get()).data()!.updatedAt).toBeInstanceOf(Timestamp);
+    for (const status of statuses.filter((s) => s !== "new")) {
+      expect((await incidents.doc(status).get()).data()).toMatchObject({ status, statusChangedBy: "op1", githubIssueNumber: 5 });
+    }
+    // A PR opened does the same, when no issue was filed first.
+    await incidents.doc("p").set({ environment: "demo", status: "new" });
+    expect(await linkIncident(db, cfg, key("p"), { kind: "pr", number: 7, url: "https://github.com/acme/shop/pull/7" })).toBe(true);
+    expect((await incidents.doc("p").get()).data()).toMatchObject({ status: "logged", githubPrNumber: 7, githubPrState: "open" });
+    // Never on another recurrence's incident, nor a retired one.
+    await incidents.doc("r").set({ environment: "demo", status: "new", recurrenceCount: 1 });
+    expect(await linkIncident(db, cfg, key("r"), { kind: "issue", number: 5, url: "https://github.com/acme/shop/issues/5" })).toBe(false);
+    expect((await incidents.doc("r").get()).data()!.status).toBe("new");
+    await incidents.doc("x").set({ environment: "demo", status: "new", retired: true });
+    await linkIncident(db, cfg, key("x"), { kind: "issue", number: 5, url: "https://github.com/acme/shop/issues/5" });
+    expect((await incidents.doc("x").get()).data()!.status).toBe("new");
   });
 });

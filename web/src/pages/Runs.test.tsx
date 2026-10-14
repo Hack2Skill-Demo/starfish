@@ -571,6 +571,60 @@ describe("Runs page", () => {
     expect(screen.getByText("Showing the 500 most recently updated runs; older ones are not listed.")).toBeInTheDocument();
   });
 
+  describe("pages of 10", () => {
+    // 27 runs, newest first: run-00 is the newest.
+    const many = () => Array.from({ length: 27 }, (_, i) => cycle(`run-${String(i).padStart(2, "0")}_r0`, { updatedAt: ts(now - 1000 - i * 1000) }));
+    const listed = () => within(screen.getByRole("region", { name: "Runs" })).getAllByRole("listitem");
+
+    it("shows 10 runs at a time, newest first, and pages through the rest", async () => {
+      renderRuns();
+      act(() => mocks.cyclesCb!(many(), false));
+      expect(screen.getByRole("heading", { name: "All runs · 27" })).toBeInTheDocument();
+      expect(listed()).toHaveLength(10);
+      const pager = screen.getByRole("navigation", { name: "Runs pages" });
+      expect(pager).toHaveTextContent("Page 1 of 3 · 1–10 of 27");
+      expect(within(pager).getByRole("button", { name: "Newer" })).toBeDisabled();
+
+      await userEvent.click(within(pager).getByRole("button", { name: "Older" }));
+      expect(pager).toHaveTextContent("Page 2 of 3 · 11–20 of 27");
+      expect(listed()[0]).toHaveTextContent("run-10");
+      await userEvent.click(within(pager).getByRole("button", { name: "Older" }));
+      expect(pager).toHaveTextContent("Page 3 of 3 · 21–27 of 27");
+      expect(listed()).toHaveLength(7);
+      expect(within(pager).getByRole("button", { name: "Older" })).toBeDisabled();
+    });
+
+    it("reads incidents only for the page shown", () => {
+      renderRuns();
+      act(() => mocks.cyclesCb!(many(), false));
+      const asked = new Set(mocks.getIncident.mock.calls.map((c) => c[0] as string));
+      expect(asked).toEqual(new Set(Array.from({ length: 10 }, (_, i) => `run-${String(i).padStart(2, "0")}`)));
+    });
+
+    it("opens a linked run on its own page", () => {
+      renderRuns("/runs?run=run-24_r0");
+      act(() => mocks.cyclesCb!(many(), false));
+      expect(screen.getByRole("navigation", { name: "Runs pages" })).toHaveTextContent("Page 3 of 3");
+      expect(screen.getByRole("button", { current: true })).toHaveTextContent("run-24");
+    });
+
+    it("offers older runs only from the last page", async () => {
+      renderRuns();
+      act(() => mocks.cyclesCb!(many(), true));
+      expect(screen.queryByRole("button", { name: "Show older runs" })).toBeNull();
+      const pager = screen.getByRole("navigation", { name: "Runs pages" });
+      await userEvent.click(within(pager).getByRole("button", { name: "Older" }));
+      await userEvent.click(within(pager).getByRole("button", { name: "Older" }));
+      expect(screen.getByRole("button", { name: "Show older runs" })).toBeInTheDocument();
+    });
+
+    it("has no pager for 10 runs or fewer", () => {
+      renderRuns();
+      act(() => mocks.cyclesCb!(many().slice(0, 10), false));
+      expect(screen.queryByRole("navigation", { name: "Runs pages" })).toBeNull();
+    });
+  });
+
   it("puts the runs under a heading per day", () => {
     renderRuns();
     act(() => mocks.cyclesCb!([cycle("inc-a_r0"), cycle("old_r0", { updatedAt: ts(now - 3 * 86_400_000) })], false));

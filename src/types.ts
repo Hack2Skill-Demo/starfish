@@ -82,9 +82,10 @@ export interface LogCounterCheck {
  *
  * - `new`          just aggregated, nobody has looked at it
  * - `acknowledged` an operator is aware of it
- * - `logged`       tracked in an external issue. Reserved: nothing sets it yet.
- *                  An operator can't (firestore.rules), and the agent filing the
- *                  issue only links it (`githubIssueUrl`)
+ * - `logged`       tracked on GitHub: the agent filed its issue or opened its PR,
+ *                  and it was `new` (src/agent/incidentLinks.ts). Only the engine
+ *                  sets it (firestore.rules); still open, and an operator can
+ *                  acknowledge it
  * - `resolved`     fixed. Set by an operator (or an admin's retire); never
  *                  automatically, not when the linked issue closes or the PR merges
  * - `recurred`     a REGRESSION: it was `resolved` and its fingerprint fired again,

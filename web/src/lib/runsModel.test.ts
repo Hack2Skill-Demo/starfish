@@ -6,6 +6,8 @@ import {
   formatClock,
   formatDuration,
   groupByDay,
+  pageIndexOf,
+  pageOf,
   runSummary,
   splitTrace,
   trackMarks,
@@ -660,5 +662,29 @@ describe("the run's summary, its error, and the list's strip", () => {
     expect(trackMarks(gap, T0)).toEqual(["done", "none", "none", "done", "none"]);
     const live = cycle({ stage: "triage", summary: { triage: { rule: "r" } } });
     expect(trackMarks(live, T0)).toEqual(["done", "running", "none", "none", "none"]);
+  });
+});
+
+describe("pageOf: the Runs list, 10 at a time", () => {
+  const items = Array.from({ length: 27 }, (_, i) => i);
+  it("cuts pages of 10 and says which items each holds", () => {
+    expect(pageOf(items, 0)).toEqual({ items: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9], page: 0, pages: 3, from: 1, to: 10 });
+    expect(pageOf(items, 2)).toMatchObject({ items: [20, 21, 22, 23, 24, 25, 26], page: 2, from: 21, to: 27 });
+  });
+  it("clamps a page out of range, so a list that shrank never shows an empty page", () => {
+    expect(pageOf(items, 9).page).toBe(2);
+    expect(pageOf(items, -1).page).toBe(0);
+    expect(pageOf(items, Number.NaN).page).toBe(0);
+    expect(pageOf(items.slice(0, 5), 2)).toMatchObject({ page: 0, pages: 1, items: [0, 1, 2, 3, 4] });
+  });
+  it("is one empty page for an empty list", () => {
+    expect(pageOf([], 0)).toEqual({ items: [], page: 0, pages: 1, from: 0, to: 0 });
+  });
+  it("finds the page a run is on", () => {
+    const ids = items.map(String);
+    expect(pageIndexOf(ids, "0")).toBe(0);
+    expect(pageIndexOf(ids, "10")).toBe(1);
+    expect(pageIndexOf(ids, "26")).toBe(2);
+    expect(pageIndexOf(ids, "x")).toBeNull();
   });
 });

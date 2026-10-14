@@ -67,8 +67,8 @@ export function HandoffCard({
     acknowledge:
       incident.status === "acknowledged" ? (
         <Badge tone="success">Acknowledged</Badge>
-      ) : incident.status !== "new" ? (
-        <span className="text-xs text-gray-600 dark:text-gray-400">Only a new incident can be acknowledged; this one is {incident.status}.</span>
+      ) : nextStatus(incident.status, "acknowledge") === null ? (
+        <span className="text-xs text-gray-600 dark:text-gray-400">Only a new or logged incident can be acknowledged; this one is {incident.status}.</span>
       ) : (
         statusButton("acknowledge", "Acknowledge")
       ),
