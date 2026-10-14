@@ -83,6 +83,8 @@ export type AcquireResult =
       resumed: boolean;
       leaseExpiresAt: Date;
       reconsidered?: ReconsiderTrigger;
+      /** With `reconsidered`: the state the cycle was reopened from, so the run's note says what it was (#366). */
+      reopenedFrom?: "declined" | "waiting-human";
       /** What earlier attempts of this cycle (this consideration) spent: model calls, revisions (#182). */
       modelCalls: number;
       revisions: number;
@@ -214,7 +216,7 @@ export async function acquireLease(db: Firestore, cfg: CycleConfig, key: CycleKe
           ...(state === "declined" && { "summary.notify": FieldValue.delete() }),
           updatedAt: Timestamp.fromDate(now),
         });
-        return { acquired: true, cycleId: id, attempt: 1, resumed: false, leaseExpiresAt: new Date(expires), reconsidered: trigger, modelCalls: 0, revisions: 0 };
+        return { acquired: true, cycleId: id, attempt: 1, resumed: false, leaseExpiresAt: new Date(expires), reconsidered: trigger, reopenedFrom: state, modelCalls: 0, revisions: 0 };
       }
     }
     if (state !== "running") {

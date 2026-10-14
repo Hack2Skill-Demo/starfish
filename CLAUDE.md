@@ -195,8 +195,8 @@ src/
   agent/fixer.ts   stage 2: minimal patch or honest decline from a stubbed-testable model call;
                    fails closed, redacts both ways. The model's hunks are put where their text is in the files it was shown
                    (`patchNormalize.ts`: it puts `a/` and `b/` on the bare file headers the model writes, which was the live
-                   cause of "does not apply"; it never invents a change, and a hunk it cannot find leaves the file's hunks as
-                   written for the gate to refuse; #317). Run by `pnpm agent` (deployed: declined 2026-10-08, #259; 2026-10-12 proposed a
+                   cause of "does not apply"; it never invents a change, and a hunk it cannot find, or finds more than once (the
+                   model's line number never picks, #366), leaves the file's hunks as written for the gate to refuse; #317). Run by `pnpm agent` (deployed: declined 2026-10-08, #259; 2026-10-12 proposed a
                    patch for demo-app and the verify gate refused it as not applying, twice, #317)
   agent/cycle.ts   cycle per (incident, recurrence), transactional lease with fencing, append-only run events
                    (redacted), the cycle's run record (summary.<stage>, path) and its model-call and revision counts (#182); infrastructure errors throw, logical refusals are returned. Run by `pnpm agent` (deployed to the demo project; dry run off since 2026-10-10)
@@ -228,7 +228,7 @@ src/
                    allowed
   agent/autoMerge.ts  the switches (`mergeBlockedBy`, with the candidate's merge case still listed), gate 2 (`certaintyGate`,
                    pure over the run record, now reported in the evidence, not required) and the merge step after the
-                   pass: a merge case recorded, fresh switches + incident status, the floor, no earlier merge of the
+                   pass, over finished (`done`) cycles only (#364): a merge case recorded, fresh switches + incident status, the floor, no earlier merge of the
                    incident still watched or reverted (#240), the index path's evidence PR (`kind: index`, no revert
                    watch),
                    PR into the configured base with the head Starfish built, every
@@ -257,7 +257,9 @@ src/
                    cooldown + cap per 24 h; never over ignored/resolved.
                    cycle.ts reopens the same cycle in the lease transaction, so still one issue and one PR per recurrence.
                    A WAITING-HUMAN cycle (a person was told) is reopened only on an operator's `retriageRequestedAt` (the Runs
-                   page's "Retry with agent"), never over an open PR: for a result Starfish itself got wrong (#317). It reuses
+                   page's "Retry with agent") later than the cycle settled (`settledAt`, which an escalation's later event does
+                   not move, #365), never over an open PR: for a result Starfish itself got wrong (#317); its run says
+                   "Handed to a person earlier; retried", a declined one's "Declined earlier; triaged again" (#366). It reuses
                    the recorded issue, alert and message, so a retry files and sends nothing twice, and without a new request
                    (or a change in Starfish) it ends where it did. Emulator-tested; not yet run on the demo project
   agent/assemble.ts  one incident's inputs: shallow clone at a pinned revision, counter-check, samples, files the incident's OWN

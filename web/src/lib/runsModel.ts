@@ -478,7 +478,8 @@ export interface Step {
 }
 
 /**
- * A `cycle` note of this type: a declined cycle was reopened and its stages run again (src/agent/reconsider.ts,
+ * A `cycle` note of this type: a declined cycle (or, on an operator's retry, one that waited for a person) was reopened
+ * and its stages run again (src/agent/reconsider.ts,
  * src/agent/cycle.ts). The same cycle, so its earlier stages' events are still in its log.
  */
 const REOPENED_TYPE = "reconsidered";
