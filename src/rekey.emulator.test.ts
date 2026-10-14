@@ -112,7 +112,7 @@ describe("rekeyIncidents on the emulator (#362)", () => {
       expect((d.updatedAt as Timestamp).toMillis()).toBe(Date.parse("2026-10-02T00:00:00Z"));
     }
     const key = (await keys().doc(incidentKeyId(ENV, NEW_FP)).get()).data()!;
-    expect(key).toMatchObject({ incidentId: "early", environment: ENV, fingerprint: NEW_FP, appliedWindows: ["w1", "w3", "w2"] });
+    expect(key).toMatchObject({ incidentId: "early", environment: ENV, fingerprint: NEW_FP, appliedWindows: ["w1", "w2", "w3"] });
     // The old keys are left as they were: the store re-checks content, so a key whose incident moved is ignored.
     expect((await keys().doc(incidentKeyId(ENV, "old-a")).get()).get("incidentId")).toBe("late");
   });

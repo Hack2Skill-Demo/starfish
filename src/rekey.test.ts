@@ -103,9 +103,20 @@ describe("keyTarget: the incident the store converges on", () => {
 });
 
 describe("mergeAppliedWindows", () => {
-  it("keeps each window once, in the order first seen, bounded like a key", () => {
-    expect(mergeAppliedWindows([["w1", "w2"], ["w2", "w3"], []])).toEqual(["w1", "w2", "w3"]);
-    const many = Array.from({ length: APPLIED_WINDOWS_RETAINED + 5 }, (_, i) => `w${i}`);
+  // Window ids as ingest/window.ts makes them: the boundaries in ISO form, so text order is time order.
+  const win = (h: number) => {
+    const at = (x: number) => new Date(Date.UTC(2026, 9, 1) + x * 3_600_000).toISOString();
+    return `${at(h)}..${at(h + 1)}`;
+  };
+  it("keeps each window once, oldest first, bounded like a key", () => {
+    expect(mergeAppliedWindows([[win(1), win(2)], [win(2), win(3)], []])).toEqual([win(1), win(2), win(3)]);
+    const many = Array.from({ length: APPLIED_WINDOWS_RETAINED + 5 }, (_, i) => win(i));
     expect(mergeAppliedWindows([many])).toEqual(many.slice(-APPLIED_WINDOWS_RETAINED));
+  });
+
+  it("keeps the newest windows whatever order the keys were read in", () => {
+    const many = Array.from({ length: APPLIED_WINDOWS_RETAINED + 5 }, (_, i) => win(i));
+    const half = Math.floor(many.length / 2);
+    expect(mergeAppliedWindows([many.slice(half), many.slice(0, half)])).toEqual(many.slice(-APPLIED_WINDOWS_RETAINED));
   });
 });

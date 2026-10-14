@@ -139,11 +139,15 @@ export function keyTarget(members: readonly RekeyRecord[]): string | undefined {
   return undefined;
 }
 
-/** The applied windows of several keys as one list, each once, in the order first seen, the newest kept. Pure. */
+/**
+ * The applied windows of several keys as one list, each once, oldest first, the newest kept. Pure. A window id is its
+ * boundaries in ISO form (`ingest/window.ts`), so text order is time order; sorting keeps the newest whatever order the
+ * old keys were read in (the store drops from the front, `APPLIED_WINDOWS_RETAINED`).
+ */
 export function mergeAppliedWindows(lists: readonly (readonly string[])[]): string[] {
   const seen = new Set<string>();
   for (const list of lists) for (const w of list) seen.add(w);
-  return [...seen].slice(-APPLIED_WINDOWS_RETAINED);
+  return [...seen].sort().slice(-APPLIED_WINDOWS_RETAINED);
 }
 
 function appliedWindows(snap: DocumentSnapshot | undefined): string[] {
