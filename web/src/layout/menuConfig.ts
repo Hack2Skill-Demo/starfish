@@ -21,8 +21,9 @@ export const menuItems: MenuItem[] = [
   { id: "overview", label: "Overview", path: "/overview", icon: LayoutDashboard },
   { id: "incidents", label: "Incidents", path: "/incidents", icon: Activity },
   { id: "runs", label: "Runs", path: "/runs", icon: Workflow },
-  // Guests see Settings read-only: it shows the connections and says to sign in to change them.
-  { id: "settings", label: "Settings", path: "/settings", icon: Settings, roles: ["admin", "guest"] },
+  // Operators and guests see Settings read-only: the connections and the settings in force, no editor and no On-call
+  // (admins only, Settings.tsx). An admin edits.
+  { id: "settings", label: "Settings", path: "/settings", icon: Settings, roles: ["admin", "operator", "guest"] },
 ];
 
 /**

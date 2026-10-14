@@ -8,9 +8,15 @@ describe("menuConfig", () => {
     expect(matchesPath("/incidents", "/")).toBe(false);
   });
 
-  it("hides admin-only items from operators", () => {
-    expect(visibleMenuItems(menuItems, ["operator"]).map((i) => i.id)).toEqual(["overview", "incidents", "runs"]);
+  it("shows an operator Settings (read-only on the page) as well as an admin (#355)", () => {
+    expect(visibleMenuItems(menuItems, ["operator"]).map((i) => i.id)).toEqual(["overview", "incidents", "runs", "settings"]);
     expect(visibleMenuItems(menuItems, ["admin"]).map((i) => i.id)).toEqual(["overview", "incidents", "runs", "settings"]);
+  });
+
+  it("hides a role-gated item from a role it does not name", () => {
+    const items = [...menuItems, { ...menuItems[0]!, id: "admin-only", path: "/admin-only", roles: ["admin" as const] }];
+    expect(visibleMenuItems(items, ["operator"]).map((i) => i.id)).not.toContain("admin-only");
+    expect(visibleMenuItems(items, ["admin"]).map((i) => i.id)).toContain("admin-only");
   });
 
   it("shows a guest the incidents and a view-only Settings, never anything role-gated beyond that", () => {
