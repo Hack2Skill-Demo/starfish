@@ -49,7 +49,7 @@ pnpm spike            # the Gemini fix-quality spike (needs .env + Vertex access
 pnpm ingest           # one ingest run: next window(s) of the watched project's logs → the store
 PROJECT_ID=<p> scripts/deploy-gcp.sh   # Cloud Run job + Scheduler + Secret Manager; DRY_RUN=1 prints the plan (docs/deploy.md)
 # The whole setup, in order (docs/setup.md): scripts/preflight-gcp.sh → deploy-gcp.sh → pnpm grant-operator →
-# scripts/smoke-gcp.sh → scripts/deploy-web.sh. pnpm status: is the deployed engine alive? Run once on the demo project (2026-10-05), the smoke test included; the agent job was deployed there on 2026-10-07 and, since the Deploy engine workflow's first run (2026-10-10), runs hourly with dry run off and auto-merge on for the demo target; no incident has gone through it yet.
+# scripts/smoke-gcp.sh → scripts/deploy-web.sh. pnpm status: is the deployed engine alive? Run once on the demo project (2026-10-05), the smoke test included; the agent job was deployed there on 2026-10-07 and, since the Deploy engine workflow's first run (2026-10-10), runs hourly with dry run off and auto-merge on for the demo target; real incidents have gone through it as far as a PR on the demo app (demo-app #41, #42, #49); nothing merged.
 scripts/setup-github-deploy.sh   # one-time (re-run after it changes): lets GitHub Actions deploy with no key (WIF); deploy-on-merge is then a repo variable that needs required reviewers on `deploy` (#301) (docs/deploy.md); run on the demo project 2026-10-10, before it granted Hosting for the web UI (#265), required a run on main in the provider's condition (#299) and refused an Editor/Owner build account (#300, which preflight-gcp.sh also FAILs on); those two are written and tested with stubs, not run: re-run it there
 scripts/ingest-cadence.sh status|recording|restore|now   # the ingest's tick for recording the demo, and a run now (#65); DRY_RUN=1 prints
 pnpm scoreboard       # scoreboard/RESULTS.md from recorded runs (#10; format in scoreboard/FORMAT.md; no run recorded yet)
@@ -57,6 +57,7 @@ pnpm feedback-corpus -- --out=<new dir>   # operators' noise/log corrections -> 
 pnpm replay           # replay the agent's stages over a corpus into a results file (#10); --check-corpus checks the cases without a model; needs Vertex for a real run, none recorded
 pnpm escalate         # one tick of the phone escalation (#37); the agent pass runs it too; off unless STARFISH_PHONE_ESCALATION; never run against real Twilio
 pnpm scrub            # dry-run: how many stored incidents still hold a credential/email (--apply to rewrite)
+pnpm rekey            # dry-run: after a fingerprint change, stored incidents whose fingerprint moved (#362); --apply needs --project; built, emulator-tested, never run on a real project
 pnpm demo-users       # dry-run: the judges' sign-in accounts (operator role, random passwords printed once); --apply/--remove need --project, refuses unless STARFISH_ENV=demo; never run on a real project
 pnpm seed-demo        # dry-run: the synthetic, badged demo history (#12); --apply/--remove need --project, refuses unless STARFISH_ENV=demo
 pnpm public-view      # dry-run: the guests' trimmed copies (#18) to write or remove (--apply needs --project); never run on a real project
@@ -141,11 +142,18 @@ src/
                    recorded by error and cause names/codes only, a timeout as one (`modelCallFailure`, #334)
   spike.ts         fix-quality spike over fixtures/incidents/*.json
   ingest/          Cloud Logging → classified, fingerprinted, deduped incidents
-    parseLogEntry  parse + noise suppression + the shared log filter
+    parseLogEntry  parse + noise suppression + the shared log filter. A message that carries its own stack (the
+                   firebase-functions logger writes one into it) is split at its first V8 frame line (`messageStack.ts`,
+                   #361): the title is the message (fingerprint, classifier and the guests' copy read it), the whole text the
+                   stack unless the entry has a stack field. Counter-check samples are split the same way
     classify       error type (source class > code > HTTP status > keywords), service
-    fingerprint    sha256(canonical functionName : first 100 chars of the normalized error core: leading wrappers
+    fingerprint    sha256(canonical functionName : first 100 chars of the normalized error core: a stack after the title
+                   cut off (#361, so a stored record still holding frames hashes like a new one), then leading wrappers
                    `Unhandled error`, `<Name>Error:` and the function's own `<fn> failed:` stripped, so one bug logged in two
-                   shapes is one incident, #318);
+                   shapes is one incident, #318). A change to it moves stored fingerprints: `pnpm rekey` (`src/rekey.ts`,
+                   #362) gives every live incident of the environment the current one and points its key at the incident
+                   the store converges on (earliest open, else latest resolved; none merged or deleted; tombstones and
+                   retired incidents kept), one transaction per fingerprint. Unit- and emulator-tested; never run on a real project;
                    volatile ids/paths/timestamps/counts are collapsed first. Monitoring-only (`mon-`),
                    high-cardinality overflow (`ovf-`, its fixed per-day message hashed unnormalized) and consolidated Cloud Run
                    quota (`pq-`) have their own namespaces
@@ -184,7 +192,7 @@ src/
   agent/triage.ts  stage 1 of the agent loop (#8): act/notify/decline for one incident, and how far to go
                    (`triageLevel`: noise, log, fix, merge): on act the model may name one of the admin's merge cases
                    (`mergeCases`; `missing-index` never offered), kept only if listed. Deterministic gates before the
-                   model (an overflow incident, #303, or a consolidated Cloud Run quota one goes to a person with no model call), local validation after it; run by `pnpm agent` (deployed to the demo project, dry run: ran on real incidents 2026-10-08)
+                   model (an overflow incident, #303, or a consolidated Cloud Run quota one goes to a person with no model call), local validation after it; run by `pnpm agent` (deployed to the demo project: has triaged real incidents since 2026-10-08, dry run off since 2026-10-10)
   triageRules.ts   the rules engine and the feedback engine (#267), pure, shared with the UI: an admin's class rules
                    (`classRules`, `STARFISH_CLASS_RULES`: match error type/code, service, function -> noise, log or fix) and an
                    operator's correction of one incident (`corrected*` on it, history in `incidents/{id}/corrections`,
@@ -195,8 +203,8 @@ src/
   agent/fixer.ts   stage 2: minimal patch or honest decline from a stubbed-testable model call;
                    fails closed, redacts both ways. The model's hunks are put where their text is in the files it was shown
                    (`patchNormalize.ts`: it puts `a/` and `b/` on the bare file headers the model writes, which was the live
-                   cause of "does not apply"; it never invents a change, and a hunk it cannot find leaves the file's hunks as
-                   written for the gate to refuse; #317). Run by `pnpm agent` (deployed: declined 2026-10-08, #259; 2026-10-12 proposed a
+                   cause of "does not apply"; it never invents a change, and a hunk it cannot find, or finds more than once (the
+                   model's line number never picks, #366), leaves the file's hunks as written for the gate to refuse; #317). Run by `pnpm agent` (deployed: declined 2026-10-08, #259; 2026-10-12 proposed a
                    patch for demo-app and the verify gate refused it as not applying, twice, #317)
   agent/cycle.ts   cycle per (incident, recurrence), transactional lease with fencing, append-only run events
                    (redacted), the cycle's run record (summary.<stage>, path) and its model-call and revision counts (#182); infrastructure errors throw, logical refusals are returned. Run by `pnpm agent` (deployed to the demo project; dry run off since 2026-10-10)
@@ -228,7 +236,7 @@ src/
                    allowed
   agent/autoMerge.ts  the switches (`mergeBlockedBy`, with the candidate's merge case still listed), gate 2 (`certaintyGate`,
                    pure over the run record, now reported in the evidence, not required) and the merge step after the
-                   pass: a merge case recorded, fresh switches + incident status, the floor, no earlier merge of the
+                   pass, over finished (`done`) cycles only (#364): a merge case recorded, fresh switches + incident status, the floor, no earlier merge of the
                    incident still watched or reverted (#240), the index path's evidence PR (`kind: index`, no revert
                    watch),
                    PR into the configured base with the head Starfish built, every
@@ -257,7 +265,9 @@ src/
                    cooldown + cap per 24 h; never over ignored/resolved.
                    cycle.ts reopens the same cycle in the lease transaction, so still one issue and one PR per recurrence.
                    A WAITING-HUMAN cycle (a person was told) is reopened only on an operator's `retriageRequestedAt` (the Runs
-                   page's "Retry with agent"), never over an open PR: for a result Starfish itself got wrong (#317). It reuses
+                   page's "Retry with agent") later than the cycle settled (`settledAt`, which an escalation's later event does
+                   not move, #365), never over an open PR: for a result Starfish itself got wrong (#317); its run says
+                   "Handed to a person earlier; retried", a declined one's "Declined earlier; triaged again" (#366). It reuses
                    the recorded issue, alert and message, so a retry files and sends nothing twice, and without a new request
                    (or a change in Starfish) it ends where it did. Emulator-tested; not yet run on the demo project
   agent/assemble.ts  one incident's inputs: shallow clone at a pinned revision, counter-check, samples, files the incident's OWN
@@ -369,7 +379,8 @@ src/
                    env defaults, last-good fallback, a frozen snapshot per run
   publicView.ts    the guests' TRIMMED COPIES (#18), pure: one allowlist per kind (`toPublicIncident`, `toPublicCycle`,
                    `toPublicEvent`), every field named and its value's shape checked; only for `STARFISH_PUBLIC_ENVIRONMENTS`
-                   (default `demo`). Never detail, traces, tenant ids, the log filter, model words, patches or event data;
+                   (default `demo`). The title is its first line only (#361). Never detail, traces, tenant ids, the log filter,
+                   model words, patches or event data;
                    an event's one-line summary only for the engine-worded stages. `publicView: 1` marks a copy
   publicViewStore.ts  writes them (Admin SDK only): an event's copy in the event's own transaction (cycle.ts); an
                    incident's or cycle's refreshed after each engine write from what was committed (store.ts, cycle.ts,
@@ -398,7 +409,8 @@ collection-group query over `events`, with its own rule and index; a guest's rea
 with more says older ones are not drawn, #326,
 `web/src/lib/runs.ts`; a run waiting for the person it told, on an open incident, gets a "What you can do now" card
 (`components/HandoffCard.tsx`: acknowledge, fix and resolve, retry, correct triage, ignore, each beside its control; the
-same list `src/handoff.ts` puts in the Slack "needs a human" message); the waterfall logic is pure in `runsModel.ts`: a step with no event is "not
+same list `src/handoff.ts` puts in the Slack "needs a human" message; a viewer with no role, a guest, reads one line instead:
+a signed-in team member takes it from here, #360); the waterfall logic is pure in `runsModel.ts`: a step with no event is "not
 reached", a cycle whose lease ran out is not "in progress"; the hero card's corner button shows the run full width (the run
 list hidden; only while a run is shown), kept per browser like the sidebar's collapse; a dark hero card opens the run (the error, its count, how far it got, the actions); the step log sits under the track,
 newest first (oldest first on request), with triage's

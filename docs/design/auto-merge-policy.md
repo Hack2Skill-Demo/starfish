@@ -1,7 +1,9 @@
 # Auto-merge policy: Gemini decides how far to go, inside an admin's limits
 
 > **Status: built for the demo target behind default-off switches (#9); other targets stay
-> PR-only. Never run against real GitHub.** Auto-merge (code fixes and the missing-index evidence
+> PR-only. Never merged anything on real GitHub.** On the demo project the switches are on for the demo target
+> since 2026-10-10, and the safety floor has refused a real pull request there (demo-app #49), so a person was
+> told and nothing was merged. Auto-merge (code fixes and the missing-index evidence
 > PR) and fast-revert are written and tested against real git, a fake GitHub API and the Firestore
 > emulator. A target can auto-merge only if the deployment lists it in
 > `STARFISH_AUTO_MERGE_TARGETS` (the demo), an admin turns `autoMerge` on in Settings **and** lists
@@ -382,8 +384,14 @@ It also exposes the **rules engine** (the class table above, per project) and th
 engine** (reclassification history). Both are built: class rules under Runtime settings, the correction and
 its history on an incident's page (above).
 
-GitHub and Slack integration and the settings page are designed; the settings page exists but
-only describes the connections today.
+What is built of that: the Settings page edits the runtime settings, Gemini's project, region and model and the
+class rules among them, and shows which credentials the agent job holds ("configured", never "connected"). The GitHub
+and Slack integrations are built and run from the demo project's agent job: one repository (`STARFISH_GITHUB_REPO`,
+its base branch `STARFISH_GITHUB_BASE_BRANCH`) gets the incident's issue and the pull request (on real GitHub since
+2026-10-12; Starfish's merge, evidence comment and revert never run there), and Slack gets two messages through two
+webhooks, the on-call "needs a human" one and the optional `#ops-alerts` one (real Slack since 2026-10-11). Those are
+set when deploying, not on the page. Still planned: a repository per purpose (indexes and rules apart from code),
+labels, and a channel per purpose (a "healed" one included) chosen on the settings page.
 
 ## Before auto-merge is turned on for a target
 

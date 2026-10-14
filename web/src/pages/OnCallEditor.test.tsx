@@ -1,7 +1,7 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Ctx, type StarfishAuthCtx } from "../auth/authCore";
 import { DEFAULT_POLICY } from "../../../src/oncallSchema";
 
@@ -39,6 +39,9 @@ function renderEditor() {
 }
 
 describe("OnCallEditor (#37)", () => {
+  afterEach(() => {
+    vi.restoreAllMocks(); // the window.confirm spies
+  });
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.readOnCall.mockResolvedValue({
@@ -92,5 +95,70 @@ describe("OnCallEditor (#37)", () => {
     await userEvent.click(screen.getByRole("button", { name: "Save on-call policy" }));
     expect(await screen.findByText(/Wait must be/)).toBeInTheDocument();
     expect(mocks.savePolicy).not.toHaveBeenCalled();
+  });
+
+  const waitInput = () => screen.getByText("Wait before the first call (minutes)").closest("label")!.querySelector("input")!;
+  const rota = (over: { policy?: object; people?: object[] } = {}) => ({
+    policy: { ...DEFAULT_POLICY },
+    people: [{ id: "p1", name: "Ada", role: "primary", maskedPhone: "+1 ••• ••• ••42", state: "confirmed" }],
+    ...over,
+  });
+
+  it("keeps unsaved policy edits when a person is added and the rota is read again (#358)", async () => {
+    renderEditor();
+    await screen.findByText("Ada");
+    await userEvent.clear(waitInput());
+    await userEvent.type(waitInput(), "37");
+    // The refetch after the add: a new object, the same policy, one more person.
+    mocks.readOnCall.mockResolvedValue(
+      rota({ people: [...rota().people, { id: "p3", name: "Linus", role: "primary", maskedPhone: "+1 ••• ••• ••99", state: "pending" }] })
+    );
+    await userEvent.type(screen.getByLabelText("Name"), "Linus");
+    await userEvent.type(screen.getByLabelText("Phone number"), "+15550000199");
+    await userEvent.click(screen.getByRole("button", { name: "Add person" }));
+    await screen.findByText("Linus");
+    expect(waitInput()).toHaveValue("37");
+  });
+
+  it("keeps unsaved policy edits when a person is removed (#358)", async () => {
+    mocks.readOnCall.mockResolvedValue(rota());
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    mocks.removePerson.mockResolvedValue(undefined);
+    renderEditor();
+    await screen.findByText("Ada");
+    await userEvent.clear(waitInput());
+    await userEvent.type(waitInput(), "42");
+    mocks.readOnCall.mockResolvedValue(rota({ people: [] }));
+    await userEvent.click(screen.getByRole("button", { name: "Remove" }));
+    await screen.findByText("Nobody on the rota yet.");
+    expect(waitInput()).toHaveValue("42");
+  });
+
+  it("loads the stored policy again when a refetch brings a different one", async () => {
+    mocks.readOnCall.mockResolvedValue(rota());
+    mocks.removePerson.mockResolvedValue(undefined);
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    renderEditor();
+    await screen.findByText("Ada");
+    await userEvent.clear(waitInput());
+    await userEvent.type(waitInput(), "42");
+    // Another admin changed the policy meanwhile: the stored one wins, as before.
+    mocks.readOnCall.mockResolvedValue(rota({ policy: { ...DEFAULT_POLICY, waitMinutes: 15 }, people: [] }));
+    await userEvent.click(screen.getByRole("button", { name: "Remove" }));
+    await waitFor(() => expect(waitInput()).toHaveValue("15"));
+  });
+
+  it("shows what was saved after a save, even when the refetch brings back the same policy", async () => {
+    mocks.readOnCall.mockResolvedValue(rota());
+    mocks.savePolicy.mockResolvedValue(undefined);
+    renderEditor();
+    await screen.findByText("Ada");
+    await userEvent.clear(waitInput());
+    await userEvent.type(waitInput(), " 20 ");
+    mocks.readOnCall.mockResolvedValue(rota({ policy: { ...DEFAULT_POLICY, waitMinutes: 20 } }));
+    await userEvent.click(screen.getByRole("button", { name: "Save on-call policy" }));
+    await waitFor(() => expect(mocks.savePolicy).toHaveBeenCalled());
+    expect(mocks.savePolicy.mock.calls[0]![3]).toMatchObject({ waitMinutes: 20 });
+    await waitFor(() => expect(waitInput()).toHaveValue("20"));
   });
 });

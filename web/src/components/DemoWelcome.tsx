@@ -36,10 +36,12 @@ const PAGES: { name: string; text: string }[] = [
 
 const STEP_TITLES = ["Meet Starfish", "How an incident moves", "Take a look around"] as const;
 
-/** The focusable elements of the dialog, in order, for keeping Tab inside it. */
+/** The focusable elements of the dialog, in order, for keeping Tab inside it (the last step's checkbox included, #359). */
 function focusables(root: HTMLElement): HTMLElement[] {
   return Array.from(
-    root.querySelectorAll<HTMLElement>('a[href], button:not([disabled]), [tabindex]:not([tabindex="-1"])'),
+    root.querySelectorAll<HTMLElement>(
+      'a[href], button:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex="-1"])',
+    ),
   );
 }
 
@@ -69,6 +71,17 @@ export function DemoWelcome({
     return () => before?.focus?.();
   }, []);
 
+  // Next and Back can unmount the button that was pressed ("Next" is gone on the last step, "Back" on the first), and
+  // focus would fall to the page, outside the overlay that holds Escape and the Tab trap (#359). Each new step puts
+  // focus on its heading instead, so it is also read out.
+  const heading = useRef<HTMLHeadingElement>(null);
+  const shownStep = useRef(step);
+  useEffect(() => {
+    if (shownStep.current === step) return;
+    shownStep.current = step;
+    heading.current?.focus();
+  }, [step]);
+
   const onKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Escape") {
       e.stopPropagation();
@@ -80,7 +93,9 @@ export function DemoWelcome({
     if (items.length === 0) return;
     const first = items[0];
     const end = items[items.length - 1];
-    if (e.shiftKey && (document.activeElement === first || document.activeElement === panel.current)) {
+    // Shift+Tab from the first control, or from something the trap does not list (the panel, a step's heading), wraps.
+    const active = document.activeElement as HTMLElement | null;
+    if (e.shiftKey && (active === first || !active || !items.includes(active))) {
       e.preventDefault();
       end.focus();
     } else if (!e.shiftKey && document.activeElement === end) {
@@ -213,7 +228,7 @@ export function DemoWelcome({
             <p className="text-xs font-medium uppercase tracking-wide text-gray-600 dark:text-gray-400">
               Step {step + 1} of {STEP_TITLES.length}
             </p>
-            <h2 id={titleId} className="mt-1 text-lg font-semibold text-gray-900 dark:text-white">
+            <h2 id={titleId} ref={heading} tabIndex={-1} className="mt-1 text-lg font-semibold text-gray-900 focus:outline-none dark:text-white">
               {STEP_TITLES[step]}
             </h2>
           </div>

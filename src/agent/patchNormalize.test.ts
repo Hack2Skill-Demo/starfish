@@ -170,6 +170,32 @@ describe("normalizePatch (#317)", () => {
     expect(gitAccepts(out, { [PATH]: SOURCE })).toBe(false);
   });
 
+  // #366: the old side was once placed at the match nearest the model's line number, which is its own arithmetic.
+  it("leaves a hunk whose old side is in the file twice as written: the model's line number never picks between them", () => {
+    const src = [
+      "export function getA(db) {",
+      "  const doc = db.read();",
+      "  return doc.value;",
+      "}",
+      "export function getB(db) {",
+      "  const doc = db.read();",
+      "  return doc.value;",
+      "}",
+      "",
+    ].join("\n");
+    const patch = (start: number) =>
+      [`--- a/x.ts`, `+++ b/x.ts`, `@@ -${start},2 +${start},2 @@`, "   const doc = db.read();", "-  return doc.value;", "+  return doc?.value ?? null;", ""].join("\n");
+    for (const start of [2, 6, 40]) {
+      const p = patch(start);
+      expect(normalizePatch(p, [{ path: "x.ts", content: src }])).toBe(p);
+    }
+    // The same hunk with one more line of context that places it once is rebuilt.
+    const unique = [`--- a/x.ts`, `+++ b/x.ts`, "@@ -40,3 +40,3 @@", " export function getB(db) {", "   const doc = db.read();", "-  return doc.value;", "+  return doc?.value ?? null;", " }", ""].join("\n");
+    const out = normalizePatch(unique, [{ path: "x.ts", content: src }]);
+    expect(out).toContain("@@ -5,4 +5,4 @@");
+    expect(gitAccepts(out, { "x.ts": src })).toBe(true);
+  });
+
   it("leaves a file it was not shown, and a patch it cannot read, exactly as written", () => {
     const other = [`--- a/other.ts`, `+++ b/other.ts`, "@@ -1,1 +1,1 @@", "-a", "+b", ""].join("\n");
     expect(normalizePatch(other, files)).toBe(other);

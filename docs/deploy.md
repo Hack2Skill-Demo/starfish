@@ -3,14 +3,16 @@
 `scripts/deploy-gcp.sh` puts the ingest on Google Cloud: a Cloud Run **job** that Cloud Scheduler
 starts on a cron, under its own service account, with the image built from the `Dockerfile`.
 
-> **Status: the ingest part has run once, on the demo project (2026-10-05)**, from a terminal: the ingest job and its
+> **Status: the ingest part was first deployed on the demo project (2026-10-05)**, from a terminal: the ingest job and its
 > schedule, followed by the smoke test (`scripts/smoke-gcp.sh`). The agent job (`DEPLOY_AGENT=1`, `github-actions`
 > isolation) was deployed there from a terminal on 2026-10-07 and ran hourly in dry run: on 2026-10-08 it triaged three
-> incidents with Gemini and its fix stage declined each (#259); verify, review and a pull request have not been reached on a
-> real incident. The `cloud-run-job` verify job has never been deployed. The admin API (`DEPLOY_ADMIN_API=1`) was deployed once
+> incidents with Gemini and its fix stage declined each (#259). The `cloud-run-job` verify job has never been deployed. The admin API (`DEPLOY_ADMIN_API=1`) was deployed once
 > on 2026-10-07 (see its section), and the Deploy engine workflow first ran on 2026-10-10 (a dry run, then the real deploy, after `setup-github-deploy.sh`): it
 > redeployed ingest, the agent and the admin API, and since then the agent runs with **dry run off, auto-merge on for the demo target
-> and the missing-index repair on**. No incident has gone through it since, so nothing has been opened, merged or repaired yet. The
+> and the missing-index repair on**. Since then it has posted both Slack messages (from 2026-10-11) and filed issues on the demo
+> app, and from 2026-10-12 real incidents have gone through the verify step (the demo app's own CI), Gemini's review and on to a
+> pull request (demo-app #41, #42 and #49). Nothing has been merged or repaired yet: the merge, the fast revert and the index
+> repair have never run against real GitHub or Google, and no phone call has been placed. The
 > Deploy web UI workflow has run twice on merges (2026-10-10) and failed both times before publishing anything: the deployer had
 > no Hosting role (#265). `setup-github-deploy.sh` now grants it; it has to be run again on the project before the workflow can
 > work, and that has not happened yet. The script's whole plan is pinned by `scripts/deploy-gcp.test.mjs`
@@ -102,7 +104,7 @@ the value as a new version (over stdin, never printed or passed as an argument),
 **What the Settings page shows.** Storing a secret does not change the Settings page by itself: the secrets are mounted on the agent job only, and the
 browser can't read them. At the start of each `pnpm agent` pass the job writes which of them it holds (booleans, never a value) to
 `starfish_runs/integrations`, and GitHub and Slack then read "Token configured" / "Webhook configured" with the time it was reported. Until the
-agent has run once the cards say "Not connected yet". "Configured" means set, not working: nothing has called GitHub or Slack for real.
+agent has run once the cards say "Not connected yet". "Configured" means set, not working: the report checks that a credential is present, never that a call with it succeeds.
 
 **Slack (#17).** With `DEPLOY_AGENT=1` and `STARFISH_SLACK_WEBHOOK_ONCALL=https://hooks.slack.com/services/...` set, the script stores the
 webhook as a version of its own secret, `starfish-slack-oncall` (over stdin, never printed; any other URL is refused, unechoed),
@@ -111,7 +113,7 @@ GitHub token. Add `AGENT_EXTRA_ENV_VARS="STARFISH_UI_URL=https://<site>.web.app"
 Without a webhook nothing Slack-shaped is created. The agent is a dry run by default and a dry run **sends nothing**: the cycle's
 record says `dry-run`. To post for real, turn dry run off (`STARFISH_DRY_RUN=false` in `AGENT_EXTRA_ENV_VARS`, or an admin on the Settings page; `EXTRA_ENV_VARS` may not set it, #147), which also lets a configured GitHub client open pull requests.
 A failed delivery is recorded on the cycle (`summary.notify`: `failed`, the status and Slack's short error code, never the URL) and the cycle still
-finishes. Delivery is at-least-once: after a crash between the post and its record a resumed cycle posts again. Never run against real Slack.
+finishes. Delivery is at-least-once: after a crash between the post and its record a resumed cycle posts again. Posting to real Slack from the demo project's agent job since 2026-10-11 (#330), both messages.
 The optional `#ops-alerts` "new incident" webhook, `STARFISH_SLACK_WEBHOOK_ALERTS`, is handled exactly the same way in a secret of its own,
 `starfish-slack-alerts` (agent's account, agent job, the same `--update-secrets` flag), and recorded as `summary.alert`.
 
@@ -148,8 +150,9 @@ Twilio and the Firestore emulator; **never run against real Twilio**.
 
 `loadGithubToken()` (`src/config.ts`) reads that variable, and the pull-request opener
 (`src/integrations/githubPr.ts`) is its only user. The opener is tested against a local git remote
-and a fake GitHub API, **not against real GitHub**, and the only job that calls it (the agent job, deployed
-2026-10-07) runs in dry run, so the token has cloned the repository but opened nothing. The deploy script sets `STARFISH_GITHUB_REPO` (from `AGENT_REPO`) on the
+and a fake GitHub API, and the only job that calls it is the agent job (deployed 2026-10-07, dry run off since
+2026-10-10). On the demo project it has opened pull requests on real GitHub since 2026-10-12 (demo-app #41, #42 and #49);
+its merge, evidence comment and revert have never run against real GitHub (#330). The deploy script sets `STARFISH_GITHUB_REPO` (from `AGENT_REPO`) on the
 agent job only; without it the opener cannot be built.
 
 **The incident's issue (#17).** For every incident the agent acts on or escalates (not a declined one) it files one GitHub issue in
@@ -445,7 +448,8 @@ part least likely to work first time; if it fails, deploy once with the box tick
 
 **What the run log holds:** the script's own progress lines and `gcloud` output. The workflow never turns on
 shell tracing, passes no secret, and the auth step writes a credentials *file* that refers to the token exchange rather
-than holding a key. A real run is the check that no value leaks, and it has not happened (#75's done-when).
+than holding a key. A real run is the check that no value leaks: the workflow has run on the demo project since 2026-10-10, and no reading
+of those logs for leaked values is recorded yet (#75's done-when).
 
 **What a `dry_run` checks (#175).** The script's dry run makes no `gcloud` call, and the auth step only writes a
 credentials file, so neither touches Google. A `dry_run` therefore adds one step before the script, "Check the sign-in",
@@ -595,7 +599,7 @@ Alerting → Edit notification channels). Uptime checks are billed beyond a free
 Scheduler job `starfish-agent-tick` (hourly at :30), under its own service account `starfish-agent` (the store's
 `starfish` database only, Gemini, `logging.viewer` on the watched project for the counter-check, the one secret). It
 runs `pnpm agent` (`src/agentCli.ts`): pick open incidents with no settled cycle, check the repository out, run triage,
-fix, verify and review as a **dry run** (which, with `github-actions` isolation, still pushes the patch to a `starfish/<cycle>` branch: below).
+fix, verify and review, as a **dry run** by default (which, with `github-actions` isolation, still pushes the patch to a `starfish/<cycle>` branch: below).
 
 The agent holds those credentials, so it **never runs the target repository's code**: the verify step is isolated, and
 `VERIFY_ISOLATION` says where. There are two, and the first is the default and the one decided for the demo.
@@ -710,8 +714,8 @@ back to the fixer once. A verify job that cannot be started, writes no result be
 limit plus 300 s), or writes something that is not a result **throws**: the cycle's lease expires and it is
 resumed, counted against its attempts. A forged or mismatched result is refused.
 
-**What is still not true.** Nothing here has opened a pull request: the agent runs in dry run. It has read Cloud Logging
-and asked Gemini on the demo project (2026-10-08), but no patch of its own has yet reached verify. The verify job's image is this repository's engine image (Node,
+**What is still not true.** None of this has run on a real project: the demo project's verify step is the target's own
+CI (`github-actions`, above), which has judged the agent's patches there since 2026-10-12. The verify job's image is this repository's engine image (Node,
 pnpm, git): a target repository that needs another toolchain needs another image. The Deploy engine workflow's
 deployer needs more for this (the verify bucket, the agent account's own IAM policy): run `setup-github-deploy.sh` with
 `VERIFY_ISOLATION=cloud-run-job`; see the table above.
@@ -798,10 +802,10 @@ repository variable `STARFISH_WEB_ADMIN_API_URL` to it and run Deploy web UI (#2
 `ADMIN_API_ORIGINS` and redeploying takes every browser origin away again: the script always sets it, empty included (#233).
 
 > **Status: written; tested with stubs for every rule and over a real local HTTP server; the deploy plan is pinned by a dry
-> run. Deployed once to the demo project on 2026-10-07 from a terminal. The real token check against Firebase Auth ran there: an
+> run. Deployed to the demo project on 2026-10-07 from a terminal, and redeployed by the Deploy engine workflow since 2026-10-10. The real token check against Firebase Auth ran there: an
 > unauthenticated call got the 401, every sign-in got the same 401 until the service's account was given
 > `roles/firebaseauth.viewer` by hand (the revocation check is an Auth lookup; the script now grants it), and then
-> "Run ingest now" ran from the UI as an admin. Retire, the Twilio routes, App Check and a call from another origin have not
+> "Run ingest now" ran from the UI as an admin. Retire, "Run agent now", the Twilio routes, App Check and a call from another origin have not
 > been exercised, and `GET /healthz` is not reachable on a `run.app` URL (Google's front end answers it; `GET /api/health` was added for that,
 > and has not been tried on Cloud Run yet).**
 
@@ -828,7 +832,9 @@ trigger #65 asks for: anyone with `roles/run.developer` on the job can run it.
 
 ## What is most likely to go wrong the first time
 
-The ingest path ran once on a real project (the demo project, 2026-10-05); the smoke test passed there too; the agent job and the Actions workflows have not run. The likely first failures, and what they mean:
+The ingest path was first deployed to a real project (the demo project) from a terminal on 2026-10-05, and the smoke test passed there too;
+the agent job has run there hourly since 2026-10-07, the Deploy engine workflow has deployed it since 2026-10-10, and the Deploy web UI
+workflow's two runs failed before publishing (#265). The likely first failures on a new project, and what they mean:
 
 - **The build is denied** ("Build failed because the default service account is missing required IAM permissions", seen
   on a first run). `gcloud run jobs deploy --source` builds as the Compute Engine default account, which a newer
@@ -846,9 +852,10 @@ The ingest path ran once on a real project (the demo project, 2026-10-05); the s
   `setup-github-deploy.sh` run again).
 - **An alert when ingestion stops.** The UI shows it; nothing pages anyone (an item on #6).
 - **The admin API has run once, not fully.** It was deployed to the demo project on 2026-10-07 and "Run ingest now" worked from the UI
-  ([above](#the-admin-api-run-ingest-now-and-retire-an-incident-63-65)); Retire has not been tried against it. The UI's two buttons appear only once the site is built with the service's URL. Without it, for recording a demo, see [the cadence script](#recording-the-demo-a-shorter-tick-and-a-run-now-65).
-- **The agent has run only in dry run.** Deployed to the demo project on 2026-10-07; triage and fix drafting have run on real
-  incidents, verify, review and a pull request have not. The agent job deploys with `DEPLOY_AGENT=1`, verified by the target's
+  ([above](#the-admin-api-run-ingest-now-and-retire-an-incident-63-65)); Retire and "Run agent now" have not been tried against it. The UI's three buttons appear only once the site is built with the service's URL. Without it, for recording a demo, see [the cadence script](#recording-the-demo-a-shorter-tick-and-a-run-now-65).
+- **The agent has not merged anything.** Deployed to the demo project on 2026-10-07, dry run off since 2026-10-10; triage and
+  fix drafting have run on real incidents since 2026-10-08, and since 2026-10-12 the verify step, the review and a pull request
+  too (demo-app #41, #42 and #49). The merge, the fast revert and the phone escalation have never run for real. The agent job deploys with `DEPLOY_AGENT=1`, verified by the target's
   CI or by a separate credential-less job ([above](#the-agent-and-where-its-tests-run-74)); `in-process` verification is
   not a sandbox and is for a machine with nothing to protect.
 - **Cost.** Cloud Run jobs, Scheduler (three free jobs) and Secret Manager (a few free versions) sit

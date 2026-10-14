@@ -366,10 +366,18 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
     await note({
       stage: "cycle",
       type: lease.reconsidered ? "reconsidered" : "started",
+      // A run that waited for a person was never declined: only an operator's Retry reopens one (reconsider.ts).
       summary: lease.reconsidered
-        ? `Declined earlier; triaged again: ${RECONSIDER_SUMMARY[lease.reconsidered]}`
+        ? lease.reopenedFrom === "waiting-human"
+          ? `Handed to a person earlier; retried: ${RECONSIDER_SUMMARY[lease.reconsidered]}`
+          : `Declined earlier; triaged again: ${RECONSIDER_SUMMARY[lease.reconsidered]}`
         : `Attempt ${lease.attempt}${lease.resumed ? " (resumed)" : ""}`,
-      data: { attempt: lease.attempt, resumed: lease.resumed, ...(lease.reconsidered && { trigger: lease.reconsidered }) },
+      data: {
+        attempt: lease.attempt,
+        resumed: lease.resumed,
+        ...(lease.reconsidered && { trigger: lease.reconsidered }),
+        ...(lease.reopenedFrom && { reopenedFrom: lease.reopenedFrom }),
+      },
     });
 
     // Asked before every stage and before anything is opened: a cycle stops at the next step after an

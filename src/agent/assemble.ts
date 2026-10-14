@@ -103,6 +103,10 @@ const iso = (v: unknown): string | undefined => {
   return d instanceof Date && !Number.isNaN(d.getTime()) ? d.toISOString() : str(v);
 };
 
+const SIGNAL_SOURCES: readonly NonNullable<Incident["signalSource"]>[] = ["log", "monitoring", "overflow", "platform-quota"];
+const isSignalSource = (v: unknown): v is NonNullable<Incident["signalSource"]> =>
+  typeof v === "string" && (SIGNAL_SOURCES as readonly string[]).includes(v);
+
 /** The stored document as the stages see an incident. Only fields that exist are set. */
 export function toIncident(id: string, d: Record<string, unknown>): Incident {
   return {
@@ -123,8 +127,9 @@ export function toIncident(id: string, d: Record<string, unknown>): Incident {
     ...(str(d.stackTrace) && { stackTrace: str(d.stackTrace) }),
     ...(str(d.traceId) && { traceId: str(d.traceId) }),
     ...(str(d.sourceProjectId) && { sourceProjectId: str(d.sourceProjectId) }),
-    // Triage's evidence rules read these (#19): a Monitoring-only incident is judged differently.
-    ...(d.signalSource === "monitoring" && { signalSource: "monitoring" as const }),
+    // Triage's gates read these: a Monitoring-only incident (#19) is judged differently, and an overflow (#303) or a
+    // consolidated Cloud Run quota incident goes to a person with no model call (#363). Any other value is left out.
+    ...(isSignalSource(d.signalSource) && { signalSource: d.signalSource }),
     ...(typeof d.monitoringCount === "number" && Number.isFinite(d.monitoringCount) && { monitoringCount: d.monitoringCount }),
   };
 }

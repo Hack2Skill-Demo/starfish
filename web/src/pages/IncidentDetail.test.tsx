@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter, Route, Routes } from "react-router";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -56,10 +56,10 @@ const guestCtx: StarfishAuthCtx = {
 
 const operatorCtx: StarfishAuthCtx = { ...guestCtx, guest: false, user: { uid: "op1" } as StarfishAuthCtx["user"], roles: ["operator"], role: "operator" };
 
-function renderPage(id = "inc-1", ctx: StarfishAuthCtx = guestCtx) {
+function renderPage(id = "inc-1", ctx: StarfishAuthCtx = guestCtx, client = new QueryClient({ defaultOptions: { queries: { retry: false } } })) {
   return render(
     <Ctx.Provider value={ctx}>
-      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+      <QueryClientProvider client={client}>
         <MemoryRouter initialEntries={[`/incidents/${id}`]}>
           <Routes>
             <Route path="/incidents/:id" element={<IncidentDetail />} />
@@ -168,6 +168,44 @@ describe("IncidentDetail page", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent("Couldn't read the agent's run record");
     expect(stage("triage")).toBeNull();
     expect(stage("detected")).not.toBeNull();
+  });
+
+  it("shows nothing of the run it read before once a later read of it fails (#356)", async () => {
+    const sha = "a".repeat(64);
+    mocks.readCycle.mockResolvedValue(
+      parseCycle("inc-1_r0", {
+        incidentId: "inc-1",
+        environment: "demo",
+        state: "waiting-human",
+        synthetic: true,
+        createdAt: ts(0),
+        updatedAt: ts(1000),
+        summary: { verify: { status: "passed", patchSha256: sha }, review: { verdict: "approve", patchSha256: sha } },
+      })
+    );
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    renderPage("inc-1", guestCtx, client);
+    expect(await screen.findByText(/all record the same patch hash/)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "inc-1_r0" })).toBeInTheDocument();
+    expect(screen.getByText("Synthetic")).toBeInTheDocument();
+
+    mocks.readCycle.mockRejectedValue(new Error("unavailable"));
+    await act(() => client.refetchQueries({ queryKey: ["cycle"] }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Couldn't read the agent's run record");
+    expect(screen.queryByText(/patch hash/)).toBeNull();
+    expect(screen.queryByRole("link", { name: "inc-1_r0" })).toBeNull();
+    expect(screen.queryByText("Synthetic")).toBeNull();
+    expect(screen.getByRole("heading", { name: "orders-create" })).toBeInTheDocument();
+  });
+
+  it("shows nothing of the incident it read before once a later read of it fails (#356)", async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    renderPage("inc-1", guestCtx, client);
+    expect(await screen.findByRole("heading", { name: "orders-create" })).toBeInTheDocument();
+    mocks.getIncident.mockRejectedValue(new Error("unavailable"));
+    await act(() => client.refetchQueries({ queryKey: ["incident"] }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Couldn't read this incident");
+    expect(screen.queryByRole("heading", { name: "orders-create" })).toBeNull();
   });
 
   it("warns when the stages are not about the same patch", async () => {

@@ -45,7 +45,8 @@ export default function IncidentDetail() {
     enabled: ready && id !== "",
     retry: false,
   });
-  const row = incident.data ?? null;
+  // A read that failed shows nothing it read before (#195, #356): TanStack Query keeps `data` after a failed refetch.
+  const row = incident.isError ? null : (incident.data ?? null);
   const cycleId = row ? currentCycleId(row) : "";
   const cycle = useQuery({
     queryKey: ["cycle", environment, cycleId],
@@ -74,7 +75,7 @@ export default function IncidentDetail() {
           No incident with this id in this environment.
         </p>
       ) : (
-        <Evidence row={row} cycle={cycle.data ?? null} runPending={cycle.isPending} runFailed={cycle.isError} />
+        <Evidence row={row} cycle={cycle.isError ? null : (cycle.data ?? null)} runPending={cycle.isPending} runFailed={cycle.isError} />
       )}
     </div>
   );

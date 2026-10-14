@@ -9,8 +9,9 @@
  *
  * This keeps what the model decided (which lines are context, which are removed, which are added) and rebuilds what
  * it only guessed: the `a/` and `b/` on a path it shown a file by, and where each hunk sits in the file and how many
- * lines it spans. Each hunk is found in the file by its old-side text; a hunk that is not found exactly once, in order,
- * leaves the file's hunks untouched for the gate to refuse as before. It never invents a change: every `+` line is the
+ * lines it spans. Each hunk is found in the file by its old-side text, after the hunk before it; a hunk whose old side
+ * is not there, or is there more than once (the model's line number never chooses between two places, #366), leaves
+ * the file's hunks as written for the gate to judge as before. It never invents a change: every `+` line is the
  * model's, every context and `-` line is rewritten from the file itself, and the verify gate still judges the result.
  * Pure; it neither throws nor reads anything but its arguments.
  */
@@ -27,7 +28,7 @@ interface Op {
   text: string;
 }
 interface Hunk {
-  declaredOldStart: number;
+  /** The header's own numbers are not kept: they are the model's guess, and where the hunk goes is found by its text. */
   ops: Op[];
 }
 interface Section {
@@ -40,7 +41,7 @@ interface Section {
   isNew: boolean;
 }
 
-const HUNK = /^@@ -(\d+)(?:,\d+)? \+\d+(?:,\d+)? @@/;
+const HUNK = /^@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@/;
 
 function stripPrefix(raw: string): string | null {
   const p = raw.trim().split("\t")[0] ?? "";
@@ -80,9 +81,8 @@ function parse(patch: string): Section[] | undefined {
       if (line.startsWith("+++ ")) section.path = stripPrefix(line.slice(4)) ?? section.path;
       continue;
     }
-    const m = HUNK.exec(line);
-    if (m) {
-      hunk = { declaredOldStart: Number(m[1]), ops: [] };
+    if (HUNK.test(line)) {
+      hunk = { ops: [] };
       section.hunks.push(hunk);
       continue;
     }
@@ -107,10 +107,15 @@ function fileLines(content: string): string[] | undefined {
   return lines;
 }
 
-/** Index of `old` in `file` at or after `from`, nearest to `near`; exact text first, then ignoring trailing space. */
-function locate(file: string[], old: string[], from: number, near: number): number {
+/**
+ * Index of `old` in `file` at or after `from` when it is there exactly once: exact text first, then ignoring trailing
+ * space. Found more than once (by the first comparison that finds it at all) is -1, like not found: the model's line
+ * number is its own arithmetic, so choosing between two places by it could put its change in a function it never meant
+ * (#366). The hunk is then left as written for the gate to judge.
+ */
+function locate(file: string[], old: string[], from: number): number {
   for (const same of [(a: string, b: string) => a === b, (a: string, b: string) => a.trimEnd() === b.trimEnd()]) {
-    let best = -1;
+    let found = -1;
     for (let i = from; i + old.length <= file.length; i++) {
       let ok = true;
       for (let k = 0; k < old.length; k++) {
@@ -119,9 +124,11 @@ function locate(file: string[], old: string[], from: number, near: number): numb
           break;
         }
       }
-      if (ok && (best === -1 || Math.abs(i - near) < Math.abs(best - near))) best = i;
+      if (!ok) continue;
+      if (found !== -1) return -1; // a second place: ambiguous
+      found = i;
     }
-    if (best !== -1) return best;
+    if (found !== -1) return found;
   }
   return -1;
 }
@@ -155,7 +162,7 @@ function rebuild(section: Section, file: string[]): string[] | undefined {
     const added = h.ops.filter((o) => o.kind === "+").length;
     const removed = h.ops.filter((o) => o.kind === "-").length;
     if (old.length === 0) return undefined;
-    const at = locate(file, old, from, h.declaredOldStart - 1);
+    const at = locate(file, old, from);
     if (at === -1) return undefined;
     out.push(`@@ -${range(at + 1, old.length)} +${range(at + 1 + delta, old.length - removed + added)} @@`);
     let seen = 0;
@@ -179,7 +186,7 @@ function recountNew(section: Section): string[] | undefined {
 
 /**
  * The patch with each hunk's position and counts rebuilt from the files it names. A section for a file that was not
- * shown, or whose hunks are not found, is kept exactly as written. Returns the input unchanged when it cannot be read.
+ * shown, or whose hunks are not each found exactly once, is kept as written (apart from its file headers). Returns the input unchanged when it cannot be read.
  */
 export function normalizePatch(patch: string, files: readonly SourceFile[]): string {
   if (patch.includes("\r")) return patch;

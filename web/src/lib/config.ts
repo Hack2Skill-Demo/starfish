@@ -129,7 +129,8 @@ export interface WebConfig {
   onCallPeopleCollection: string;
   /**
    * The engine counts as stopped when its last run finished longer ago than this. Set it to
-   * about three times the schedule's interval: the engine does not know its own cadence.
+   * about three times the schedule's interval: the run records that interval when the engine knows its schedule
+   * (`STARFISH_INGEST_SCHEDULE`), but this threshold does not follow it.
    */
   engineStaleMinutes: number;
   /**

@@ -6,7 +6,7 @@ the few steps only a person with the console can do.
 > **Status: run once, on the demo project (2026-10-05); most of it worked.** The preflight, the ingest deploy (job, Scheduler,
 > database and rules), `grant-operator` and the web deploy ran against `hack2skill-demo`, after two fixes the first run found (the
 > build account's role, #103; `grant-operator` following the shell's project, #104). The smoke test then passed: a planted error was read into the store and retired. **The agent job was
-> deployed on 2026-10-07 and ran hourly in dry run (triage and fix drafting ran; verify, review and a PR have not); since 2026-10-10 it runs with dry run off and auto-merge on for the demo target, and no incident has gone through it yet; the admin API was deployed once on 2026-10-07 ("Run ingest now" worked from the UI; Retire has not been tried), the Deploy engine workflow has run there since 2026-10-10, and Deploy web UI's two runs failed before publishing (#265).** Every script below is tested against stubs of `gcloud` and `firebase`
+> deployed on 2026-10-07 and ran hourly in dry run (triage and fix drafting on real incidents with Gemini from 2026-10-08); since 2026-10-10 it runs with dry run off and auto-merge on for the demo target. Real incidents have since gone as far as a pull request on the demo app (demo-app #41, #42 and #49, from 2026-10-12: issue filed, the target's CI as the verify step, Gemini's review, both Slack messages since 2026-10-11); nothing has been merged, and no phone call placed; the admin API was deployed once on 2026-10-07 ("Run ingest now" worked from the UI; Retire has not been tried), the Deploy engine workflow has run there since 2026-10-10, and Deploy web UI's two runs failed before publishing (#265).** Every script below is tested against stubs of `gcloud` and `firebase`
 > (so the plan, the order and the refusals are pinned; the web deploy is tested against a stub of `pnpm`), and the two CLIs (`grant-operator`, `status`)
 > were run end to end against the Firebase emulators. Expect
 > to fix one or two things on the first pass of the parts that have not run; [`deploy.md`](deploy.md) lists the likely ones.
@@ -108,11 +108,13 @@ Be honest with yourself about this list before the demo:
   target repository's own CI on a pushed `starfish/<cycle>` branch (or, heavier, by a separate credential-less job); see
   [`deploy.md`](deploy.md#the-agent-and-where-its-tests-run-74), including the workflow the target needs. It is a dry run
   by default and then opens no pull request, but it pushes branches. On the demo project it has run on real incidents
-  since 2026-10-08 and filed incident issues, but no fix has reached the verify gate: today's deployed Starfish
-  *finds, triages and shows* incidents; it has not yet *fixed* any.
-- **No Slack, no phone call, no issue filed** (#17, #37). The pull-request opener exists
-  (`src/integrations/githubPr.ts`, tested against a local git remote and a fake GitHub API, **never against real
-  GitHub**) and the mounted GitHub token has that one reader, but nothing that runs deployed calls it.
+  since 2026-10-08, with dry run off since 2026-10-10: it files incident issues, and since 2026-10-12 its patches have
+  passed the target's CI and Gemini's review and stopped at a pull request (demo-app #41, #42 and #49). None has been
+  merged: today's deployed Starfish *finds, triages, drafts and proposes* fixes; it has not yet *fixed* anything.
+- **No phone call** (#37): the escalation is built, off by default and never run against real Twilio. Slack (both
+  messages, since 2026-10-11) and GitHub (issues and pull requests through `src/integrations/githubPr.ts`, since
+  2026-10-12) do run from the deployed agent job; Starfish merging a pull request, its evidence comment and the fast
+  revert have never run against real GitHub (#330).
 - **No alert when ingestion stops**, only the UI's "engine stopped" line (#6).
 - **No App Check unless you set it up, and no enforcement unless you switch it on** (#12). The UI initialises App Check
   only when built with `VITE_STARFISH_APPCHECK_SITE_KEY`; requiring it on Firestore is a console step that is set per
@@ -127,7 +129,7 @@ Be honest with yourself about this list before the demo:
 
 Everything here is in the issues; the order that gets to the headline demo fastest is #5 (something to break),
 #74 (the loop as a job: its verify isolation is decided, `github-actions` for the demo, and built; the agent job deploys
-with `DEPLOY_AGENT=1`, and runs on the demo project in dry run), then #11 (the index heal: the gated executor is built and tested against
+with `DEPLOY_AGENT=1`, and runs hourly on the demo project, with dry run off since 2026-10-10), then #11 (the index heal: the gated executor is built and tested against
 fakes and the emulator, never run against Google).
 
 ## If a step fails

@@ -59,6 +59,24 @@
       ]
     },
     {
+      "collectionGroup": "starfish_cycles",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "environment", "order": "ASCENDING" },
+        { "fieldPath": "state", "order": "ASCENDING" },
+        { "fieldPath": "summary.merge.state", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "starfish_cycles",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "environment", "order": "ASCENDING" },
+        { "fieldPath": "state", "order": "ASCENDING" },
+        { "fieldPath": "summary.revert.state", "order": "ASCENDING" }
+      ]
+    },
+    {
       "collectionGroup": "starfish_public_incidents",
       "queryScope": "COLLECTION",
       "fields": [

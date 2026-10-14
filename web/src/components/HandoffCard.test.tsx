@@ -81,10 +81,20 @@ describe("HandoffCard", () => {
     expect(screen.getByRole("button", { name: "Mark resolved" })).toBeInTheDocument();
   });
 
-  it("shows a guest the steps without any button that changes the incident", () => {
-    renderWith(<HandoffCard path="human" incidentId="inc-a" incident={row("new")} canRetry={false} />, []);
-    expect(screen.getByText("Take it")).toBeInTheDocument();
-    for (const name of ["Acknowledge", "Mark resolved", "Ignore"]) expect(screen.queryByRole("button", { name })).toBeNull();
+  // #360: the steps are the role's; a guest can take none of them (no button, and firestore.rules refuses the writes).
+  it("tells a guest a signed-in team member takes it from here, with no step, button or correction link", () => {
+    renderWith(<HandoffCard path="notify" incidentId="inc-a" incident={row("new")} issueUrl="https://github.com/o/r/issues/7" canRetry />, []);
+    expect(screen.queryByRole("region", { name: "What you can do now" })).toBeNull();
+    const card = screen.getByRole("region", { name: "Waiting for a person" });
+    expect(card).toHaveTextContent(
+      "Starfish stopped here and told a person: triage judged no code change fixes this. It does not try this run again on its own; a signed-in team member takes it from here."
+    );
+    for (const title of ["Take it", "Deal with the cause", "Let Starfish try again", "Starfish judged it wrong?", "Not worth fixing?"]) {
+      expect(within(card).queryByText(title)).toBeNull();
+    }
+    expect(within(card).queryByRole("button")).toBeNull();
+    expect(within(card).queryByRole("link")).toBeNull();
+    expect(card).not.toHaveTextContent(/waits for one of these/);
   });
 
   it("points at the evidence page when no issue was filed", () => {

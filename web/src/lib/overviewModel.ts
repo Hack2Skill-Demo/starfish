@@ -5,7 +5,7 @@
  * window (`isHealedRun`); a merged pull request is not a heal.
  */
 import type { IncidentRow } from "./incidents";
-import { KNOWN_STAGES, isHealedRun, parseEvent, runStatus, type CyclePath, type CycleRow, type EventRow } from "./runsModel";
+import { isHealedRun, titleOf, parseEvent, runStatus, type CyclePath, type CycleRow, type EventRow } from "./runsModel";
 
 export interface CycleCounts {
   /** Cycles waiting for a person: a pull request, a notification, a stuck verify... */
@@ -197,8 +197,12 @@ export function latestActivity(rows: readonly ActivityRow[], max: number): Activ
   return [...rows].sort((a, b) => b.at.getTime() - a.at.getTime() || b.seq - a.seq).slice(0, max);
 }
 
-/** The words the Runs page uses for a stage; `cycle` is the loop's own bookkeeping; anything else as stored. */
+/**
+ * The words the Runs page uses for a stage (its own `titleOf`, so the two never disagree, #360: the loop's stages, the
+ * index path's and the optional ones such as the issue, alert and escalation); `cycle` is the loop's own bookkeeping;
+ * anything else as stored.
+ */
 export function stageTitle(stage: string): string {
   if (stage === "cycle") return "Run";
-  return KNOWN_STAGES.find((s) => s.stage === stage)?.title ?? stage;
+  return titleOf(stage);
 }

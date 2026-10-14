@@ -15,6 +15,7 @@
  */
 import type { LogCounterCheck } from "../types.js";
 import { fingerprintOfLogEntry } from "./fingerprint.js";
+import { splitMessageStack } from "./messageStack.js";
 import { buildLogFilter, extractErrorDetail, extractMessageTitle, parseLogEntry, type LogSource, type RawLogEntry } from "./parseLogEntry.js";
 import { isSensitiveKey, redactPii, sliceWellFormed } from "./redact.js";
 
@@ -162,6 +163,13 @@ export function toSample(entry: unknown): ErrorLogSample | null {
         context[k] = clip(String(v), MAX_CONTEXT_VALUE);
       }
     }
+  }
+  // As ingest reads it (#361): a message that carries its own stack is its title, the frames its stack unless the
+  // entry had one. The message is clipped short, so frames kept in it would crowd out the stack the fixer needs.
+  const split = splitMessageStack(message);
+  if (split.stack !== undefined) {
+    message = split.title;
+    stack ??= split.stack;
   }
   if (!message && !stack) return null;
 

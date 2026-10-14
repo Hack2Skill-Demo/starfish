@@ -13,6 +13,7 @@ const mocks = vi.hoisted(() => ({
   cyclesCb: undefined as undefined | ((rows: unknown[], capped: boolean) => void),
   cyclesErr: undefined as undefined | ((e: Error) => void),
   eventsCb: undefined as undefined | ((rows: unknown[], capped?: boolean) => void),
+  eventsErr: undefined as undefined | ((e: Error) => void),
   unsubCycles: vi.fn(),
   unsubEvents: vi.fn(),
   subscribedEvents: [] as string[],
@@ -45,15 +46,17 @@ vi.mock("../lib/runs", async (orig) => ({
     return mocks.unsubCycles;
   },
   readCycle: mocks.readCycle,
-  subscribeEvents: (id: string, _env: string, ok: EventsCb) => {
+  subscribeEvents: (id: string, _env: string, ok: EventsCb, err: (e: Error) => void) => {
     mocks.subscribedEvents.push(id);
     mocks.eventsCb = ok as never;
+    mocks.eventsErr = err;
     return mocks.unsubEvents;
   },
 }));
 
 import Runs from "./Runs";
-import { EVENT_LIMIT } from "../lib/runs";
+import { CYCLE_LIMIT, EVENT_LIMIT } from "../lib/runs";
+import { LIVE_RETRY_MS } from "../lib/useLiveRecord";
 
 const ts = (ms: number) => ({ toDate: () => new Date(ms) });
 const now = Date.now();
@@ -92,7 +95,7 @@ describe("Runs page", () => {
     vi.clearAllMocks();
     mocks.subscribedEvents.length = 0;
     mocks.cycleLimits.length = 0;
-    mocks.cyclesCb = mocks.cyclesErr = mocks.eventsCb = undefined;
+    mocks.cyclesCb = mocks.cyclesErr = mocks.eventsCb = mocks.eventsErr = undefined;
     mocks.env = { environment: "demo", ready: true, settingsUnavailable: false };
     mocks.getIncident.mockResolvedValue(null);
     localStorage.removeItem("starfish.runs.listHidden");
@@ -130,6 +133,43 @@ describe("Runs page", () => {
     expect(screen.getByRole("alert")).toHaveTextContent("Couldn't read the runs");
     expect(screen.getByRole("alert")).toHaveTextContent("Check that firestore.rules and firestore.indexes.json are deployed");
     expect(screen.getByRole("alert")).toHaveTextContent("may still be building");
+  });
+
+  it("listens again a while after the runs or a run's events fail, and says so until a new snapshot arrives (#357)", () => {
+    vi.useFakeTimers();
+    try {
+      renderRuns();
+      act(() => mocks.cyclesCb!([cycle("inc-a_r0")], false));
+      act(() => mocks.eventsCb!([event(1, "cycle", "started", "Attempt 1", 50_000)]));
+      const detail = () => screen.getByRole("region", { name: "Run detail" });
+
+      // A run's events: started again after LIVE_RETRY_MS, still failed until the new listener answers.
+      act(() => mocks.eventsErr!(new Error("unavailable")));
+      expect(within(detail()).getByRole("alert")).toHaveTextContent("Couldn't read this run's events.");
+      act(() => vi.advanceTimersByTime(LIVE_RETRY_MS - 1));
+      expect(mocks.subscribedEvents).toEqual(["inc-a_r0"]);
+      act(() => vi.advanceTimersByTime(1));
+      expect(mocks.subscribedEvents).toEqual(["inc-a_r0", "inc-a_r0"]);
+      expect(mocks.unsubEvents).toHaveBeenCalledTimes(1);
+      expect(within(detail()).getByRole("alert")).toHaveTextContent("Couldn't read this run's events.");
+      act(() => mocks.eventsCb!([event(1, "cycle", "started", "Attempt 2", 50_000)]));
+      expect(within(detail()).queryByRole("alert")).toBeNull();
+      expect(within(detail()).getByText("Attempt 2")).toBeInTheDocument();
+
+      // The list: the same, at the same page size, never the old rows in between (#195).
+      act(() => mocks.cyclesErr!(new Error("unavailable")));
+      expect(screen.getByRole("alert")).toHaveTextContent("Couldn't read the runs");
+      expect(mocks.cycleLimits).toEqual([CYCLE_LIMIT]);
+      act(() => vi.advanceTimersByTime(LIVE_RETRY_MS));
+      expect(mocks.cycleLimits).toEqual([CYCLE_LIMIT, CYCLE_LIMIT]);
+      expect(screen.getByRole("alert")).toHaveTextContent("Couldn't read the runs");
+      expect(screen.queryByRole("region", { name: "Run detail" })).toBeNull();
+      act(() => mocks.cyclesCb!([cycle("inc-a_r0")], false));
+      expect(screen.queryByText(/Couldn't read the runs/)).toBeNull();
+      expect(detail()).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("lists runs, opens the newest, and draws a partial run's missing steps as not reached", () => {

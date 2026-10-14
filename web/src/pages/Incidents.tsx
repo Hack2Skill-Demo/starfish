@@ -206,7 +206,10 @@ export default function Incidents() {
     queryFn: () => listIncidents(windowHours, environment),
     enabled: ready,
   });
-  const { data, isError, refetch, isFetching } = query;
+  const { isError, refetch, isFetching } = query;
+  // A read that failed shows no figure, never the last one it had (#195, #356): TanStack Query keeps `data` after a
+  // failed refetch, so the counts, the footer, the capped banner and the runs would otherwise go on showing it.
+  const data = isError ? undefined : query.data;
   const isLoading = query.isLoading || !ready;
   const mutation = useMutation({
     mutationFn: ({ row, action }: { row: IncidentRow; action: IncidentAction }) =>

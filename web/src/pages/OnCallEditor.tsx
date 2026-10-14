@@ -18,7 +18,7 @@ import { webConfig } from "../lib/config";
 import { firestore } from "../lib/firebase";
 import { formFromPolicy, policyFromForm, type PolicyForm } from "../lib/onCallForm";
 import { addPerson, normalizePhone, readOnCall, removePerson, savePolicy, type OnCallCollections } from "../lib/onCallWrite";
-import { ONCALL_ROLES, ROLE_LABELS, validName, type OnCallRole } from "../../../src/oncallSchema";
+import { ONCALL_ROLES, ROLE_LABELS, validName, type OnCallPolicy, type OnCallRole } from "../../../src/oncallSchema";
 
 const INPUT =
   "w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 placeholder:text-gray-500 dark:border-gray-700 dark:placeholder:text-gray-400 dark:bg-gray-900 dark:text-gray-100";
@@ -38,13 +38,21 @@ export function OnCallEditor() {
   const [person, setPerson] = useState<{ name: string; role: OnCallRole; phone: string }>({ name: "", role: "primary", phone: "" });
   const [codes, setCodes] = useState<Record<string, string>>({});
 
+  // Load the form when the stored POLICY changes: on first read, and when a refetch brings a different policy. Adding,
+  // removing or confirming a person refetches the rota too, a new object holding the same policy: that must not reset
+  // the form, or it wipes the admin's unsaved policy edits (#358). A save sets the form itself (below). The policy is
+  // plain JSON (strings, numbers, a boolean), so its text is both the key and an exact copy.
+  const policyKey = data.isSuccess ? JSON.stringify(data.data.policy) : undefined;
   useEffect(() => {
-    if (data.isSuccess) setForm(formFromPolicy(data.data.policy));
-  }, [data.isSuccess, data.data]);
+    if (policyKey !== undefined) setForm(formFromPolicy(JSON.parse(policyKey) as OnCallPolicy | null));
+  }, [policyKey]);
 
   const savePolicyM = useMutation({
     mutationFn: (p: Parameters<typeof savePolicy>[3]) => savePolicy(firestore(), cols, uid, p),
-    onSuccess: () => {
+    onSuccess: (_r, saved) => {
+      // What was saved, as the form shows it: the refetch may bring back the same policy, which the effect ignores.
+      setForm(formFromPolicy(saved));
+      setProblems([]);
       toast.success("On-call policy saved");
       return refresh();
     },

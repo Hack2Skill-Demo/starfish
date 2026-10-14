@@ -132,10 +132,25 @@ describe("toPublicIncident", () => {
     expect(toPublicIncident(storedIncident(), { publicEnvironments: [] })).toBeNull();
   });
 
-  it("bounds the title to one line of 200 characters", () => {
-    const copy = toPublicIncident(storedIncident({ errorMessage: `first line\n\tsecond line ${"x".repeat(400)}` }), pub)!;
-    expect(copy.errorMessage).toMatch(/^first line second line x+$/);
+  it("bounds the title to its first line, of at most 200 characters", () => {
+    const copy = toPublicIncident(storedIncident({ errorMessage: `first line\t${"x".repeat(400)}\nsecond line` }), pub)!;
+    expect(copy.errorMessage).toMatch(/^first line x+$/);
     expect((copy.errorMessage as string).length).toBe(200);
+    // The first line that holds text.
+    expect(toPublicIncident(storedIncident({ errorMessage: "\n  \r\nthe title\nmore" }), pub)!.errorMessage).toBe("the title");
+  });
+
+  it("never shows a stack trace a stored title still carries (#361)", () => {
+    // Stored before ingest split the stack off the message: the logger's `new Error(message).stack`.
+    const stored =
+      "Error: orders-getOrder failed: Cannot read properties of undefined (reading 'toString')\n" +
+      "    at entryFromArgs (/workspace/node_modules/firebase-functions/lib/logger/index.js:133:19)\n" +
+      "    at Object.error (/workspace/node_modules/firebase-functions/lib/logger/index.js:164:11)";
+    const copy = toPublicIncident(storedIncident({ errorMessage: stored }), pub)!;
+    expect(copy.errorMessage).toBe("Error: orders-getOrder failed: Cannot read properties of undefined (reading 'toString')");
+    expect(copy.errorMessage).not.toMatch(/ at /);
+    // A text that is nothing but frames has no title to show.
+    expect(toPublicIncident(storedIncident({ errorMessage: "    at x (/a.js:1:2)\n    at y (/b.js:3:4)" }), pub)!).not.toHaveProperty("errorMessage");
   });
 
   it("keeps the newest buckets the store keeps, and only real ones", () => {

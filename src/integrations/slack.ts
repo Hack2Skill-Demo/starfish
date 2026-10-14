@@ -28,8 +28,8 @@
  * through its own webhook: once per cycle Starfish acts on or escalates, recorded the same way (`summary.alert`).
  *
  * When an urgent "needs a human" message goes unacknowledged, the phone escalation (src/oncall/, #37) calls the on-call
- * people; this file is not part of it. Not built: the `#ops-log` channel (a merged fix, healed). Never run against
- * real Slack: tested over local HTTP against a fake webhook.
+ * people; this file is not part of it. Not built: the `#ops-log` channel (a merged fix, healed). Tested over local HTTP
+ * against a fake webhook; both messages have posted to real Slack from the deployed agent since 2026-10-11 (#330).
  */
 import { redactPii } from "../ingest/redact.js";
 import { handoffSteps } from "../handoff.js";

@@ -20,6 +20,9 @@
  *            (reconsider.ts), in the same transaction that takes the lease: the same cycle id, so still one
  *            issue and one pull request per recurrence, the events appended after the earlier ones, the earlier
  *            decision moved to `history`, and a fresh deadline and attempt count for the new consideration.
+ *   settled  `settledAt`: when the cycle last ended (finishCycle, or given up as failed). Events appended to a settled
+ *            cycle (appendEventsInTransaction) move `updatedAt` but never this, so a person's retry asked before them still
+ *            counts (reconsider.ts `settledAtMillis`, #365).
  *   startDays the UTC days the cycle was started or reopened on: what the daily cycle cap counts (pass.ts).
  *   spend    `modelCalls` and `revisions`: what the cycle has used of its model-call budget and its one revision, counted
  *            under the fence before each is spent, so a resumed attempt goes on from them instead of from zero (#182). A
@@ -80,6 +83,8 @@ export type AcquireResult =
       resumed: boolean;
       leaseExpiresAt: Date;
       reconsidered?: ReconsiderTrigger;
+      /** With `reconsidered`: the state the cycle was reopened from, so the run's note says what it was (#366). */
+      reopenedFrom?: "declined" | "waiting-human";
       /** What earlier attempts of this cycle (this consideration) spent: model calls, revisions (#182). */
       modelCalls: number;
       revisions: number;
@@ -211,7 +216,7 @@ export async function acquireLease(db: Firestore, cfg: CycleConfig, key: CycleKe
           ...(state === "declined" && { "summary.notify": FieldValue.delete() }),
           updatedAt: Timestamp.fromDate(now),
         });
-        return { acquired: true, cycleId: id, attempt: 1, resumed: false, leaseExpiresAt: new Date(expires), reconsidered: trigger, modelCalls: 0, revisions: 0 };
+        return { acquired: true, cycleId: id, attempt: 1, resumed: false, leaseExpiresAt: new Date(expires), reconsidered: trigger, reopenedFrom: state, modelCalls: 0, revisions: 0 };
       }
     }
     if (state !== "running") {
@@ -221,7 +226,7 @@ export async function acquireLease(db: Firestore, cfg: CycleConfig, key: CycleKe
     const deadlineMs = ms(d.deadlineAt) ?? 0;
     if (now.getTime() >= deadlineMs) {
       wrote(d.environment);
-      tx.update(ref, { state: "failed", outcome: "deadline-passed", path: "failed", owner: null, leaseExpiresAt: null, updatedAt: Timestamp.fromDate(now) });
+      tx.update(ref, { state: "failed", outcome: "deadline-passed", path: "failed", owner: null, leaseExpiresAt: null, updatedAt: Timestamp.fromDate(now), settledAt: Timestamp.fromDate(now) });
       return { acquired: false, reason: "deadline-passed" };
     }
 
@@ -235,7 +240,7 @@ export async function acquireLease(db: Firestore, cfg: CycleConfig, key: CycleKe
     const free = d.resumeUncounted === true;
     if (!renewing && !free && attempts >= cfg.maxCycleAttempts) {
       wrote(d.environment);
-      tx.update(ref, { state: "failed", outcome: "retries-exhausted", path: "failed", owner: null, leaseExpiresAt: null, updatedAt: Timestamp.fromDate(now) });
+      tx.update(ref, { state: "failed", outcome: "retries-exhausted", path: "failed", owner: null, leaseExpiresAt: null, updatedAt: Timestamp.fromDate(now), settledAt: Timestamp.fromDate(now) });
       return { acquired: false, reason: "retries-exhausted" };
     }
 
@@ -275,7 +280,7 @@ export async function giveUpStranded(db: Firestore, cfg: CycleConfig, key: Cycle
     const reason = strandedReason(snap.data(), now, cfg.maxCycleAttempts);
     if (reason === null) return null;
     wrote(snap.get("environment"));
-    tx.update(ref, { state: "failed", outcome: reason, path: "failed", owner: null, leaseExpiresAt: null, updatedAt: Timestamp.fromDate(now) });
+    tx.update(ref, { state: "failed", outcome: reason, path: "failed", owner: null, leaseExpiresAt: null, updatedAt: Timestamp.fromDate(now), settledAt: Timestamp.fromDate(now) });
     return reason;
   });
 }
@@ -301,7 +306,7 @@ export async function renewLease(db: Firestore, cfg: CycleConfig, id: string, ow
     wrote(d.environment);
     const deadlineMs = ms(d.deadlineAt) ?? 0;
     if (now.getTime() >= deadlineMs) {
-      tx.update(ref, { state: "failed", outcome: "deadline-passed", path: "failed", owner: null, leaseExpiresAt: null, updatedAt: Timestamp.fromDate(now) });
+      tx.update(ref, { state: "failed", outcome: "deadline-passed", path: "failed", owner: null, leaseExpiresAt: null, updatedAt: Timestamp.fromDate(now), settledAt: Timestamp.fromDate(now) });
       return { ok: false, reason: "lease-lost" } as const;
     }
     const expires = leaseEnd(cfg, now, deadlineMs);
@@ -532,6 +537,8 @@ export async function finishCycle(
       owner: null,
       leaseExpiresAt: null,
       updatedAt: Timestamp.fromDate(now),
+      // When it settled: events appended later (appendEventsInTransaction) move updatedAt, never this (#365).
+      settledAt: Timestamp.fromDate(now),
     });
     return { ok: true } as const;
   });

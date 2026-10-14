@@ -331,12 +331,22 @@ export function flat(record: Record<string, unknown>): Record<string, string | n
 }
 
 /**
- * The cycles of this environment whose `summary.<stage>.state` is one of `states`, at most `limit`. Equality only: no
- * composite index. A seeded synthetic cycle (seedDemo.ts) is never one: nothing it names exists (#192).
+ * The finished (`done`) cycles of this environment whose `summary.<stage>.state` is one of `states`, at most `limit`.
+ * Equality filters only, which Firestore can serve by merging single-field indexes; firestore.indexes.json also
+ * carries the (environment, state, summary.<stage>.state) composite, so the query never depends on that. A seeded synthetic cycle (seedDemo.ts) is never one: nothing it names exists (#192).
+ * A cycle still running (the loop records the merge candidate just before it finishes), or one that ended otherwise, is
+ * never one either: `moveRecord` refuses to move its record, and a refusal read as the daily cap told a person every
+ * pass that the cap was reached (#364). A revert record is only ever written on a done cycle, and done is final.
  */
 export async function cyclesInState(db: Firestore, cfg: Pick<AutoMergeConfig, "cycleCollection" | "environment">, stage: "merge" | "revert", states: string[], limit: number) {
   if (!Number.isInteger(limit) || limit < 1) return [];
-  const snap = await db.collection(cfg.cycleCollection).where("environment", "==", cfg.environment).where(`summary.${stage}.state`, "in", states).limit(limit).get();
+  const snap = await db
+    .collection(cfg.cycleCollection)
+    .where("environment", "==", cfg.environment)
+    .where("state", "==", "done")
+    .where(`summary.${stage}.state`, "in", states)
+    .limit(limit)
+    .get();
   return snap.docs.filter((d) => d.data().synthetic !== true).map((d) => ({ id: d.id, data: d.data() }));
 }
 
@@ -486,6 +496,8 @@ export async function runAutoMergeStep(deps: AutoMergeDeps): Promise<AutoMergeSu
     const headSha = merge.headSha;
     const now = d.now();
     const isPending = (m: Rec) => m.state === "pending";
+    // Only a finished cycle's candidate is decided (#364): before then nothing is sent, merged or counted.
+    if (cycle.data.state !== "done") return "unchanged";
     // A PR retargeted to another base is refused by the client (#186): a decision for a person, not an error to retry.
     const readPr = async (n: number) => {
       try {
@@ -582,8 +594,10 @@ export async function runAutoMergeStep(deps: AutoMergeDeps): Promise<AutoMergeSu
     const claimedAt = now.toISOString();
     const claimed = await moveRecord(db, cfg, cycle.id, "merge", isPending, { ...merge, state: "merging", claimedBy: d.owner, claimedAt }, { counter: { ref: counter, cap: cfg.maxMergesPerDay } });
     if (!claimed) {
-      const fresh = rec(rec((await db.collection(cfg.cycleCollection).doc(cycle.id).get()).data()?.summary).merge);
-      return fresh.state === "pending" ? skip("daily-merge-cap") : "unchanged";
+      // Refused with the record still pending on a finished cycle is the cap; anything else moved on without this pass.
+      const doc = (await db.collection(cfg.cycleCollection).doc(cycle.id).get()).data();
+      const fresh = rec(rec(doc?.summary).merge);
+      return doc?.state === "done" && fresh.state === "pending" ? skip("daily-merge-cap") : "unchanged";
     }
     const mine = (m: Rec) => m.state === "merging" && m.claimedAt === claimedAt && m.claimedBy === d.owner;
     const claimedMerge = { ...merge, claimedBy: d.owner, claimedAt };

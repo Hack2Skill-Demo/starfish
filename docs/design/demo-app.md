@@ -5,6 +5,13 @@
 > [`demo-app-scenarios.md`](demo-app-scenarios.md)). Written 2026-10-04 for #5 and #32. Updated the
 > same day with the decisions taken after #50 (see "Decisions"). The last four (#68) were settled by
 > what was built, each on its recommended option (2026-10-06).
+>
+> **Since then, on Starfish's side (2026-10-14):** the stages this page calls designed are built: triage, the fix
+> draft, the verify gate, review, Slack, phone escalation, auto-merge and the index heal. Ingest runs on a schedule on
+> the demo project, and triage, the fix draft, the verify step (the demo app's own CI), review, the incident's issue,
+> both Slack messages and pull requests have run there against the demo app (demo-app #41, #42 and #49). Auto-merge has
+> merged nothing, and the index heal and phone calls have never run for real. The rest of this page is as written; it
+> does not track the demo app repositories' own state.
 
 ## Summary
 
@@ -205,7 +212,7 @@ Suites:
 
 ## Guardrails and what Starfish needs
 
-**What a press shows today.** Ingest, fingerprinting, dedup, the counter-check, redaction and runtime settings are built. Nothing runs ingest on a schedule yet, because the Cloud Run job and Scheduler are [#6](https://github.com/Hack2Skill-Demo/starfish/issues/6). Until #6 lands, the runner calls the engine's ingest directly, so the built scenarios can be checked. Triage, the fix draft, the verify gate, review, Slack, auto-merge and the index heal are designed, not built. The demo shows each one only once it exists.
+**What a press showed when this was written (2026-10-04).** Ingest, fingerprinting, dedup, the counter-check, redaction and runtime settings were built. Nothing ran ingest on a schedule yet, because the Cloud Run job and Scheduler were [#6](https://github.com/Hack2Skill-Demo/starfish/issues/6) (deployed on the demo project since 2026-10-05). Until #6 landed, the runner was to call the engine's ingest directly, so the built scenarios could be checked. Triage, the fix draft, the verify gate, review, Slack, auto-merge and the index heal were designed, not built; they are built now (see the status at the top). The demo shows each one only once it exists.
 
 The demo side:
 

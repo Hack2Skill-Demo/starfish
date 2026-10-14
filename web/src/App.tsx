@@ -2,7 +2,8 @@
  * Routes. Public: sign-in and access-denied. Everything else sits behind
  * RequireRole inside the Starfish layout. A guest (an anonymous, read-only session on the
  * public demo) may see the layout, Overview, Incidents, incident evidence, Runs and a
- * view-only Settings, all limited to the demo environment by firestore.rules.
+ * view-only Settings, all limited to the demo environment by firestore.rules. An operator
+ * sees the same pages, Settings read-only too; only an admin edits it.
  */
 import { lazy, Suspense } from "react";
 import { Navigate, Route, Routes } from "react-router";
@@ -38,14 +39,8 @@ export default function App() {
           <Route path="incidents" element={<Incidents />} />
           <Route path="incidents/:id" element={<IncidentDetail />} />
           <Route path="runs" element={<Runs />} />
-          <Route
-            path="settings"
-            element={
-              <RequireRole allowedRoles={["admin"]} allowGuest>
-                <Settings />
-              </RequireRole>
-            }
-          />
+          {/* Every role: an admin edits; an operator or a guest sees it read-only, and On-call only an admin (#355). */}
+          <Route path="settings" element={<Settings />} />
           <Route path="*" element={<NotFound />} />
         </Route>
       </Routes>

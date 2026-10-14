@@ -1400,6 +1400,28 @@ describe("runCycle: a declined incident is reconsidered on new evidence (#8)", (
     expect(await cycleDoc()).toMatchObject({ reconsideredBecause: "cause", reconsiderCount: 1 });
   });
 
+  // #366: every reopen was worded "Declined earlier", but a run reopened by an operator's Retry waited for a person.
+  it("words the reopen by what the run was: declined, or handed to a person and retried (#366)", async () => {
+    cfgOver = { incidentCollection: incidents() };
+    await stored();
+    const notify = { decision: "notify", reasoning: "The API is not enabled.", suspectedCause: "Vertex API disabled" };
+    const model = scripted({ triage: [notify, decline] });
+    const d = deps(model, { reconsider: policy });
+    expect(await runCycle(d, key)).toMatchObject({ kind: "finished", state: "waiting-human" });
+    await stored({ retriageRequestedAt: later(1) });
+    clock = later(2);
+    expect(await runCycle(d, key)).toMatchObject({ kind: "finished", state: "declined" });
+    await stored({ retriageRequestedAt: later(3) });
+    clock = later(4);
+    await runCycle(d, key);
+    const reopens = (await events()).filter((e) => e.stage === "cycle" && e.type === "reconsidered");
+    expect(reopens.map((e) => e.summary)).toEqual([
+      "Handed to a person earlier; retried: an operator asked for a retriage",
+      "Declined earlier; triaged again: an operator asked for a retriage",
+    ]);
+    expect(reopens.map((e) => e.data?.reopenedFrom)).toEqual(["waiting-human", "declined"]);
+  });
+
   it("an operator who ignores the incident during the reconsideration settles it", async () => {
     cfgOver = { incidentCollection: incidents() };
     await stored();

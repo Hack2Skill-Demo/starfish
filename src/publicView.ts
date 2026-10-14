@@ -117,6 +117,16 @@ export function publicLine(v: unknown, max: number): string | undefined {
   return out === "" ? undefined : out;
 }
 
+/**
+ * The first line of a stored title that holds text, never a stack frame (#361): ingest keeps only a message's title
+ * now, but a record stored before then holds the frames after it, and {@link publicLine} would flatten them into it.
+ */
+export function firstLine(v: unknown): string | undefined {
+  if (typeof v !== "string") return undefined;
+  const line = v.split(/\r\n|[\n\r\u2028\u2029]/).find((l) => l.trim() !== "");
+  return line === undefined || /^\s+at\s/.test(line) ? undefined : line;
+}
+
 /** `{ ...(v !== undefined && { [k]: v }) }`, spelled once: Firestore rejects undefined, so absent stays absent. */
 function put(out: Out, key: string, value: unknown): void {
   if (value !== undefined) out[key] = value;
@@ -174,7 +184,8 @@ export function toPublicIncident(d: Record<string, unknown> | undefined, pub: Pi
   put(out, "functionName", publicLine(d.functionName, MAX_NAME));
   put(out, "service", publicLine(d.service, MAX_NAME));
   put(out, "errorType", matching(ERROR_TYPE_RE)(d.errorType));
-  put(out, "errorMessage", publicLine(d.errorMessage, MAX_TITLE));
+  // The first line only (#361): a record stored before ingest split a stack off its message holds the frames after it.
+  put(out, "errorMessage", publicLine(firstLine(d.errorMessage), MAX_TITLE));
   put(out, "errorName", matching(ERROR_NAME_RE)(d.errorName));
   put(out, "errorCode", matching(ERROR_CODE_RE)(d.errorCode));
   put(out, "triageState", typeof d.triageState === "string" && TRIAGE_STATES.includes(d.triageState) ? d.triageState : undefined);

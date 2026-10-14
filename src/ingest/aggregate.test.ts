@@ -122,6 +122,30 @@ describe("aggregateErrors", () => {
     expect(created[0]!.fingerprint).toBe(computeErrorFingerprint("orders-createorder", core));
   });
 
+  it("counts one bug whose message carries a stack as one incident: title stored, frames as its stack (#361)", async () => {
+    // A short core: the frames after it were inside the 100 hashed characters before the split.
+    const core = "Cannot read properties of undefined (reading 'toString')";
+    const unhandled =
+      `Unhandled error TypeError: ${core}\n    at getOrder (/workspace/lib/orders/getOrder.js:22:31)\n` +
+      "    at listOnTimeout (node:internal/timers:581:17)";
+    const rethrow =
+      `Error: orders-getOrder failed: ${core}\n` +
+      "    at entryFromArgs (/workspace/node_modules/firebase-functions/lib/logger/index.js:133:19)\n" +
+      "    at check (/workspace/lib/users/permissions.js:12:7)";
+    const at = (data: string, timestamp: string) => ({ metadata: { timestamp, resource: { labels: { service_name: "orders-getorder" } } }, data });
+    entries.splice(0, entries.length, at(unhandled, "2026-09-21T00:00:00.000Z"), at(rethrow, "2026-09-21T00:00:01.000Z"));
+    const { db, created } = fakeDb();
+
+    const result = await aggregateErrors(db, config, window);
+
+    expect(result.incidentsCreated).toBe(1);
+    expect(created[0]).toMatchObject({ occurrenceCount: 2, errorMessage: `Unhandled error TypeError: ${core}`, stackTrace: unhandled });
+    expect(created[0]!.fingerprint).toBe(computeErrorFingerprint("orders-getorder", core));
+    // Classified on the title: no `internal` code from node:internal frames, no Timeout or Auth from a frame's path.
+    expect(created[0]).not.toHaveProperty("errorCode");
+    expect(created[0]!.errorType).not.toMatch(/^(TimeoutError|AuthError)$/);
+  });
+
   it("stores no seeded credential from the message, error, stack or name", async () => {
     const secrets = Object.values(SEEDED_SECRETS);
     const all = secrets.join(" ");
