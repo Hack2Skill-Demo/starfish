@@ -80,6 +80,20 @@ describe("createCiVerifier", () => {
     expect(h.calls).toContain("delete:inc1_r0");
   });
 
+  it("puts the failure before the runner's own warnings, so the error leads the output the run event keeps", async () => {
+    const h = harness({
+      runs: () => [run({ id: 7, conclusion: "failure" })],
+      annotations: [
+        { path: ".github", line: 2, level: "warning", message: "Node.js 20 is deprecated. The following actions target Node.js 20 but are being forced to run on Node.js 24" },
+        { path: ".github", line: 0, level: "notice", message: "a notice" },
+        { path: ".github", line: 41, level: "failure", message: "functions typecheck: src/orders/getOrder.ts(14,42): error TS2345" },
+      ],
+    });
+    const lines = (await h.verify(request())).output.split("\n").filter((l) => l.startsWith("  "));
+    expect(lines.map((l) => l.trim().split(" ")[0])).toEqual(["failure", "warning", "notice"]);
+    expect(lines[0]).toContain("error TS2345");
+  });
+
   it.each(["failure", "cancelled", "timed_out", "action_required", "neutral", "skipped", "stale", "startup_failure"])("does not count a check that concluded %s as a pass", async (conclusion) => {
     const r = await harness({ runs: () => [run({ conclusion })] }).verify(request());
     expect(r.status).toBe("failed");

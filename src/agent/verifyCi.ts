@@ -159,12 +159,27 @@ async function describeFailures(client: CiClient, bad: CheckRun[]): Promise<Fail
   return out;
 }
 
+/**
+ * GitHub's annotation levels, most telling first. A runner adds its own warnings to every job (a deprecated Node for
+ * the actions, say), often before the step's error; the run event keeps only the first few hundred characters of the
+ * output, so a warning listed first hid the error that failed the patch. Unknown levels go last; order is otherwise kept.
+ */
+const LEVEL_ORDER = ["failure", "warning", "notice"];
+
+function failuresFirst(annotations: CheckAnnotation[]): CheckAnnotation[] {
+  const rank = (a: CheckAnnotation): number => {
+    const i = LEVEL_ORDER.indexOf(a.level);
+    return i === -1 ? LEVEL_ORDER.length : i;
+  };
+  return [...annotations].sort((a, b) => rank(a) - rank(b));
+}
+
 /** What the checks said, for the fixer and for people. Every string in it was scrubbed by the client and is bounded. */
 function summarize(runs: CheckRun[], failures: FailureDetail[]): string {
   const lines = runs.map((r) => `${r.name}: ${r.conclusion ?? r.status}${r.url ? ` (${r.url})` : ""}`);
   for (const { run, annotations } of failures) {
     if (run.title || run.summary) lines.push(`${run.name}: ${[run.title, run.summary].filter(Boolean).join(" - ")}`);
-    for (const a of annotations.slice(0, MAX_ANNOTATIONS_SHOWN)) lines.push(`  ${a.level} ${a.path}${a.line ? `:${a.line}` : ""} ${a.message}`);
+    for (const a of failuresFirst(annotations).slice(0, MAX_ANNOTATIONS_SHOWN)) lines.push(`  ${a.level} ${a.path}${a.line ? `:${a.line}` : ""} ${a.message}`);
   }
   return lines.join("\n");
 }
