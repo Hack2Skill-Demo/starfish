@@ -788,6 +788,35 @@ export function groupByDay(cycles: readonly CycleRow[], nowMs: number): RunDay[]
   return [...days.values()];
 }
 
+/** How many runs one page of the Runs list shows. */
+export const RUNS_PER_PAGE = 10;
+
+export interface RunPage<T> {
+  items: T[];
+  /** 0-based, clamped into range: a live list that shrank, or a filter, never leaves an empty page past the end. */
+  page: number;
+  /** At least 1, so "page 1 of 1" holds for an empty list too. */
+  pages: number;
+  /** 1-based positions of the page's first and last item; 0 and 0 when the list is empty. */
+  from: number;
+  to: number;
+}
+
+/** One page of a list, newest first as given. A page out of range (or not a whole number) is clamped. */
+export function pageOf<T>(items: readonly T[], page: number, perPage: number = RUNS_PER_PAGE): RunPage<T> {
+  const size = Math.max(1, Math.floor(perPage));
+  const pages = Math.max(1, Math.ceil(items.length / size));
+  const p = Number.isFinite(page) ? Math.min(Math.max(0, Math.floor(page)), pages - 1) : 0;
+  const slice = items.slice(p * size, p * size + size);
+  return { items: slice, page: p, pages, from: slice.length > 0 ? p * size + 1 : 0, to: p * size + slice.length };
+}
+
+/** The page of the list a run is on, or null when it is not in the list. */
+export function pageIndexOf(ids: readonly string[], id: string, perPage: number = RUNS_PER_PAGE): number | null {
+  const i = ids.indexOf(id);
+  return i < 0 ? null : Math.floor(i / Math.max(1, Math.floor(perPage)));
+}
+
 /** "850 ms", "12 s", "3 min 5 s". */
 export function formatDuration(ms: number): string {
   if (!Number.isFinite(ms) || ms < 0) return "";

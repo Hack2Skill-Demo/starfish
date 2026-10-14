@@ -13,6 +13,8 @@ import { Link, useSearchParams } from "react-router";
 import {
   ArrowDownUp,
   Check,
+  ChevronLeft,
+  ChevronRight,
   Circle,
   CircleDot,
   CirclePlay,
@@ -61,6 +63,8 @@ import {
   formatClock,
   formatDuration,
   groupByDay,
+  pageIndexOf,
+  pageOf,
   prStateView,
   progressText,
   runFilter,
@@ -176,9 +180,30 @@ export default function Runs() {
   }, [ready, selectedId, loaded, listed, environment, linkKey]);
   // Absent: not answered yet. A run named in the URL is only ever that run: never another one in its place.
   const linkedAnswer = linked?.key === linkKey ? linked.row : undefined;
+  // The list shows RUNS_PER_PAGE runs at a time. Another environment or filter starts again from the first page; a run
+  // named in the URL opens on its own page, once, so paging away from it afterwards stays where the operator put it.
+  const [page, setPage] = useState(0);
+  const pageKey = `${environment}|${filter?.label ?? ""}`;
+  const [pagedFor, setPagedFor] = useState(pageKey);
+  if (pagedFor !== pageKey) {
+    setPagedFor(pageKey);
+    setPage(0);
+  }
+  const [jumpedFor, setJumpedFor] = useState<string | null>(null);
+  if (selectedId !== null && selectedId !== jumpedFor && visible) {
+    const at = pageIndexOf(
+      visible.map((c) => c.id),
+      selectedId
+    );
+    if (at !== null) {
+      setJumpedFor(selectedId);
+      setPage(at);
+    }
+  }
+  const paged = pageOf(visible ?? [], page);
   const selected =
     selectedId === null
-      ? (visible?.[0] ?? null)
+      ? (paged.items[0] ?? null)
       : (cycles?.find((c) => c.id === selectedId) ?? (linkedAnswer && linkedAnswer !== "failed" ? linkedAnswer : null));
   // Full width only while a run is shown: its hero holds the toggle that brings the list back.
   const fullWidth = listHidden && selected !== null;
@@ -187,11 +212,12 @@ export default function Runs() {
     next.set("run", id);
     setParams(next, { replace: true });
   };
-  // Cycle records carry only the incident ID. Read the visible incidents by ID so the list can identify each run
-  // without changing its stable URL or assuming that a recent run's incident is in the incident page's time window.
+  // Cycle records carry only the incident ID. Read the incidents of the page shown by ID so the list can identify each
+  // run without changing its stable URL or assuming that a recent run's incident is in the incident page's time window.
+  const pageItems = paged.items;
   const incidentIds = useMemo(
-    () => [...new Set([...(visible ?? []).map((c) => c.incidentId), ...(selected ? [selected.incidentId] : [])])],
-    [visible, selected]
+    () => [...new Set([...pageItems.map((c) => c.incidentId), ...(selected ? [selected.incidentId] : [])])],
+    [pageItems, selected]
   );
   const incidentReads = useQueries({
     queries: incidentIds.map((id) => ({
@@ -274,7 +300,8 @@ export default function Runs() {
               {/* Hidden, not unmounted: the hero's toggle keeps its aria-controls target, and showing it again is instant. */}
               <div id="run-list" hidden={fullWidth} className="min-w-0">
                 <RunList
-                  cycles={visible ?? []}
+                  cycles={paged.items}
+                  pagination={{ ...paged, total: visible?.length ?? 0, onPage: setPage }}
                   incidents={incidents}
                   capped={capped}
                   shown={shown}
@@ -347,6 +374,7 @@ const MARK: Record<TrackMark, string> = {
 
 function RunList({
   cycles,
+  pagination,
   incidents,
   capped,
   shown,
@@ -356,7 +384,9 @@ function RunList({
   now,
   onSelect,
 }: {
+  /** The runs of the page shown. */
   cycles: CycleRow[];
+  pagination: { page: number; pages: number; from: number; to: number; total: number; onPage: (page: number) => void };
   incidents: ReadonlyMap<string, IncidentRow>;
   capped: boolean;
   /** How many runs the list read. */
@@ -434,7 +464,9 @@ function RunList({
           </ul>
         </div>
       ))}
-      {capped && (
+      {pagination.pages > 1 && <RunPager {...pagination} />}
+      {/* Older runs are read only from the last page: they come after it. */}
+      {capped && pagination.page === pagination.pages - 1 && (
         <div className="space-y-2">
           <p className="px-1 text-xs text-gray-600 dark:text-gray-400">
             Showing the {shown} most recently updated runs{onShowOlder ? "." : "; older ones are not listed."}
@@ -452,6 +484,26 @@ function RunList({
         </div>
       )}
     </section>
+  );
+}
+
+const PAGER_BUTTON =
+  "inline-flex min-h-9 items-center gap-1 rounded-lg border border-gray-200 bg-white px-3 text-sm font-medium text-gray-900 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100 dark:hover:bg-gray-700";
+
+/** Previous / next through the list, RUNS_PER_PAGE runs at a time, and which runs this page holds. */
+function RunPager({ page, pages, from, to, total, onPage }: { page: number; pages: number; from: number; to: number; total: number; onPage: (page: number) => void }) {
+  return (
+    <nav aria-label="Runs pages" className="flex items-center justify-between gap-2">
+      <button type="button" onClick={() => onPage(page - 1)} disabled={page === 0} className={PAGER_BUTTON}>
+        <ChevronLeft className="h-4 w-4" aria-hidden /> Newer
+      </button>
+      <span className="text-center text-xs text-gray-600 dark:text-gray-400" aria-live="polite">
+        Page {page + 1} of {pages} · {from}–{to} of {total}
+      </span>
+      <button type="button" onClick={() => onPage(page + 1)} disabled={page >= pages - 1} className={PAGER_BUTTON}>
+        Older <ChevronRight className="h-4 w-4" aria-hidden />
+      </button>
+    </nav>
   );
 }
 

@@ -408,7 +408,8 @@ the engine recorded healed, `isHealedRun`; its activity feed is a
 collection-group query over `events`, with its own rule and index; a guest's reads `starfish_public_events`), the
 **Incidents** page (under each error, the incident's current run: its state, triage's reason and a link to it, `lib/useIncidentRuns.ts`; with `VITE_STARFISH_DEMO_APP_URL`, a link to the demo app's Lab, `components/DemoAppLink.tsx`), a **Runs** page (live subscription to `{cycleCollection}` and its newest 200 events, read newest first by `seq`; a run
 with more says older ones are not drawn, #326,
-`web/src/lib/runs.ts`; a run waiting for the person it told, on an open incident, gets a "What you can do now" card
+`web/src/lib/runs.ts`; the run list shows 10 runs a page (`pageOf` in `runsModel.ts`, a linked run opens on its page, "Show
+older runs" on the last page, incidents read for the page shown only); a run waiting for the person it told, on an open incident, gets a "What you can do now" card
 (`components/HandoffCard.tsx`: acknowledge, fix and resolve, retry, correct triage, ignore, each beside its control; the
 same list `src/handoff.ts` puts in the Slack "needs a human" message; a viewer with no role, a guest, reads one line instead:
 a signed-in team member takes it from here, #360); the waterfall logic is pure in `runsModel.ts`: a step with no event is "not
