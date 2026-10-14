@@ -14,7 +14,7 @@ import {
   type ActivityRow,
 } from "./overviewModel";
 import type { IncidentRow } from "./incidents";
-import { parseCycle, type CycleRow } from "./runsModel";
+import { parseCycle, titleOf, type CycleRow } from "./runsModel";
 
 const HOUR = 3_600_000;
 const NOW = Date.UTC(2026, 9, 4, 12, 30, 0);
@@ -219,6 +219,15 @@ describe("latest activity", () => {
   it("names a stage the way the Runs page does, and shows an unknown one as stored", () => {
     expect(stageTitle("fix")).toBe("Draft a fix");
     expect(stageTitle("cycle")).toBe("Run");
-    expect(stageTitle("notify")).toBe("notify");
+    // #360: the stages only some runs reach, and the index path's, read as the Runs page names them.
+    expect(stageTitle("issue")).toBe("GitHub issue");
+    expect(stageTitle("alert")).toBe("Alert the team");
+    expect(stageTitle("notify")).toBe("Tell a person");
+    expect(stageTitle("escalation")).toBe("Phone the on-call");
+    expect(stageTitle("index")).toBe("Missing index");
+    for (const stage of ["triage", "fix", "verify", "review", "pr", "issue", "alert", "notify", "before", "merge", "escalation", "index"]) {
+      expect(stageTitle(stage), stage).toBe(titleOf(stage));
+    }
+    expect(stageTitle("something-new")).toBe("something-new");
   });
 });

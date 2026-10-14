@@ -1,7 +1,8 @@
 /**
  * "What you can do now": on a run that ended with a person told, the steps that person has (src/handoff.ts, the same
- * list the Slack "needs a human" message carries), each beside the control that does it. Anyone may read it, a guest
- * included; the buttons show only for a role, and firestore.rules checks the role and the transition again.
+ * list the Slack "needs a human" message carries), each beside the control that does it. The steps and their buttons
+ * show only for a role, and firestore.rules checks the role and the transition again; a guest (no role) reads one line
+ * saying the run waits for a signed-in team member (#360).
  */
 import { useState, type ReactNode } from "react";
 import { Link } from "react-router";
@@ -98,16 +99,28 @@ export function HandoffCard({
     ignore: statusButton("ignore", "Ignore"),
   };
 
+  const stopped = `Starfish stopped here and told a person${path === "human" ? ": its fix did not get through" : ": triage judged no code change fixes this"}.`;
+  const cardClass = "space-y-3 rounded-xl border border-warning-300 bg-warning-50 p-5 sm:p-6 dark:border-warning-700 dark:bg-warning-900/20";
+
+  // A viewer with no role (a guest) can do none of the steps: no button shows, and firestore.rules refuses the writes
+  // (#360). Listing them, or a link to a correction control they never see, would be steps they cannot take.
+  if (!canAct) {
+    return (
+      <section aria-label="Waiting for a person" className={cardClass}>
+        <h3 className="text-base font-semibold text-gray-900 dark:text-white">Waiting for a person</h3>
+        <p className="text-sm text-gray-700 dark:text-gray-300">
+          {stopped} It does not try this run again on its own; a signed-in team member takes it from here.
+        </p>
+      </section>
+    );
+  }
+
   return (
-    <section
-      aria-label="What you can do now"
-      className="space-y-3 rounded-xl border border-warning-300 bg-warning-50 p-5 sm:p-6 dark:border-warning-700 dark:bg-warning-900/20"
-    >
+    <section aria-label="What you can do now" className={cardClass}>
       <div>
         <h3 className="text-base font-semibold text-gray-900 dark:text-white">What you can do now</h3>
         <p className="mt-1 text-sm text-gray-700 dark:text-gray-300">
-          Starfish stopped here and told a person{path === "human" ? ": its fix did not get through" : ": triage judged no code change fixes this"}.
-          It does not try this run again on its own: it waits for one of these.
+          {stopped} It does not try this run again on its own: it waits for one of these.
         </p>
       </div>
       <ol className="divide-y divide-warning-200 dark:divide-warning-800">
