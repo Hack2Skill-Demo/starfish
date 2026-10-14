@@ -119,4 +119,43 @@ describe("DemoWelcome", () => {
     await user.click(screen.getByRole("button", { name: "Close the guide" }));
     expect(onClose).toHaveBeenCalledTimes(2);
   });
+
+  // #359: Next is gone on the last step and Back on the first; the pressed button unmounting dropped focus to the page,
+  // outside the overlay that handles Escape and Tab.
+  it("keeps focus in the dialog when Next or Back unmounts the button pressed, so Escape still closes it", async () => {
+    const user = userEvent.setup();
+    const onClose = renderGuide({ guest: false, askToSignIn: false });
+    await user.click(screen.getByRole("button", { name: "Next" }));
+    await user.click(screen.getByRole("button", { name: "Next" }));
+    expect(screen.getByRole("heading", { name: "Take a look around" })).toHaveFocus();
+    await user.keyboard("{Escape}");
+    expect(onClose).toHaveBeenCalledTimes(1);
+
+    await user.click(screen.getByRole("button", { name: "Back" }));
+    await user.click(screen.getByRole("button", { name: "Back" }));
+    expect(screen.getByRole("heading", { name: "Meet Starfish" })).toHaveFocus();
+    await user.keyboard("{Escape}");
+    expect(onClose).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps Tab inside the dialog, the Don't show this again box included", async () => {
+    const user = userEvent.setup();
+    renderGuide({ guest: false, askToSignIn: false });
+    await user.click(screen.getByRole("button", { name: "Next" }));
+    await user.click(screen.getByRole("button", { name: "Next" }));
+    const close = screen.getByRole("button", { name: "Close the guide" });
+    const box = screen.getByRole("checkbox", { name: "Don't show this again" });
+    const done = screen.getByRole("button", { name: "Start exploring" });
+    // From the step's heading, Shift+Tab wraps to the last control rather than leaving the dialog.
+    await user.tab({ shift: true });
+    expect(done).toHaveFocus();
+    await user.tab({ shift: true });
+    expect(box).toHaveFocus();
+    await user.tab();
+    expect(done).toHaveFocus();
+    await user.tab();
+    expect(close).toHaveFocus();
+    await user.tab({ shift: true });
+    expect(done).toHaveFocus();
+  });
 });
