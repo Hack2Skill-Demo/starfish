@@ -540,7 +540,7 @@ and, for the public demo, `STARFISH_WEB_DEMO_SIGNIN_HINT` (`VITE_STARFISH_DEMO_S
 finds the sign-in details, e.g. "They are in our presentation slides.", shown on the sign-in page and in the welcome guide;
 never the credentials themselves, since it ships in the bundle; unset = "Use the email and password you were given."),
 and `STARFISH_WEB_DEMO_APP_URL` (`VITE_STARFISH_DEMO_APP_URL`: the watched demo app's Lab, an https URL such as
-`https://hack2skill-demo.web.app/#lab`, linked from the Incidents page; unset = no link, so deleting the variable and
+`https://hack2skill-demo.web.app/#lab`, linked from the Incidents page and the header's flask button; unset = no link, so deleting the variable and
 re-running the workflow takes it down),
 and `STARFISH_WEB_SOURCE_URL` (`VITE_STARFISH_SOURCE_URL`: the source repository, an https URL, shown as a GitHub mark in the
 guest bar and on the sign-in page; unset = no link).

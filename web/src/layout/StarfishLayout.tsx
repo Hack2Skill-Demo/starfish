@@ -7,7 +7,8 @@
  *
  * A build for the public demo (#12) also carries the welcome guide (components/DemoWelcome.tsx): it opens by itself once
  * per tab until the visitor ticks "Don't show this again" on its last step, and from the header's help
- * button any time. A guest gets the guest bar under every page.
+ * button any time. A guest gets the guest bar under every page. Where the build names the demo shop
+ * (`VITE_STARFISH_DEMO_APP_URL`), the header's flask button opens the invitation to break it from its Lab.
  */
 import { useState } from "react";
 import { Outlet, NavLink, Link, useLocation, useNavigate } from "react-router";
@@ -20,6 +21,7 @@ import { menuItems, visibleMenuItems, activeMenuItem } from "./menuConfig";
 import { offersGuestView, publicDemoActionsOn } from "../lib/dataSource";
 import { hasChosenGuestView, markWelcomeShownThisSession, shouldAutoOpenWelcome } from "../lib/demoGuide";
 import { DemoWelcome } from "../components/DemoWelcome";
+import { DemoLabButton } from "../components/DemoAppLink";
 import { GuestBar } from "../components/GuestBar";
 
 const ROLE_LABELS = { admin: "Admin", operator: "Operator" } as const;
@@ -201,6 +203,7 @@ export function StarfishLayout() {
           </button>
           <span className="text-sm font-medium text-gray-700 dark:text-gray-200">{active?.label ?? "Starfish"}</span>
           <div className="flex items-center gap-2">
+            <DemoLabButton />
             {demoGuide && (
               <button
                 onClick={() => setWelcomeOpen(true)}
