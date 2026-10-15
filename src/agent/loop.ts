@@ -249,6 +249,10 @@ class LeaseLost extends Error {}
 /** How many revisions one cycle may make, shared between a failed verify and a blocking review. */
 export const MAX_REVISIONS = 1;
 
+/** Said to the fixer after the review broke its patch (#375): fix what was shown, and nothing else in the file. */
+export const REVISION_SCOPE =
+  "Fix only what is listed above, with the smallest change to your patch. Do not widen it to fix other problems in the file: those are for a person.";
+
 const RECONSIDER_SUMMARY = {
   operator: "an operator asked for a retriage",
   corrected: "an operator corrected the incident to a level above noise",
@@ -885,7 +889,12 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
           if (revisions < MAX_REVISIONS) {
             await spendRevision();
             const broken = (reviewed.attacks ?? []).filter((a) => a.outcome === "broken").map((a) => `${a.attack}: ${a.detail}`);
-            feedback = { previousPatchSha256: verified.patchSha256, verifyOutput: `A reviewer broke this patch:\n${broken.join("\n")}` };
+            // Only what the review showed this patch breaks (#375): a revision that also takes on other problems in the file
+            // stops being the minimal fix and fails on its own (CODE-03's transaction rewrite).
+            feedback = {
+              previousPatchSha256: verified.patchSha256,
+              verifyOutput: `A reviewer broke this patch:\n${broken.join("\n")}\n${REVISION_SCOPE}`,
+            };
             continue;
           }
           return await handOver(

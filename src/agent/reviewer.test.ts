@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { MAX_ATTACKS, MAX_REVIEW_PATCH_CHARS, REVIEW_SCHEMA, renderForReview, reviewPatch, sha256, verdictOf, type Attack, type ReviewRequest } from "./reviewer.js";
+import { MAX_ATTACKS, MAX_REVIEW_PATCH_CHARS, REVIEW_SCHEMA, REVIEW_SYSTEM, renderForReview, reviewPatch, sha256, verdictOf, type Attack, type ReviewRequest } from "./reviewer.js";
 import { MAX_FIX_PATCH_BYTES } from "./fixer.js";
 import type { AskJson } from "./triage.js";
 import type { VerifyResult } from "./verifyGate.js";
@@ -53,6 +53,12 @@ describe("verdictOf: decided here, not by the model", () => {
   });
   it("approves with flags when something is flagged and nothing is broken", () => {
     expect(verdictOf([a("held"), a("flagged")])).toBe("approve-with-flags");
+  });
+  it("tells the reviewer a defect already in the code is flagged, not broken, so it never blocks a minimal fix (#375)", () => {
+    // CODE-03: cancelOrder.ts also holds G2-02's race; blocking the one-line await fix over it made the revision overreach.
+    expect(REVIEW_SYSTEM).toContain("Judge the patch, not the file.");
+    expect(REVIEW_SYSTEM).toMatch(/already in the\s+code before the patch[\s\S]*is "flagged"/);
+    expect(verdictOf([{ attack: "Two concurrent cancels", outcome: "flagged", detail: "already in the code before this patch" }])).toBe("approve-with-flags");
   });
   it("blocks when any attack broke it, whatever else held", () => {
     expect(verdictOf([a("held"), a("flagged"), a("broken")])).toBe("block");

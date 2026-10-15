@@ -311,7 +311,10 @@ src/
                    "pass in progress". Built, unit- and emulator-tested; not yet written by a deployed pass
   agent/automationSwitch.ts  the kill switch: reads the runtime settings fresh each time the loop asks; fails closed
   agent/reviewer.ts  stage 4: attacks the verified patch; verdict computed from outcomes in code, bound
-                   to the patch hash the gate tested. Run by `pnpm agent` (reached on a real incident 2026-10-12: the run that opened demo-app #41)
+                   to the patch hash the gate tested. It judges the patch, not the file: a defect already in the code that the
+                   patch neither caused nor worsened is "flagged" (approves with flags), never "broken", and the one revision a
+                   block earns is told to fix only what was shown (`REVISION_SCOPE`, #375: CODE-03's one-line fix was blocked over
+                   the file's other race, and the revision's rewrite failed CI). Unit- and emulator-tested; not yet run on the demo project. Run by `pnpm agent` (reached on a real incident 2026-10-12: the run that opened demo-app #41)
   agent/verifyGate.ts  stage 3 (its output redacted before it is cut, `redactTail` in ingest/redact.ts, #18): apply a patch in a scratch copy, judge the tree that results, run the
                    configured command with a scrubbed env. Not a sandbox; run by `pnpm agent` (its local checks judged real patches 2026-10-12, #317; with
                    `github-actions` isolation the target's CI runs the command, verifyCi.ts)
