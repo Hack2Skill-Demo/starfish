@@ -11,6 +11,7 @@
  *     arrival, without choosing it, is asked.
  */
 import { webConfig } from "./config";
+import { publicDemoActionsOn } from "./dataSource";
 
 const DISMISSED_KEY = "starfish.demo.welcomeDismissed";
 const SHOWN_THIS_SESSION_KEY = "starfish.demo.welcomeShownThisSession";
@@ -49,6 +50,27 @@ export const setWelcomeDismissed = (dismissed: boolean): void =>
   dismissed ? mark(DISMISSED_KEY) : unmark(DISMISSED_KEY);
 export const hasChosenGuestView = (): boolean => read(CHOSE_GUEST_KEY);
 export const markGuestViewChosen = (): void => mark(CHOSE_GUEST_KEY);
+
+/**
+ * What a visitor may do on the public demo, and the limits that protect its billing, or null where the open actions
+ * are off (a view-only demo, or any other build): the guide and the guest bar never claim limits that are not active.
+ * The numbers are the build's copy of the admin API's limits (`publicLimits`, the engine's defaults unless set), which
+ * the admin API enforces per address (the last X-Forwarded-For entry, an IPv6 caller by its /64).
+ */
+export function visitorActions(): { short: string; full: string; limits: string } | null {
+  if (!publicDemoActionsOn()) return null;
+  const l = webConfig().publicLimits;
+  const n = (count: number, one: string, many: string) => `${count} ${count === 1 ? one : many}`;
+  return {
+    short: "No sign-in needed: triage, retry and run the agent · limited per IP address to protect our cloud and model billing",
+    full:
+      "No sign-in needed: you can acknowledge, resolve or ignore incidents, retry a run, correct triage, and start an ingest run or an agent pass yourself.",
+    limits:
+      `To protect our cloud and Gemini billing, these actions are limited per IP address: up to ${n(l.actionsPerIpPerHour, "incident action", "incident actions")} ` +
+      `and ${n(l.runsPerIpPerHour, "ingest or agent start", "ingest or agent starts")} an hour from one address, and ` +
+      `${n(l.agentRunsPerHour, "agent pass", "agent passes")} an hour started by all visitors together. Past a limit you are told when to try again.`,
+  };
+}
 
 /** Where the sign-in email and password are: the deployment's own line, else a generic one. Never the credentials. */
 export function signInHint(): string {

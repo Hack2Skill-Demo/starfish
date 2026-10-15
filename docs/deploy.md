@@ -750,8 +750,9 @@ account has there. The admin API then starts the same job a schedule tick starts
 agent's own account with the agent's own switches (dry run, the kill switch, auto-merge), caps and leases: an admin's click
 is one tick, early, and gives Starfish no way to act that a tick does not. The admin API holds none of the agent's
 credentials. A run without `DEPLOY_AGENT=1` sets the name empty, and the route is gone again; the grant on the job, if an
-earlier run made it, is left in place and can be removed by hand. Starts are not limited beyond one in flight per
-instance and the per-address limit below: each is a job execution, bounded by the agent's own daily caps. Tested with stubs and the emulator, and pinned
+earlier run made it, is left in place and can be removed by hand. An admin's starts are not limited beyond one in flight per
+instance and the per-address limit below: each is a job execution, bounded by the agent's own daily caps (a visitor's, where
+the public demo's open actions are on, are: [below](#the-public-demos-open-actions-visitors-act-within-per-address-limits)). Tested with stubs and the emulator, and pinned
 in the dry-run plan; **never run against real Cloud Run**.
 
 The audit trail is `starfish_audit` (`STARFISH_AUDIT_COLLECTION`): admin-readable, engine-written. An ingest run or a retire an
@@ -809,6 +810,84 @@ repository variable `STARFISH_WEB_ADMIN_API_URL` to it and run Deploy web UI (#2
 > "Run ingest now" ran from the UI as an admin. Retire, "Run agent now", the Twilio routes, App Check and a call from another origin have not
 > been exercised, and `GET /healthz` is not reachable on a `run.app` URL (Google's front end answers it; `GET /api/health` was added for that,
 > and has not been tried on Cloud Run yet).**
+
+## The public demo's open actions: visitors act, within per-address limits
+
+Off by default. On the public demo only, a visitor with **no account** (an anonymous Firebase Auth session, the "guest")
+may do what an operator does, acknowledge, resolve, ignore and reopen an incident, "Retry with agent" and "Correct triage",
+and start **Run ingest now** and **Run agent now**. They also read the demo's full stored records (error detail, stack
+traces, Gemini's reasoning, the patches), not only the trimmed copies. Settings editing (runtime settings, merge cases, the
+kill switch, the auto-merge switches), On-call (phone numbers and the Twilio routes) and Retire stay admin-only.
+
+**How it works** (`src/publicDemo.ts`, `src/publicDemoLimit.ts`):
+
+- **Every visitor action goes through the admin API**, never a write from the browser: `firestore.rules` cannot see a
+  caller's address, and the address is what the limits count. The rules gain **no** anonymous write. Three routes exist
+  only while it is on, for an anonymous token only: `POST /api/incidents/<id>/status` (`{"action": "acknowledge" |
+  "resolve" | "ignore" | "reopen"}`), `POST /api/incidents/<id>/retriage` and `POST /api/incidents/<id>/correction`
+  (`{"level": "noise" | "log" | "fix" | "merge", "note"?: "..."}`); `POST /api/ingest/run` and `POST /api/agent/run` accept an
+  anonymous token too. Each write has the shape `firestore.rules` require of an operator (the same fields, the caller
+  named, the server's time), on an incident of the deployment's own environment, never a retired one, with the transition
+  table the UI and the rules share (`src/incidentActions.ts`). A correction's note is redacted first, since other visitors
+  read it. Off, the three routes are a 404 and an anonymous caller gets the same 403 as before.
+- **Audited, without the address**: each change lands in `starfish_audit` in the same transaction (`actorUid` the anonymous
+  uid, `actorKind: "anonymous"`, before and after); a run is recorded before it starts (`run-ingest`, `run-agent`). Refusals
+  are not recorded (anyone can mint an anonymous account).
+- **Limits, durable across instances**: one Firestore transaction claims each call before it runs, in an engine-only
+  collection (`starfish_public_actions`, `STARFISH_PUBLIC_ACTION_COLLECTION`, closed to every client):
+
+  | Limit | Default | Setting |
+  |---|---|---|
+  | incident actions from one address an hour | 30 | `STARFISH_PUBLIC_ACTIONS_PER_IP_PER_HOUR` |
+  | "Run ingest now" + "Run agent now" from one address an hour (one count) | 3 | `STARFISH_PUBLIC_RUNS_PER_IP_PER_HOUR` |
+  | agent passes started by **all** visitors together an hour | 6 | `STARFISH_PUBLIC_AGENT_RUNS_PER_HOUR` |
+
+  Past one: a 429 that says which limit and when it lifts, with `Retry-After`. The address is the one the per-minute
+  limit keys on (the last `X-Forwarded-For` entry, an IPv6 caller by its /64), stored only as an HMAC with a random salt the
+  first claim creates (`starfish_public_actions/salt`). Each counter carries `expiresAt` (two days on): add a Firestore TTL
+  policy on that field for the collection group if you want them deleted (`gcloud firestore fields ttls update expiresAt
+  --collection-group=starfish_public_actions --enable-ttl --database=<db>`); without one, one small document per address and
+  hour stays. The per-minute limit above still applies first. A claimed call that then fails still counts. There is no
+  deployment-wide cap on ingest runs: each is the scheduled run, one at a time per instance.
+- **Reads**: as it starts, the admin API writes `starfish_runs/public_access` (`{enabled, environment}`, `STARFISH_RUN_COLLECTION`),
+  a document only the engine writes. `firestore.rules` let a guest read the demo's stored incidents, their corrections,
+  cycles and run events only while it says `enabled: true, environment: 'demo'`, and still only the `demo` environment, a
+  query's limit at most 500. Turned off, the next start of the admin API writes `enabled: false`; a deploy starts a new
+  revision, so that is at deploy time. To close the reads at once without a deploy, set `enabled` to `false` (or delete the
+  document) in the console.
+
+**Turn it on** (the demo only):
+
+1. Engine: `STARFISH_ENV=demo DEPLOY_ADMIN_API=1 PUBLIC_DEMO_ACTIONS=true ... scripts/deploy-gcp.sh` (with `DEPLOY_AGENT=1` for
+   "Run agent now"). The script refuses `PUBLIC_DEMO_ACTIONS=true` for any other environment, and refuses the setting from
+   `EXTRA_ENV_VARS`; it always sets it on the admin API, so a run without it turns it off again. Other limits go through
+   `EXTRA_ENV_VARS` (`STARFISH_PUBLIC_RUNS_PER_IP_PER_HOUR=2`, say). The Deploy engine workflow does not pass it: there it stays off.
+   Deploy the rules too (the script does unless `SKIP_FIRESTORE_RULES=1`).
+2. Check the gate: the admin API's start log says `public demo reads gate` with `gate: "enabled"` (or `"unchanged"`).
+3. Web: build the demo site with `VITE_STARFISH_PUBLIC_DEMO_ACTIONS=true` and `VITE_STARFISH_ADMIN_API_URL` set
+   (`scripts/deploy-web.sh` passes `VITE_*` through). If you changed a limit, set the matching `VITE_STARFISH_PUBLIC_*` so the
+   guide quotes it. A visitor then sees the operator's controls and the run buttons; the guest bar and the welcome guide say no
+   sign-in is needed and that the actions are limited per IP address to protect billing, with the numbers; a 429 shows its
+   reason. Built with the flag but without step 1, a visitor's reads are refused. Turn off in the reverse order.
+
+**The risks, within those limits.** Anyone on the internet can:
+
+- **spend Gemini calls**: each agent pass may triage, fix and review, up to the agent's own caps (`STARFISH_MAX_CYCLES_PER_PASS`,
+  `STARFISH_MAX_CYCLES_PER_DAY`, the per-cycle model call budget);
+- **make the agent file GitHub issues and open pull requests and post Slack messages** for the demo app, when the agent's dry
+  run is off (it files and sends nothing in a dry run), within the agent's daily cycle cap; and, where an admin turned
+  auto-merge on, a merge is still gated exactly as before (the admin's merge cases, the safety floor, green checks), since a
+  visitor's start is one ordinary pass and nothing a visitor writes raises Starfish past an admin's class rules;
+- **replace an operator's correction**: the incident keeps the latest one, so a visitor's `merge` lifts an operator's earlier
+  cap on that incident (never an admin's class rule), and a correction above `noise` on a declined incident has it triaged
+  again (more model calls, within the caps above);
+- **change incidents' status, ask for retries and write corrections** that every other visitor and the team see, and read the
+  demo's full records: run the demo on demo data only;
+- **hold the one-at-a-time locks**: while a visitor's ingest run or agent start is in progress on an instance, an admin's gets the 409.
+
+> **Status: built; tested with stubs (every route, switch off and on, the limits) and against the Firestore emulator (the
+> writes, the counters under concurrent claims, the gate, and `firestore.rules`: a guest still writes nothing and reads the
+> full records only with the gate on). Never run on the real project.**
 
 ## Recording the demo: a shorter tick, and a run now (#65)
 

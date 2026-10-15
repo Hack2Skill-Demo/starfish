@@ -16,7 +16,7 @@ import { SourceLink } from "../components/SourceLink";
 import { Button } from "../components/ui/Button";
 import { firebaseAuth } from "../lib/firebase";
 import { StarfishLogo } from "../layout/StarfishLogo";
-import { offersGuestView } from "../lib/dataSource";
+import { offersGuestView, publicDemoActionsOn } from "../lib/dataSource";
 import { markGuestViewChosen, signInHint } from "../lib/demoGuide";
 import { useAuth } from "./authCore";
 
@@ -116,13 +116,19 @@ export function SignIn() {
             {offersGuestView() && (
               <p className="mb-6 rounded-lg border border-gray-200 bg-gray-50 p-4 text-sm text-gray-700 dark:border-gray-700 dark:bg-gray-900/40 dark:text-gray-300">
                 <span className="font-medium text-gray-900 dark:text-white">Public demo.</span> {signInHint()}
-                {(guest || !user) && (
-                  <span className="mt-2 block">
-                    No sign-in details? You can still look around in the view-only demo below. It shows fewer details
-                    (no stack traces, error detail, Gemini's reasoning or patches) and none of the triage or admin
-                    actions.
-                  </span>
-                )}
+                {(guest || !user) &&
+                  (publicDemoActionsOn() ? (
+                    <span className="mt-2 block">
+                      No sign-in details? Open the demo below: no sign-in is needed to triage incidents, retry a run or
+                      start the agent. Those actions are limited per IP address to protect our cloud and model billing.
+                    </span>
+                  ) : (
+                    <span className="mt-2 block">
+                      No sign-in details? You can still look around in the view-only demo below. It shows fewer details
+                      (no stack traces, error detail, Gemini's reasoning or patches) and none of the triage or admin
+                      actions.
+                    </span>
+                  ))}
               </p>
             )}
 
@@ -210,7 +216,9 @@ export function SignIn() {
                     {enteringGuest ? "Opening the demo view..." : "See the demo view"}
                   </button>
                 )}
-                <span className="mt-1 block text-xs">Read-only, no sign-in needed.</span>
+                <span className="mt-1 block text-xs">
+                  {publicDemoActionsOn() ? "No sign-in needed; actions limited per IP address." : "Read-only, no sign-in needed."}
+                </span>
               </div>
             )}
           </div>

@@ -1,18 +1,21 @@
 /**
- * The bar under every page for a guest (an anonymous, read-only session on the public demo, #12). It says the view is
- * read-only, reopens the welcome guide, and offers sign-in. A guest who did not choose the view-only demo is also told
+ * The bar under every page for a guest (an anonymous session on the public demo, #12). It says the view is read-only
+ * (or, where the public demo's open actions are on, what a visitor can do and that it is limited per IP address to
+ * protect billing), reopens the welcome guide, and offers sign-in. A guest who did not choose the view-only demo is also told
  * where the sign-in details are (`signInHint`); one who chose it just gets the link.
  */
 import { Link, useLocation } from "react-router";
-import { signInHint } from "../lib/demoGuide";
+import { signInHint, visitorActions } from "../lib/demoGuide";
 import { SourceLink } from "./SourceLink";
 
 export function GuestBar({ askToSignIn, onOpenGuide }: { askToSignIn: boolean; onOpenGuide?: () => void }) {
   const location = useLocation();
+  // Where the public demo's open actions are on, the bar says what a visitor can do and that it is limited per address.
+  const open = visitorActions();
   return (
     <footer className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 border-t border-gray-200 bg-white px-4 py-2 text-xs text-gray-600 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-400 lg:px-6">
       <span>
-        Public demo · view only
+        {open ? `Public demo · ${open.short}` : "Public demo · view only"}
         {askToSignIn && (
           <>
             {" "}

@@ -1,6 +1,8 @@
 import type { AddressInfo } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
-import { createAdminApi, type AdminApiDeps, type ApiRequest } from "./adminApi.js";
+import { createAdminApi, type AdminApiDeps, type ApiRequest, type PublicDemoDeps } from "./adminApi.js";
+import type { PublicIncidentResult } from "./publicDemo.js";
+import type { ClaimResult, PublicActionKind } from "./publicDemoLimit.js";
 import { startAdminApiServer } from "./adminApiServer.js";
 import { createIpRateLimiter } from "./ipRateLimit.js";
 import type { RunSummary } from "./ingest/run.js";
@@ -461,5 +463,170 @@ describe("admin API: phone escalation (#37)", () => {
     const r = await api({ method: "POST", path: "/twilio/status", query: "e=a&s=0", form: {} });
     expect(r.status).toBe(500);
     expect(r.text).toBe("server error");
+  });
+});
+
+describe("admin API: the public demo's open actions", () => {
+  const GUEST_TOKEN = "g".repeat(40);
+  /** Two callers: TOKEN is the admin, GUEST_TOKEN an anonymous session; `limits` decides each claim. */
+  const withPublic = (opts: { publicDemo?: boolean; agent?: boolean; claim?: (kind: PublicActionKind, key: string) => Promise<ClaimResult> } = {}) => {
+    const done: string[] = [];
+    const claims: string[] = [];
+    const publicDemo: PublicDemoDeps = {
+      claim: opts.claim ?? ((kind, key) => (claims.push(`${kind}:${key}`), Promise.resolve({ ok: true as const }))),
+      setStatus: (id, action, uid) => (done.push(`status:${id}:${action}:${uid}`), Promise.resolve({ ok: true as const })),
+      requestRetriage: (id, uid) => (done.push(`retriage:${id}:${uid}`), Promise.resolve({ ok: true as const })),
+      correct: (id, level, note, uid) => (done.push(`correct:${id}:${String(level)}:${String(note)}:${uid}`), Promise.resolve({ ok: true as const })),
+      runIngest: (uid) => (done.push(`guest-ingest:${uid}`), Promise.resolve({ ok: true as const, summary: SUMMARY })),
+      ...(opts.agent !== false && { runAgent: (uid: string) => (done.push(`guest-agent:${uid}`), Promise.resolve({ ok: true as const })) }),
+    };
+    const f = fakes({
+      verifyToken: (t) => (t === TOKEN ? Promise.resolve({ uid: "admin-1" }) : t === GUEST_TOKEN ? Promise.resolve({ uid: "anon-1", anonymous: true }) : Promise.reject(new Error("bad"))),
+      ...(opts.agent !== false && { runAgent: (uid: string) => (done.push(`agent:${uid}`), Promise.resolve({ ok: true as const })) }),
+      sendOnCallCode: () => Promise.resolve({ ok: true as const }),
+      confirmOnCallNumber: () => Promise.resolve({ ok: true as const }),
+      ...(opts.publicDemo !== false && { publicDemo }),
+    });
+    return { ...f, done, claims };
+  };
+  const asGuest = (path: string, body?: unknown): ApiRequest => ({ method: "POST", path, authorization: `Bearer ${GUEST_TOKEN}`, clientKey: "203.0.113.7", ...(body !== undefined && { body }) });
+
+  describe("switch off (no publicDemo wired): exactly as before", () => {
+    it("an anonymous caller is refused every admin route with the same 403, and the incident routes do not exist", async () => {
+      const { api, done, calls } = withPublic({ publicDemo: false });
+      for (const path of ["/api/ingest/run", "/api/agent/run", "/api/incidents/i1/retire", "/api/oncall/people/p1/send-code"]) {
+        const r = await api(asGuest(path));
+        expect(r.status, path).toBe(403);
+        expect(r.body).toEqual({ error: "admins only" });
+      }
+      for (const kind of ["status", "retriage", "correction"]) {
+        expect((await api(asGuest(`/api/incidents/i1/${kind}`, { action: "resolve", level: "log" }))).status, kind).toBe(404);
+        expect((await api(post(`/api/incidents/i1/${kind}`))).status, kind).toBe(404);
+      }
+      expect(done).toEqual([]);
+      expect(calls).toEqual([]);
+    });
+
+    it("an admin's routes run as before", async () => {
+      const { api, done, calls } = withPublic({ publicDemo: false });
+      expect((await api(post("/api/ingest/run"))).status).toBe(200);
+      expect((await api(post("/api/agent/run"))).status).toBe(202);
+      expect(calls).toEqual(["ingest:admin-1"]);
+      expect(done).toEqual(["agent:admin-1"]);
+    });
+  });
+
+  describe("switch on", () => {
+    it("lets an anonymous caller run ingest and the agent through the visitors' path, each claimed by its address", async () => {
+      const { api, done, claims, calls } = withPublic();
+      const ingest = await api(asGuest("/api/ingest/run"));
+      expect(ingest.status).toBe(200);
+      expect(ingest.body).toMatchObject({ ok: true, outcome: "ok", incidentsCreated: 1 });
+      expect((await api(asGuest("/api/agent/run"))).status).toBe(202);
+      expect(done).toEqual(["guest-ingest:anon-1", "guest-agent:anon-1"]);
+      expect(claims).toEqual(["ingest:203.0.113.7", "agent:203.0.113.7"]);
+      expect(calls).toEqual([]); // the admin's own ingest never ran
+    });
+
+    it("lets an anonymous caller change status, ask for a retry and correct triage, passing only what it validated", async () => {
+      const { api, done, claims } = withPublic();
+      expect((await api(asGuest("/api/incidents/inc-1/status", { action: "acknowledge" }))).status).toBe(200);
+      expect((await api(asGuest("/api/incidents/inc-1/retriage"))).status).toBe(200);
+      expect((await api(asGuest("/api/incidents/inc-1/correction", { level: "log", note: "flaky provider" }))).status).toBe(200);
+      expect(done).toEqual(["status:inc-1:acknowledge:anon-1", "retriage:inc-1:anon-1", "correct:inc-1:log:flaky provider:anon-1"]);
+      expect(claims).toEqual(["action:203.0.113.7", "action:203.0.113.7", "action:203.0.113.7"]);
+    });
+
+    it("refuses a malformed body with a 400 before anything is claimed", async () => {
+      const { api, done, claims } = withPublic();
+      for (const [path, body] of [
+        ["/api/incidents/inc-1/status", { action: "delete" }],
+        ["/api/incidents/inc-1/status", undefined],
+        ["/api/incidents/inc-1/correction", { level: "everything" }],
+        ["/api/incidents/inc-1/correction", { level: "log", note: 3 }],
+      ] as const) {
+        expect((await api(asGuest(path, body))).status, JSON.stringify(body)).toBe(400);
+      }
+      expect((await api(asGuest("/api/incidents/bad id/status", { action: "resolve" }))).status).toBe(404);
+      expect(done).toEqual([]);
+      expect(claims).toEqual([]);
+    });
+
+    it("keeps Settings-adjacent and admin-only routes closed to anonymous callers: Retire and On-call are 403", async () => {
+      const { api, done } = withPublic();
+      for (const path of ["/api/incidents/inc-1/retire", "/api/oncall/people/p1/send-code", "/api/oncall/people/p1/confirm"]) {
+        const r = await api(asGuest(path, { code: "123456", reason: "x" }));
+        expect(r.status, path).toBe(403);
+        expect(r.body).toEqual({ error: "admins only" });
+      }
+      expect(done).toEqual([]);
+    });
+
+    it("keeps the incident routes for anonymous callers only: an admin or operator triages from the UI as before", async () => {
+      const { api, done } = withPublic();
+      const r = await api(post("/api/incidents/inc-1/status", { body: { action: "resolve" } }));
+      expect(r.status).toBe(403);
+      expect(done).toEqual([]);
+      // An admin's ingest and agent still take the admin's path, unclaimed.
+      expect((await api(post("/api/agent/run"))).status).toBe(202);
+      expect(done).toEqual(["agent:admin-1"]);
+    });
+
+    it("answers 429 with the limit's reason and retry-after, and runs nothing, past a limit", async () => {
+      const refuse = (limit: "address" | "deployment") => () => Promise.resolve({ ok: false as const, limit, retryAfterSeconds: 1500 });
+      const { api, done } = withPublic({ claim: refuse("address") });
+      const r = await api(asGuest("/api/incidents/inc-1/retriage"));
+      expect(r.status).toBe(429);
+      expect(r.headers["retry-after"]).toBe("1500");
+      expect(r.body).toEqual({ error: "the public demo's hourly limit for your address is reached: try again in 25 minutes" });
+      expect((await api(asGuest("/api/ingest/run"))).status).toBe(429);
+      const { api: capped, done: cappedDone } = withPublic({ claim: refuse("deployment") });
+      const a = await capped(asGuest("/api/agent/run"));
+      expect(a.status).toBe(429);
+      expect(a.body).toEqual({ error: "the public demo's hourly limit of agent passes is reached: try again in 25 minutes" });
+      expect([...done, ...cappedDone]).toEqual([]);
+    });
+
+    it("answers 500 with no detail when the limits cannot be checked, and runs nothing", async () => {
+      const { api, done } = withPublic({ claim: () => Promise.reject(new Error("firestore down: secret detail")) });
+      const r = await api(asGuest("/api/agent/run"));
+      expect(r.status).toBe(500);
+      expect(JSON.stringify(r.body)).not.toContain("secret");
+      expect(done).toEqual([]);
+    });
+
+    it("maps an action's refusals to a status and a short reason", async () => {
+      const cases: [string, number][] = [["no-such-incident", 404], ["not-applicable", 409], ["off", 403], ["bad-request", 400], ["invalid-id", 400]];
+      for (const [reason, status] of cases) {
+        const f = withPublic();
+        const api = createAdminApi({ ...f.deps, publicDemo: { ...f.deps.publicDemo!, setStatus: () => Promise.resolve({ ok: false, reason } as PublicIncidentResult) } });
+        expect((await api(asGuest("/api/incidents/inc-1/status", { action: "resolve" }))).status, reason).toBe(status);
+      }
+    });
+
+    it("a visitor's agent start is a 404 where no agent job is named, as an admin's is", async () => {
+      const { api, done } = withPublic({ agent: false });
+      expect((await api(asGuest("/api/agent/run"))).status).toBe(404);
+      expect(done).toEqual([]);
+    });
+
+    it("needs a valid token, and App Check where it is on, like every route", async () => {
+      const { api, done } = withPublic();
+      expect((await api({ method: "POST", path: "/api/incidents/inc-1/retriage", clientKey: "x" })).status).toBe(401);
+      const f = withPublic();
+      const strict = createAdminApi({ ...f.deps, verifyAppCheck: () => Promise.reject(new Error("no")) });
+      expect((await strict(asGuest("/api/incidents/inc-1/retriage"))).status).toBe(401);
+      expect([...done, ...f.done]).toEqual([]);
+    });
+  });
+
+  it("the HTTP shell hands the caller's address (the last X-Forwarded-For entry) to the handler", async () => {
+    const seen: (string | undefined)[] = [];
+    const server = startAdminApiServer((req) => (seen.push(req.clientKey), Promise.resolve({ status: 200, headers: {}, body: {} })), 0);
+    await new Promise((r) => server.once("listening", r));
+    const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    await fetch(`${base}/api/ingest/run`, { method: "POST", headers: { "x-forwarded-for": "9.9.9.9, 203.0.113.5" } });
+    server.close();
+    expect(seen).toEqual(["203.0.113.5"]);
   });
 });

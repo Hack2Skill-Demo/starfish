@@ -5,10 +5,11 @@ import { Ctx, type StarfishAuthCtx } from "../auth/authCore";
 
 const mocks = vi.hoisted(() => ({
   toast: { success: vi.fn(), error: vi.fn() },
-  config: { incidentCollection: "starfish_incidents", adminApiUrl: "" },
+  config: { incidentCollection: "starfish_incidents", adminApiUrl: "", environment: "demo", publicDemoActions: false },
   markStarted: vi.fn(),
+  auth: { currentUser: null as null | { isAnonymous: boolean } },
 }));
-vi.mock("../lib/firebase", () => ({ firebaseAuth: vi.fn(), firestore: vi.fn() }));
+vi.mock("../lib/firebase", () => ({ firebaseAuth: () => mocks.auth, firestore: vi.fn() }));
 vi.mock("../lib/config", () => ({ webConfig: () => mocks.config }));
 vi.mock("./ui/toast", () => ({ toast: mocks.toast }));
 vi.mock("../lib/agentStart", () => ({ markAgentStartRequested: mocks.markStarted }));
@@ -31,6 +32,43 @@ function renderWith(ui: React.ReactNode, roles: StarfishAuthCtx["roles"], signed
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.config.adminApiUrl = "";
+  mocks.config.publicDemoActions = false;
+  mocks.auth.currentUser = null;
+});
+
+describe("RetryRunButton for a public demo visitor", () => {
+  const asGuest = (ui: React.ReactNode) => {
+    mocks.auth.currentUser = { isAnonymous: true };
+    const ctx: StarfishAuthCtx = { user: { uid: "anon" } as StarfishAuthCtx["user"], roles: [], role: null, loading: false, signOut: async () => {}, guest: true, enterAsGuest: async () => false };
+    return render(<Ctx.Provider value={ctx}>{ui}</Ctx.Provider>);
+  };
+
+  it("is not shown to a guest where the open actions are off", () => {
+    mocks.config.adminApiUrl = "https://admin.example";
+    asGuest(<RetryRunButton incidentId="inc-a" ask={vi.fn()} startAgent={vi.fn()} />);
+    expect(screen.queryByRole("button")).toBeNull();
+  });
+
+  it("where they are on, asks for the retry and starts a pass, and shows a refusal's own message", async () => {
+    mocks.config.adminApiUrl = "https://admin.example";
+    mocks.config.publicDemoActions = true;
+    const ask = vi.fn().mockResolvedValue(undefined);
+    const startAgent = vi.fn().mockResolvedValue({ ok: true, value: null });
+    asGuest(<RetryRunButton incidentId="inc-a" ask={ask} startAgent={startAgent} />);
+    await userEvent.click(screen.getByRole("button", { name: "Retry with agent" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Agent started" })).toBeDisabled());
+    expect(ask).toHaveBeenCalledWith("inc-a", "anon");
+    expect(startAgent).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows the admin API's reason when the retry itself is refused", async () => {
+    mocks.config.adminApiUrl = "https://admin.example";
+    mocks.config.publicDemoActions = true;
+    const ask = vi.fn().mockRejectedValue(new Error("The public demo's hourly limit for your address is reached: try again in 5 minutes."));
+    asGuest(<RetryRunButton incidentId="inc-a" ask={ask} startAgent={vi.fn()} />);
+    await userEvent.click(screen.getByRole("button", { name: "Retry with agent" }));
+    await waitFor(() => expect(mocks.toast.error).toHaveBeenCalledWith("The public demo's hourly limit for your address is reached: try again in 5 minutes."));
+  });
 });
 
 describe("RetryRunButton", () => {

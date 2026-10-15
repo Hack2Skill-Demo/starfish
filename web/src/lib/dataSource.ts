@@ -6,6 +6,10 @@
  * (src/publicView.ts), which keep the stored field names, so the same parsers read both. What a copy leaves out (error
  * detail, stack traces, the model's words, event payloads) is simply absent, and the pages show nothing for it.
  *
+ * The public demo's open actions (`VITE_STARFISH_PUBLIC_DEMO_ACTIONS`, a demo build only, off by default): a guest then
+ * reads the stored documents too (firestore.rules serve them while the engine's gate document is on), and gets the
+ * operator's controls, which send each action to the admin API (`actsThroughAdminApi`): a guest never writes Firestore.
+ *
  * Decided from the signed-in user at the moment of the read. The pages read only once the session is resolved
  * (RequireRole), and a change of identity clears the cache and remounts them (StarfishAuthProvider), so a read never
  * outlives the session it was made for.
@@ -41,9 +45,29 @@ export function isGuestSession(): boolean {
   return firebaseAuth().currentUser?.isAnonymous === true;
 }
 
+/** The public demo's open actions are on for this build: the flag, on a demo build only. */
+export function publicDemoActionsOn(): boolean {
+  const c = webConfig();
+  return c.publicDemoActions && c.environment === PUBLIC_DEMO_ENVIRONMENT;
+}
+
+/** This viewer's actions go to the admin API instead of Firestore: a guest, with the open actions on and an admin API to call. */
+export function actsThroughAdminApi(): boolean {
+  // The build flag first: with it off (every build but an open demo) nothing else is looked at.
+  return publicDemoActionsOn() && Boolean(webConfig().adminApiUrl) && isGuestSession();
+}
+
+/**
+ * Whether this viewer gets the operator's controls (triage, retry, correction): anyone with a role, and a guest where
+ * the open actions are on and there is an admin API to send them to. The server and firestore.rules check again.
+ */
+export function canOperate(roles: readonly string[], guest: boolean): boolean {
+  return roles.length > 0 || (guest && publicDemoActionsOn() && Boolean(webConfig().adminApiUrl));
+}
+
 export function dataSource(): DataSource {
   const c = webConfig();
-  return isGuestSession()
+  return isGuestSession() && !publicDemoActionsOn()
     ? { guest: true, incidents: c.publicIncidentCollection, cycles: c.publicCycleCollection, publicEvents: c.publicEventCollection }
     : { guest: false, incidents: c.incidentCollection, cycles: c.cycleCollection };
 }

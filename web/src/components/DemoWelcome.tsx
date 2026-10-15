@@ -7,13 +7,16 @@
  * A guest who did not choose the view-only demo (made a guest on arrival) is asked to sign in, and told where the
  * sign-in details are (`signInHint`, never the credentials). One who chose it, or a signed-in visitor, is not asked.
  *
+ * Where the public demo's open actions are on (`visitorActions`), a guest is told what they can do without signing in
+ * and that those actions are limited per IP address to protect billing; the view-only wording is not shown then.
+ *
  * Every claim here is about what the code does; whether a stage has run on a real incident is what the pages show.
  */
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { useLocation, useNavigate } from "react-router";
 import { ExternalLink, LogIn, X } from "lucide-react";
 import { Button } from "./ui/Button";
-import { isWelcomeDismissed, markGuestViewChosen, setWelcomeDismissed, signInHint } from "../lib/demoGuide";
+import { isWelcomeDismissed, markGuestViewChosen, setWelcomeDismissed, signInHint, visitorActions } from "../lib/demoGuide";
 
 const FLOW: { name: string; text: string }[] = [
   {
@@ -50,7 +53,7 @@ export function DemoWelcome({
   askToSignIn,
   onClose,
 }: {
-  /** The viewer is a guest (an anonymous, read-only session). */
+  /** The viewer is a guest (an anonymous session: read-only, unless the public demo's open actions are on). */
   guest: boolean;
   /** A guest who did not choose the view-only demo: ask them to sign in. */
   askToSignIn: boolean;
@@ -63,6 +66,8 @@ export function DemoWelcome({
   const navigate = useNavigate();
   const location = useLocation();
   const last = step === STEP_TITLES.length - 1;
+  // Where the public demo's open actions are on: what a visitor can do, and the limits that protect our billing.
+  const open = visitorActions();
 
   // Focus moves into the dialog when it opens and back to where it was when it closes.
   useEffect(() => {
@@ -128,11 +133,19 @@ export function DemoWelcome({
     </div>
   );
 
+  const openCallout = guest && open && (
+    <div data-testid="visitor-actions" className="rounded-lg border border-brand-200 bg-brand-50 p-4 text-sm text-gray-800 dark:border-brand-800 dark:bg-brand-900/20 dark:text-gray-200">
+      <p className="font-medium">{open.full}</p>
+      <p className="mt-1 text-gray-700 dark:text-gray-300">{open.limits}</p>
+    </div>
+  );
+
   let body: ReactNode;
   if (step === 0) {
     body = (
       <>
         {signInCallout}
+        {openCallout}
         <p className="text-base font-medium text-gray-900 dark:text-white">
           An AI ops engineer for teams that don't have one.
         </p>
@@ -188,12 +201,13 @@ export function DemoWelcome({
           Everything shown is what this deployment recorded from the project it watches. A record marked Synthetic is an
           illustration, not a run that happened.
         </p>
-        {guest && (
+        {guest && !open && (
           <p>
             The view-only demo shows trimmed copies: no stack traces, error detail, Gemini's reasoning or patches.
             {!askToSignIn && " Sign in from the bar at the bottom to see them."}
           </p>
         )}
+        {guest && open && <p>{open.limits}</p>}
         {signInCallout}
         {origin && (
           <p className="text-gray-600 dark:text-gray-400">

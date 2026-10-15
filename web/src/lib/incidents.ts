@@ -26,9 +26,11 @@ import {
   deleteField,
 } from "firebase/firestore";
 import { readCorrection, type IncidentCorrection } from "../../../src/triageRules";
+import { nextStatus, type IncidentAction } from "../../../src/incidentActions";
 import { firestore } from "./firebase";
 import { webConfig } from "./config";
-import { dataSource } from "./dataSource";
+import { actsThroughAdminApi, dataSource } from "./dataSource";
+import { appAdminApi, requestRetriageAsVisitor, setIncidentStatusAsVisitor } from "./adminApi";
 
 export const INCIDENT_STATUSES = ["new", "acknowledged", "logged", "resolved", "recurred", "ignored"] as const;
 export type IncidentStatus = (typeof INCIDENT_STATUSES)[number];
@@ -252,39 +254,25 @@ export async function getIncident(id: string, environment: string): Promise<Inci
   return toRow(snap.id, data, 24);
 }
 
-export type IncidentAction = "acknowledge" | "resolve" | "ignore" | "reopen";
-
 /**
- * The status an action moves to, or null when it doesn't apply from the current
- * status. firestore.rules enforces the same table against the stored status.
- *
- * Reopen applies only to an ignored incident. An operator never reopens a
- * resolved one: the engine does, as `recurred`, when its error actually fires
- * again (src/ingest/store.ts). `recurred` is open, so it can be resolved or
- * ignored like any other open incident.
+ * The status an action moves to, or null when it doesn't apply from the current status: src/incidentActions.ts, the one
+ * table the UI, firestore.rules and the public demo's open actions (src/publicDemo.ts) share.
  */
-export function nextStatus(current: IncidentStatus, action: IncidentAction): IncidentStatus | null {
-  const open = current === "new" || current === "acknowledged" || current === "logged" || current === "recurred";
-  switch (action) {
-    case "acknowledge":
-      // A logged incident (the agent filed its issue) is still nobody's until a person takes it.
-      return current === "new" || current === "logged" ? "acknowledged" : null;
-    case "resolve":
-      return open ? "resolved" : null;
-    case "ignore":
-      return open ? "ignored" : null;
-    case "reopen":
-      return current === "ignored" ? "new" : null;
-  }
-}
+export { nextStatus, type IncidentAction } from "../../../src/incidentActions";
 
 /**
  * Apply an operator action. The write touches only the fields firestore.rules
- * lets an operator change, and records who did it.
+ * lets an operator change, and records who did it. A public demo visitor's goes through the admin API instead.
  */
 export async function applyAction(row: IncidentRow, action: IncidentAction, uid: string): Promise<void> {
   const status = nextStatus(row.status, action);
   if (!status) throw new Error(`Can't ${action} an incident that is ${row.status}`);
+  // A visitor of the public demo, where its open actions are on: the admin API makes the same write (src/publicDemo.ts).
+  if (actsThroughAdminApi()) {
+    const r = await setIncidentStatusAsVisitor(appAdminApi(), row.id, action);
+    if (!r.ok) throw new Error(r.message);
+    return;
+  }
   const ref = doc(firestore(), webConfig().incidentCollection, row.id);
   await updateDoc(ref, {
     status,
@@ -301,6 +289,11 @@ export async function applyAction(row: IncidentRow, action: IncidentAction, uid:
  * message or pull request. firestore.rules allows only these two fields, the server's time and the caller.
  */
 export async function requestRetriage(incidentId: string, uid: string): Promise<void> {
+  if (actsThroughAdminApi()) {
+    const r = await requestRetriageAsVisitor(appAdminApi(), incidentId);
+    if (!r.ok) throw new Error(r.message);
+    return;
+  }
   const ref = doc(firestore(), webConfig().incidentCollection, incidentId);
   await updateDoc(ref, { retriageRequestedAt: serverTimestamp(), retriageRequestedBy: uid });
 }

@@ -505,6 +505,26 @@ describe("loadConfig: where a missing index may be created", () => {
     }
   });
 
+  it("keeps the public demo's open actions off by default, with 30 actions and 3 runs an hour per address and 6 agent passes an hour in all", () => {
+    const c = loadConfig();
+    expect(c.publicDemoActions).toBe(false);
+    expect([c.publicActionsPerIpPerHour, c.publicRunsPerIpPerHour, c.publicAgentRunsPerHour]).toEqual([30, 3, 6]);
+    expect(c.publicActionCollection).toBe("starfish_public_actions");
+    vi.stubEnv("STARFISH_PUBLIC_DEMO_ACTIONS", "true");
+    vi.stubEnv("STARFISH_PUBLIC_RUNS_PER_IP_PER_HOUR", "1");
+    expect(loadConfig()).toMatchObject({ publicDemoActions: true, publicRunsPerIpPerHour: 1 });
+    vi.stubEnv("STARFISH_PUBLIC_DEMO_ACTIONS", "maybe");
+    expect(() => loadConfig()).toThrow(/STARFISH_PUBLIC_DEMO_ACTIONS/);
+    vi.stubEnv("STARFISH_PUBLIC_DEMO_ACTIONS", "false");
+    for (const name of ["STARFISH_PUBLIC_ACTIONS_PER_IP_PER_HOUR", "STARFISH_PUBLIC_RUNS_PER_IP_PER_HOUR", "STARFISH_PUBLIC_AGENT_RUNS_PER_HOUR"]) {
+      for (const bad of ["0", "-1", "2.5", "lots"]) {
+        vi.stubEnv(name, bad);
+        expect(() => loadConfig(), `${name}=${bad}`).toThrow(new RegExp(name));
+      }
+      vi.stubEnv(name, "");
+    }
+  });
+
   it("reads the UI origin for Slack links: exact, https, empty by default", () => {
     expect(loadConfig().uiBaseUrl).toBe("");
     vi.stubEnv("STARFISH_UI_URL", "https://site.web.app/");

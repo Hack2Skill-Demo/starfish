@@ -17,6 +17,8 @@
 #   VITE_STARFISH_SOURCE_URL  the public demo only: the source repository (https), a GitHub mark in the guest bar and on /signin
 #   VITE_STARFISH_DEMO_SIGNIN_HINT  the public demo only: where a visitor finds the sign-in details (never the
 #                         credentials: it ships in the bundle). Unset or empty: a generic line
+#   VITE_STARFISH_PUBLIC_DEMO_ACTIONS  the public demo only: true opens the operator's controls to visitors, through the
+#                         admin API; build with it only once deploy-gcp.sh ran with PUBLIC_DEMO_ACTIONS=true (docs/deploy.md)
 #   DRY_RUN=1             print the commands instead of running them
 #   ALLOW_RULES_DRIFT=1   deploy even when the live Firestore rules of STARFISH_DATABASE_ID are not this repository's
 #                         firestore.rules, or cannot be read (#262). Default: refuse, and say to run the engine deploy first

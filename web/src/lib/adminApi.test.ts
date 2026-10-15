@@ -1,5 +1,15 @@
 import { describe, expect, it, vi } from "vitest";
-import { confirmOnCallNumber, retireIncident, runAgentNow, runIngestNow, sendOnCallCode, type AdminApiDeps } from "./adminApi";
+import {
+  confirmOnCallNumber,
+  correctTriageAsVisitor,
+  requestRetriageAsVisitor,
+  retireIncident,
+  runAgentNow,
+  runIngestNow,
+  sendOnCallCode,
+  setIncidentStatusAsVisitor,
+  type AdminApiDeps,
+} from "./adminApi";
 
 vi.mock("./config", () => ({ webConfig: () => ({ adminApiUrl: "" }) }));
 vi.mock("./firebase", () => ({ firebaseAuth: vi.fn() }));
@@ -148,5 +158,40 @@ describe("App Check header (#12)", () => {
       expect(r.ok).toBe(true);
       expect("x-firebase-appcheck" in headersOf(f)).toBe(false);
     }
+  });
+});
+
+describe("the public demo's visitor actions", () => {
+  it("posts each incident action to its route with only what it needs", async () => {
+    const f = reply(200, { ok: true });
+    expect(await setIncidentStatusAsVisitor(deps(f), "inc 1", "resolve")).toEqual({ ok: true, value: null });
+    expect(await requestRetriageAsVisitor(deps(f), "inc-1")).toEqual({ ok: true, value: null });
+    expect(await correctTriageAsVisitor(deps(f), "inc-1", "log", "  ")).toEqual({ ok: true, value: null });
+    expect(await correctTriageAsVisitor(deps(f), "inc-1", "fix", " flaky ")).toEqual({ ok: true, value: null });
+    const calls = (f as unknown as ReturnType<typeof vi.fn>).mock.calls as [string, RequestInit][];
+    expect(calls.map(([url, init]) => [url, init.body])).toEqual([
+      ["https://admin.example/api/incidents/inc%201/status", JSON.stringify({ action: "resolve" })],
+      ["https://admin.example/api/incidents/inc-1/retriage", undefined],
+      ["https://admin.example/api/incidents/inc-1/correction", JSON.stringify({ level: "log" })],
+      ["https://admin.example/api/incidents/inc-1/correction", JSON.stringify({ level: "fix", note: "flaky" })],
+    ]);
+  });
+
+  it("shows the server's own reason for a refused change, and a plain one for a 403", async () => {
+    expect(await setIncidentStatusAsVisitor(deps(reply(409, { error: "that change does not apply to this incident as it is now" })), "i", "acknowledge")).toEqual({
+      ok: false,
+      message: "That change does not apply to this incident as it is now.",
+    });
+    expect(await requestRetriageAsVisitor(deps(reply(403, { error: "anything" })), "i")).toEqual({ ok: false, message: "Visitors can't do this on this deployment." });
+  });
+
+  it("shows a limit's own message (which limit, when it lifts) on every route, a run included", async () => {
+    const limit = { error: "the public demo's hourly limit for your address is reached: try again in 25 minutes" };
+    const shown = "The public demo's hourly limit for your address is reached: try again in 25 minutes.";
+    expect(await runAgentNow(deps(reply(429, limit)))).toEqual({ ok: false, message: shown });
+    expect(await runIngestNow(deps(reply(429, limit)))).toEqual({ ok: false, message: shown });
+    expect(await requestRetriageAsVisitor(deps(reply(429, limit)), "i")).toEqual({ ok: false, message: shown });
+    // No readable reason: a generic one, never silence.
+    expect(await runAgentNow(deps(reply(429, null)))).toEqual({ ok: false, message: "Too many requests from here. Try again later." });
   });
 });

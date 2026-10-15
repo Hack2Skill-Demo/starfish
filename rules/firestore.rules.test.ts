@@ -1269,3 +1269,107 @@ describe("the on-call rota (#37): phone numbers are personal data", () => {
   });
 });
 
+
+// The public demo's open reads (src/publicDemo.ts): a guest reads the demo's FULL stored records only while the
+// engine-written gate document says so; a guest still writes nothing, and the gate itself is closed to every client.
+describe("public demo: open reads behind the gate document", () => {
+  const guest = () => env.authenticatedContext("guest1", { firebase: { sign_in_provider: "anonymous" } }).firestore();
+  const emailNoRole = () => env.authenticatedContext("nobody", { firebase: { sign_in_provider: "password" } }).firestore();
+  const GATE = "starfish_runs/public_access";
+  const setGate = (data: Record<string, unknown> | null) =>
+    env.withSecurityRulesDisabled((ctx) => (data === null ? deleteDoc(doc(ctx.firestore(), GATE)) : setDoc(doc(ctx.firestore(), GATE), data)));
+
+  beforeEach(async () => {
+    await env.withSecurityRulesDisabled(async (ctx) => {
+      const db = ctx.firestore();
+      await setDoc(doc(db, "incidents/demo-1"), { environment: "demo", status: "new", functionName: "f", lastOccurredAt: Timestamp.now(), updatedAt: Timestamp.now() });
+      await setDoc(doc(db, "incidents/prod-1"), { environment: "prod", status: "new", functionName: "f", lastOccurredAt: Timestamp.now(), updatedAt: Timestamp.now() });
+      await setDoc(doc(db, "incidents/demo-1/corrections/corr-0001"), { level: "log", by: "op1", at: Timestamp.now() });
+      await setDoc(doc(db, "incidents/prod-1/corrections/corr-0001"), { level: "log", by: "op1", at: Timestamp.now() });
+      await setDoc(doc(db, "starfish_cycles/demo-1_r0"), { incidentId: "demo-1", environment: "demo", state: "done", updatedAt: Timestamp.now() });
+      await setDoc(doc(db, "starfish_cycles/demo-1_r0/events/000001"), { seq: 1, environment: "demo", stage: "triage", at: Timestamp.now() });
+      await setDoc(doc(db, "starfish_cycles/prod-1_r0"), { incidentId: "prod-1", environment: "prod", state: "done", updatedAt: Timestamp.now() });
+      await setDoc(doc(db, "starfish_cycles/prod-1_r0/events/000001"), { seq: 1, environment: "prod", stage: "triage", at: Timestamp.now() });
+    });
+  });
+
+  /** Every read the UI makes of the stored records, as a guest would make it. */
+  const demoReads = (db: ReturnType<typeof guest>) => [
+    getDoc(doc(db, "incidents/demo-1")),
+    getDocs(query(collection(db, "incidents"), where("environment", "==", "demo"), where("lastOccurredAt", ">=", Timestamp.fromMillis(0)), orderBy("lastOccurredAt", "desc"), limit(200))),
+    readCorrections(db, "incidents", "demo-1"),
+    getDoc(doc(db, "starfish_cycles/demo-1_r0")),
+    getDocs(query(collection(db, "starfish_cycles"), where("environment", "==", "demo"), orderBy("updatedAt", "desc"), limit(50))),
+    getDocs(query(collection(db, "starfish_cycles/demo-1_r0/events"), where("environment", "==", "demo"), orderBy("seq", "desc"), limit(201))),
+    getDocs(query(collectionGroup(db, "events"), where("environment", "==", "demo"), orderBy("at", "desc"), limit(10))),
+  ];
+
+  it("with no gate document (the default), a guest reads none of the stored records, as before", async () => {
+    for (const read of demoReads(guest())) await assertFails(read);
+  });
+
+  it("with the gate off, for another environment, or malformed, a guest still reads none of them", async () => {
+    for (const gate of [{ enabled: false, environment: "demo" }, { enabled: true, environment: "prod" }, { enabled: "true", environment: "demo" }, { enabled: true }]) {
+      await setGate(gate);
+      for (const read of demoReads(guest())) await assertFails(read);
+    }
+  });
+
+  it("with the gate on for the demo, a guest reads the demo's stored incidents, corrections, cycles and events", async () => {
+    await setGate({ enabled: true, environment: "demo", updatedAt: Timestamp.now() });
+    for (const read of demoReads(guest())) await assertSucceeds(read);
+    // A missing one reads as missing, as the copies do (#142).
+    expect((await assertSucceeds(getDoc(doc(guest(), "incidents/no-such")))).exists()).toBe(false);
+  });
+
+  it("with the gate on, still nothing outside the demo, nothing unbounded, and nothing for anyone but a guest", async () => {
+    await setGate({ enabled: true, environment: "demo" });
+    const db = guest();
+    await assertFails(getDoc(doc(db, "incidents/prod-1")));
+    await assertFails(getDocs(query(collection(db, "incidents"), where("environment", "==", "prod"), limit(10))));
+    await assertFails(getDocs(query(collection(db, "incidents"), where("environment", "==", "demo")))); // no limit
+    await assertFails(getDocs(query(collection(db, "incidents"), where("environment", "==", "demo"), limit(501))));
+    await assertFails(getDocs(collection(db, "incidents")));
+    await assertFails(readCorrections(db, "incidents", "prod-1"));
+    await assertFails(getDoc(doc(db, "incidents/prod-1/corrections/corr-0001")));
+    await assertFails(getDoc(doc(db, "starfish_cycles/prod-1_r0")));
+    await assertFails(getDoc(doc(db, "starfish_cycles/prod-1_r0/events/000001")));
+    await assertFails(getDocs(query(collectionGroup(db, "events"), where("environment", "==", "prod"), limit(10))));
+    // A role-less email account and a visitor with no session are not guests.
+    for (const other of [emailNoRole(), anon()]) for (const read of demoReads(other)) await assertFails(read);
+  });
+
+  it("with the gate on, a guest still writes nothing: no triage, retry, correction, cycle or gate", async () => {
+    await setGate({ enabled: true, environment: "demo" });
+    const db = guest();
+    await assertFails(updateDoc(doc(db, "incidents/demo-1"), { status: "acknowledged", updatedAt: serverTimestamp(), statusChangedBy: "guest1" }));
+    await assertFails(updateDoc(doc(db, "incidents/demo-1"), { retriageRequestedAt: serverTimestamp(), retriageRequestedBy: "guest1" }));
+    await assertFails(saveCorrection(db, "incidents", "demo-1", "guest1", "log", ""));
+    await assertFails(setDoc(doc(db, "incidents/demo-1/corrections/corr-0002"), { level: "log", by: "guest1", at: serverTimestamp() }));
+    await assertFails(updateDoc(doc(db, "starfish_cycles/demo-1_r0"), { state: "running" }));
+    await assertFails(setDoc(doc(db, "starfish_cycles/demo-1_r0/events/000002"), { seq: 2, environment: "demo" }));
+    await assertFails(setDoc(doc(db, GATE), { enabled: false, environment: "demo" }));
+  });
+
+  it("nobody reads or writes the gate or the visitors' counters from a client, an admin included: only the engine", async () => {
+    await setGate({ enabled: true, environment: "demo" });
+    await env.withSecurityRulesDisabled((ctx) => setDoc(doc(ctx.firestore(), "starfish_public_actions/salt"), { value: "a".repeat(64) }));
+    for (const db of [as("admin1"), as("op1"), guest(), anon()]) {
+      await assertFails(getDoc(doc(db, GATE)));
+      await assertFails(setDoc(doc(db, GATE), { enabled: true, environment: "demo" }));
+      await assertFails(getDoc(doc(db, "starfish_public_actions/salt")));
+      await assertFails(setDoc(doc(db, "starfish_public_actions/ip-runs.2026-10-15T09.x"), { count: 0 }));
+    }
+  });
+
+  it("leaves operators and admins exactly as they were, gate or no gate", async () => {
+    for (const gate of [null, { enabled: true, environment: "demo" }]) {
+      await setGate(gate);
+      for (const uid of ["op1", "admin1"]) {
+        for (const read of demoReads(as(uid))) await assertSucceeds(read);
+        await assertSucceeds(getDoc(doc(as(uid), "incidents/prod-1")));
+        await assertSucceeds(readCorrections(as(uid), "incidents", "prod-1"));
+      }
+    }
+  });
+});

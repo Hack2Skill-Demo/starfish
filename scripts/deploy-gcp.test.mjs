@@ -133,6 +133,30 @@ describe("scripts/deploy-gcp.sh", () => {
       });
     });
 
+    describe("the public demo's open actions", () => {
+      const service = (out) => out.split("\n").find((l) => l.includes("gcloud run deploy starfish-admin")) ?? "";
+
+      it("are off unless asked, and always set on the admin API so a run without them turns them off", () => {
+        expect(service(deploy(admin).out)).toMatch(/STARFISH_PUBLIC_DEMO_ACTIONS=false(@|'|"|$)/);
+        const r = deploy({ ...admin, STARFISH_ENV: "demo", PUBLIC_DEMO_ACTIONS: "true" });
+        expect(r.status).toBe(0);
+        expect(service(r.out)).toMatch(/STARFISH_PUBLIC_DEMO_ACTIONS=true(@|'|"|$)/);
+      });
+
+      it("are refused anywhere but the demo, for a value that is not a boolean, and from either list", () => {
+        for (const env of [
+          { PUBLIC_DEMO_ACTIONS: "true" },
+          { STARFISH_ENV: "demo", PUBLIC_DEMO_ACTIONS: "maybe" },
+          { STARFISH_ENV: "demo", EXTRA_ENV_VARS: "STARFISH_PUBLIC_DEMO_ACTIONS=true" },
+          { STARFISH_ENV: "demo", AGENT_EXTRA_ENV_VARS: "STARFISH_PUBLIC_DEMO_ACTIONS=true" },
+        ]) {
+          const r = deploy({ ...admin, ...env });
+          expect(r.status, JSON.stringify(env)).toBe(1);
+          expect(r.gcloudCalled).toBe(false);
+        }
+      });
+    });
+
     it("keeps the service's own errors out of ingest, in the job and the agent", () => {
       expect(deploy(admin).out).toContain("STARFISH_EXCLUDED_SERVICES=starfish,starfish-ingest,starfish-admin");
       const withAgent = deploy({ ...admin, DEPLOY_AGENT: "1", AGENT_REPO: "o/r", VERIFY_CHECKS: "verify", STARFISH_GITHUB_TOKEN: "x" });

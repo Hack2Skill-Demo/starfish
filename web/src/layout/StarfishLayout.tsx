@@ -17,7 +17,7 @@ import { useTheme } from "../theme/useTheme";
 import { useEnvironment } from "../lib/useSettings";
 import { StarfishLogo } from "./StarfishLogo";
 import { menuItems, visibleMenuItems, activeMenuItem } from "./menuConfig";
-import { offersGuestView } from "../lib/dataSource";
+import { offersGuestView, publicDemoActionsOn } from "../lib/dataSource";
 import { hasChosenGuestView, markWelcomeShownThisSession, shouldAutoOpenWelcome } from "../lib/demoGuide";
 import { DemoWelcome } from "../components/DemoWelcome";
 import { GuestBar } from "../components/GuestBar";
@@ -44,7 +44,9 @@ export function StarfishLayout() {
   const demoGuide = offersGuestView();
   const [welcomeOpen, setWelcomeOpen] = useState(() => demoGuide && shouldAutoOpenWelcome());
   // Read on each render: the guide's "Continue view-only" sets it, and its close re-renders the layout.
-  const askToSignIn = guest && !hasChosenGuestView();
+  // Where the public demo's open actions are on, a guest already has the full records and the operator's controls:
+  // nothing to sign in for.
+  const askToSignIn = guest && !hasChosenGuestView() && !publicDemoActionsOn();
 
   const items = visibleMenuItems(menuItems, guest ? ["guest"] : roles);
   const active = activeMenuItem(items, location.pathname);
@@ -180,7 +182,7 @@ export function StarfishLayout() {
             {guest ? (
               <>
                 <p className="text-sm font-medium text-white">Guest</p>
-                <p className="text-xs text-gray-400">Public demo · view only</p>
+                <p className="text-xs text-gray-400">Public demo · {publicDemoActionsOn() ? "open to try" : "view only"}</p>
               </>
             ) : (
               <>

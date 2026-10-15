@@ -32,6 +32,16 @@
  * carry no ID token and are handed to src/oncall/webhooks.ts, which refuses anything without a valid Twilio signature.
  * Absent wiring (no Twilio configured): all of them are a 404.
  *
+ * The public demo's open actions (src/publicDemo.ts): wired (`publicDemo`) only where a deployment turns them on on a
+ * public environment (`STARFISH_PUBLIC_DEMO_ACTIONS`, off by default). Then, and only for an ANONYMOUS caller (the
+ * verified token's sign-in provider, never anything the caller says), `POST /api/ingest/run` and `POST /api/agent/run`
+ * skip the admin check, and three more routes exist: `POST /api/incidents/<id>/status` (`{ action }`: acknowledge,
+ * resolve, ignore, reopen), `.../retriage` and `.../correction` (`{ level, note? }`). Each call is first claimed against
+ * the hourly limits (src/publicDemoLimit.ts: per address, and for agent passes per deployment): over one, a 429 with a
+ * short reason and `retry-after`. Retire, the on-call routes and everything else stay admin-only for everyone. Off, the
+ * three routes are a 404 and an anonymous caller gets the 403 it always got. Built and tested with stubs; never run on
+ * a real project.
+ *
  * Public on the network on purpose: the browser must reach it (Cloud Run `--allow-unauthenticated`), and
  * everything above is what stands between the internet and the store. The per-address rate limit is the HTTP shell's
  * (src/adminApiServer.ts), not this file's; the deploy caps the instances.
@@ -39,9 +49,14 @@
 import { redactPii, truncate } from "./ingest/redact.js";
 import type { RetireResult } from "./ingest/retire.js";
 import type { TriggerResult } from "./ingest/trigger.js";
+import type { RunSummary } from "./ingest/run.js";
 import type { AgentTriggerResult } from "./agent/trigger.js";
 import type { ConfirmResult, SendCodeResult } from "./oncall/optIn.js";
 import type { TwilioWebhookRequest, TwilioWebhookResponse } from "./oncall/webhooks.js";
+import { isIncidentAction, type IncidentAction } from "./incidentActions.js";
+import { isLevel } from "./triageRules.js";
+import type { PublicIncidentResult } from "./publicDemo.js";
+import type { ClaimResult, PublicActionKind } from "./publicDemoLimit.js";
 
 export interface ApiRequest {
   method: string;
@@ -59,6 +74,8 @@ export interface ApiRequest {
   form?: Record<string, string>;
   /** The `X-Twilio-Signature` header. */
   twilioSignature?: string;
+  /** The caller's address as the HTTP shell keys it (src/ipRateLimit.ts `clientKey`): what the public demo's limits count. */
+  clientKey?: string;
 }
 
 export interface ApiResponse {
@@ -81,9 +98,28 @@ export function refusalReason(e: unknown): string {
   return text.slice(0, 300) || "refused";
 }
 
+/**
+ * The public demo's open actions (src/publicDemo.ts), for an anonymous caller only. Present only where the deployment
+ * turned them on; each action checks the switch again itself.
+ */
+export interface PublicDemoDeps {
+  /** Claim one call against the hourly limits (src/publicDemoLimit.ts). Throws only when the store does. */
+  claim(kind: PublicActionKind, clientKey: string): Promise<ClaimResult>;
+  setStatus(incidentId: string, action: IncidentAction, uid: string): Promise<PublicIncidentResult>;
+  requestRetriage(incidentId: string, uid: string): Promise<PublicIncidentResult>;
+  /** `level` and `note` as the caller sent them: the action validates them. */
+  correct(incidentId: string, level: unknown, note: unknown, uid: string): Promise<PublicIncidentResult>;
+  runIngest(uid: string): Promise<TriggerResult | { ok: false; reason: "off" }>;
+  /** Absent where no agent job is named: a visitor's agent start is then a 404, as an admin's is. */
+  runAgent?(uid: string): Promise<AgentTriggerResult | { ok: false; reason: "off" }>;
+}
+
 export interface AdminApiDeps {
-  /** The uid in a valid Firebase ID token; throws for anything else. */
-  verifyToken(idToken: string): Promise<{ uid: string }>;
+  /**
+   * The uid in a valid Firebase ID token, and whether its sign-in provider is `anonymous` (a guest of the public demo);
+   * throws for anything else.
+   */
+  verifyToken(idToken: string): Promise<{ uid: string; anonymous?: boolean }>;
   /**
    * Told why a call got the 401, so an operator can tell a missing Auth permission from an expired session. The reason
    * is a short, bounded string with anything token-shaped removed (`refusalReason`); it never reaches the caller, who
@@ -116,10 +152,46 @@ export interface AdminApiDeps {
   confirmOnCallNumber?(personId: string, code: string, actorUid: string): Promise<ConfirmResult>;
   /** Twilio's webhooks (#37), signature-checked there. Absent: `/twilio/*` is a 404. */
   twilioWebhooks?(req: TwilioWebhookRequest): Promise<TwilioWebhookResponse>;
+  /** The public demo's open actions, for anonymous callers. Absent (the default): none, and their routes are a 404. */
+  publicDemo?: PublicDemoDeps;
 }
 
 const RETIRE_RE = /^\/api\/incidents\/([A-Za-z0-9_-]{1,128})\/retire$/;
 const ONCALL_RE = /^\/api\/oncall\/people\/([A-Za-z0-9_-]{1,64})\/(send-code|confirm)$/;
+const PUBLIC_INCIDENT_RE = /^\/api\/incidents\/([A-Za-z0-9_-]{1,128})\/(status|retriage|correction)$/;
+
+/** What each refusal of a visitor's incident action becomes: a status and a message safe to show. */
+const PUBLIC_INCIDENT_STATUS: Record<string, [number, string]> = {
+  off: [403, "the public demo's actions are off"],
+  "invalid-id": [400, "bad request"],
+  "bad-request": [400, "bad request"],
+  "no-such-incident": [404, "no such incident"],
+  "not-applicable": [409, "that change does not apply to this incident as it is now"],
+};
+
+/** What a finished ingest run reports to the caller: its numbers, a failed run's message redacted and cut. */
+function ingestBody(s: RunSummary): Record<string, unknown> {
+  return {
+    ok: true,
+    outcome: s.outcome,
+    windows: s.windows,
+    entriesProcessed: s.totals.entriesProcessed,
+    incidentsCreated: s.totals.incidentsCreated,
+    incidentsUpdated: s.totals.incidentsUpdated,
+    incidentsRecurred: s.totals.incidentsRecurred,
+    capped: s.capped,
+    ...(s.error !== undefined && { error: truncate(redactPii(s.error), 300) }),
+  };
+}
+
+/** A 429's reason, safe to show: which limit, and when it lifts. */
+function limitMessage(r: Extract<ClaimResult, { ok: false }>): string {
+  const minutes = Math.max(1, Math.ceil(r.retryAfterSeconds / 60));
+  const when = `try again in ${minutes} minute${minutes === 1 ? "" : "s"}`;
+  return r.limit === "deployment"
+    ? `the public demo's hourly limit of agent passes is reached: ${when}`
+    : `the public demo's hourly limit for your address is reached: ${when}`;
+}
 
 /** What each refusal of the on-call routes becomes: a status and a message safe to show. */
 const ONCALL_STATUS: Record<string, [number, string]> = {
@@ -161,6 +233,81 @@ export function createAdminApi(deps: AdminApiDeps): (req: ApiRequest) => Promise
       ...(body !== undefined && { body }),
     });
 
+    /** Over a limit: 429, the reason, and when it lifts. */
+    const limited = (r: Extract<ClaimResult, { ok: false }>): ApiResponse => {
+      const out = reply(429, { error: limitMessage(r) });
+      return { ...out, headers: { ...out.headers, "retry-after": String(r.retryAfterSeconds) } };
+    };
+    /** Claim one call; a refusal or a store failure is the answer, null lets the call run. */
+    const claim = async (pub: PublicDemoDeps, kind: PublicActionKind): Promise<ApiResponse | null> => {
+      let claimed: ClaimResult;
+      try {
+        claimed = await pub.claim(kind, req.clientKey ?? "unknown");
+      } catch {
+        return reply(500, { error: "could not check the public demo's limits" });
+      }
+      return claimed.ok ? null : limited(claimed);
+    };
+
+    const handlePublic = async (pub: PublicDemoDeps, route: "ingest" | "agent" | "incident", uid: string, incident: RegExpExecArray | null): Promise<ApiResponse> => {
+      if (route === "ingest") {
+        // The lock is looked at first so a call that would get a 409 costs the caller nothing, then again after the claim.
+        if (ingestRunning) return reply(409, { error: "an ingest run is already in progress here" });
+        const refused = await claim(pub, "ingest");
+        if (refused) return refused;
+        if (ingestRunning) return reply(409, { error: "an ingest run is already in progress here" });
+        ingestRunning = true;
+        try {
+          const result = await pub.runIngest(uid);
+          if (!result.ok) return reply(result.reason === "off" || result.reason === "not-admin" ? 403 : 400, { error: result.reason === "off" ? "the public demo's actions are off" : "bad request" });
+          return reply(200, ingestBody(result.summary));
+        } catch {
+          return reply(500, { error: "the run failed to start" });
+        } finally {
+          ingestRunning = false;
+        }
+      }
+
+      if (route === "agent") {
+        if (agentStarting) return reply(409, { error: "an agent pass is already being started here" });
+        const refused = await claim(pub, "agent");
+        if (refused) return refused;
+        if (agentStarting) return reply(409, { error: "an agent pass is already being started here" });
+        agentStarting = true;
+        try {
+          const result = await pub.runAgent!(uid);
+          if (!result.ok) return reply(result.reason === "off" || result.reason === "not-admin" ? 403 : 400, { error: result.reason === "off" ? "the public demo's actions are off" : "bad request" });
+          return reply(202, { ok: true, started: true });
+        } catch {
+          return reply(502, { error: "the agent job could not be started" });
+        } finally {
+          agentStarting = false;
+        }
+      }
+
+      // The incident routes: the body is checked before anything is claimed, so a malformed call costs nothing.
+      const [, incidentId, kind] = incident!;
+      const body = typeof req.body === "object" && req.body !== null ? (req.body as Record<string, unknown>) : {};
+      if (kind === "status" && !isIncidentAction(body.action)) return reply(400, { error: "bad request" });
+      if (kind === "correction" && (!isLevel(body.level) || (body.note !== undefined && typeof body.note !== "string"))) return reply(400, { error: "bad request" });
+      const refused = await claim(pub, "action");
+      if (refused) return refused;
+      let result: PublicIncidentResult;
+      try {
+        result =
+          kind === "status"
+            ? await pub.setStatus(incidentId!, body.action as IncidentAction, uid)
+            : kind === "retriage"
+              ? await pub.requestRetriage(incidentId!, uid)
+              : await pub.correct(incidentId!, body.level, body.note, uid);
+      } catch {
+        return reply(500, { error: "the change could not be saved" });
+      }
+      if (result.ok) return reply(200, { ok: true });
+      const [status, error] = PUBLIC_INCIDENT_STATUS[result.reason] ?? [400, "bad request"];
+      return reply(status, { error });
+    };
+
     if (req.method === "OPTIONS") return { status: 204, headers: cors };
     // `/api/health` is the probe on Cloud Run: its front end answers `/healthz` on a run.app URL itself (#212).
     if (req.method === "GET" && (req.path === "/api/health" || req.path === "/healthz")) return reply(200, { ok: true });
@@ -178,7 +325,9 @@ export function createAdminApi(deps: AdminApiDeps): (req: ApiRequest) => Promise
 
     const retireMatch = RETIRE_RE.exec(req.path);
     const onCallMatch = ONCALL_RE.exec(req.path);
-    const route = req.path === "/api/ingest/run" ? "ingest" : req.path === "/api/agent/run" && deps.runAgent ? "agent" : retireMatch ? "retire" : onCallMatch && (onCallMatch[2] === "send-code" ? deps.sendOnCallCode : deps.confirmOnCallNumber) ? "oncall" : undefined;
+    // The visitors' incident routes exist only where the public demo's actions are wired; otherwise a 404, as before.
+    const publicMatch = deps.publicDemo ? PUBLIC_INCIDENT_RE.exec(req.path) : null;
+    const route = req.path === "/api/ingest/run" ? "ingest" : req.path === "/api/agent/run" && deps.runAgent ? "agent" : retireMatch ? "retire" : onCallMatch && (onCallMatch[2] === "send-code" ? deps.sendOnCallCode : deps.confirmOnCallNumber) ? "oncall" : publicMatch ? "incident" : undefined;
     if (route === undefined) return reply(404, { error: "not found" });
     if (req.method !== "POST") return reply(405, { error: "method not allowed" });
 
@@ -187,6 +336,7 @@ export function createAdminApi(deps: AdminApiDeps): (req: ApiRequest) => Promise
     // never reaches the ID-token check (one Auth lookup per call, #141).
     const match = /^Bearer ([A-Za-z0-9._-]{20,4096})$/.exec(req.authorization ?? "");
     let uid: string;
+    let anonymous: boolean;
     try {
       if (deps.verifyAppCheck) {
         const appCheck = /^[A-Za-z0-9._-]{20,4096}$/.exec(req.appCheck ?? "");
@@ -194,7 +344,9 @@ export function createAdminApi(deps: AdminApiDeps): (req: ApiRequest) => Promise
         await deps.verifyAppCheck(appCheck[0]);
       }
       if (!match) throw new Error("no token");
-      uid = (await deps.verifyToken(match[1]!)).uid;
+      const caller = await deps.verifyToken(match[1]!);
+      uid = caller.uid;
+      anonymous = caller.anonymous === true;
     } catch (e) {
       try {
         deps.onRefused?.(refusalReason(e));
@@ -203,6 +355,14 @@ export function createAdminApi(deps: AdminApiDeps): (req: ApiRequest) => Promise
       }
       return reply(401, { error: "sign in again" });
     }
+
+    // A visitor of the public demo (an anonymous session), where its open actions are on: the routes it may use, each
+    // claimed against the hourly limits before it runs. Everyone else, and a visitor anywhere else, goes on to the role.
+    const pub = deps.publicDemo;
+    if (pub && anonymous && (route === "ingest" || route === "incident" || (route === "agent" && pub.runAgent))) {
+      return handlePublic(pub, route, uid, publicMatch);
+    }
+    if (route === "incident") return reply(403, { error: "for the public demo's visitors only" });
 
     // The role before any lock (#305): a caller who is not an admin never holds one, so it can neither block an admin
     // with a 409 nor learn from one that a run is in progress. The awaited read comes before the lock's check-and-set,
@@ -221,18 +381,7 @@ export function createAdminApi(deps: AdminApiDeps): (req: ApiRequest) => Promise
       try {
         const result = await deps.runIngest(uid);
         if (!result.ok) return reply(result.reason === "not-admin" ? 403 : 400, { error: result.reason === "not-admin" ? "admins only" : "bad request" });
-        const s = result.summary;
-        return reply(200, {
-          ok: true,
-          outcome: s.outcome,
-          windows: s.windows,
-          entriesProcessed: s.totals.entriesProcessed,
-          incidentsCreated: s.totals.incidentsCreated,
-          incidentsUpdated: s.totals.incidentsUpdated,
-          incidentsRecurred: s.totals.incidentsRecurred,
-          capped: s.capped,
-          ...(s.error !== undefined && { error: truncate(redactPii(s.error), 300) }),
-        });
+        return reply(200, ingestBody(result.summary));
       } catch {
         // The run's own failure is recorded in last_run; what escaped is an infrastructure fault, and its text stays in the log.
         return reply(500, { error: "the run failed to start" });

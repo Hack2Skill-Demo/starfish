@@ -110,6 +110,11 @@
 #                        (STARFISH_AGENT_JOB) and its account gets roles/run.invoker on that one job, nothing the agent
 #                        holds. Without DEPLOY_AGENT=1 the name is set empty, so the route is gone again. Neither
 #                        list may set STARFISH_AGENT_JOB: the name and the grant are made together, here
+#   PUBLIC_DEMO_ACTIONS  true or false (default false): the public demo's open actions (src/publicDemo.ts). On, an anonymous
+#                        visitor may triage, retry, correct triage and start ingest and the agent through the admin API,
+#                        within per-address hourly limits, and reads the demo's full records. STARFISH_ENV=demo only. Always
+#                        set on the admin API (STARFISH_PUBLIC_DEMO_ACTIONS), so a run without it turns it off again (#233);
+#                        neither list may set that name. The limits: STARFISH_PUBLIC_*_PER_HOUR in EXTRA_ENV_VARS (docs/deploy.md)
 #   ADMIN_SA_NAME        the admin API's service account. Default starfish-admin-api
 #   ADMIN_API_ORIGINS    the operator UI's origin(s), comma-separated, allowed to call it from a browser, e.g.
 #                        https://my-site.web.app. Empty: no browser may (a server-side caller is not affected). Always set
@@ -147,6 +152,7 @@ AGENT_SCHEDULE="${AGENT_SCHEDULE:-30 * * * *}"
 AGENT_EXTRA_ENV_VARS="${AGENT_EXTRA_ENV_VARS:-}"
 DEPLOY_ADMIN_API="${DEPLOY_ADMIN_API:-0}"
 ADMIN_API_ORIGINS="${ADMIN_API_ORIGINS:-}"
+PUBLIC_DEMO_ACTIONS="${PUBLIC_DEMO_ACTIONS:-false}"
 ADMIN_SERVICE_NAME="${ADMIN_SERVICE_NAME:-starfish-admin}"
 VERIFY_ISOLATION="${VERIFY_ISOLATION:-github-actions}"
 VERIFY_CHECKS="${VERIFY_CHECKS:-}"
@@ -241,6 +247,20 @@ done
 for var in EXTRA_ENV_VARS AGENT_EXTRA_ENV_VARS; do
   case "@${!var}" in
     *@STARFISH_AGENT_JOB=*|*@STARFISH_AGENT_JOB_REGION=*) die "$var may not set STARFISH_AGENT_JOB or STARFISH_AGENT_JOB_REGION: DEPLOY_ADMIN_API=1 with DEPLOY_AGENT=1 names the job to the admin API and grants the role it needs" ;;
+  esac
+done
+# The public demo's open actions: one switch, set on the admin API here and nowhere else, and only for the demo.
+case "$(printf '%s' "$PUBLIC_DEMO_ACTIONS" | tr '[:upper:]' '[:lower:]')" in
+  true|1|yes) PUBLIC_DEMO_ACTIONS=true ;;
+  false|0|no|"") PUBLIC_DEMO_ACTIONS=false ;;
+  *) die "PUBLIC_DEMO_ACTIONS must be true or false: $PUBLIC_DEMO_ACTIONS" ;;
+esac
+if [ "$PUBLIC_DEMO_ACTIONS" = "true" ] && [ "$STARFISH_ENV" != "demo" ]; then
+  die "PUBLIC_DEMO_ACTIONS=true is for the public demo only (STARFISH_ENV=demo): it lets anyone with no account act on the store"
+fi
+for var in EXTRA_ENV_VARS AGENT_EXTRA_ENV_VARS; do
+  case "@${!var}" in
+    *@STARFISH_PUBLIC_DEMO_ACTIONS=*) die "$var may not set STARFISH_PUBLIC_DEMO_ACTIONS: set PUBLIC_DEMO_ACTIONS for the script, which sets it on the admin API every run" ;;
   esac
 done
 # Where Gemini is called: VERTEX_LOCATION in src/settingsSchema.ts. It becomes part of the API's host name.
@@ -491,6 +511,9 @@ if [ "$DEPLOY_ADMIN_API" = "1" ]; then
   ADMIN_AGENT_JOB=""
   [ "$DEPLOY_AGENT" != "1" ] || ADMIN_AGENT_JOB="$AGENT_JOB_NAME"
   ADMIN_ENV="$ADMIN_ENV@STARFISH_AGENT_JOB=$ADMIN_AGENT_JOB"
+  # The public demo's open actions (src/publicDemo.ts): always set, false included, so a run without the switch turns it
+  # off again (#233) and the admin API's next start closes the visitors' full reads (the gate document it writes).
+  ADMIN_ENV="$ADMIN_ENV@STARFISH_PUBLIC_DEMO_ACTIONS=$PUBLIC_DEMO_ACTIONS"
   unique_names "the admin API" "$ADMIN_ENV"
 fi
 

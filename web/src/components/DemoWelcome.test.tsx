@@ -5,7 +5,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { hasChosenGuestView, isWelcomeDismissed, setWelcomeDismissed } from "../lib/demoGuide";
 import { DemoWelcome } from "./DemoWelcome";
 
-vi.mock("../lib/config", () => ({ webConfig: () => ({ demoSignInHint: "They are in our slides." }) }));
+const cfg = vi.hoisted(() => ({ open: false, limits: { actionsPerIpPerHour: 30, runsPerIpPerHour: 3, agentRunsPerHour: 6 } }));
+vi.mock("../lib/config", () => ({
+  webConfig: () => ({ demoSignInHint: "They are in our slides.", environment: "demo", publicDemoActions: cfg.open, publicLimits: cfg.limits }),
+}));
 
 function SignInPage() {
   const from = (useLocation().state as { from?: { pathname?: string } } | null)?.from?.pathname;
@@ -26,7 +29,50 @@ function renderGuide(props: { guest: boolean; askToSignIn: boolean }) {
 }
 
 describe("DemoWelcome", () => {
-  beforeEach(() => localStorage.clear());
+  beforeEach(() => {
+    localStorage.clear();
+    cfg.open = false;
+    cfg.limits = { actionsPerIpPerHour: 30, runsPerIpPerHour: 3, agentRunsPerHour: 6 };
+  });
+
+  it("tells a guest nothing about open actions or limits where the public demo's open actions are off", async () => {
+    const user = userEvent.setup();
+    renderGuide({ guest: true, askToSignIn: false });
+    expect(screen.queryByTestId("visitor-actions")).toBeNull();
+    expect(screen.getByRole("dialog")).not.toHaveTextContent(/IP address|billing/);
+    await user.click(screen.getByRole("button", { name: "Next" }));
+    await user.click(screen.getByRole("button", { name: "Next" }));
+    expect(screen.getByRole("dialog")).toHaveTextContent("The view-only demo shows trimmed copies");
+    expect(screen.getByRole("dialog")).not.toHaveTextContent(/IP address|billing/);
+  });
+
+  it("where they are on, tells a guest what they can do and the per-IP limits that protect billing, with the configured numbers", async () => {
+    cfg.open = true;
+    const user = userEvent.setup();
+    renderGuide({ guest: true, askToSignIn: false });
+    const callout = screen.getByTestId("visitor-actions");
+    expect(callout).toHaveTextContent("No sign-in needed");
+    expect(callout).toHaveTextContent("retry a run, correct triage, and start an ingest run or an agent pass yourself");
+    expect(callout).toHaveTextContent("To protect our cloud and Gemini billing, these actions are limited per IP address");
+    expect(callout).toHaveTextContent("up to 30 incident actions and 3 ingest or agent starts an hour from one address, and 6 agent passes an hour started by all visitors together");
+    await user.click(screen.getByRole("button", { name: "Next" }));
+    await user.click(screen.getByRole("button", { name: "Next" }));
+    expect(screen.getByRole("dialog")).not.toHaveTextContent("view-only demo");
+    expect(screen.getByRole("dialog")).toHaveTextContent("limited per IP address");
+  });
+
+  it("quotes the build's numbers, not fixed ones", () => {
+    cfg.open = true;
+    cfg.limits = { actionsPerIpPerHour: 10, runsPerIpPerHour: 1, agentRunsPerHour: 2 };
+    renderGuide({ guest: true, askToSignIn: false });
+    expect(screen.getByTestId("visitor-actions")).toHaveTextContent("up to 10 incident actions and 1 ingest or agent start an hour from one address, and 2 agent passes an hour");
+  });
+
+  it("does not show a signed-in visitor the visitors' limits", () => {
+    cfg.open = true;
+    renderGuide({ guest: false, askToSignIn: false });
+    expect(screen.queryByTestId("visitor-actions")).toBeNull();
+  });
 
   it("walks through three steps and ends on Start exploring for a signed-in visitor", async () => {
     const user = userEvent.setup();

@@ -148,6 +148,30 @@ export interface StarfishConfig {
    * addresses on the reserved `.example` domain, which can receive no mail.
    */
   demoUserEmails: string[];
+  /**
+   * The public demo's open actions (src/publicDemo.ts): a visitor with no account (an anonymous Firebase Auth session, a
+   * "guest") may do what an operator does (acknowledge, resolve, ignore, reopen, "Retry with agent", "Correct triage")
+   * and start "Run ingest now" and "Run agent now", always through the admin API (never a Firestore write from the
+   * browser), within the per-address and deployment-wide hourly limits below. Settings, On-call and Retire stay
+   * admin-only. Honoured only where `environment` is one of `publicEnvironments` (`publicDemoActionsOn`); off by
+   * default. The admin API also opens guests' reads of the full stored records while it is on, through the gate
+   * document `{runCollection}/public_access` firestore.rules reads (src/publicDemo.ts `syncPublicAccess`).
+   */
+  publicDemoActions: boolean;
+  /** Open actions (status, retry, correction) one address may make per hour while `publicDemoActions` is on. Default 30. */
+  publicActionsPerIpPerHour: number;
+  /** "Run ingest now" and "Run agent now" starts one address may make per hour, together, while it is on. Default 3. */
+  publicRunsPerIpPerHour: number;
+  /**
+   * Agent passes ALL visitors together may start per hour while it is on, whatever their address: anonymous accounts are
+   * free and addresses rotate, and each pass may spend Gemini calls and file issues and pull requests. Default 6.
+   */
+  publicAgentRunsPerHour: number;
+  /**
+   * Engine-only collection of the open actions' hourly counters (src/publicDemoLimit.ts): per address (a keyed hash,
+   * never the address) and deployment-wide, plus the hash's salt. firestore.rules closes it to every client.
+   */
+  publicActionCollection: string;
   /** The trimmed copies guests read (src/publicView.ts): incidents, cycles, and run events (one flat collection). */
   publicIncidentCollection: string;
   publicCycleCollection: string;
@@ -682,6 +706,11 @@ export function loadConfig(): StarfishConfig {
     cycleCollection: process.env.STARFISH_CYCLE_COLLECTION || "starfish_cycles",
     publicEnvironments: validEnvironmentLabels(parseList(process.env.STARFISH_PUBLIC_ENVIRONMENTS, ",") ?? ["demo"]),
     demoUserEmails: parseList(process.env.STARFISH_DEMO_USERS, ",") ?? DEFAULT_DEMO_USERS,
+    publicDemoActions: parseBoolean(process.env.STARFISH_PUBLIC_DEMO_ACTIONS, false, "STARFISH_PUBLIC_DEMO_ACTIONS"),
+    publicActionsPerIpPerHour: positiveInteger(process.env.STARFISH_PUBLIC_ACTIONS_PER_IP_PER_HOUR, 30, "STARFISH_PUBLIC_ACTIONS_PER_IP_PER_HOUR"),
+    publicRunsPerIpPerHour: positiveInteger(process.env.STARFISH_PUBLIC_RUNS_PER_IP_PER_HOUR, 3, "STARFISH_PUBLIC_RUNS_PER_IP_PER_HOUR"),
+    publicAgentRunsPerHour: positiveInteger(process.env.STARFISH_PUBLIC_AGENT_RUNS_PER_HOUR, 6, "STARFISH_PUBLIC_AGENT_RUNS_PER_HOUR"),
+    publicActionCollection: textOr(process.env.STARFISH_PUBLIC_ACTION_COLLECTION, "starfish_public_actions"),
     publicIncidentCollection: textOr(process.env.STARFISH_PUBLIC_INCIDENT_COLLECTION, "starfish_public_incidents"),
     publicCycleCollection: textOr(process.env.STARFISH_PUBLIC_CYCLE_COLLECTION, "starfish_public_cycles"),
     publicEventCollection: textOr(process.env.STARFISH_PUBLIC_EVENT_COLLECTION, "starfish_public_events"),
