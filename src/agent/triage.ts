@@ -24,6 +24,9 @@
  *     trace): a count of failures says that something broke, not where, so there is nothing for a
  *     fixer to aim at. A model's `act` is turned into `notify`, so a human looks instead.
  *
+ * The model is shown the incident's log evidence and, when the caller assembled any, the same source files the fixer
+ * gets, bounded smaller (#371): a message the code logs itself reads like an outage elsewhere until the code is read.
+ *
  * Everything shown to the model is redacted and bounded, and everything the model returns is
  * checked here and redacted again before it is stored, because it is shown to people (guests,
  * on the public demo) and a model can echo what it was shown.
@@ -44,6 +47,7 @@ import type { ErrorLogSample } from "../ingest/counterCheck.js";
 import { OPEN_INCIDENT_STATUSES, type Incident, type IncidentStatus } from "../types.js";
 import { INDEX_MERGE_CASE, MAX_MERGE_CASE_DESCRIPTION, type MergeCase } from "../settingsSchema.js";
 import { capHolds, capSource, levelCap, type ClassRule, type IncidentCorrection, type LevelCap } from "../triageRules.js";
+import { renderSourceFiles, sourceNote, type SourceFound } from "./sourceContext.js";
 
 export type TriageDecision = "act" | "notify" | "decline" | "defer" | "skip" | "error";
 
@@ -97,6 +101,16 @@ export interface TriageOptions {
   mergeCases?: readonly MergeCase[];
   /** The admin's class rules (config `classRules`): with the subject's correction, the cap on how far triage may go. */
   classRules?: readonly ClassRule[];
+  /**
+   * The source the caller assembled for the incident (assemble.ts), the same files the fixer is shown (#371). Shown to the
+   * model, smaller-bounded, so "no code change helps" is judged against the code rather than guessed from the message's
+   * wording. Absent or empty: the model judges the log evidence alone, as before.
+   */
+  source?: TriageSource;
+}
+
+export interface TriageSource extends SourceFound {
+  files: readonly { path: string; content: string }[];
 }
 
 export interface TriageSubject {
@@ -114,6 +128,9 @@ export type AskJson = <T>(prompt: string, systemInstruction: string, schema: Rec
 export const MAX_REASON_LEN = 1000;
 const MAX_FIELD_LEN = 1500;
 const MAX_SAMPLE_FIELD_LEN = 600;
+/** Smaller than the fixer's (20,000 and 60,000): triage judges whether code is at fault, it does not write the change. */
+export const MAX_TRIAGE_FILE_CHARS = 8_000;
+export const MAX_TRIAGE_SOURCE_CHARS = 20_000;
 
 const MODEL_DECISIONS = ["act", "notify", "decline"] as const;
 type ModelDecision = (typeof MODEL_DECISIONS)[number];
@@ -130,6 +147,13 @@ You are shown one production incident. Choose exactly one decision:
 
 Weigh the occurrence count, the independent log counter-check, the recent samples, and whether the
 error describes real user-facing breakage.
+
+You may also be shown SOURCE CONTEXT: the files the incident's stack trace names or, when no frame names
+one, the file that exports the failing function. Read it before choosing "notify": a message the code logs
+itself ("refund failed", "lookup failed") can be the visible end of a defect in that same code (an
+unawaited promise, a wrong field name, an unchecked value), not an outage somewhere else. Choose
+"notify" for a provider, platform or permission failure only when the code you were shown does not
+explain the error. The source may be partial: no visible defect is not proof that there is none.
 
 Read the counter-check for what it is: every ERROR-severity log entry for the whole FUNCTION over its
 window, counted straight from Cloud Logging. The occurrence count is for this one incident, over its
@@ -231,6 +255,23 @@ export function renderForTriage(subject: TriageSubject): string {
     });
   }
   return lines.join("\n");
+}
+
+/**
+ * The whole prompt: the incident (`renderForTriage`, which the fixer and the reviewer reuse) and, when the caller
+ * assembled any, the source block (#371), bounded smaller than the fixer's.
+ */
+export function renderTriagePrompt(subject: TriageSubject, source?: TriageSource): string {
+  const incident = renderForTriage(subject);
+  if (!source || source.files.length === 0) return incident;
+  const note = sourceNote(source, source.files.length);
+  return [
+    incident,
+    "",
+    "SOURCE CONTEXT",
+    ...(note ? [note, ""] : []),
+    ...renderSourceFiles(source.files, { maxFileChars: MAX_TRIAGE_FILE_CHARS, maxTotalChars: MAX_TRIAGE_SOURCE_CHARS }),
+  ].join("\n");
 }
 
 function counterCheckLine(i: Incident): string {
@@ -347,7 +388,7 @@ export async function triageIncident(subject: TriageSubject, ask: AskJson = askJ
   let raw: unknown;
   try {
     raw = await ask<unknown>(
-      renderForTriage(subject),
+      renderTriagePrompt(subject, options.source),
       cases.length > 0 ? TRIAGE_SYSTEM + mergeCasesInstruction(cases) : TRIAGE_SYSTEM,
       cases.length > 0 ? triageSchemaWithMergeCase(cases) : TRIAGE_SCHEMA
     );

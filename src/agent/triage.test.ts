@@ -1,6 +1,18 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
-import { MAX_REASON_LEN, TRIAGE_SCHEMA, TRIAGE_SYSTEM, renderForTriage, triageIncident, triageLevel, type AskJson } from "./triage.js";
+import {
+  MAX_REASON_LEN,
+  MAX_TRIAGE_FILE_CHARS,
+  MAX_TRIAGE_SOURCE_CHARS,
+  TRIAGE_SCHEMA,
+  TRIAGE_SYSTEM,
+  renderForTriage,
+  renderTriagePrompt,
+  triageIncident,
+  triageLevel,
+  type AskJson,
+} from "./triage.js";
+import { FOUND_BY_NAME_NOTE } from "./sourceContext.js";
 import { SEEDED_SECRETS } from "../ingest/testSecrets.js";
 import { INCIDENT_STATUSES, OPEN_INCIDENT_STATUSES, type Incident, type SpikeFixture } from "../types.js";
 
@@ -228,6 +240,66 @@ describe("what the model is shown", () => {
     await triageIncident({ incident: incident({ message: hostile }), status: "new" }, ask);
     expect(calls[0]!.prompt).toContain(hostile);
     expect(calls[0]!.system).not.toContain(hostile);
+  });
+});
+
+describe("the source triage is shown (#371)", () => {
+  // CODE-03 on the demo: the only ERROR line is a message the code writes itself, which read like a provider outage.
+  const cancelOrder = {
+    path: "functions/src/orders/cancelOrder.ts",
+    content: [
+      "function giftCardFor(code: string): DocumentSnapshot {",
+      "  return db.doc(`giftCards/${code}`).get() as unknown as DocumentSnapshot;",
+      "}",
+      "const card = giftCardFor(decision.giftCardCode);",
+      "if (!card.exists) logger.error('Gift card refund failed');",
+    ].join("\n"),
+  };
+
+  it("shows the files the caller assembled, after the incident, with the system prompt saying how to read them", async () => {
+    const { ask, calls } = stub(act);
+    await triageIncident({ incident: incident({ message: "Gift card refund failed" }), status: "new" }, ask, { source: { files: [cancelOrder], rule: "stack" } });
+    const prompt = calls[0]!.prompt;
+    expect(prompt.startsWith(renderForTriage({ incident: incident({ message: "Gift card refund failed" }), status: "new" }))).toBe(true);
+    expect(prompt).toContain("SOURCE CONTEXT");
+    expect(prompt).toContain("--- functions/src/orders/cancelOrder.ts ---");
+    expect(prompt).toContain("return db.doc(`giftCards/${code}`).get()");
+    expect(prompt).not.toContain(FOUND_BY_NAME_NOTE);
+    expect(TRIAGE_SYSTEM).toContain("SOURCE CONTEXT");
+    // The code is data under the system prompt, like the incident.
+    expect(calls[0]!.system).not.toContain("giftCardFor");
+  });
+
+  it("is the incident alone when no source was assembled, as before", () => {
+    const subject = { incident: incident(), status: "new" as const };
+    expect(renderTriagePrompt(subject)).toBe(renderForTriage(subject));
+    expect(renderTriagePrompt(subject, { files: [] })).toBe(renderForTriage(subject));
+  });
+
+  it("says when the file was found by the function's name, not a stack frame", () => {
+    const prompt = renderTriagePrompt({ incident: incident(), status: "new" }, { files: [cancelOrder], rule: "function-name" });
+    expect(prompt).toContain(FOUND_BY_NAME_NOTE);
+  });
+
+  it("bounds each file and all of them together, smaller than the fixer's budget", () => {
+    const files = Array.from({ length: 10 }, (_, i) => ({ path: `f${i}.ts`, content: "x".repeat(MAX_TRIAGE_FILE_CHARS * 2) }));
+    const prompt = renderTriagePrompt({ incident: incident({ message: "m" }), status: "new" }, { files });
+    expect(prompt.split("x").length - 1).toBeLessThanOrEqual(MAX_TRIAGE_SOURCE_CHARS);
+    expect(prompt).toContain("--- f0.ts ---");
+    expect(prompt).not.toContain("--- f9.ts ---");
+  });
+
+  it("redacts credential shapes in the source but keeps code that only names them", () => {
+    const content = `const key = "${SEEDED_SECRETS.stripe}";\nconst token = getToken();`;
+    const prompt = renderTriagePrompt({ incident: incident(), status: "new" }, { files: [{ path: "a.ts", content }] });
+    expect(prompt).not.toContain(SEEDED_SECRETS.stripe);
+    expect(prompt).toContain("const token = getToken();");
+  });
+
+  it("never shows source for a decision the engine makes without the model", async () => {
+    const { ask, calls } = stub(act);
+    await triageIncident({ incident: incident({ logCounterCheck: undefined }), status: "new" }, ask, { source: { files: [cancelOrder] } });
+    expect(calls).toHaveLength(0);
   });
 });
 

@@ -24,8 +24,9 @@
  * model in its tests.
  */
 import { askJson, modelCallFailure } from "../vertex.js";
-import { clipWellFormed, redactCredentials, redactPii, sanitize } from "../ingest/redact.js";
+import { clipWellFormed, redactCredentials, sanitize } from "../ingest/redact.js";
 import { renderForTriage } from "./triage.js";
+import { renderSourceFiles, sourceNote } from "./sourceContext.js";
 import { MAX_REVIEW_PATCH_CHARS } from "./reviewer.js";
 import { normalizePatch } from "./patchNormalize.js";
 import type { AskJson, TriageSubject } from "./triage.js";
@@ -95,13 +96,7 @@ If the source you were given is not enough to fix the problem confidently, say s
 return an empty "patch". Guessing is worse than declining. Never touch CI configuration, credentials,
 or the files that define how the project is tested or verified.`;
 
-/** Said before source found by the function's name rather than by a stack frame (#259). */
-export const FOUND_BY_NAME_NOTE =
-  "(No stack frame named a repository file. The file below was chosen because it exports the failing function by name; the fault may be in code it calls, which you were not shown.)";
-
-/** The same, when the files it imports by a relative path are shown after it (#347). */
-export const FOUND_BY_NAME_WITH_IMPORTS_NOTE =
-  "(No stack frame named a repository file. The first file below was chosen because it exports the failing function by name; the files after it are the ones it imports by a relative path, one level deep. The fault may be in any of them, or in code they call, which you were not shown.)";
+export { FOUND_BY_NAME_NOTE, FOUND_BY_NAME_WITH_IMPORTS_NOTE } from "./sourceContext.js";
 
 export const FIX_SCHEMA = {
   type: "object",
@@ -118,16 +113,9 @@ export const FIX_SCHEMA = {
 /** What the model is shown. Source gets shape-only redaction: `token = getToken()` is code, not a leak. */
 export function renderForFix(req: FixRequest): string {
   const parts = [renderForTriage(req.subject), "", "SOURCE CONTEXT"];
-  if (req.sourceRule === "function-name" && req.files.length > 0) {
-    parts.push((req.sourceImports ?? 0) > 0 && req.files.length > 1 ? FOUND_BY_NAME_WITH_IMPORTS_NOTE : FOUND_BY_NAME_NOTE, "");
-  }
-  let budget = MAX_TOTAL_SOURCE_CHARS;
-  for (const file of req.files) {
-    if (budget <= 0) break;
-    const body = redactCredentials(file.content).slice(0, Math.min(MAX_FILE_CHARS, budget));
-    budget -= body.length;
-    parts.push(`--- ${redactPii(file.path).slice(0, 300)} ---`, body, "");
-  }
+  const note = sourceNote({ ...(req.sourceRule && { rule: req.sourceRule }), ...(req.sourceImports !== undefined && { imports: req.sourceImports }) }, req.files.length);
+  if (note) parts.push(note, "");
+  parts.push(...renderSourceFiles(req.files, { maxFileChars: MAX_FILE_CHARS, maxTotalChars: MAX_TOTAL_SOURCE_CHARS }));
   if (req.feedback) {
     parts.push(
       "PREVIOUS ATTEMPT FAILED VERIFICATION",

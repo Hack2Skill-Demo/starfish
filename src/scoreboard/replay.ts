@@ -114,7 +114,9 @@ async function replayIncidentCase(c: CorpusCase, opts: ReplayOptions): Promise<{
   const { cfg, ask } = opts;
   const subject: TriageSubject = { incident: readIncident(c), status: "new" };
   let modelCalls = 1;
-  const triage = await triageIncident(subject, ask);
+  // As the loop does (#371): triage sees the files the fixer will, when the case has a snapshot.
+  const files = c.repoDir ? readFiles(c) : [];
+  const triage = await triageIncident(subject, ask, { source: { files } });
   if (triage.decision !== "act" && triage.decision !== "notify" && triage.decision !== "decline") {
     throw new CaseError(`triage ${triage.rule}`);
   }
@@ -123,7 +125,6 @@ async function replayIncidentCase(c: CorpusCase, opts: ReplayOptions): Promise<{
   if (call !== "act") return ended(`triage ${triage.rule}`);
   if (!c.repoDir || !c.verifyCommand) return ended("triage model-act; the case has no snapshot to fix");
 
-  const files = readFiles(c);
   let feedback: FixRequest["feedback"];
   let proposedAny = false;
   const notShipped = (note: string) => ended(note, proposedAny ? { fixPassed: false } : {});
