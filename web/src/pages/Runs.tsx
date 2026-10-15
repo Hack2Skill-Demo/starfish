@@ -1503,23 +1503,27 @@ function Timeline({
           <ol aria-label="Earlier rounds" className="mt-1 divide-y divide-gray-100 dark:divide-gray-700">
             {[...earlier].reverse().map((r) => (
               <li key={r.round} className="py-2">
-                <p className="text-xs font-medium text-gray-600 dark:text-gray-400">
-                  Round {r.round} of {rounds} · ended on {r.title.toLowerCase()} · {formatDuration(r.durationMs)} long
-                </p>
-                <ol aria-label={`Round ${r.round}`} className="mt-1 space-y-1.5 border-l-2 border-gray-100 pl-3 dark:border-gray-700">
-                  {r.steps.map((step) => (
-                    <li key={step.stage}>
-                      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5">
-                        <span className="text-sm font-medium text-gray-900 dark:text-white">{step.title}</span>
-                        <span className={`text-xs ${step.failed ? "font-medium text-error-700 dark:text-error-400" : "text-gray-600 dark:text-gray-400"}`}>
-                          {stepVerdict({ status: step.failed ? "failed" : "done", ...(step.outcome && { outcome: step.outcome }) })}
-                        </span>
-                        <span className="ml-auto text-xs text-gray-600 dark:text-gray-400">{formatDateTime(step.at)}</span>
-                      </div>
-                      {step.summary && <p className={`mt-0.5 whitespace-pre-wrap ${BODY}`}>{step.summary}</p>}
-                    </li>
-                  ))}
-                </ol>
+                {/* Folded, like an accordion: the latest round is the one being read; an earlier one opens on request. */}
+                <details className="group">
+                  <summary className="flex cursor-pointer list-none items-center gap-1.5 rounded py-0.5 text-xs font-medium text-gray-600 hover:text-gray-900 dark:text-gray-400 dark:hover:text-white [&::-webkit-details-marker]:hidden">
+                    <ChevronRight className="h-3.5 w-3.5 shrink-0 transition-transform group-open:rotate-90" aria-hidden />
+                    Round {r.round} of {rounds} · ended on {r.title.toLowerCase()} · {formatDuration(r.durationMs)} long
+                  </summary>
+                  <ol aria-label={`Round ${r.round}`} className="mt-1 ml-5 space-y-1.5 border-l-2 border-gray-100 pl-3 dark:border-gray-700">
+                    {r.steps.map((step) => (
+                      <li key={step.stage}>
+                        <div className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5">
+                          <span className="text-sm font-medium text-gray-900 dark:text-white">{step.title}</span>
+                          <span className={`text-xs ${step.failed ? "font-medium text-error-700 dark:text-error-400" : "text-gray-600 dark:text-gray-400"}`}>
+                            {stepVerdict({ status: step.failed ? "failed" : "done", ...(step.outcome && { outcome: step.outcome }) })}
+                          </span>
+                          <span className="ml-auto text-xs text-gray-600 dark:text-gray-400">{formatDateTime(step.at)}</span>
+                        </div>
+                        {step.summary && <p className={`mt-0.5 whitespace-pre-wrap ${BODY}`}>{step.summary}</p>}
+                      </li>
+                    ))}
+                  </ol>
+                </details>
               </li>
             ))}
           </ol>

@@ -1,4 +1,4 @@
-import { act, render, screen, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -410,6 +410,12 @@ describe("Runs page", () => {
     expect(earlier[0]).toHaveTextContent("second reason");
     expect(earlier[0]).toHaveTextContent("ended on triage · 10 s long");
     expect(earlier[1]).toHaveTextContent("first reason");
+    // Each earlier round is folded, like an accordion, and opens on its own line.
+    const folds = earlier.map((li) => li.querySelector("details")!);
+    expect(folds.every((d) => !d.open)).toBe(true);
+    fireEvent.click(within(earlier[0] as HTMLElement).getByText(/Round 2 of 3/));
+    expect(folds[0]!.open).toBe(true);
+    expect(folds[1]!.open).toBe(false);
   });
 
   it("keeps a step an earlier round reached on the track, and a step that failed unexpectedly in red, both in the step log", () => {
