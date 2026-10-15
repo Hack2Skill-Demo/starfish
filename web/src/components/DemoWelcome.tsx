@@ -16,6 +16,7 @@ import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { useLocation, useNavigate } from "react-router";
 import { ExternalLink, LogIn, X } from "lucide-react";
 import { Button } from "./ui/Button";
+import { keepTabInside } from "./ui/dialogFocus";
 import { isWelcomeDismissed, markGuestViewChosen, setWelcomeDismissed, signInHint, visitorActions } from "../lib/demoGuide";
 
 const FLOW: { name: string; text: string }[] = [
@@ -38,15 +39,6 @@ const PAGES: { name: string; text: string }[] = [
 ];
 
 const STEP_TITLES = ["Meet Starfish", "How an incident moves", "Take a look around"] as const;
-
-/** The focusable elements of the dialog, in order, for keeping Tab inside it (the last step's checkbox included, #359). */
-function focusables(root: HTMLElement): HTMLElement[] {
-  return Array.from(
-    root.querySelectorAll<HTMLElement>(
-      'a[href], button:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex="-1"])',
-    ),
-  );
-}
 
 export function DemoWelcome({
   guest,
@@ -93,20 +85,8 @@ export function DemoWelcome({
       onClose();
       return;
     }
-    if (e.key !== "Tab" || !panel.current) return;
-    const items = focusables(panel.current);
-    if (items.length === 0) return;
-    const first = items[0];
-    const end = items[items.length - 1];
-    // Shift+Tab from the first control, or from something the trap does not list (the panel, a step's heading), wraps.
-    const active = document.activeElement as HTMLElement | null;
-    if (e.shiftKey && (active === first || !active || !items.includes(active))) {
-      e.preventDefault();
-      end.focus();
-    } else if (!e.shiftKey && document.activeElement === end) {
-      e.preventDefault();
-      first.focus();
-    }
+    // The last step's checkbox is in the trap too (#359).
+    keepTabInside(e, panel.current);
   };
 
   const signIn = () => {
