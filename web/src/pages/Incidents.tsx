@@ -48,6 +48,7 @@ import { DemoAppLink } from "../components/DemoAppLink";
 import { RunIngestButton } from "../components/AdminActions";
 import { toast } from "../components/ui/toast";
 import { useAuth } from "../auth/authCore";
+import { canOperate } from "../lib/dataSource";
 import { asFilterValue } from "../lib/urlFilters";
 import { formatDateTime, formatRelativeTime } from "../lib/formatters";
 import { buildCloudLoggingUrl } from "../lib/cloudLoggingUrl";
@@ -184,8 +185,9 @@ export function filterRows(rows: IncidentRow[], f: { status: string; service: st
 }
 
 export default function Incidents() {
-  const { user, roles } = useAuth();
-  const canTriage = roles.length > 0; // every Starfish role may triage
+  const { user, roles, guest } = useAuth();
+  // Every Starfish role may triage, and a public demo visitor where its open actions are on (through the admin API).
+  const canTriage = canOperate(roles, guest);
   const queryClient = useQueryClient();
 
   const [searchParams, setSearchParams] = useSearchParams();

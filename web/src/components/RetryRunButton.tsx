@@ -7,7 +7,8 @@
  * The request alone runs on the next agent pass. For an admin on a build with the admin API it also starts that pass at
  * once (`POST /api/agent/run`, #276), as "Run agent now" does, so the retry runs without waiting for the schedule; the
  * agent's status then says a start was requested (`lib/agentStart.ts`). An operator's retry waits for the next pass:
- * starting the agent stays an admin's action, and the server checks the role again either way.
+ * starting the agent stays an admin's action, and the server checks the role again either way. Where the public demo's
+ * open actions are on, a visitor's retry goes to the admin API and starts a pass too, within the visitor's hourly limits.
  */
 import { useState } from "react";
 import { Bot } from "lucide-react";
@@ -18,6 +19,7 @@ import { requestRetriage } from "../lib/incidents";
 import { webConfig } from "../lib/config";
 import { markAgentStartRequested } from "../lib/agentStart";
 import { appAdminApi, runAgentNow, type AdminResult } from "../lib/adminApi";
+import { actsThroughAdminApi, canOperate } from "../lib/dataSource";
 
 export function RetryRunButton({
   incidentId,
@@ -32,18 +34,24 @@ export function RetryRunButton({
   /** `md` matches the run hero's other actions (44 px). */
   size?: "sm" | "md";
 }) {
-  const { user, roles } = useAuth();
+  const { user, roles, guest } = useAuth();
   const [state, setState] = useState<"idle" | "busy" | "requested" | "started">("idle");
-  if (!user || roles.length === 0) return null;
-  const canStart = roles.includes("admin") && Boolean(webConfig().adminApiUrl);
+  if (!user || !canOperate(roles, guest)) return null;
+  // An admin, or a public demo visitor where its open actions are on, also starts the pass (within the visitor's limits).
+  const canStart = (roles.includes("admin") || actsThroughAdminApi()) && Boolean(webConfig().adminApiUrl);
 
   const click = async () => {
     setState("busy");
     try {
       await ask(incidentId, user.uid);
-    } catch {
+    } catch (e) {
       setState("idle");
-      toast.error("The retry could not be requested. It is allowed only on an open incident, for an operator.");
+      // A visitor's refusal comes from the admin API with its own reason (a limit reached, say).
+      toast.error(
+        actsThroughAdminApi() && e instanceof Error && e.message
+          ? e.message
+          : "The retry could not be requested. It is allowed only on an open incident, for an operator."
+      );
       return;
     }
     if (!canStart) {

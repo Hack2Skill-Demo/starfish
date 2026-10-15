@@ -2,7 +2,8 @@
  * The feedback engine's control (src/triageRules.ts): an operator says how far Starfish should go with this incident,
  * at most. It only ever holds Starfish back: triage is capped at the level chosen, a merge waiting for its checks is
  * stopped, and a declined incident corrected to anything above noise is triaged again. "Merge" removes this person's
- * limit, never an admin's class rule. Shown to operators and admins; a guest sees nothing (firestore.rules refuses them).
+ * limit, never an admin's class rule. Shown to operators and admins; a guest sees nothing (firestore.rules refuses them),
+ * unless the public demo's open actions are on: then a guest's correction goes to the admin API (src/publicDemo.ts).
  */
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -13,17 +14,22 @@ import { firestore } from "../lib/firebase";
 import { webConfig } from "../lib/config";
 import { formatDateTime } from "../lib/formatters";
 import { LEVEL_LABELS, readCorrections, saveCorrection } from "../lib/correctionWrite";
+import { actsThroughAdminApi, canOperate } from "../lib/dataSource";
+import { appAdminApi, correctTriageAsVisitor } from "../lib/adminApi";
 import type { IncidentRow } from "../lib/incidents";
 import { LEVELS, MAX_NOTE, type Level } from "../../../src/triageRules";
 
 export function CorrectionControl({ row }: { row: IncidentRow }) {
   const { user, roles, guest } = useAuth();
+  const viaApi = guest && actsThroughAdminApi();
   const queryClient = useQueryClient();
   const [open, setOpen] = useState(false);
   const [level, setLevel] = useState<Level>(row.correction?.level ?? "log");
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
-  const allowed = !guest && user !== null && roles.length > 0 && !row.trimmed;
+  // Operators and admins; a public demo visitor where its open actions are on (sent through the admin API). Never on a
+  // trimmed copy, which is not the stored incident.
+  const allowed = user !== null && canOperate(roles, guest) && (!guest || viaApi) && !row.trimmed;
   const history = useQuery({
     queryKey: ["corrections", row.id],
     queryFn: () => readCorrections(firestore(), webConfig().incidentCollection, row.id),
@@ -35,7 +41,12 @@ export function CorrectionControl({ row }: { row: IncidentRow }) {
   const save = async () => {
     setBusy(true);
     try {
-      await saveCorrection(firestore(), webConfig().incidentCollection, row.id, user.uid, level, note);
+      if (viaApi) {
+        const r = await correctTriageAsVisitor(appAdminApi(), row.id, level, note);
+        if (!r.ok) throw new Error(r.message);
+      } else {
+        await saveCorrection(firestore(), webConfig().incidentCollection, row.id, user.uid, level, note);
+      }
       toast.success("Correction saved. Starfish goes no further than this with the incident.");
       setNote("");
       setOpen(false);

@@ -13,10 +13,12 @@ const mocks = vi.hoisted(() => ({
   toast: { success: vi.fn(), error: vi.fn() },
   navigate: vi.fn(),
   markAgentStartRequested: vi.fn(),
+  open: false,
+  auth: { currentUser: null as null | { isAnonymous: boolean } },
 }));
 vi.mock("../lib/agentStart", () => ({ markAgentStartRequested: mocks.markAgentStartRequested }));
-vi.mock("../lib/config", () => ({ webConfig: () => ({ adminApiUrl: mocks.adminApiUrl }) }));
-vi.mock("../lib/firebase", () => ({ firebaseAuth: vi.fn() }));
+vi.mock("../lib/config", () => ({ webConfig: () => ({ adminApiUrl: mocks.adminApiUrl, environment: "demo", publicDemoActions: mocks.open }) }));
+vi.mock("../lib/firebase", () => ({ firebaseAuth: () => mocks.auth }));
 vi.mock("../lib/adminApi", () => ({
   appAdminApi: () => ({ baseUrl: "x", getToken: async () => "t" }),
   runIngestNow: mocks.runIngestNow,
@@ -44,6 +46,52 @@ const summary = { outcome: "ok", windows: 1, entriesProcessed: 5, incidentsCreat
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.adminApiUrl = "https://admin.example";
+  mocks.open = false;
+  mocks.auth.currentUser = null;
+});
+
+describe("a public demo visitor (an anonymous session)", () => {
+  const asGuest = (ui: React.ReactNode) => {
+    mocks.auth.currentUser = { isAnonymous: true };
+    const ctx: StarfishAuthCtx = { user: { uid: "anon" } as StarfishAuthCtx["user"], roles: [], role: null, loading: false, signOut: async () => {}, guest: true, enterAsGuest: async () => false };
+    return render(
+      <Ctx.Provider value={ctx}>
+        <QueryClientProvider client={new QueryClient()}>
+          <MemoryRouter>{ui}</MemoryRouter>
+        </QueryClientProvider>
+      </Ctx.Provider>
+    );
+  };
+  const all = (
+    <>
+      <RunIngestButton />
+      <RunAgentButton />
+      <RetireControl incidentId="inc-1" />
+    </>
+  );
+
+  it("sees none of the controls where the open actions are off, as before", () => {
+    asGuest(all);
+    expect(screen.queryByRole("button")).toBeNull();
+  });
+
+  it("sees Run ingest now and Run agent now where they are on, never Retire, and is shown a limit's message", async () => {
+    mocks.open = true;
+    mocks.runAgentNow.mockResolvedValue({ ok: false, message: "The public demo's hourly limit of agent passes is reached: try again in 25 minutes." });
+    asGuest(all);
+    expect(screen.getByRole("button", { name: /Run ingest now/ })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Retire/ })).toBeNull();
+    await userEvent.setup().click(screen.getByRole("button", { name: /Run agent now/ }));
+    await waitFor(() => expect(mocks.toast.error).toHaveBeenCalledWith("The public demo's hourly limit of agent passes is reached: try again in 25 minutes."));
+    expect(mocks.markAgentStartRequested).not.toHaveBeenCalled();
+  });
+
+  it("sees none of them without an admin API to call", () => {
+    mocks.open = true;
+    mocks.adminApiUrl = "";
+    asGuest(all);
+    expect(screen.queryByRole("button")).toBeNull();
+  });
 });
 
 describe("describeRun", () => {

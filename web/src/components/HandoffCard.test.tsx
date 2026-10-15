@@ -6,8 +6,11 @@ import { Ctx, type StarfishAuthCtx } from "../auth/authCore";
 import type { IncidentRow } from "../lib/incidents";
 
 const mocks = vi.hoisted(() => ({ toast: { success: vi.fn(), error: vi.fn() } }));
-vi.mock("../lib/firebase", () => ({ firebaseAuth: vi.fn(), firestore: vi.fn() }));
-vi.mock("../lib/config", () => ({ webConfig: () => ({ incidentCollection: "starfish_incidents" }) }));
+const open = vi.hoisted(() => ({ on: false }));
+vi.mock("../lib/firebase", () => ({ firebaseAuth: () => ({ currentUser: { isAnonymous: true } }), firestore: vi.fn() }));
+vi.mock("../lib/config", () => ({
+  webConfig: () => ({ incidentCollection: "starfish_incidents", environment: "demo", adminApiUrl: "https://admin.example", publicDemoActions: open.on }),
+}));
 vi.mock("./ui/toast", () => ({ toast: mocks.toast }));
 vi.mock("./RetryRunButton", () => ({ RetryRunButton: ({ incidentId }: { incidentId: string }) => <button type="button">Retry with agent ({incidentId})</button> }));
 
@@ -32,7 +35,32 @@ function renderWith(ui: React.ReactNode, roles: StarfishAuthCtx["roles"]) {
   );
 }
 
-beforeEach(() => vi.clearAllMocks());
+beforeEach(() => {
+  vi.clearAllMocks();
+  open.on = false;
+});
+
+describe("HandoffCard for a public demo visitor where the open actions are on", () => {
+  it("gives a guest the steps and their controls, and each change goes through the action given", async () => {
+    open.on = true;
+    const act = vi.fn(async () => {});
+    renderWith(<HandoffCard path="human" incidentId="inc-a" incident={row("new")} canRetry act={act} />, []);
+    const card = screen.getByRole("region", { name: "What you can do now" });
+    expect(within(card).getByRole("button", { name: "Retry with agent (inc-a)" })).toBeInTheDocument();
+    await userEvent.setup().click(within(card).getByRole("button", { name: "Acknowledge" }));
+    expect(act).toHaveBeenCalledWith(expect.objectContaining({ id: "inc-a" }), "acknowledge", "guest");
+  });
+
+  it("shows a refusal's own message (a limit reached)", async () => {
+    open.on = true;
+    const act = vi.fn(async () => {
+      throw new Error("The public demo's hourly limit for your address is reached: try again in 5 minutes.");
+    });
+    renderWith(<HandoffCard path="human" incidentId="inc-a" incident={row("new")} canRetry={false} act={act} />, []);
+    await userEvent.setup().click(screen.getByRole("button", { name: "Ignore" }));
+    expect(mocks.toast.error).toHaveBeenCalledWith("The public demo's hourly limit for your address is reached: try again in 5 minutes.");
+  });
+});
 
 describe("HandoffCard", () => {
   it("lists every step a person has, beside the control that does it", () => {

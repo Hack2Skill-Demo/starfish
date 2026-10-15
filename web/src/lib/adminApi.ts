@@ -1,5 +1,6 @@
 /**
- * The browser's side of the admin API (src/adminApi.ts): "Run ingest now", "Run agent now" and "Retire an incident".
+ * The browser's side of the admin API (src/adminApi.ts): "Run ingest now", "Run agent now" and "Retire an incident", and
+ * the public demo's visitors' incident actions where those are on.
  * Each sends the signed-in person's Firebase ID token in a header; the server decides from the operator
  * record whether that person is an admin, so hiding the buttons from everyone else is a courtesy, not
  * the check. Nothing here throws: an answer is a typed result with a message safe to show.
@@ -40,6 +41,8 @@ function messageFor(status: number): string {
       return "That incident no longer exists.";
     case 409:
       return "An ingest run is already in progress. Try again in a moment.";
+    case 429:
+      return "Too many requests from here. Try again later.";
     default:
       return "The admin service could not do that. Try again; if it keeps failing, check its logs.";
   }
@@ -81,7 +84,8 @@ async function post(deps: AdminApiDeps, path: string, body?: unknown, serverSays
     return { ok: false, message: "Could not reach the admin service." };
   }
   if (!res.ok) {
-    if (serverSays && res.status !== 401 && res.status !== 403) {
+    // A limit (429) always says which one and when it lifts, in the server's own words, chosen to be safe to show.
+    if ((serverSays || res.status === 429) && res.status !== 401 && res.status !== 403) {
       try {
         const error = ((await res.json()) as { error?: unknown } | null)?.error;
         if (typeof error === "string" && error.length > 0 && error.length <= 120) return { ok: false, message: `${error.charAt(0).toUpperCase()}${error.slice(1)}.` };
@@ -153,6 +157,32 @@ export async function sendOnCallCode(deps: AdminApiDeps, personId: string): Prom
 /** Phone escalation (#37): confirm a person's number with the six-digit code they read back. */
 export async function confirmOnCallNumber(deps: AdminApiDeps, personId: string, code: string): Promise<AdminResult<null>> {
   const r = await post(deps, `/api/oncall/people/${encodeURIComponent(personId)}/confirm`, { code }, true);
+  return r.ok ? { ok: true, value: null } : r;
+}
+
+/**
+ * The public demo's open actions (src/publicDemo.ts): a visitor's incident changes, sent to the admin API because a
+ * guest may not write Firestore. The server checks the switch, the session, the incident and the hourly limits; its
+ * own short reason is shown on a refusal (a limit reached, a change that no longer applies).
+ */
+const VISITOR_MESSAGES: Partial<Record<number, string>> = {
+  403: "Visitors can't do this on this deployment.",
+  404: "That incident no longer exists.",
+};
+
+export async function setIncidentStatusAsVisitor(deps: AdminApiDeps, incidentId: string, action: string): Promise<AdminResult<null>> {
+  const r = await post(deps, `/api/incidents/${encodeURIComponent(incidentId)}/status`, { action }, true, VISITOR_MESSAGES);
+  return r.ok ? { ok: true, value: null } : r;
+}
+
+export async function requestRetriageAsVisitor(deps: AdminApiDeps, incidentId: string): Promise<AdminResult<null>> {
+  const r = await post(deps, `/api/incidents/${encodeURIComponent(incidentId)}/retriage`, undefined, true, VISITOR_MESSAGES);
+  return r.ok ? { ok: true, value: null } : r;
+}
+
+export async function correctTriageAsVisitor(deps: AdminApiDeps, incidentId: string, level: string, note: string): Promise<AdminResult<null>> {
+  const body = note.trim() === "" ? { level } : { level, note: note.trim() };
+  const r = await post(deps, `/api/incidents/${encodeURIComponent(incidentId)}/correction`, body, true, VISITOR_MESSAGES);
   return r.ok ? { ok: true, value: null } : r;
 }
 

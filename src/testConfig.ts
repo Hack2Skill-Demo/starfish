@@ -92,6 +92,11 @@ export function testConfig(over: Partial<StarfishConfig> = {}): StarfishConfig {
     // Off in tests unless a test turns it on: the trimmed copies for guests (src/publicView.ts) live in shared collections.
     publicEnvironments: [],
     demoUserEmails: [],
+    publicDemoActions: false,
+    publicActionsPerIpPerHour: 30,
+    publicRunsPerIpPerHour: 3,
+    publicAgentRunsPerHour: 6,
+    publicActionCollection: "starfish_public_actions",
     publicIncidentCollection: "starfish_public_incidents",
     publicCycleCollection: "starfish_public_cycles",
     publicEventCollection: "starfish_public_events",

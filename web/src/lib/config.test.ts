@@ -5,6 +5,7 @@ import {
   normalizeAdminApiUrl,
   normalizeDemoAppUrl,
   readAppCheckConfig,
+  readPublicLimits,
   resolveFirebaseConfig,
   webConfig,
 } from "./config";
@@ -227,6 +228,27 @@ describe("normalizeDemoAppUrl", () => {
   it("shows no link for a missing, malformed, non-https or credentialed value", () => {
     for (const bad of [undefined, "", "  ", "not a url", "http://shop.example", "javascript:alert(1)", "https://u:p@shop.example"]) {
       expect(normalizeDemoAppUrl(bad)).toBe("");
+    }
+  });
+});
+
+describe("the public demo's open actions", () => {
+  it("quotes the engine's default limits, and a configured whole number above zero instead", () => {
+    expect(readPublicLimits({})).toEqual({ actionsPerIpPerHour: 30, runsPerIpPerHour: 3, agentRunsPerHour: 6 });
+    expect(
+      readPublicLimits({ VITE_STARFISH_PUBLIC_ACTIONS_PER_IP_PER_HOUR: "10", VITE_STARFISH_PUBLIC_RUNS_PER_IP_PER_HOUR: "1", VITE_STARFISH_PUBLIC_AGENT_RUNS_PER_HOUR: "2" })
+    ).toEqual({ actionsPerIpPerHour: 10, runsPerIpPerHour: 1, agentRunsPerHour: 2 });
+    for (const bad of ["0", "-1", "2.5", "lots", ""]) expect(readPublicLimits({ VITE_STARFISH_PUBLIC_RUNS_PER_IP_PER_HOUR: bad }).runsPerIpPerHour, bad).toBe(3);
+  });
+});
+
+describe("the public demo's open actions flag", () => {
+  it("is off unless set to true or 1", async () => {
+    for (const [raw, on] of [[undefined, false], ["", false], ["false", false], ["yes", false], ["true", true], ["1", true], [" TRUE ", true]] as const) {
+      vi.resetModules();
+      const fresh = await import("./config");
+      const c = await fresh.bootstrapWebConfig({ ...full, ...(raw !== undefined && { VITE_STARFISH_PUBLIC_DEMO_ACTIONS: raw }) });
+      expect(c.publicDemoActions, String(raw)).toBe(on);
     }
   });
 });

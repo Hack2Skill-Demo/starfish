@@ -328,7 +328,18 @@ src/
                    checked (`isAdmin` dep) right after the token and before any lock, so a non-admin gets 403 and never holds one (#305);
                    each action checks it again. A per-address
                    limit (`ipRateLimit.ts`, `STARFISH_ADMIN_API_RATE_LIMIT_PER_MINUTE`, default 30) answers 429 before any token check. `adminApiServer.ts` is its HTTP
-                   shell, `adminApiCli.ts` the Cloud Run service (`DEPLOY_ADMIN_API=1`): deployed once to the demo project (2026-10-07), "Run ingest now" run from the UI; Retire and the Twilio routes not yet tried
+                   shell, `adminApiCli.ts` the Cloud Run service (`DEPLOY_ADMIN_API=1`): deployed once to the demo project (2026-10-07), "Run ingest now" run from the UI; Retire and the Twilio routes not yet tried.
+                   The public demo's OPEN ACTIONS (`publicDemo` dep, wired only with `STARFISH_PUBLIC_DEMO_ACTIONS` on a public environment,
+                   off by default): for an ANONYMOUS token (the verified sign-in provider) `/api/ingest/run`, `/api/agent/run` and
+                   `POST /api/incidents/<id>/status|retriage|correction` skip the admin check, each first claimed against hourly limits
+                   (429 with the reason and `retry-after`); Retire and On-call stay 403; off, the three routes are a 404
+  publicDemo.ts    those actions (`setIncidentStatusAsGuest`, `requestRetriageAsGuest`, `correctTriageAsGuest`, `triggerIngestAsGuest`,
+                   `triggerAgentPassAsGuest`): Admin SDK writes in the shape firestore.rules require of an operator, own environment only,
+                   never retired, audited in the same transaction (`actorKind: anonymous`, never the address), each checking the switch
+                   itself; `syncPublicAccess` writes the rules' gate `{runCollection}/public_access` as the admin API starts.
+                   `incidentActions.ts` is the transition table shared with the UI. `publicDemoLimit.ts`: per-address (salted HMAC, never
+                   the address) and deployment-wide hourly counters in `STARFISH_PUBLIC_ACTION_COLLECTION`, one transaction per claim
+                   (30 actions and 3 runs per address, 6 visitor agent passes in all). Stub- and emulator-tested; never run on a real project
   operators.ts     grant a person an operator record (the first admin; `pnpm grant-operator --project <id>`, which refuses if the shell's project differs and reads the store before creating an account); the closed collection can't be written from the UI
   status.ts        judges the engine's last_run record (`pnpm status`): the same verdicts as the UI's engine line ("behind" when
                    lagSeconds passes `STARFISH_INGEST_BEHIND_MINUTES`, else twice the schedule's interval, else the stale
@@ -443,7 +454,7 @@ React 19, Vite, Tailwind 4, react-router, TanStack Query; Starfish's own theme i
   in a claim, so a revoked role takes effect on the next request. Grant access by writing that record from the Admin
   SDK or the console.
 - **Guests (rules and UI built):** an anonymous Firebase Auth session never reads a stored incident, cycle or event
-  (#18). It may *read* their trimmed copies (`starfish_public_incidents`, `starfish_public_cycles`,
+  (#18), unless the public demo's open actions are on (below). It may *read* their trimmed copies (`starfish_public_incidents`, `starfish_public_cycles`,
   `starfish_public_events`, written by the engine only, `src/publicView.ts`), `last_run`, `agent_last_run` and
   `starfish_runs/integrations` (which credentials the agent job holds: booleans and a time, never a value), each only
   whose `environment` is `demo` (a get of a missing one reads as missing; a query must carry a limit of at most 500, since
@@ -465,6 +476,16 @@ React 19, Vite, Tailwind 4, react-router, TanStack Query; Starfish's own theme i
   requires its token only with `STARFISH_ADMIN_API_APPCHECK` (default off); Firestore enforcement is a console step,
   not scripted (docs/deploy.md). Unit-tested; never run on a real project. Anonymous sign-in
   is project-wide, so see #32 before enabling it in a project shared with another app.
+- **Public demo open actions (built, off by default, never run on a real project):** with the engine's
+  `STARFISH_PUBLIC_DEMO_ACTIONS` (admin API, demo environment only; `PUBLIC_DEMO_ACTIONS=true` for deploy-gcp.sh) and a demo build
+  with `VITE_STARFISH_PUBLIC_DEMO_ACTIONS`, a guest gets the operator's controls (triage, HandoffCard, Retry, Correct triage) and
+  "Run ingest now"/"Run agent now", every one sent to the admin API (`lib/adminApi.ts` `*AsVisitor`, routed in `lib/incidents.ts`
+  and `CorrectionControl`; `dataSource.ts` `canOperate`/`actsThroughAdminApi`), never a Firestore write; Settings stays read-only,
+  On-call and Retire hidden. `dataSource()` then reads the stored documents, which firestore.rules serve a guest only while the
+  engine-written gate `starfish_runs/public_access` says `enabled: true, environment: 'demo'` (`publicAccessOn`). Limits per IP
+  address and in all (src/publicDemoLimit.ts) answer 429 with their reason, shown as is; the guest bar, welcome guide and
+  /signin say no sign-in is needed and that actions are limited per IP to protect billing, quoting `VITE_STARFISH_PUBLIC_*`
+  (which must match the engine's), and only when the flag is on. docs/deploy.md has the risks.
 - **Data:** the UI reads and triages incidents straight from Firestore, filtered to its own
   environment. `firestore.rules` is the security boundary and enforces the status
   transitions; `pnpm test:emulator` runs it against the emulator (Java needed).

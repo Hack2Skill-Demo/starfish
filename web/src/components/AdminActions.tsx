@@ -1,6 +1,7 @@
 /**
  * The admin-only controls over the admin API (#63, #65): "Run ingest now" on the Incidents page, "Run agent now" on
- * the Runs page (#276) and "Retire" on an incident. They render only for an admin and only when the site was built with an admin API URL; the
+ * the Runs page (#276) and "Retire" on an incident. They render only for an admin and only when the site was built with an admin API URL
+ * (the two run buttons also for a public demo visitor where its open actions are on; Retire never); the
  * server checks the role again on every call, so these are a convenience and never the gate. An outcome is
  * reported as the engine reported it: a run that failed says so, and nothing is called done early.
  */
@@ -13,12 +14,22 @@ import { toast } from "./ui/toast";
 import { useAuth } from "../auth/authCore";
 import { webConfig } from "../lib/config";
 import { markAgentStartRequested } from "../lib/agentStart";
+import { actsThroughAdminApi } from "../lib/dataSource";
 import { appAdminApi, retireIncident, runAgentNow, runIngestNow, type AdminApiDeps, type IngestSummary } from "../lib/adminApi";
 
 /** True when this viewer should see the admin controls. */
 export function useAdminControls(): boolean {
   const { roles } = useAuth();
   return roles.includes("admin") && Boolean(webConfig().adminApiUrl);
+}
+
+/**
+ * True when this viewer should see "Run ingest now" and "Run agent now": an admin, or a public demo visitor where its
+ * open actions are on (the server then counts the start against the visitor's hourly limits). Retire stays an admin's.
+ */
+export function useRunControls(): boolean {
+  const { guest } = useAuth();
+  return useAdminControls() || (guest && actsThroughAdminApi());
 }
 
 export function describeRun(s: IngestSummary): { ok: boolean; text: string } {
@@ -31,7 +42,7 @@ export function describeRun(s: IngestSummary): { ok: boolean; text: string } {
 }
 
 export function RunIngestButton({ api = appAdminApi, onDone }: { api?: () => AdminApiDeps; onDone?: () => void }) {
-  const show = useAdminControls();
+  const show = useRunControls();
   const [busy, setBusy] = useState(false);
   const queryClient = useQueryClient();
   if (!show) return null;
@@ -63,7 +74,7 @@ export function RunIngestButton({ api = appAdminApi, onDone }: { api?: () => Adm
  * requested, so it says so and watches the record until the pass shows (`lib/agentStart.ts`), with no page refresh.
  */
 export function RunAgentButton({ api = appAdminApi }: { api?: () => AdminApiDeps }) {
-  const show = useAdminControls();
+  const show = useRunControls();
   const [busy, setBusy] = useState(false);
   if (!show) return null;
 

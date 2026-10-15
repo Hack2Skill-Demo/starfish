@@ -168,6 +168,35 @@ export interface WebConfig {
    * sign-in page. "" = no link.
    */
   sourceUrl: string;
+  /**
+   * The public demo only (`environment` = demo): the open actions are on (`VITE_STARFISH_PUBLIC_DEMO_ACTIONS`, off by
+   * default). A visitor with no account then reads the full stored records and gets the operator's controls plus "Run
+   * ingest now" and "Run agent now", each sent to the admin API (src/publicDemo.ts), never written to Firestore. Turn it
+   * on only together with the engine's STARFISH_PUBLIC_DEMO_ACTIONS (docs/deploy.md): built with it alone, a visitor's
+   * reads are refused.
+   */
+  publicDemoActions: boolean;
+  /**
+   * The engine's hourly limits on those actions, for the guide to quote: they MUST match the admin API's
+   * STARFISH_PUBLIC_ACTIONS_PER_IP_PER_HOUR, STARFISH_PUBLIC_RUNS_PER_IP_PER_HOUR and STARFISH_PUBLIC_AGENT_RUNS_PER_HOUR,
+   * which are what is enforced (the same defaults: 30, 3 and 6). The UI never enforces them itself.
+   */
+  publicLimits: { actionsPerIpPerHour: number; runsPerIpPerHour: number; agentRunsPerHour: number };
+}
+
+/** A whole number above zero, else the default (a bad value only changes a sentence of the guide). */
+function positiveWhole(raw: string | undefined, fallback: number): number {
+  const n = Number(raw);
+  return raw !== undefined && raw !== "" && Number.isInteger(n) && n > 0 ? n : fallback;
+}
+
+/** The public demo's limits as the guide quotes them; the defaults are the engine's. */
+export function readPublicLimits(env: Record<string, string | undefined>): WebConfig["publicLimits"] {
+  return {
+    actionsPerIpPerHour: positiveWhole(env.VITE_STARFISH_PUBLIC_ACTIONS_PER_IP_PER_HOUR, 30),
+    runsPerIpPerHour: positiveWhole(env.VITE_STARFISH_PUBLIC_RUNS_PER_IP_PER_HOUR, 3),
+    agentRunsPerHour: positiveWhole(env.VITE_STARFISH_PUBLIC_AGENT_RUNS_PER_HOUR, 6),
+  };
 }
 
 /**
@@ -276,6 +305,8 @@ export function bootstrapWebConfig(
         demoSignInHint: (env.VITE_STARFISH_DEMO_SIGNIN_HINT ?? "").trim().slice(0, 300),
         demoAppUrl: normalizeDemoAppUrl(env.VITE_STARFISH_DEMO_APP_URL),
         sourceUrl: normalizeDemoAppUrl(env.VITE_STARFISH_SOURCE_URL),
+        publicDemoActions: ["1", "true"].includes((env.VITE_STARFISH_PUBLIC_DEMO_ACTIONS ?? "").trim().toLowerCase()),
+        publicLimits: readPublicLimits(env),
       };
       return cached;
     },

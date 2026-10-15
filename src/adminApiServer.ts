@@ -38,9 +38,10 @@ export function startAdminApiServer(
   const now = opts.now ?? Date.now;
   const server = createServer((req, res) => {
     void (async () => {
+      // The caller's address, keyed once: the per-minute limit below and the public demo's hourly limits count the same key.
+      const key = clientKey(req.headers["x-forwarded-for"], req.socket.remoteAddress);
       // The per-IP limit comes first (src/ipRateLimit.ts): a refused caller costs no body read, token check or store read.
       if (opts.limiter) {
-        const key = clientKey(req.headers["x-forwarded-for"], req.socket.remoteAddress);
         const decision = opts.limiter.take(key, now());
         if (!decision.ok) {
           if (decision.firstRefusal) opts.onLimited?.(key);
@@ -62,6 +63,7 @@ export function startAdminApiServer(
           out = await handle({
             method: req.method ?? "GET",
             path,
+            clientKey: key,
             ...(q >= 0 && { query: raw.slice(q + 1) }),
             ...(typeof req.headers.authorization === "string" && { authorization: req.headers.authorization }),
             ...(typeof req.headers["x-firebase-appcheck"] === "string" && { appCheck: req.headers["x-firebase-appcheck"] }),

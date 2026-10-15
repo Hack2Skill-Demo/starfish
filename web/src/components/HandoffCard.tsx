@@ -2,7 +2,8 @@
  * "What you can do now": on a run that ended with a person told, the steps that person has (src/handoff.ts, the same
  * list the Slack "needs a human" message carries), each beside the control that does it. The steps and their buttons
  * show only for a role, and firestore.rules checks the role and the transition again; a guest (no role) reads one line
- * saying the run waits for a signed-in team member (#360).
+ * saying the run waits for a signed-in team member (#360), unless the public demo's open actions are on, when a guest
+ * gets the steps too and the admin API makes each change (src/publicDemo.ts).
  */
 import { useState, type ReactNode } from "react";
 import { Link } from "react-router";
@@ -14,6 +15,7 @@ import { toast } from "./ui/toast";
 import { useAuth } from "../auth/authCore";
 import { applyAction, nextStatus, type IncidentAction, type IncidentRow } from "../lib/incidents";
 import { RetryRunButton } from "./RetryRunButton";
+import { canOperate } from "../lib/dataSource";
 
 const DONE: Record<IncidentAction, string> = { acknowledge: "Acknowledged", resolve: "Resolved", ignore: "Ignored", reopen: "Reopened" };
 const ICON = { acknowledge: Check, resolve: CheckCircle, ignore: EyeOff };
@@ -37,9 +39,10 @@ export function HandoffCard({
   onChanged?: () => void;
   act?: (row: IncidentRow, action: IncidentAction, uid: string) => Promise<void>;
 }) {
-  const { user, roles } = useAuth();
+  const { user, roles, guest } = useAuth();
   const [busy, setBusy] = useState<IncidentAction | null>(null);
-  const canAct = user !== null && roles.length > 0;
+  // A role, or a public demo visitor where its open actions are on (each action then goes through the admin API).
+  const canAct = user !== null && canOperate(roles, guest);
 
   const statusButton = (action: "acknowledge" | "resolve" | "ignore", label: string): ReactNode => {
     if (!canAct || nextStatus(incident.status, action) === null) return null;
