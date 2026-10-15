@@ -388,8 +388,9 @@ apparent over-engineering is scar tissue from real incidents, and the tests in
   itself, the one its schedule starts (`POST /api/agent/run`, `src/agent/agentJob.ts`), behind the same admin check and an audit entry
   written before the start. The pass runs as the agent's own account with its own switches, caps and leases, so a click is one
   tick, early; the admin API holds none of the agent's credentials, only the right to start that one job. The Runs page has a
-  "Run agent now" button for admins; it reports that the pass started, not what it did. Built; tested with stubs and the
-  emulator; never run against real Cloud Run
+  "Run agent now" button for admins; it reports that the pass started, not what it did. An admin's "Retry with agent" on a
+  run starts the same pass right after recording the retry, so it runs without waiting for the schedule (an operator's retry
+  waits for the next pass). Built; tested with stubs and the emulator; never run against real Cloud Run
 - a fingerprint ignores what varies per occurrence (ids, paths, timestamps, counts) but not
   what makes a bug distinct (status codes, quoted property names), and treats a function's
   first- and second-generation spellings as one

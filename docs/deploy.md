@@ -792,7 +792,8 @@ and the script warns if it leaves the service out (on a run that deploys it). Fr
 `STARFISH_DEPLOY_ADMIN_API=1` and `STARFISH_ADMIN_API_ORIGINS`.
 
 **The buttons.** The web UI shows an admin "Run ingest now" on the Incidents page, "Run agent now" on the Runs page (it says the
-pass started, never that it finished; on a deployment with no agent job named it says so) and "Retire" on an incident, only when the site is
+pass started, never that it finished; on a deployment with no agent job named it says so; an admin's "Retry with agent" on a run
+starts the same pass after recording the retry) and "Retire" on an incident, only when the site is
 built with `VITE_STARFISH_ADMIN_API_URL=<the service URL>` (a bad or non-https value shows nothing). They send the signed-in admin's
 ID token; the server re-checks the role, so hiding them from others is a courtesy and not the gate. A finished run reports the
 engine's own counts, a failed one says it failed. Order: deploy the service with `ADMIN_API_ORIGINS` set to the site, read its URL
