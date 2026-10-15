@@ -92,6 +92,7 @@ describe(".github/workflows/deploy.yml", () => {
     const vars = code(deploy).split("- name: Deploy")[1] ?? "";
     expect(vars).toMatch(/^ {10}DEPLOY_ADMIN_API: \$\{\{ vars\.STARFISH_DEPLOY_ADMIN_API \}\}$/m);
     expect(vars).toMatch(/^ {10}ADMIN_API_ORIGINS: \$\{\{ vars\.STARFISH_ADMIN_API_ORIGINS \}\}$/m);
+    expect(vars).toMatch(/^ {10}PUBLIC_DEMO_ACTIONS: \$\{\{ vars\.STARFISH_PUBLIC_DEMO_ACTIONS \}\}$/m);
     // Whose check runs count (#229): the script refuses STARFISH_VERIFY_* in the extra lists, so this is the only way.
     expect(vars).toMatch(/^ {10}VERIFY_CHECK_APP: \$\{\{ vars\.STARFISH_VERIFY_CHECK_APP \}\}$/m);
     // The script never receives user input by interpolation into shell text.

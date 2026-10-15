@@ -149,6 +149,9 @@ jobs:
           INDEX_TARGETS: ${{ vars.STARFISH_INDEX_TARGETS }}
           DEPLOY_ADMIN_API: ${{ vars.STARFISH_DEPLOY_ADMIN_API }}
           ADMIN_API_ORIGINS: ${{ vars.STARFISH_ADMIN_API_ORIGINS }}
+          # The public demo's open actions (src/publicDemo.ts): unset or false (the default) keeps them off; the script
+          # refuses true unless STARFISH_ENV is demo, and sets it on the admin API every run, so unsetting it turns it off.
+          PUBLIC_DEMO_ACTIONS: ${{ vars.STARFISH_PUBLIC_DEMO_ACTIONS }}
           # Both empty (the default): no budget step. Set, the deployer needs a role on the billing account that
           # setup-github-deploy.sh does not grant (docs/deploy.md, "Repository variables").
           BUDGET_USD: ${{ vars.STARFISH_BUDGET_USD }}
