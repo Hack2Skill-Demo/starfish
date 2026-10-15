@@ -151,6 +151,10 @@ describe("runCycle: the whole way through", () => {
     // The evidence in the pull request is for exactly this patch.
     const verifyEvent = (await events()).find((e) => e.stage === "verify")!;
     expect(verifyEvent.data.patchSha256).toBe(opened[0]!.patchSha256);
+    // Triage judged against the same files the fixer was shown (#371).
+    const triagePrompt = model.calls.find((c) => c.stage === "triage")!.prompt;
+    expect(triagePrompt).toContain("--- greeting.txt ---");
+    expect(triagePrompt).toContain("hello old");
   });
 
   it("is a dry run by default: it drafts, verifies and reviews, and opens nothing", async () => {

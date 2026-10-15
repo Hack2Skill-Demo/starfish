@@ -30,7 +30,8 @@ What happens to an incident:
 
 1. **Ingest:** reads the watched project's new error logs on a schedule and folds repeats of one
    error into one incident (one that comes back after a fix is reopened as a regression).
-2. **Triage:** Gemini judges whether it needs action and how far to go: noise, log it, or attempt a fix.
+2. **Triage:** Gemini judges whether it needs action and how far to go: noise, log it, or attempt a fix. It reads
+   the error's logs and the source files the stack trace (or the function's name) points at, the same files the fixer gets (#371).
 3. **Fix:** Gemini drafts a minimal patch, or declines when there is no confident one-step fix.
 4. **Verify:** deterministic, not a model: in the demo, the watched project's own CI checks judge the patch.
 5. **Review:** a second Gemini pass attacks the verified patch before anything is opened.

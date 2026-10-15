@@ -12,7 +12,7 @@
  *     "caseHash": "<frozen before tuning; `pnpm replay --hash` prints it>",
  *     "incident": "cases/code-fix-1/incident.json",     // an Incident, with its log counter-check
  *     "repo": "snapshots/app",                         // the pre-fix source
- *     "files": ["src/orders.ts"],                      // what the fixer and reviewer are shown, from `repo`
+ *     "files": ["src/orders.ts"],                      // what triage, the fixer and reviewer are shown, from `repo`
  *     "verifyCommand": "node test/run.mjs",            // the target's own gate, as the agent would run it
  *     "evaluator": { "dir": "evaluators/code-fix-1", "command": "node .evaluator/check.mjs" },
  *     "plantedPatch": "...", "claimed": { "rootCause": "...", "risk": "..." }   // bad-patch only
@@ -20,7 +20,7 @@
  * }
  *
  * Every path is relative to the corpus directory and must stay inside it. The evaluator directory must lie outside the
- * snapshot, and none of its files may exist in the snapshot: the fixer and the reviewer are shown only `files`, which
+ * snapshot, and none of its files may exist in the snapshot: triage, the fixer and the reviewer see only `files`, which
  * come from the snapshot, so the private tests can never be among them. `index` cases are refused: the deterministic
  * index heal is not run by this harness.
  */

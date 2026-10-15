@@ -26,6 +26,7 @@ import { createHash } from "node:crypto";
 import { askJson, modelCallFailure } from "../vertex.js";
 import { clipWellFormed, redactCredentials, redactPii } from "../ingest/redact.js";
 import { renderForTriage } from "./triage.js";
+import { renderSourceFiles } from "./sourceContext.js";
 import type { AskJson } from "./triage.js";
 import type { FixRequest, SourceFile } from "./fixer.js";
 import type { VerifyResult } from "./verifyGate.js";
@@ -139,14 +140,8 @@ export function renderForReview(req: ReviewRequest): string {
     redactCredentials(req.patch).slice(0, MAX_REVIEW_PATCH_CHARS),
     "",
     "SOURCE CONTEXT",
+    ...renderSourceFiles(req.files, { maxFileChars: MAX_FILE_CHARS, maxTotalChars: MAX_TOTAL_SOURCE_CHARS }),
   ];
-  let budget = MAX_TOTAL_SOURCE_CHARS;
-  for (const file of req.files) {
-    if (budget <= 0) break;
-    const body = redactCredentials(file.content).slice(0, Math.min(MAX_FILE_CHARS, budget));
-    budget -= body.length;
-    parts.push(`--- ${redactPii(file.path).slice(0, 300)} ---`, body, "");
-  }
   return parts.join("\n");
 }
 

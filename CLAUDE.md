@@ -192,7 +192,11 @@ src/
   agent/triage.ts  stage 1 of the agent loop (#8): act/notify/decline for one incident, and how far to go
                    (`triageLevel`: noise, log, fix, merge): on act the model may name one of the admin's merge cases
                    (`mergeCases`; `missing-index` never offered), kept only if listed. Deterministic gates before the
-                   model (an overflow incident, #303, or a consolidated Cloud Run quota one goes to a person with no model call), local validation after it; run by `pnpm agent` (deployed to the demo project: has triaged real incidents since 2026-10-08, dry run off since 2026-10-10)
+                   model (an overflow incident, #303, or a consolidated Cloud Run quota one goes to a person with no model call), local validation after it.
+                   Shown the incident's log evidence and the files the loop assembled for the fixer, bounded smaller (8,000 chars a
+                   file, 20,000 in all; `agent/sourceContext.ts` renders the block for all three stages), so "no code change helps"
+                   is judged against the code (#371: CODE-03's own "Gift card refund failed" read as a provider outage). Unit- and
+                   emulator-tested; not yet run on the demo project; run by `pnpm agent` (deployed to the demo project: has triaged real incidents since 2026-10-08, dry run off since 2026-10-10)
   triageRules.ts   the rules engine and the feedback engine (#267), pure, shared with the UI: an admin's class rules
                    (`classRules`, `STARFISH_CLASS_RULES`: match error type/code, service, function -> noise, log or fix) and an
                    operator's correction of one incident (`corrected*` on it, history in `incidents/{id}/corrections`,

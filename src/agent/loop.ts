@@ -655,7 +655,16 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
       }
       return deps.ask<T>(prompt, system, schema);
     };
-    const triage = await triageIncident(loaded.subject, countedAsk, { mergeCases: cfg.mergeCases, classRules: cfg.classRules });
+    const triage = await triageIncident(loaded.subject, countedAsk, {
+      mergeCases: cfg.mergeCases,
+      classRules: cfg.classRules,
+      // The files the fixer will be shown (#371): "no code change helps" is judged against the code.
+      source: {
+        files: loaded.files,
+        ...(loaded.source && { rule: loaded.source.rule }),
+        ...(loaded.source?.imports !== undefined && { imports: loaded.source.imports }),
+      },
+    });
     if (spendError !== undefined) throw spendError;
     // The merge case Gemini named (triage.ts): Starfish may merge only what it named.
     const chosenCase = triage.mergeCase;
