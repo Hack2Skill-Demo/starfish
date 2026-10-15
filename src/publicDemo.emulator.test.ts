@@ -126,6 +126,16 @@ describe("a visitor's incident actions", () => {
     expect((await db.collection(config.incidentCollection).doc("demo-1").collection("corrections").get()).size).toBe(2);
   });
 
+  it("lets a visitor tighten a correction but never loosen one, so an operator's hold cannot be lifted anonymously", async () => {
+    await db.collection(config.incidentCollection).doc("demo-1").update({ correctedLevel: "log", correctedBy: "operator-uid" });
+    expect(await correctTriageAsGuest(db, config, "demo-1", "fix", "", GUEST, now)).toEqual({ ok: false, reason: "not-applicable" });
+    expect(await correctTriageAsGuest(db, config, "demo-1", "merge", "", GUEST, now)).toEqual({ ok: false, reason: "not-applicable" });
+    expect(await incident("demo-1")).toMatchObject({ correctedLevel: "log", correctedBy: "operator-uid" });
+    expect(await correctTriageAsGuest(db, config, "demo-1", "log", "", GUEST, now)).toEqual({ ok: true });
+    expect(await correctTriageAsGuest(db, config, "demo-1", "noise", "", GUEST, now)).toEqual({ ok: true });
+    expect(await correctTriageAsGuest(db, config, "demo-1", "log", "", GUEST, now)).toEqual({ ok: false, reason: "not-applicable" });
+  });
+
   it("refreshes the guests' trimmed copy after a change", async () => {
     await setIncidentStatusAsGuest(db, config, "demo-1", "acknowledge", GUEST, now);
     expect((await db.collection(config.publicIncidentCollection).doc("demo-1").get()).get("status")).toBe("acknowledged");

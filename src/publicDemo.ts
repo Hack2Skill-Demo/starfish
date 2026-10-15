@@ -29,7 +29,7 @@ import { redactPii } from "./ingest/redact.js";
 import { runIngest, type ConfigResolver, type RunDeps } from "./ingest/run.js";
 import { isPublicEnvironment, type PublicViewConfig } from "./publicView.js";
 import { refreshPublicIncident } from "./publicViewStore.js";
-import { MAX_NOTE, cleanText, isLevel, type Level } from "./triageRules.js";
+import { MAX_NOTE, cleanText, isLevel, levelRank, type Level } from "./triageRules.js";
 import { OPEN_INCIDENT_STATUSES, INCIDENT_STATUSES } from "./types.js";
 import type { TriggerResult } from "./ingest/trigger.js";
 import type { AgentTriggerResult } from "./agent/trigger.js";
@@ -136,6 +136,9 @@ export function correctTriageAsGuest(db: Firestore, cfg: PublicDemoConfig, incid
   if (raw !== "" && text === null) return Promise.resolve({ ok: false, reason: "bad-request" });
   const lvl: Level = level;
   return writeIncident(db, cfg, incidentId, actorUid, now, "public-correction", (d, at) => {
+    // A visitor may set the first correction or tighten one, never loosen it: a correction only holds Starfish back,
+    // and an anonymous stranger must not lift an operator's (or another visitor's) hold on an incident.
+    if (isLevel(d.correctedLevel) && levelRank(lvl) > levelRank(d.correctedLevel)) return "not-applicable";
     const entry = db.collection(cfg.incidentCollection).doc(incidentId).collection("corrections").doc();
     return {
       update: {

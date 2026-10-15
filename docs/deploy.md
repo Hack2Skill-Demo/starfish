@@ -878,9 +878,10 @@ kill switch, the auto-merge switches), On-call (phone numbers and the Twilio rou
   run is off (it files and sends nothing in a dry run), within the agent's daily cycle cap; and, where an admin turned
   auto-merge on, a merge is still gated exactly as before (the admin's merge cases, the safety floor, green checks), since a
   visitor's start is one ordinary pass and nothing a visitor writes raises Starfish past an admin's class rules;
-- **replace an operator's correction**: the incident keeps the latest one, so a visitor's `merge` lifts an operator's earlier
-  cap on that incident (never an admin's class rule), and a correction above `noise` on a declined incident has it triaged
-  again (more model calls, within the caps above);
+- **tighten a correction, never loosen one**: a visitor may set an incident's first correction or lower an existing one, but a
+  correction above the one already there is refused (409), so a stranger cannot lift an operator's hold on an incident. A
+  visitor's first correction above `noise` on a declined incident still has it triaged again (more model calls, within the
+  caps above);
 - **change incidents' status, ask for retries and write corrections** that every other visitor and the team see, and read the
   demo's full records: run the demo on demo data only;
 - **hold the one-at-a-time locks**: while a visitor's ingest run or agent start is in progress on an instance, an admin's gets the 409.
