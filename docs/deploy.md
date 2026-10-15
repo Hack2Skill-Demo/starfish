@@ -428,6 +428,7 @@ defaults when empty.
 | `STARFISH_VERIFY_CHECK_APP` | `VERIFY_CHECK_APP` | the slug of the GitHub App whose check runs count (#229); default the engine's, `github-actions`. Always set on the agent job, so emptying it restores the default |
 | `STARFISH_VERIFY_TIMEOUT_SECONDS`, `STARFISH_VERIFY_BUCKET`, `STARFISH_AGENT_BASE_BRANCH`, `STARFISH_AGENT_SCHEDULE`, `STARFISH_AGENT_EXTRA_ENV_VARS` | `VERIFY_TIMEOUT_SECONDS`, `VERIFY_BUCKET`, `AGENT_BASE_BRANCH`, `AGENT_SCHEDULE`, `AGENT_EXTRA_ENV_VARS` | default 600, `<project>-starfish-verify`, `main`, `30 * * * *`. The base branch is always set on the agent job, so emptying it restores `main` (#233). The schedule is also set on the agent job as `STARFISH_AGENT_SCHEDULE`, so the UI's agent line can say when the next pass is expected (#274) |
 | `STARFISH_DEPLOY_ADMIN_API`, `STARFISH_ADMIN_API_ORIGINS` | `DEPLOY_ADMIN_API`, `ADMIN_API_ORIGINS` | set `1` and the site's origin to deploy the admin API too ([below](#the-admin-api-run-ingest-now-and-retire-an-incident-63-65)); default off. Its service name is kept out of ingest either way (#177) |
+| `STARFISH_PUBLIC_DEMO_ACTIONS` | `PUBLIC_DEMO_ACTIONS` | `true` opens the public demo's actions to visitors with no account, within per-IP limits ([below](#the-public-demos-open-actions-visitors-act-within-per-address-limits)); default off, refused unless `STARFISH_ENV` is `demo`, and set on the admin API every run, so unsetting it turns it off |
 | `STARFISH_BUDGET_USD`, `STARFISH_BILLING_ACCOUNT` | `BUDGET_USD`, `BILLING_ACCOUNT` | optional budget alert (#308); empty = no budget step. Needs `roles/billing.costsManager` for the deployer on the billing account, which you grant ([below](#repository-variables)) |
 
 **The budget alert from Actions (#308): optional, and it needs a role the setup does not grant.** `STARFISH_BUDGET_USD` and
@@ -858,10 +859,11 @@ kill switch, the auto-merge switches), On-call (phone numbers and the Twilio rou
 
 **Turn it on** (the demo only):
 
-1. Engine: `STARFISH_ENV=demo DEPLOY_ADMIN_API=1 PUBLIC_DEMO_ACTIONS=true ... scripts/deploy-gcp.sh` (with `DEPLOY_AGENT=1` for
-   "Run agent now"). The script refuses `PUBLIC_DEMO_ACTIONS=true` for any other environment, and refuses the setting from
+1. Engine: set the repository variable `STARFISH_PUBLIC_DEMO_ACTIONS=true` and run the Deploy engine workflow (it passes
+   it as `PUBLIC_DEMO_ACTIONS`), or from a terminal `STARFISH_ENV=demo DEPLOY_ADMIN_API=1 PUBLIC_DEMO_ACTIONS=true ...
+   scripts/deploy-gcp.sh` (with `DEPLOY_AGENT=1` for "Run agent now"). The script refuses `PUBLIC_DEMO_ACTIONS=true` for any other environment, and refuses the setting from
    `EXTRA_ENV_VARS`; it always sets it on the admin API, so a run without it turns it off again. Other limits go through
-   `EXTRA_ENV_VARS` (`STARFISH_PUBLIC_RUNS_PER_IP_PER_HOUR=2`, say). The Deploy engine workflow does not pass it: there it stays off.
+   `EXTRA_ENV_VARS` (`STARFISH_PUBLIC_RUNS_PER_IP_PER_HOUR=2`, say). Unset in the workflow (the default), it stays off.
    Deploy the rules too (the script does unless `SKIP_FIRESTORE_RULES=1`).
 2. Check the gate: the admin API's start log says `public demo reads gate` with `gate: "enabled"` (or `"unchanged"`).
 3. Web: build the demo site with `VITE_STARFISH_PUBLIC_DEMO_ACTIONS=true` and `VITE_STARFISH_ADMIN_API_URL` set
