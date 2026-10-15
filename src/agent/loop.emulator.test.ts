@@ -11,7 +11,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import { deleteApp, initializeApp } from "firebase-admin/app";
 import { getFirestore } from "firebase-admin/firestore";
 import type { Firestore } from "firebase-admin/firestore";
-import { giveUpStrandedCycles, runCycle, type LoopDeps, type LoopSubject, type PullRequestRequest } from "./loop.js";
+import { REVISION_SCOPE, giveUpStrandedCycles, runCycle, type LoopDeps, type LoopSubject, type PullRequestRequest } from "./loop.js";
 import { buildNeedsHumanMessage, buildNewIncidentMessage, type AlertRequest, type NotifyRequest } from "../integrations/slack.js";
 import { issueText, pullRequestText, type IssueRequest } from "../integrations/githubPr.js";
 import { acquireLease } from "./cycle.js";
@@ -497,7 +497,10 @@ describe("runCycle: the fix, the gate and the review", () => {
     const r = await runCycle(deps(model), key);
     expect(r).toMatchObject({ kind: "finished", state: "done" });
     expect(model.count("review")).toBe(2);
-    expect(model.calls.filter((c) => c.stage === "fix")[1]!.prompt).toContain("A reviewer broke this patch");
+    const revision = model.calls.filter((c) => c.stage === "fix")[1]!.prompt;
+    expect(revision).toContain("A reviewer broke this patch");
+    // Scoped to what the review showed (#375): the revision is not asked to take on the rest of the file.
+    expect(revision).toContain(REVISION_SCOPE);
   });
 
   it("escalates to a person when the review blocks a second time", async () => {
