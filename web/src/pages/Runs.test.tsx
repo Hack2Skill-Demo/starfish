@@ -879,6 +879,42 @@ describe("Runs page", () => {
     expect(screen.getByRole("button", { name: "Replay speed: 30×" })).toHaveTextContent("30×");
   });
 
+  it("replays a reopened run from its latest reopening, not across the hours between rounds", () => {
+    vi.useFakeTimers();
+    try {
+      const HOUR = 3_600_000;
+      renderRuns();
+      act(() =>
+        mocks.cyclesCb!([cycle("inc-a_r0", { state: "waiting-human", path: "human", leaseExpiresAt: null, createdAt: ts(now - 6 * HOUR), updatedAt: ts(now - 30_000) })], false)
+      );
+      // Round 1 six hours ago; round 2 reopened 90 s ago and ran for 60 s.
+      act(() =>
+        mocks.eventsCb!([
+          event(1, "triage", "decision", "first", 6 * HOUR - 10_000),
+          event(2, "cycle", "reconsidered", "Retried at an operator's request", 90_000),
+          event(3, "triage", "decision", "again", 75_000),
+          event(4, "fix", "proposed", "patch", 30_000),
+        ])
+      );
+      const detail = screen.getByRole("region", { name: "Run detail" });
+      const speedButton = within(detail).getByRole("button", { name: /^Replay speed:/ });
+      expect(speedButton).toHaveTextContent("Auto · 1×");
+      fireEvent.click(speedButton);
+      expect(within(detail).getByRole("menuitemradio", { name: /^1×/ })).toHaveTextContent("As it happened: 1 min 0 s.");
+      fireEvent.keyDown(document.activeElement!, { key: "Escape" });
+
+      fireEvent.click(within(detail).getByRole("button", { name: "Watch replay" }));
+      expect(within(detail).getByRole("region", { name: "Pipeline" })).toHaveTextContent("Replaying · 0:00 of 1:00");
+      // 20 s in: this round's triage (15 s in) is recorded, its fix (60 s in) not yet.
+      act(() => vi.advanceTimersByTime(20_000));
+      const status = (step: string) => within(detail).getByRole("list", { name: "Steps" }).querySelector(`[data-step="${step}"]`)?.getAttribute("data-status");
+      expect(status("triage")).toBe("done");
+      expect(status("fix")).not.toBe("done");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("offers no replay while a worker holds the run", () => {
     renderRuns();
     act(() => mocks.cyclesCb!([cycle("inc-a_r0")], false));
