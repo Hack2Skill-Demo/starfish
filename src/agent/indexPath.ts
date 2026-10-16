@@ -156,7 +156,7 @@ export async function runIndexPath(ctx: IndexPathContext): Promise<LoopResult> {
   const opPrefix = spec ? `projects/${spec.project}/databases/${spec.database}/operations/` : "\u0000";
   const priorOperation = isOperationName(mark.operation) && mark.operation.startsWith(opPrefix) ? mark.operation : undefined;
 
-  await ctx.note({ stage: "index", type: "started", summary: "Missing index: healed by the index path, without a model", record: record({ state: "checking" }) });
+  await ctx.note({ stage: "index", type: "started", summary: "Checking the missing index and recovery gates, without a model", record: record({ state: "checking" }) });
   // Before any gate: a refusal tells a person, and their message links the issue. Only fixed words and the parsed spec.
   const issueNumber = await ctx.fileIssue(
     spec

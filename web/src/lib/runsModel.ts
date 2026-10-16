@@ -642,15 +642,18 @@ export function buildWaterfall(cycle: CycleRow, events: readonly EventRow[], now
     }
     const side = i >= known.length;
     const last = evs[evs.length - 1]!;
+    const incompleteIndex = stage === "index" && cycle.state === "failed" && ["started", "creating", "building", "waiting"].includes(last.type ?? "");
     const end = last.at.getTime();
     const from = Math.min(previousEnd, end);
     previousEnd = Math.max(previousEnd, end);
     return {
       stage,
       title: titleOf(stage),
-      status: failedUnexpectedly(stage, last.type) ? "failed" : "done",
-      ...(last.type && { outcome: last.type }),
-      ...(last.summary && { summary: last.summary }),
+      status: incompleteIndex || failedUnexpectedly(stage, last.type) ? "failed" : "done",
+      ...(incompleteIndex ? { outcome: "interrupted", summary: "Index recovery did not finish; READY and a passing query were not recorded." } : {
+        ...(last.type && { outcome: last.type }),
+        ...(last.summary && { summary: last.summary }),
+      }),
       at: last.at,
       ...(Object.keys(last.data).length > 0 && { data: last.data }),
       ...(side && { side: true as const }),

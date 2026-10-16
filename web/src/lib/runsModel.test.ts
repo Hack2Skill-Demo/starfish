@@ -517,6 +517,13 @@ describe("prStateView: the pull request as the engine last read it back (#17)", 
 });
 
 describe("the missing-index path (#11)", () => {
+  it("does not show an unfinished index check as successfully done after retries are exhausted", () => {
+    const c = cycle({ state: "failed", path: "failed", outcome: "retries-exhausted", summary: { index: { state: "checking" } } });
+    const w = buildWaterfall(c, [ev("index", "started", 100)], T0 + 1000);
+    expect(w.steps[0]).toMatchObject({ status: "failed", outcome: "interrupted", summary: expect.stringContaining("did not finish") });
+    expect(w.steps[1]).toMatchObject({ stage: "pr", status: "not-reached" });
+  });
+
   it("reads the index path and shows only its own stages, never triage or verify as not reached", () => {
     const c = parseCycle("inc-1_r0", cycleDoc({ state: "done", path: "index", leaseExpiresAt: null, summary: { index: { state: "ready", runtime: "observing" } } }))!;
     expect(c.path).toBe("index");
