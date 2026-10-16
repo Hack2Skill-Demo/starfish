@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
-import { counterCheckRecord, readBaseFiles } from "./loop.js";
+import { counterCheckRecord, readBaseFiles, retryWords, roundOf } from "./loop.js";
 
 describe("counterCheckRecord: the recount kept with triage's decision (#39)", () => {
   it("keeps the count, window, cap, time and the exact filter", () => {
@@ -61,5 +61,23 @@ describe("readBaseFiles: the base content gate 1 judges the enclosing function o
     }
     expect((await readBaseFiles(join(root, "nope"), edit("src/order.ts"))).size).toBe(0);
     expect((await readBaseFiles(root, "garbage")).size).toBe(0);
+  });
+});
+
+describe("roundOf / retryWords", () => {
+  it("counts a run's rounds from its reopenings, reading anything odd as round 1", () => {
+    expect(roundOf(undefined)).toBe(1);
+    expect(roundOf({})).toBe(1);
+    expect(roundOf({ reconsiderCount: 1 })).toBe(2);
+    expect(roundOf({ reconsiderCount: 3 })).toBe(4);
+    for (const odd of [-1, 0.5, "x", null, Number.NaN]) expect(roundOf({ reconsiderCount: odd }), String(odd)).toBe(1);
+  });
+
+  it("words a retry from round 2 only, with why in Starfish's own words, never a stored string it does not know", () => {
+    expect(retryWords(1, "operator")).toEqual({});
+    expect(retryWords(2, "operator")).toEqual({ round: 2, retriedBecause: "an operator asked for a retriage" });
+    expect(retryWords(2, "<!channel> injected")).toEqual({ round: 2 });
+    expect(retryWords(3, "toString")).toEqual({ round: 3 });
+    expect(retryWords(2, undefined)).toEqual({ round: 2 });
   });
 });

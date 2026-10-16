@@ -743,7 +743,7 @@ describe("runCycle: telling a person (#17)", () => {
     expect(calls[0]).toMatchObject({ cycleId: "inc1_r0", incidentId: "inc1", functionName: "orders-createOrder", service: "orders", path: "notify", rule: "model-notify", occurrenceCount: 42 });
     expect(calls[0]!.reason).toContain("The API is not enabled");
     expect(await kinds()).toEqual(["cycle:started", "triage:decision", "notify:pending", "notify:sent"]);
-    expect(await summaryNotify()).toEqual({ at: expect.any(String), state: "sent", attempts: 1 });
+    expect(await summaryNotify()).toEqual({ at: expect.any(String), state: "sent", attempts: 1, round: 1 });
   });
 
   it("tells a person when a fix could not be finished: the fixer declines, the gate or the review will not pass", async () => {
@@ -786,7 +786,7 @@ describe("runCycle: telling a person (#17)", () => {
     const notify = async () => ({ state: "failed" as const, attempts: 3, reason: "http-404:no_service" });
     const r = await runCycle(deps(scripted({ triage: [notifyDecision] }), { notify }), key);
     expect(r).toMatchObject({ kind: "finished", state: "waiting-human" });
-    expect(await summaryNotify()).toEqual({ at: expect.any(String), state: "failed", attempts: 3, reason: "http-404:no_service" });
+    expect(await summaryNotify()).toEqual({ at: expect.any(String), state: "failed", attempts: 3, round: 1, reason: "http-404:no_service" });
     expect(await kinds()).toContain("notify:failed");
   });
 
@@ -806,7 +806,7 @@ describe("runCycle: telling a person (#17)", () => {
     cfgOver = { dryRun: true };
     await runCycle(deps(scripted({ triage: [notifyDecision] }), { notify }), key);
     expect(calls).toHaveLength(0);
-    expect(await summaryNotify()).toEqual({ at: expect.any(String), state: "dry-run" });
+    expect(await summaryNotify()).toEqual({ at: expect.any(String), state: "dry-run", round: 1 });
   });
 
   it("records no notify stage at all when nothing is configured to tell a person", async () => {
@@ -1077,7 +1077,7 @@ describe("runCycle: the #ops-alerts \"new incident\" message (#17)", () => {
     expect(calls[0]).toMatchObject({ cycleId: "inc1_r0", incidentId: "inc1", functionName: "orders-createOrder", path: "act", occurrenceCount: 42, issueUrl: ISSUE.url });
     expect(calls[0]!.reason).toContain("A defect in the order code");
     expect(await kinds()).toEqual(["cycle:started", "triage:decision", "issue:opened", "alert:pending", "alert:sent", "fix:proposed", "verify:passed", "review:approve", "pr:opened"]);
-    expect(await summaryAlert()).toEqual({ at: expect.any(String), state: "sent", attempts: 1 });
+    expect(await summaryAlert()).toEqual({ at: expect.any(String), state: "sent", attempts: 1, round: 1 });
   });
 
   it("alerts for an escalated incident too, beside the on-call message, and never for a declined one", async () => {
@@ -1107,7 +1107,7 @@ describe("runCycle: the #ops-alerts \"new incident\" message (#17)", () => {
     cfgOver = { dryRun: true };
     await runCycle(deps(scripted({ triage: [notifyDecision] }), { alert }), key);
     expect(calls).toHaveLength(0);
-    expect(await summaryAlert()).toEqual({ at: expect.any(String), state: "dry-run" });
+    expect(await summaryAlert()).toEqual({ at: expect.any(String), state: "dry-run", round: 1 });
   });
 
   it("does not send again once recorded sent or failed, and sends again after a crash left it pending", async () => {
@@ -1427,6 +1427,48 @@ describe("runCycle: a declined incident is reconsidered on new evidence (#8)", (
       "Declined earlier; triaged again: an operator asked for a retriage",
     ]);
     expect(reopens.map((e) => e.data?.reopenedFrom)).toEqual(["waiting-human", "declined"]);
+  });
+
+  // A retried round was silent in Slack: its records said "sent" from round 1, so the team never heard what the retry did.
+  it("tells the team again in a retried round, once, worded as a retry", async () => {
+    cfgOver = { incidentCollection: incidents() };
+    await stored();
+    const notifyDecision = { decision: "notify", reasoning: "The API is not enabled.", suspectedCause: "Vertex API disabled" };
+    const model = scripted({ triage: [notifyDecision, notifyDecision] });
+    const told: NotifyRequest[] = [];
+    const alerted: AlertRequest[] = [];
+    const d = deps(model, {
+      reconsider: policy,
+      notify: async (req) => (told.push(req), { state: "sent" as const, attempts: 1 }),
+      alert: async (req) => (alerted.push(req), { state: "sent" as const, attempts: 1 }),
+    });
+    expect(await runCycle(d, key)).toMatchObject({ kind: "finished", state: "waiting-human" });
+    expect(told).toHaveLength(1);
+    expect(alerted).toHaveLength(1);
+    expect(told[0]).not.toHaveProperty("round");
+    expect(alerted[0]).not.toHaveProperty("round");
+    expect((await cycleDoc()).summary.notify).toMatchObject({ state: "sent", round: 1 });
+
+    // An operator's retry: round 2 tells the team again, saying it is a retry and why.
+    await stored({ retriageRequestedAt: later(1) });
+    clock = later(2);
+    expect(await runCycle(d, key)).toMatchObject({ kind: "finished", state: "waiting-human" });
+    expect(told).toHaveLength(2);
+    expect(alerted).toHaveLength(2);
+    expect(told[1]).toMatchObject({ round: 2, retriedBecause: "an operator asked for a retriage", path: "notify" });
+    expect(alerted[1]).toMatchObject({ round: 2, retriedBecause: "an operator asked for a retriage" });
+    const UI = "https://starfish.example.test";
+    expect(buildNeedsHumanMessage(told[1]!, UI).text).toMatch(/^Needs a human \(round 2\): /);
+    expect(buildNewIncidentMessage(alerted[1]!, UI).text).toMatch(/^Incident retried \(round 2\): /);
+    const c = await cycleDoc();
+    expect(c.summary.notify).toMatchObject({ state: "sent", round: 2 });
+    expect(c.summary.alert).toMatchObject({ state: "sent", round: 2 });
+
+    // Nothing more without a new request: the round is settled and nobody is told a third time.
+    clock = later(3);
+    expect(await runCycle(d, key)).toEqual({ kind: "not-acquired", reason: "waiting-human" });
+    expect(told).toHaveLength(2);
+    expect(alerted).toHaveLength(2);
   });
 
   it("an operator who ignores the incident during the reconsideration settles it", async () => {

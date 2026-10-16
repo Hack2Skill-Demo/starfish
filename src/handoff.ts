@@ -50,7 +50,7 @@ export function handoffSteps(path: HandoffPath, hasIssue: boolean): HandoffStep[
     {
       id: "retry",
       title: "Let Starfish try again",
-      text: "If what stopped it was Starfish's own limit and that has changed since, Retry with agent runs it again with the engine as it is now. It files and sends nothing twice.",
+      text: "If what stopped it was Starfish's own limit and that has changed since, Retry with agent runs it again with the engine as it is now. It opens no second issue or pull request; the team is told what the retry did.",
     },
     {
       id: "correct",

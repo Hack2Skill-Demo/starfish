@@ -261,6 +261,22 @@ const RECONSIDER_SUMMARY = {
   reopened: "the incident was closed while it was worked on, and has been reopened",
 } as const;
 
+/** A Slack message's retry wording: present from a run's second round on (`NotifyRequest`/`AlertRequest`). */
+type RetryWords = { round?: number; retriedBecause?: string };
+
+/** Which round of its run a cycle is in: 1, plus one for each time it was reopened (cycle.ts `reconsiderCount`). */
+export function roundOf(cycle: Record<string, unknown> | undefined): number {
+  const n = Number(cycle?.reconsiderCount ?? 0);
+  return Number.isSafeInteger(n) && n > 0 ? n + 1 : 1;
+}
+
+/** The retry wording for a round: nothing for round 1; the round, and why it was reopened in Starfish's own words. */
+export function retryWords(round: number, trigger: unknown): RetryWords {
+  if (round <= 1) return {};
+  const because = typeof trigger === "string" && Object.hasOwn(RECONSIDER_SUMMARY, trigger) ? RECONSIDER_SUMMARY[trigger as keyof typeof RECONSIDER_SUMMARY] : undefined;
+  return { round, ...(because !== undefined && { retriedBecause: because }) };
+}
+
 /** Fixer errors that are the model's patch, not a failed call: retrying would most likely repeat them (#137). */
 export const UNFIT_PATCH_RULES: ReadonlySet<FixRule> = new Set<FixRule>(["patch-malformed", "patch-too-large", "patch-contains-secret-shape"]);
 
@@ -473,31 +489,38 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
       });
     };
 
-    // A cycle that ends waiting for a person says so, once. Recorded before and after the send, so a crash between the
-    // two leaves `pending` and the next attempt posts again (at-least-once: a missed escalation is worse than a repeat),
-    // while a recorded `sent` or `failed` is never sent again.
+    // A cycle that ends waiting for a person says so, once per round. Recorded before and after the send, so a crash
+    // between the two leaves `pending` and the next attempt posts again (at-least-once: a missed escalation is worse than
+    // a repeat), while a `sent` or `failed` recorded in this round is never sent again. A reopened round (reconsider.ts)
+    // is new work with its own outcome, so it sends again, worded as a retry (`round`, `retriedBecause`): round 2 of a
+    // run that opened a pull request after a hand-off was otherwise silent, the team still reading round 1's message.
     // The same pattern serves the `#ops-alerts` "new incident" message (`summary.alert`).
     // Resolves to why it stopped before sending (the incident closed, or automation off), or null: the caller must then
     // stop too, and not settle the cycle as if a person had been told (#180).
     const deliverOnce = async (
       stage: "notify" | "alert",
       words: { dryRun: string; pending: string; sent: string; failed: string },
-      send: () => Promise<DeliveryResult>
+      send: (retry: RetryWords) => Promise<DeliveryResult>
     ): Promise<string | null> => {
+      const snap = await db.collection(cfg.cycleCollection).doc(id).get();
+      const cycleNow = snap.data();
+      const round = roundOf(cycleNow);
       if (cfg.dryRun) {
-        await note({ stage, type: "dry-run", summary: words.dryRun, record: { state: "dry-run", at: deps.now().toISOString() } });
+        await note({ stage, type: "dry-run", summary: words.dryRun, record: { state: "dry-run", at: deps.now().toISOString(), round } });
         return null;
       }
-      const snap = await db.collection(cfg.cycleCollection).doc(id).get();
-      const prior = (snap.data()?.summary as Record<string, { state?: unknown } | undefined> | undefined)?.[stage]?.state;
-      if (prior === "sent" || prior === "failed") return null;
+      const priorRecord = (cycleNow?.summary as Record<string, { state?: unknown; round?: unknown } | undefined> | undefined)?.[stage];
+      const prior = priorRecord?.state;
+      // A record from before rounds were recorded is round 1's.
+      const priorRound = typeof priorRecord?.round === "number" ? priorRecord.round : 1;
+      if ((prior === "sent" || prior === "failed") && priorRound === round) return null;
       const why = await stopReason();
       if (why !== null) return why;
       await renew();
-      await note({ stage, type: "pending", summary: words.pending, record: { state: "pending", attempts: 0 } });
+      await note({ stage, type: "pending", summary: words.pending, record: { state: "pending", attempts: 0, round } });
       let result: DeliveryResult;
       try {
-        result = await send();
+        result = await send(retryWords(round, cycleNow?.reconsideredBecause));
       } catch {
         // The sender promises not to throw; if it does anyway, that is a failed delivery and not a lost cycle.
         result = { state: "failed", attempts: 1, reason: "notifier-error" };
@@ -508,7 +531,7 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
         summary: result.state === "sent" ? words.sent : `${words.failed}: ${result.reason ?? "unknown"}`,
         data: { attempts: result.attempts },
         // `at`: when a person was told, which the phone escalation (#37, src/oncall/escalation.ts) waits after.
-        record: { state: result.state, attempts: result.attempts, at: deps.now().toISOString(), ...(result.reason !== undefined && { reason: result.reason }) },
+        record: { state: result.state, attempts: result.attempts, at: deps.now().toISOString(), round, ...(result.reason !== undefined && { reason: result.reason }) },
       });
       return null;
     };
@@ -519,7 +542,7 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
       return deliverOnce(
         "notify",
         { dryRun: "A person would be told here; nothing sent (dry run)", pending: "Telling a person", sent: "A person was told", failed: "A person could not be told" },
-        () => notify({ ...about(facts), path, rule, reason })
+        (retry) => notify({ ...about(facts), ...retry, path, rule, reason })
       );
     };
     // End the cycle waiting for a person, after telling them. Asked first, and again by the delivery itself: an incident
@@ -540,7 +563,7 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
       await deliverOnce(
         "alert",
         { dryRun: "The team would be alerted here; nothing sent (dry run)", pending: "Alerting the team", sent: "The team was alerted", failed: "The team could not be alerted" },
-        () => alert({ ...about(factsOf(loaded)), path, reason })
+        (retry) => alert({ ...about(factsOf(loaded)), ...retry, path, reason })
       );
     };
 

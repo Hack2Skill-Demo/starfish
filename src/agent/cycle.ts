@@ -211,8 +211,9 @@ export async function acquireLease(db: Firestore, cfg: CycleConfig, key: CycleKe
           "summary.fix": FieldValue.delete(),
           "summary.verify": FieldValue.delete(),
           "summary.review": FieldValue.delete(),
-          // A person was told once for this recurrence: a retry of a waiting-human cycle does not tell them again. A
-          // declined one never reached a person, so its (absent or dry-run) record goes with the rest.
+          // The Slack records stay: loop.ts sends each message once per round (the record's `round` against this
+          // `reconsiderCount`), so this round tells the team again, worded as a retry. A declined one never reached a
+          // person, so its (absent or dry-run) notify record goes with the rest.
           ...(state === "declined" && { "summary.notify": FieldValue.delete() }),
           updatedAt: Timestamp.fromDate(now),
         });

@@ -273,7 +273,7 @@ src/
                    page's "Retry with agent") later than the cycle settled (`settledAt`, which an escalation's later event does
                    not move, #365), never over an open PR: for a result Starfish itself got wrong (#317); its run says
                    "Handed to a person earlier; retried", a declined one's "Declined earlier; triaged again" (#366). It reuses
-                   the recorded issue, alert and message, so a retry files and sends nothing twice, and without a new request
+                   the recorded issue and pull request, so a retry files neither twice; its Slack messages go out once per round, worded as a retry ("(round 2)" and why), so the team hears what it did, and without a new request
                    (or a change in Starfish) it ends where it did. Emulator-tested; not yet run on the demo project
   agent/assemble.ts  one incident's inputs: shallow clone at a pinned revision, counter-check, samples, files the incident's OWN
                    stack trace names (never a sample's: a recent log entry is attacker-influenceable, #304);
@@ -364,7 +364,9 @@ src/
   integrations/slack.ts  Slack delivery (#17): one "needs a human" message through an incoming webhook, from redacted plain-text
                    fields, with what the person can do now (`src/handoff.ts`, shared with the Runs page); bounded retries, a failed delivery is a recorded result (`summary.notify`), a dry run sends nothing; the webhook
                    (a secret, `loadSlackOnCallWebhook`) never appears in a result. Also the optional #ops-alerts "new incident"
-                   message (`loadSlackAlertsWebhook`, `summary.alert`). Run by `pnpm agent`; both messages posted to real Slack since 2026-10-11 (#330)
+                   message (`loadSlackAlertsWebhook`, `summary.alert`). Each once per round of a run (the record's `round`): a reopened
+                   round sends them again as "Incident retried (round N)" / "Needs a human (round N)" with why; unit- and emulator-tested,
+                   not yet sent from a deployed round 2. Run by `pnpm agent`; both messages posted to real Slack since 2026-10-11 (#330)
   integrations/githubPr.ts  the pull-request opener (#17): idempotent by cycle id, pushes only
                    starfish/<id>, does not merge itself, token only in git's environment. Also files the incident's issue
                    (`openIssue`: idempotent by a marker, label `starfish`, a failure recorded on the cycle; titles, PR, issue and
