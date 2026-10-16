@@ -544,6 +544,19 @@ const OPTIONAL_STAGE_TITLES: Record<string, string> = {
 export const titleOf = (stage: string): string =>
   [...KNOWN_STAGES, ...INDEX_STAGES].find((s) => s.stage === stage)?.title ?? OPTIONAL_STAGE_TITLES[stage] ?? stage;
 
+/** The run's latest reopening (#285), by sequence: its note opens the round the track draws. */
+function latestReopening(events: readonly EventRow[]): EventRow | undefined {
+  return events.filter((e) => e.stage === NOTE_STAGE && e.type === REOPENED_TYPE).reduce<EventRow | undefined>((a, e) => (!a || e.seq > a.seq ? e : a), undefined);
+}
+
+/**
+ * When the round the track draws began: the latest reopening, else the cycle's start. A replay plays from here, so a
+ * run reopened hours after its first round replays its last round's minutes, not the idle hours in between.
+ */
+export function roundStartMs(cycle: CycleRow, events: readonly EventRow[]): number {
+  return latestReopening(events)?.at.getTime() ?? cycle.createdAt.getTime();
+}
+
 /**
  * One row per stage that has an event, plus every known stage that has none, as "not reached", unless
  * the cycle is still running, in which case the first of them is "running". Stages the screen does not
@@ -559,7 +572,7 @@ export function buildWaterfall(cycle: CycleRow, events: readonly EventRow[], now
   const ordered = [...events].sort((a, b) => a.seq - b.seq);
   const notes = ordered.filter((e) => e.stage === NOTE_STAGE);
   const reopenings = notes.filter((n) => n.type === REOPENED_TYPE);
-  const lastReopening = reopenings[reopenings.length - 1];
+  const lastReopening = latestReopening(ordered);
   const byStage = new Map<string, EventRow[]>();
   for (const e of ordered) {
     if (e.stage === NOTE_STAGE || (lastReopening && e.seq < lastReopening.seq)) continue;
@@ -609,7 +622,7 @@ export function buildWaterfall(cycle: CycleRow, events: readonly EventRow[], now
   const stages = [...known, ...extra];
 
   const status = runStatus(cycle, nowMs);
-  const startMs = lastReopening ? lastReopening.at.getTime() : createdMs;
+  const startMs = roundStartMs(cycle, ordered);
   const endMs = Math.max(status.live ? nowMs : cycle.updatedAt.getTime(), ...ordered.map((e) => e.at.getTime()), startMs + 1);
 
   // Only the step right after the last one that happened can be in flight, and only while a worker holds the cycle.

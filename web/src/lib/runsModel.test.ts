@@ -21,6 +21,7 @@ import {
   replaySpeed,
   replaySpeedHint,
   replaySpeedLabel,
+  roundStartMs,
   runFilter,
   runStatus,
   issueLink,
@@ -725,5 +726,18 @@ describe("replay speed menu text", () => {
     expect(replaySpeedHint(1, 144_000)).toBe("As it happened: 2 min 24 s.");
     expect(replaySpeedHint(10, 144_000)).toBe("This run in 14 s.");
     expect(replaySpeedHint("auto", 144_000)).toBe("Recorded pace; a long run fits in about a minute. This run: 48 s.");
+  });
+});
+
+describe("roundStartMs", () => {
+  it("is the cycle's start for a run never reopened", () => {
+    expect(roundStartMs(cycle(), [ev("triage", "decision", 5000)])).toBe(T0);
+  });
+
+  it("is the latest reopening for a reopened run, even listed out of order", () => {
+    const HOUR = 3_600_000;
+    const first = ev("cycle", "reconsidered", HOUR);
+    const latest = ev("cycle", "reconsidered", 6 * HOUR);
+    expect(roundStartMs(cycle(), [latest, ev("triage", "decision", 5000), first])).toBe(T0 + 6 * HOUR);
   });
 });

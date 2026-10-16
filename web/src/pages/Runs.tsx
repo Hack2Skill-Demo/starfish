@@ -89,6 +89,7 @@ import {
   type Waterfall,
   parseReplaySpeed,
   replaySpeed,
+  roundStartMs,
   type ReplaySpeedChoice,
 } from "../lib/runsModel";
 import { LEVELS, LEVEL_SHORT, judgedOnGitHub, stepDetail, type ReviewAttack, type StepDetail } from "../lib/runStepDetail";
@@ -570,8 +571,9 @@ function RunDetail({
   // While a worker holds the run, or it replays, the timer and time bar move every second; otherwise the page's tick.
   const tick = useNow(status.live || replay ? 1000 : TICK_MS);
   const clock = Math.max(now, tick);
-  const startMs = cycle.createdAt.getTime();
-  const lastMs = events && events.length > 0 ? Math.max(...events.map((e) => e.at.getTime())) : startMs;
+  // The replay plays the round the track draws: from the latest reopening, not the run's first start.
+  const startMs = roundStartMs(cycle, events ?? []);
+  const lastMs = events && events.length > 0 ? Math.max(startMs, ...events.map((e) => e.at.getTime())) : startMs;
   const spanMs = lastMs - startMs;
   const speed = replaySpeed(speedChoice, spanMs);
   const replayAt = replay ? replay.atMs + Math.max(0, clock - replay.wallMs) * speed : null;
