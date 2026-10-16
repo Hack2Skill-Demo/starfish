@@ -73,6 +73,17 @@ describe("selectCandidates", () => {
     expect(ids(await selectCandidates(db, cfg, 10)).sort()).toEqual(["fresh:0", "running:0"]);
   });
 
+  it("selects a failed run only for a fresh explicit retry request", async () => {
+    const now = new Date();
+    const reconsider = { reconsiderCooldownMinutes: 30, reconsiderMaxPerDay: 3, reconsiderBurstOccurrences: 20 };
+    await incident("failed");
+    await cycle("failed_r0", "failed");
+    await db.collection(cfg.cycleCollection).doc("failed_r0").update({ settledAt: ts(10), recurrence: 0 });
+    expect(await selectCandidates(db, cfg, 10, { reconsider, now })).toEqual([]);
+    await db.collection(cfg.incidentCollection).doc("failed").update({ retriageRequestedAt: ts(1) });
+    expect(await selectCandidates(db, cfg, 10, { reconsider, now })).toEqual([expect.objectContaining({ incidentId: "failed", reconsider: "operator" })]);
+  });
+
   it("gives a regression a fresh cycle: the old recurrence's settled cycle does not count", async () => {
     await incident("back", { status: "recurred", recurrenceCount: 1 });
     await cycle("back_r0", "done");

@@ -63,6 +63,17 @@ describe("HandoffCard for a public demo visitor where the open actions are on", 
 });
 
 describe("HandoffCard", () => {
+  it("offers incident actions after failure without claiming a handoff or offering an unsupported retry", () => {
+    renderWith(<HandoffCard path="human" incidentId="inc-a" incident={row("new")} failed canRetry={false} />, ["operator"]);
+    const card = screen.getByRole("region", { name: "What you can do now" });
+    expect(card).toHaveTextContent("Starfish could not finish this run");
+    expect(card).not.toHaveTextContent("told a person");
+    expect(within(card).getByRole("button", { name: "Acknowledge" })).toBeInTheDocument();
+    expect(within(card).getByRole("button", { name: "Mark resolved" })).toBeInTheDocument();
+    expect(within(card).getByRole("button", { name: "Ignore" })).toBeInTheDocument();
+    expect(within(card).queryByText("Let Starfish try again")).toBeNull();
+  });
+
   it("lists every step a person has, beside the control that does it", () => {
     renderWith(<HandoffCard path="human" incidentId="inc-a" incident={row("new")} issueUrl="https://github.com/o/r/issues/7" canRetry />, ["operator"]);
     const card = screen.getByRole("region", { name: "What you can do now" });

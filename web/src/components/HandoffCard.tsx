@@ -26,6 +26,7 @@ export function HandoffCard({
   incident,
   issueUrl,
   canRetry,
+  failed = false,
   onChanged,
   act = applyAction,
 }: {
@@ -35,6 +36,7 @@ export function HandoffCard({
   incident: IncidentRow;
   issueUrl?: string;
   canRetry: boolean;
+  failed?: boolean;
   /** After a status change: re-read the incident. */
   onChanged?: () => void;
   act?: (row: IncidentRow, action: IncidentAction, uid: string) => Promise<void>;
@@ -102,7 +104,7 @@ export function HandoffCard({
     ignore: statusButton("ignore", "Ignore"),
   };
 
-  const stopped = `Starfish stopped here and told a person${path === "human" ? ": its fix did not get through" : ": triage judged no code change fixes this"}.`;
+  const stopped = failed ? "Starfish could not finish this run. Check the recorded failure and incident evidence before deciding what to do next." : `Starfish stopped here and told a person${path === "human" ? ": its fix did not get through" : ": triage judged no code change fixes this"}.`;
   const cardClass = "space-y-3 rounded-xl border border-warning-300 bg-warning-50 p-5 sm:p-6 dark:border-warning-700 dark:bg-warning-900/20";
 
   // A viewer with no role (a guest) can do none of the steps: no button shows, and firestore.rules refuses the writes
@@ -127,7 +129,7 @@ export function HandoffCard({
         </p>
       </div>
       <ol className="divide-y divide-warning-200 dark:divide-warning-800">
-        {handoffSteps(path, issueUrl !== undefined).map((step) => (
+        {handoffSteps(path, issueUrl !== undefined).filter((step) => step.id !== "retry" || canRetry).map((step) => (
           <li key={step.id} className="flex flex-wrap items-start justify-between gap-x-6 gap-y-2 py-3 first:pt-0 last:pb-0">
             <div className="min-w-0 flex-[1_1_20rem]">
               <p className="text-sm font-semibold text-gray-900 dark:text-white">{step.title}</p>

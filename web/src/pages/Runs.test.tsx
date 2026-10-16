@@ -805,6 +805,17 @@ describe("Runs page", () => {
     expect(screen.queryByRole("region", { name: "What you can do now" })).toBeNull();
   });
 
+  it("shows human actions for a failed index run and an index evidence PR handoff", async () => {
+    mocks.getIncident.mockResolvedValue({ id: "inc-a", functionName: "orders-listrecentorders", errorType: "MissingIndexError", errorMessage: "missing index", status: "new" });
+    renderRuns();
+    act(() => mocks.cyclesCb!([cycle("inc-a_r0", { state: "failed", leaseExpiresAt: null, path: "failed", outcome: "deadline-passed", summary: { index: { state: "checking" } } })], false));
+    act(() => mocks.eventsCb!([event(1, "index", "started", "Checking index", 50_000)]));
+    expect(await screen.findByRole("region", { name: "What you can do now" })).toHaveAttribute("data-path", "human");
+    expect(screen.getByRole("button", { name: /Retry with agent/ })).toBeInTheDocument();
+    act(() => mocks.cyclesCb!([cycle("inc-a_r0", { state: "waiting-human", leaseExpiresAt: null, path: "index" })], false));
+    expect(screen.getByRole("region", { name: "What you can do now" })).toHaveAttribute("data-path", "human");
+  });
+
   it("does not say what a person can do once the incident is closed", async () => {
     mocks.getIncident.mockResolvedValue({ id: "inc-a", functionName: "orders-getorder", errorType: "UnknownError", errorMessage: "x", status: "ignored" });
     renderRuns();

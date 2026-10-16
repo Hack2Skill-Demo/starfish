@@ -1,6 +1,6 @@
 /**
  * The Firestore Admin API calls the missing-index heal needs (#11), kept thin because this is the part that talks to
- * Google and has never run against a real project: list a collection group's indexes, create ONE index, read the
+ * Google: list a collection group's indexes, create ONE index, read the
  * long-running operation that building it starts. Nothing here decides anything; `heal.ts` does.
  *
  * It creates a single index through `collectionGroups.indexes.create` and never deploys an index file (a stale
@@ -57,7 +57,7 @@ const OPERATION_RE = /^projects\/[a-z][a-z0-9-]{4,28}[a-z0-9]\/databases\/(?:\(d
 /** Whether a value read back from a record is a Firestore Admin operation name (what `getOperation` accepts). */
 export const isOperationName = (v: unknown): v is string => typeof v === "string" && v.length <= 300 && OPERATION_RE.test(v);
 
-/** The most pages of 100 `countIndexes` reads: far above any database's composite-index limit. */
+/** The most pages `countIndexes` reads: far above any database's composite-index limit. */
 const MAX_COUNT_PAGES = 30;
 
 const parentOf = (s: Pick<IndexSpec, "project" | "database" | "collectionGroup">) =>
@@ -90,9 +90,10 @@ export function createFirestoreAdmin(deps: { token?: () => Promise<string>; fetc
     async list(spec) {
       const out: LiveIndex[] = [];
       let pageToken = "";
+      // The API only supports pageSize=0 (server default); a positive size returns INVALID_ARGUMENT.
       // Bounded: a collection group has far fewer than 20 pages of indexes (the database limit is a few hundred).
       for (let page = 0; page < 20; page++) {
-        const body = (await call("list indexes", `${parentOf(spec)}?pageSize=100${pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : ""}`, { method: "GET" })) as {
+        const body = (await call("list indexes", `${parentOf(spec)}?pageSize=0${pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : ""}`, { method: "GET" })) as {
           indexes?: unknown;
           nextPageToken?: unknown;
         };
@@ -122,7 +123,7 @@ export function createFirestoreAdmin(deps: { token?: () => Promise<string>; fetc
       let count = 0;
       let pageToken = "";
       for (let page = 0; page < MAX_COUNT_PAGES; page++) {
-        const body = (await call("count indexes", `${base}?pageSize=100${pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : ""}`, { method: "GET" })) as {
+        const body = (await call("count indexes", `${base}?pageSize=0${pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : ""}`, { method: "GET" })) as {
           indexes?: unknown;
           nextPageToken?: unknown;
         };

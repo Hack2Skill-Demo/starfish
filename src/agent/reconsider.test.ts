@@ -77,15 +77,15 @@ describe("reconsiderTrigger", () => {
   });
 
   it("only a declined cycle of the incident's current recurrence (a waiting-human one only on a request, below)", () => {
-    for (const state of ["running", "done", "failed"]) {
+    for (const state of ["running", "done"]) {
       expect(trigger(declined({ state }), { ...baseIncident, retriageRequestedAt: at(1) })).toBeNull();
     }
     expect(trigger(declined(), { ...baseIncident, recurrenceCount: 1, retriageRequestedAt: at(1) })).toBeNull();
   });
 
-  describe("a cycle that ended waiting-human (a retry on a person's request)", () => {
+  describe.each(["waiting-human", "failed"])("a cycle that ended %s (a retry on a person's request)", (state) => {
     const waiting = (over: Record<string, unknown> = {}) => ({
-      state: "waiting-human",
+      state,
       recurrence: 0,
       updatedAt: at(30),
       outcome: "verify-patch-does-not-apply",

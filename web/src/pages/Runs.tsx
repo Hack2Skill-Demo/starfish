@@ -582,7 +582,7 @@ function RunDetail({
   // A run a person was told about, or that was declined, on an open incident, and with no pull request of its own: the
   // engine reopens that same run on request (src/agent/reconsider.ts), so it opens no second issue or pull request.
   const canRetry =
-    (cycle.state === "waiting-human" || cycle.state === "declined") &&
+    (cycle.state === "waiting-human" || cycle.state === "declined" || cycle.state === "failed") &&
     !status.live &&
     incident !== undefined &&
     ["new", "acknowledged", "logged", "recurred"].includes(incident.status) &&
@@ -627,7 +627,11 @@ function RunDetail({
   const handoff = !asLive && !status.live && cycle.state !== "running" && (cycle.path === "human" || cycle.path === "notify") ? PATH_LABELS[cycle.path] : undefined;
   // A person was told and the run waits for them: say what they can do, beside the control that does it. Only once the
   // incident is read and open: resolved or ignored, there is nothing left to choose.
-  const handoffPath = handoff && cycle.state === "waiting-human" && (cycle.path === "human" || cycle.path === "notify") ? cycle.path : undefined;
+  const handoffPath = !asLive && !status.live && cycle.state === "failed"
+    ? "human"
+    : !asLive && !status.live && cycle.state === "waiting-human" && cycle.path === "index"
+      ? "human"
+      : handoff && cycle.state === "waiting-human" && (cycle.path === "human" || cycle.path === "notify") ? cycle.path : undefined;
   const showHandoff = handoffPath !== undefined && incident !== undefined && ["new", "acknowledged", "logged", "recurred"].includes(incident.status);
   const queryClient = useQueryClient();
 
@@ -685,6 +689,7 @@ function RunDetail({
           incident={incident}
           issueUrl={issue?.url}
           canRetry={canRetry}
+          failed={cycle.state === "failed"}
           onChanged={() => void queryClient.invalidateQueries({ queryKey: ["run-incident", environment, cycle.incidentId] })}
         />
       )}
