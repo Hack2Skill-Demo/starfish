@@ -99,6 +99,7 @@ describe("Runs page", () => {
     mocks.env = { environment: "demo", ready: true, settingsUnavailable: false };
     mocks.getIncident.mockResolvedValue(null);
     localStorage.removeItem("starfish.runs.listHidden");
+    localStorage.removeItem("starfish.runs.replaySpeed");
   });
 
   it("says the settings couldn't be read, so an empty list isn't taken for a quiet day (#143)", () => {
@@ -814,11 +815,66 @@ describe("Runs page", () => {
     expect(screen.queryByRole("region", { name: "What you can do now" })).toBeNull();
   });
 
+  it("replays at the speed picked, carries on from where it is when the speed changes, and remembers the choice", () => {
+    vi.useFakeTimers();
+    try {
+      renderRuns();
+      act(() => mocks.cyclesCb!([cycle("inc-a_r0", { state: "waiting-human", leaseExpiresAt: null, path: "human" })], false));
+      // Recorded 10 s and 40 s into the run.
+      act(() => mocks.eventsCb!([event(1, "triage", "decision", "Act", 50_000), event(2, "fix", "declined", "No fix", 20_000)]));
+      const detail = screen.getByRole("region", { name: "Run detail" });
+      const speed = within(detail).getByRole("combobox", { name: "Replay speed" });
+      expect(speed).toHaveValue("auto");
+      expect(within(speed).getByRole("option", { name: "Auto (1×)" })).toBeInTheDocument();
+
+      fireEvent.change(speed, { target: { value: "10" } });
+      expect(localStorage.getItem("starfish.runs.replaySpeed")).toBe("10");
+      fireEvent.click(within(detail).getByRole("button", { name: "Watch replay" }));
+      expect(within(detail).getByText("Replaying · 10×")).toBeInTheDocument();
+      expect(screen.getByTestId("run-summary")).toHaveTextContent(/^Replaying the recorded run at 10× speed\./);
+      const steps = within(detail).getByRole("list", { name: "Steps" });
+      const status = (step: string) => steps.querySelector(`[data-step="${step}"]`)?.getAttribute("data-status");
+
+      // 2 s on the page = 20 s of the run: triage is recorded, the fix not yet.
+      act(() => vi.advanceTimersByTime(2000));
+      expect(status("triage")).toBe("done");
+      expect(status("fix")).not.toBe("done");
+
+      // Slower from here: it carries on at 20 s in rather than starting again, so triage stays recorded.
+      fireEvent.change(speed, { target: { value: "1" } });
+      expect(within(detail).getByText("Replaying")).toBeInTheDocument();
+      act(() => vi.advanceTimersByTime(2000));
+      expect(status("triage")).toBe("done");
+      expect(status("fix")).not.toBe("done");
+      expect(within(detail).getByRole("button", { name: "Stop replay" })).toBeInTheDocument();
+
+      // Once it has played to the end, a slower speed does not bring it back mid-way.
+      fireEvent.change(speed, { target: { value: "60" } });
+      act(() => vi.advanceTimersByTime(2000));
+      expect(within(detail).getByRole("button", { name: "Watch replay" })).toBeInTheDocument();
+      fireEvent.change(speed, { target: { value: "1" } });
+      act(() => vi.advanceTimersByTime(1000));
+      expect(within(detail).getByRole("button", { name: "Watch replay" })).toBeInTheDocument();
+      expect(status("fix")).toBe("done");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("opens with the replay speed this browser picked last", () => {
+    localStorage.setItem("starfish.runs.replaySpeed", "30");
+    renderRuns();
+    act(() => mocks.cyclesCb!([cycle("inc-a_r0", { state: "waiting-human", leaseExpiresAt: null, path: "human" })], false));
+    act(() => mocks.eventsCb!([event(1, "triage", "decision", "Act", 50_000)]));
+    expect(screen.getByRole("combobox", { name: "Replay speed" })).toHaveValue("30");
+  });
+
   it("offers no replay while a worker holds the run", () => {
     renderRuns();
     act(() => mocks.cyclesCb!([cycle("inc-a_r0")], false));
     act(() => mocks.eventsCb!([event(1, "triage", "decision", "Act", 30_000)]));
     expect(screen.queryByRole("button", { name: "Watch replay" })).toBeNull();
+    expect(screen.queryByRole("combobox", { name: "Replay speed" })).toBeNull();
   });
 
   it("opens with the run's story on the hero card: the error, its count and how far the run got", async () => {
