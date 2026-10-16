@@ -17,14 +17,12 @@ import {
   ChevronRight,
   Circle,
   CircleDot,
-  CirclePlay,
   Copy,
   CornerDownRight,
   Database,
   ExternalLink,
   FileText,
   FlaskConical,
-  Gauge,
   GitMerge,
   GitPullRequest,
   GitPullRequestClosed,
@@ -33,7 +31,6 @@ import {
   Phone,
   ScanSearch,
   ShieldCheck,
-  Square,
   Workflow,
   X,
 } from "lucide-react";
@@ -47,6 +44,7 @@ import StoreReadHint from "../components/StoreReadHint";
 import { AgentStatus } from "../components/AgentStatus";
 import { RunAgentButton } from "../components/AdminActions";
 import { RetryRunButton } from "../components/RetryRunButton";
+import { ReplayControl } from "../components/ReplayControl";
 import { HandoffCard } from "../components/HandoffCard";
 import { Badge, type BadgeTone } from "../components/ui/Badge";
 import { SyntheticBadge } from "../components/SyntheticBadge";
@@ -89,8 +87,6 @@ import {
   type Step,
   type StepStatus,
   type Waterfall,
-  REPLAY_SPEEDS,
-  autoReplaySpeed,
   parseReplaySpeed,
   replaySpeed,
   type ReplaySpeedChoice,
@@ -590,8 +586,7 @@ function RunDetail({
     ["new", "acknowledged", "logged", "recurred"].includes(incident.status) &&
     prLink(cycle) === undefined;
   const toggleReplay = () => setReplay(replaying ? null : { wallMs: Date.now(), atMs: startMs });
-  const changeSpeed = (raw: string) => {
-    const next = parseReplaySpeed(raw);
+  const changeSpeed = (next: ReplaySpeedChoice) => {
     // Re-anchored on the same clock replayAt was read with, so the replay neither jumps nor stalls. A replay that already
     // ended is dropped: a slower speed would otherwise put its position back inside the run and resume it mid-way.
     if (replaying && replayAt !== null) setReplay({ wallMs: clock, atMs: replayAt });
@@ -659,32 +654,7 @@ function RunDetail({
           <>
             {canRetry && !showHandoff && <RetryRunButton incidentId={cycle.incidentId} size="md" />}
             {canReplay && (
-              <button
-                type="button"
-                onClick={toggleReplay}
-                title="Plays back on this page the steps this run recorded. It runs nothing: Retry with agent does."
-                className={HERO_ACTION}
-              >
-                {replaying ? <Square className="h-4 w-4" aria-hidden /> : <CirclePlay className="h-4 w-4" aria-hidden />}
-                {replaying ? "Stop replay" : "Watch replay"}
-              </button>
-            )}
-            {canReplay && (
-              <label className={`${HERO_ACTION} cursor-pointer gap-2 pr-2 has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-offset-2 has-[:focus-visible]:outline-white`} title="How fast the replay plays the recorded steps back. Auto: the recorded pace, faster for a run longer than a minute and a half.">
-                <Gauge className="h-4 w-4" aria-hidden />
-                <select
-                  aria-label="Replay speed"
-                  value={String(speedChoice)}
-                  onChange={(e) => changeSpeed(e.target.value)}
-                  className="cursor-pointer rounded-md bg-transparent py-1 text-sm font-medium text-white focus-visible:outline-none [&>option]:text-gray-900"
-                >
-                  {REPLAY_SPEEDS.map((s) => (
-                    <option key={s} value={String(s)}>
-                      {s === "auto" ? `Auto (${autoReplaySpeed(spanMs)}×)` : `${s}×`}
-                    </option>
-                  ))}
-                </select>
-              </label>
+              <ReplayControl replaying={replaying} onToggle={toggleReplay} speed={speedChoice} onSpeed={changeSpeed} spanMs={spanMs} />
             )}
             <Link to={`/incidents/${encodeURIComponent(cycle.incidentId)}`} className={HERO_ACTION}>
               <FileText className="h-4 w-4" aria-hidden />
