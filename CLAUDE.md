@@ -550,17 +550,20 @@ Facts the team has confirmed (2026-10-15/16). Don't ask them again; check here f
   2026-10-16 `STARFISH_PUBLIC_DEMO_ACTIONS=true` (the public demo's open actions, #377, #379).
 - **The Mac's `web/.env`** holds the `VITE_FIREBASE_*` values, `VITE_STARFISH_ADMIN_API_URL=https://starfish-admin-5khi25qkla-uc.a.run.app`
   and, since 2026-10-16, `VITE_STARFISH_PUBLIC_DEMO_ACTIONS=true`.
-- **demo-control** (the Lab's controller) deploys only by hand: its `Deploy` workflow (workflow_dispatch, type the project id).
+- **demo-control** (the Lab's controller) is deployed from the maintainer's Mac, never from GitHub:
+  `pnpm dlx firebase-tools@14.27.0 deploy --only functions:demo-control --project hack2skill-demo --non-interactive` on its
+  `main` (its docs/deploy.md step 8; its GitHub "Deploy functions" workflow exists but is not how it ships).
   demo-app deploys on merge to its `main`.
 - **Not known here:** the admin's merge cases (Settings → Auto-merge); the full `STARFISH_AGENT_EXTRA_ENV_VARS`. Ask for these
   only when a task needs them.
 - **Assumptions that turned out wrong, so don't repeat them:** that the team deploys the engine from a terminal (GitHub does);
-  that the failing `Deploy web UI` workflow keeps UI changes off the site (the Mac script publishes them); that Retry with
+  that the failing `Deploy web UI` workflow keeps UI changes off the site (the Mac script publishes them); that demo-control
+  ships through its GitHub workflow (it is deployed from the Mac); that Retry with
   agent starts a pass by itself for an operator (only an admin's or, with the open actions on, a visitor's does, #374, #377).
 - **demo-app's baseline is `baseline-v2`** (pushed 2026-10-16, annotated, on `9c9a37c`, demo-app #56's merge: every planted
   fault, CODE-04's included, checked by all 23 evaluators). demo-control resets from it (`BASELINE_TAG`, demo-control #35) and
-  has CODE-04, the scenario whose fix the merge floor allows (#33). Still to do by hand: demo-control's `Deploy` workflow, so
-  the Lab offers CODE-04.
+  has CODE-04, the scenario whose fix the merge floor allows (#33). The Lab offers CODE-04 once demo-control's `main` is
+  deployed from the Mac (above).
 
 ## Sessions
 
