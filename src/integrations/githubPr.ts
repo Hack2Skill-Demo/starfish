@@ -103,6 +103,16 @@ export interface PullRequestResult {
   headSha?: string;
 }
 
+/**
+ * The incident's issue as `openIssue` left it. `reused`: this run did not file one; the incident's issue from an
+ * earlier recurrence was still open, so the recurrence was noted on it as a comment (#397).
+ */
+export interface IssueResult {
+  number: number;
+  url: string;
+  reused?: true;
+}
+
 /** What the issue says about one incident. Built by the loop from stored, already-bounded fields. */
 export interface IssueRequest {
   cycleId: string;
@@ -458,9 +468,50 @@ export function indexPullRequestText(req: PullRequestRequest, index: IndexEviden
 /** The marker that finds an issue again by cycle. HTML comment: invisible on GitHub, not part of any text we redact. */
 const issueMarker = (cycleId: string) => `<!-- ${ISSUE_MARKER_PREFIX}${cycleId} -->`;
 
+/** The cycle id's incident and recurrence (`<incidentId>_r<n>`, cycle.ts `cycleId`), or null for any other shape. */
+function cycleParts(cycleId: string): { incidentId: string; recurrence: number } | null {
+  const m = /^(.+)_r(\d{1,9})$/.exec(cycleId);
+  return m ? { incidentId: m[1]!, recurrence: Number(m[2]) } : null;
+}
+
+/**
+ * The cycle a Starfish issue body names in its marker, or null when it carries none. The LAST marker: the footer's,
+ * which `issueText` always writes after every other line, so a marker-shaped string in a code span above it (a
+ * function name) cannot make the issue look like another incident's.
+ */
+function markedCycle(body: string): string | null {
+  const all = [...body.matchAll(new RegExp(`<!-- ${ISSUE_MARKER_PREFIX}([A-Za-z0-9_-]{1,128}) -->`, "g"))];
+  return all.length > 0 ? all[all.length - 1]![1]! : null;
+}
+
 /** The issue's title and body. Redacted and bounded; incident text cannot close a fence or add a link. */
 export function issueText(req: IssueRequest): { title: string; body: string } {
   const title = `[Starfish] ${titleLine(req.functionName, 60) || "unknown function"}: ${titleLine(req.errorType, 40) || "error"}`;
+  return { title, body: fitBody(issueLines(req), issueFooter(req)) };
+}
+
+/**
+ * The comment a recurrence leaves on the incident's issue when that issue is still open (#397), instead of a second
+ * issue: the same sections the issue has, under a heading that says it came back, and this run's marker, so a retry
+ * finds the comment and does not post it twice. Redacted and bounded like the issue.
+ */
+export function recurrenceCommentText(req: IssueRequest): string {
+  const recurrence = cycleParts(req.cycleId)?.recurrence;
+  const head = [
+    `## Failing again${recurrence !== undefined ? ` (recurrence ${recurrence})` : ""}`,
+    "",
+    "This incident was resolved and is failing again. Starfish is working on it as a new run, and notes it here instead of filing a second issue.",
+    "",
+  ];
+  return fitBody([...head, ...issueLines(req)], issueFooter(req));
+}
+
+function issueFooter(req: IssueRequest): string[] {
+  return ["", `Run: \`${code(req.cycleId, 128)}\``, "", issueMarker(req.cycleId), ""];
+}
+
+/** The issue's sections, shared by the issue and a recurrence's comment on it. */
+function issueLines(req: IssueRequest): string[] {
   const lines: string[] = [
     "## What is failing",
     "",
@@ -496,7 +547,7 @@ export function issueText(req: IssueRequest): { title: string; body: string } {
     if (run) lines.push(`- [The run](${run})`);
     if (logs) lines.push(`- [Everything the newest failing request logged, in Cloud Logging](${logs})`);
   }
-  return { title, body: fitBody(lines, ["", `Run: \`${code(req.cycleId, 128)}\``, "", issueMarker(req.cycleId), ""]) };
+  return lines;
 }
 
 /** Build the opener the agent loop is given. Throws at once for a configuration that could act on the wrong target. */
@@ -563,10 +614,13 @@ export interface GithubClient {
   readPullRequest: (cycleId: string, number: number) => Promise<PullRequestState>;
   /**
    * File the incident's issue, or return the one this cycle already filed (found by the marker in its body among the
-   * newest issues carrying the `starfish` label, so a retry after a crash or a timeout does not file a second).
-   * Writes only an issue and its label; it never touches a branch, a pull request or any file.
+   * newest issues carrying the `starfish` label, so a retry after a crash or a timeout does not file a second). When
+   * an earlier recurrence of the same incident filed an issue that is still OPEN, no second issue is filed: the
+   * recurrence is noted on that one as a comment carrying this cycle's marker (once; a retry finds the comment) and
+   * that issue is returned, `reused` (#397). A closed one is left alone and a new issue filed.
+   * Writes only an issue, its label or a comment on it; it never touches a branch, a pull request or any file.
    */
-  openIssue: (req: IssueRequest) => Promise<PullRequestResult>;
+  openIssue: (req: IssueRequest) => Promise<IssueResult>;
   /**
    * Push the patch as one commit on `starfish/<cycleId>` on top of the base revision and return that commit. A branch
    * this cycle left that is exactly this change is reused; one that differs is DELETED and rebuilt (the verify step
@@ -1061,7 +1115,7 @@ export function createGithubClient(cfg: GithubPrConfig, deps: GithubPrDeps): Git
     throw failure(created.status, created.headers, created.json);
   }
 
-  async function openIssue(req: IssueRequest): Promise<PullRequestResult> {
+  async function openIssue(req: IssueRequest): Promise<IssueResult> {
     if (!CYCLE_RE.test(req.cycleId)) throw new GithubError("invalid-request", "The cycle id is not a plain id, so it cannot name an issue.");
     await checkTarget();
     const marker = issueMarker(req.cycleId);
@@ -1070,19 +1124,46 @@ export function createGithubClient(cfg: GithubPrConfig, deps: GithubPrDeps): Git
     const found = await call("GET", `/repos/${cfg.githubRepo}/issues?labels=${ISSUE_LABEL}&state=all&sort=created&direction=desc&per_page=${MAX_ISSUE_SCAN}`);
     if (found.status !== 200) throw failure(found.status, found.headers, found.json);
     if (!Array.isArray(found.json)) throw new GithubError("unexpected-response", "GitHub's list of issues was not a list");
+    // The incident's open issue from an earlier recurrence, newest first (#397). Matched on the incident id the marker's
+    // cycle id names, exactly: never a prefix, so `abc` never matches an incident called `abc_r1x`.
+    const incident = cycleParts(req.cycleId)?.incidentId;
+    let earlier: PullRequestResult | null = null;
     for (const item of found.json) {
-      const i = item as { body?: unknown; pull_request?: unknown };
-      if (i.pull_request === undefined && typeof i.body === "string" && i.body.includes(marker)) {
+      const i = item as { body?: unknown; pull_request?: unknown; state?: unknown };
+      if (i.pull_request !== undefined || typeof i.body !== "string") continue;
+      if (i.body.includes(marker)) {
         const existing = asPr(item);
         if (existing) return existing;
       }
+      const marked = markedCycle(i.body);
+      if (earlier === null && incident !== undefined && i.state === "open" && marked !== null && marked !== req.cycleId && cycleParts(marked)?.incidentId === incident) {
+        earlier = asPr(item);
+      }
     }
+    if (earlier) return { ...(await noteRecurrence(earlier, req, marker)), reused: true };
 
     const { title, body } = issueText(req);
     const created = await call("POST", `/repos/${cfg.githubRepo}/issues`, { title, body, labels: [ISSUE_LABEL] });
     if (created.status !== 201) throw failure(created.status, created.headers, created.json);
     const issue = asPr(created.json);
     if (!issue) throw new GithubError("unexpected-response", "GitHub created an issue but did not say which.");
+    return issue;
+  }
+
+  /**
+   * Comment this recurrence on the incident's open issue, once: a comment already carrying this cycle's marker (a retry
+   * after a crash between the comment and the cycle's record) is not posted again. The check reads the issue's first
+   * 100 comments; an issue with more could get a second note on such a retry, never a second issue.
+   */
+  async function noteRecurrence(issue: PullRequestResult, req: IssueRequest, marker: string): Promise<PullRequestResult> {
+    const listed = await call("GET", `/repos/${cfg.githubRepo}/issues/${issue.number}/comments?per_page=${MAX_ISSUE_SCAN}`);
+    if (listed.status !== 200) throw failure(listed.status, listed.headers, listed.json);
+    if (!Array.isArray(listed.json)) throw new GithubError("unexpected-response", "GitHub's list of comments was not a list");
+    const noted = listed.json.some((c) => typeof (c as { body?: unknown }).body === "string" && (c as { body: string }).body.includes(marker));
+    if (!noted) {
+      const posted = await call("POST", `/repos/${cfg.githubRepo}/issues/${issue.number}/comments`, { body: recurrenceCommentText(req) });
+      if (posted.status !== 201) throw failure(posted.status, posted.headers, posted.json);
+    }
     return issue;
   }
 

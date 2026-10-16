@@ -268,7 +268,7 @@ src/
   agent/reconsider.ts  when a DECLINED cycle is triaged again (#8): an operator's `retriageRequestedAt`, a burst, or a new
                    structural cause since the recorded decision, or an incident closed mid-cycle and reopened (#227);
                    cooldown + cap per 24 h; never over ignored/resolved.
-                   cycle.ts reopens the same cycle in the lease transaction, so still one issue and one PR per recurrence.
+                   cycle.ts reopens the same cycle in the lease transaction, so still one PR per recurrence and no second issue.
                    A WAITING-HUMAN cycle (a person was told) is reopened only on an operator's `retriageRequestedAt` (the Runs
                    page's "Retry with agent") later than the cycle settled (`settledAt`, which an escalation's later event does
                    not move, #365), never over an open PR: for a result Starfish itself got wrong (#317); its run says
@@ -369,7 +369,8 @@ src/
                    not yet sent from a deployed round 2. Run by `pnpm agent`; both messages posted to real Slack since 2026-10-11 (#330)
   integrations/githubPr.ts  the pull-request opener (#17): idempotent by cycle id, pushes only
                    starfish/<id>, does not merge itself, token only in git's environment. Also files the incident's issue
-                   (`openIssue`: idempotent by a marker, label `starfish`, a failure recorded on the cycle; titles, PR, issue and
+                   (`openIssue`: idempotent by a marker, label `starfish`, a failure recorded on the cycle; a recurrence whose incident's
+                   earlier issue is still open comments on it instead of filing another, #397, tested against a fake GitHub; titles, PR, issue and
                    commit, are cut at a word with `…` within their budget, references broken first, `titleLine`, #327), and reads one of its PRs
                    back (`readPullRequest`: refuses one not from starfish/<cycle> in the repo, or not into the configured base). For #9 only: squash-merges
                    one of its PRs at an exact head (`mergePullRequest`), comments on it, and opens the revert of its own
