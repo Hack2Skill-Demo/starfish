@@ -37,7 +37,7 @@ import {
   GitPullRequestClosed,
   Search,
   ArrowRight,
-  Workflow,
+  Play,
 } from "lucide-react";
 import { Badge } from "../components/ui/Badge";
 import { EmptyState } from "../components/ui/EmptyState";
@@ -121,14 +121,14 @@ function AgentStrip({ view, functionName }: { view: IncidentRunView; functionNam
   if (view.kind === "none") {
     return (
       <p className="mt-2 flex items-center gap-1.5 text-xs text-gray-500 dark:text-gray-400">
-        <Workflow className="h-3.5 w-3.5" aria-hidden="true" />
+        <Play className="h-3.5 w-3.5" aria-hidden="true" />
         No agent run yet
       </p>
     );
   }
   return (
     <div className="mt-2 flex max-w-xs items-center gap-2 whitespace-nowrap rounded-md border border-gray-200 bg-gray-50 px-2 py-1 2xl:max-w-md dark:border-gray-700 dark:bg-gray-900/40">
-      <Workflow className="h-3.5 w-3.5 shrink-0 text-gray-500 dark:text-gray-400" aria-hidden="true" />
+      <Play className="h-3.5 w-3.5 shrink-0 text-gray-500 dark:text-gray-400" aria-hidden="true" />
       <span className="shrink-0">
         <Badge tone={view.status.tone}>{view.status.label}</Badge>
       </span>

@@ -31,7 +31,7 @@ import {
   Phone,
   ScanSearch,
   ShieldCheck,
-  Workflow,
+  Play,
   X,
 } from "lucide-react";
 import { GeminiMark } from "../components/GeminiMark";
@@ -277,7 +277,7 @@ export default function Runs() {
       ) : cycles.length === 0 ? (
         <div className="rounded-lg border border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-800">
           <EmptyState
-            icon={<Workflow className="h-5 w-5" aria-hidden />}
+            icon={<Play className="h-5 w-5" aria-hidden />}
             title="No runs recorded"
             description="Nothing has run the agent loop for this environment. A deployment schedules it only once that job exists; until then this list stays empty."
           />

@@ -2,7 +2,7 @@
  * Sidebar menu: top-level items with optional
  * children, each optionally restricted to roles (empty/unset = any role).
  */
-import { Activity, LayoutDashboard, Settings, Workflow, type LucideIcon } from "lucide-react";
+import { Bug, LayoutDashboard, Play, Settings, type LucideIcon } from "lucide-react";
 import type { ViewerRole } from "../auth/authCore";
 
 export interface MenuChild {
@@ -19,8 +19,9 @@ export interface MenuItem extends MenuChild {
 
 export const menuItems: MenuItem[] = [
   { id: "overview", label: "Overview", path: "/overview", icon: LayoutDashboard },
-  { id: "incidents", label: "Incidents", path: "/incidents", icon: Activity },
-  { id: "runs", label: "Runs", path: "/runs", icon: Workflow },
+  { id: "incidents", label: "Incidents", path: "/incidents", icon: Bug },
+  // A run is the agent working one incident: the play mark, which the run pages and "Run agent now" share.
+  { id: "runs", label: "Runs", path: "/runs", icon: Play },
   // Operators and guests see Settings read-only: the connections and the settings in force, no editor and no On-call
   // (admins only, Settings.tsx). An admin edits.
   { id: "settings", label: "Settings", path: "/settings", icon: Settings, roles: ["admin", "operator", "guest"] },
