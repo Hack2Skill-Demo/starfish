@@ -15,11 +15,12 @@ const mocks = vi.hoisted(() => ({
   eventsErr: undefined as undefined | ((e: Error) => void),
   unsub: vi.fn(),
   listIncidents: vi.fn(),
+  getIncident: vi.fn(),
 }));
 vi.mock("../lib/useSettings", () => ({ useEnvironment: () => mocks.env }));
 vi.mock("../components/EngineStatus", () => ({ EngineStatus: ({ environment }: { environment: string }) => <div data-testid="engine">{environment}</div> }));
 vi.mock("../components/AgentStatus", () => ({ AgentStatus: ({ environment }: { environment: string }) => <div data-testid="agent">{environment}</div> }));
-vi.mock("../lib/incidents", async (orig) => ({ ...(await orig<typeof import("../lib/incidents")>()), listIncidents: mocks.listIncidents }));
+vi.mock("../lib/incidents", async (orig) => ({ ...(await orig<typeof import("../lib/incidents")>()), listIncidents: mocks.listIncidents, getIncident: mocks.getIncident }));
 vi.mock("../lib/runs", async (orig) => ({
   ...(await orig<typeof import("../lib/runs")>()),
   subscribeCycles: (_e: string, ok: (rows: CycleRow[], capped: boolean) => void, err: (e: Error) => void) => {
@@ -59,6 +60,7 @@ const tile = (label: string) => screen.getByTestId(`tile-${label}`);
 describe("Overview page", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.getIncident.mockResolvedValue(null);
     mocks.cyclesCb = mocks.cyclesErr = mocks.eventsCb = mocks.eventsErr = undefined;
     mocks.listIncidents.mockResolvedValue({ rows: [], capped: false });
     mocks.env = { environment: "demo", ready: true, settingsUnavailable: false };
@@ -164,6 +166,26 @@ describe("Overview page", () => {
     act(() => mocks.cyclesCb!([cycle("inc-a_r0", { incidentId: "inc-a" })], false));
     const latest = screen.getByRole("region", { name: "Latest runs" });
     expect(within(latest).getByRole("link", { name: "inc-a" })).toHaveAttribute("href", "/runs?run=inc-a_r0");
+  });
+
+  it("names latest runs from their incidents even outside the chart window", async () => {
+    mocks.getIncident.mockResolvedValue(incident({ id: "old-incident", functionName: "orders-listrecentorders" }));
+    renderPage();
+    act(() => mocks.cyclesCb!([cycle("latest-run", { incidentId: "old-incident" })], false));
+    const latest = screen.getByRole("region", { name: "Latest runs" });
+    const link = await within(latest).findByRole("link", { name: "orders-listrecentorders" });
+    expect(link).toHaveAttribute("href", "/runs?run=latest-run");
+    expect(link).toHaveAttribute("title", "orders-listrecentorders");
+    expect(mocks.getIncident).toHaveBeenCalledWith("old-incident", "demo");
+  });
+
+  it("keeps a run accessible if its incident cannot be read", async () => {
+    mocks.getIncident.mockRejectedValue(new Error("denied"));
+    renderPage();
+    act(() => mocks.cyclesCb!([cycle("latest-run", { incidentId: "missing" })], false));
+    await waitFor(() => expect(mocks.getIncident).toHaveBeenCalledWith("missing", "demo"));
+    expect(within(screen.getByRole("region", { name: "Latest runs" })).getByRole("link", { name: "missing" }))
+      .toHaveAttribute("href", "/runs?run=latest-run");
   });
 
   it("says when the runs or the incidents can't be read", async () => {
@@ -276,6 +298,7 @@ describe("Overview latest activity", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.getIncident.mockResolvedValue(null);
     mocks.cyclesCb = mocks.cyclesErr = mocks.eventsCb = mocks.eventsErr = undefined;
     mocks.listIncidents.mockResolvedValue({ rows: [], capped: false });
   });

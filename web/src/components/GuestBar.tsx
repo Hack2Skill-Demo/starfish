@@ -17,7 +17,7 @@ export function GuestBar({ askToSignIn, onOpenGuide }: { askToSignIn: boolean; o
     <footer className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 border-t border-gray-200 bg-white px-4 py-2 text-xs text-gray-600 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-400 lg:px-6">
       <span>
         {open ? `Public demo · ${open.short}` : "Public demo · view only"}
-        {askToSignIn && (
+        {askToSignIn && !publicDemoActionsOn() && (
           <>
             {" "}
             · <span className="text-gray-800 dark:text-gray-200">Sign in for the full records. {signInHint()}</span>
@@ -35,13 +35,13 @@ export function GuestBar({ askToSignIn, onOpenGuide }: { askToSignIn: boolean; o
             What is Starfish?
           </button>
         )}
-        <Link
+        {!publicDemoActionsOn() && <Link
           to={signInPath()}
           state={{ from: location }}
           className="font-medium text-brand-700 hover:underline dark:text-brand-400"
         >
-          {publicDemoActionsOn() ? "Team sign-in" : "Sign in"}
-        </Link>
+          Sign in
+        </Link>}
       </span>
     </footer>
   );
