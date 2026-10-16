@@ -8,7 +8,7 @@
 import { useState } from "react";
 import { useNavigate } from "react-router";
 import { useQueryClient } from "@tanstack/react-query";
-import { Play, Archive, Workflow } from "lucide-react";
+import { Archive, Play, RefreshCw } from "lucide-react";
 import { Button } from "./ui/Button";
 import { toast } from "./ui/toast";
 import { useAuth } from "../auth/authCore";
@@ -63,7 +63,7 @@ export function RunIngestButton({ api = appAdminApi, onDone }: { api?: () => Adm
 
   return (
     <Button variant="secondary" size="sm" onClick={click} disabled={busy} aria-busy={busy}>
-      <Play className="h-4 w-4" aria-hidden /> {busy ? "Running…" : "Run ingest now"}
+      <RefreshCw className="h-4 w-4" aria-hidden /> {busy ? "Running…" : "Run ingest now"}
     </Button>
   );
 }
@@ -99,7 +99,7 @@ export function RunAgentButton({ api = appAdminApi }: { api?: () => AdminApiDeps
       aria-busy={busy}
       title="Starts the pass the schedule runs, now: same switches, same caps"
     >
-      <Workflow className="h-4 w-4" aria-hidden /> {busy ? "Starting…" : "Run agent now"}
+      <Play className="h-4 w-4" aria-hidden /> {busy ? "Starting…" : "Run agent now"}
     </Button>
   );
 }

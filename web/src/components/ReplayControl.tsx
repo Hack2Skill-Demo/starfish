@@ -5,7 +5,7 @@
  * closes and returns focus to the speed button; a click outside or Tab away closes it.
  */
 import { useEffect, useId, useRef, useState, type KeyboardEvent } from "react";
-import { Check, ChevronDown, ChevronUp, CirclePlay, Square } from "lucide-react";
+import { Check, ChevronDown, ChevronUp, History, Square } from "lucide-react";
 import { REPLAY_SPEEDS, autoReplaySpeed, replaySpeedHint, replaySpeedLabel, type ReplaySpeedChoice } from "../lib/runsModel";
 
 const HALF =
@@ -79,7 +79,7 @@ export function ReplayControl({
         title="Plays back on this page the steps this run recorded. It runs nothing: Retry with agent does."
         className={`${HALF} gap-2 rounded-l-lg px-4`}
       >
-        {replaying ? <Square className="h-4 w-4" aria-hidden /> : <CirclePlay className="h-4 w-4" aria-hidden />}
+        {replaying ? <Square className="h-4 w-4" aria-hidden /> : <History className="h-4 w-4" aria-hidden />}
         {replaying ? "Stop replay" : "Watch replay"}
       </button>
       <button
