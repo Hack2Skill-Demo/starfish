@@ -522,6 +522,39 @@ React 19, Vite, Tailwind 4, react-router, TanStack Query; Starfish's own theme i
   here (an editable command is code execution on the engine host).
 - **Run:** `pnpm -C web dev` (port 5177).
 
+## The demo deployment, as it is actually run
+
+Facts the team has confirmed (2026-10-15/16). Don't ask them again; check here first, and update this section when one changes.
+
+- **Who deploys what.** The **engine and admin API** are deployed by GitHub: the `Deploy engine` workflow runs on every
+  merge to `main` that touches its paths (`STARFISH_DEPLOY_ON_MERGE=true`), or by hand (Run workflow). It has deployed every
+  merge (runs #69 to #73 on 10-14/15). The **web UI** is deployed from the maintainer's Mac with a personal script,
+  `~/redeploy-starfish.sh` (not in this repo): it checks Node 22+ and the gcloud account, checks `web/.env` exists, pulls
+  `main`, `pnpm install`, sets project `hack2skill-demo`, exports `PROJECT_ID=hack2skill-demo GOOGLE_CLOUD_PROJECT=hack2skill-demo
+  STARFISH_ENV=demo`, runs `HOSTING_SITE=ocean-starfish scripts/deploy-web.sh`, then `pnpm status`. The GitHub `Deploy web UI`
+  workflow fails (#370, #373), and that does not block the live UI: the Mac script is how it ships. Don't tell the team to deploy
+  the engine from a terminal: `deploy-gcp.sh` re-applies every setting, and a local run without the exact variables below
+  (`STARFISH_AGENT_EXTRA_ENV_VARS` especially) would silently reset them.
+- **Repository variables (Actions) already set:** `GCP_DEPLOY_SERVICE_ACCOUNT` (starfish-deployer@hack2skill-demo),
+  `GCP_WORKLOAD_IDENTITY_PROVIDER`, `STARFISH_ADMIN_API_ORIGINS=https://ocean-starfish.web.app`, `STARFISH_AGENT_EXTRA_ENV_VARS`
+  (starts `STARFISH_UI_URL=https://ocean-starfish.web.app…`; the rest not seen), `STARFISH_AGENT_REPO=Hack2Skill-Demo/demo-app`,
+  `STARFISH_DEPLOY_ADMIN_API=1`, `STARFISH_DEPLOY_AGENT=1`, `STARFISH_DEPLOY_ON_MERGE=true`, `STARFISH_ENV=demo`,
+  `STARFISH_GCP_PROJECT_ID=hack2skill-demo`, `STARFISH_INDEX_TARGETS=hack2skill-demo/(default)`, `STARFISH_VERIFY_CHECKS=verify`,
+  `STARFISH_VERTEX_LOCATION=global`, `STARFISH_WEB_ADMIN_API_URL=https://starfish-admin-5khi25qkla-uc.a.run.app`,
+  `STARFISH_WEB_DEMO_APP_URL=https://hack2skill-demo.web.app/#lab`, `STARFISH_WEB_HOSTING_SITE=ocean-starfish`, and since
+  2026-10-16 `STARFISH_PUBLIC_DEMO_ACTIONS=true` (the public demo's open actions, #377, #379).
+- **The Mac's `web/.env`** holds the `VITE_FIREBASE_*` values, `VITE_STARFISH_ADMIN_API_URL=https://starfish-admin-5khi25qkla-uc.a.run.app`
+  and, since 2026-10-16, `VITE_STARFISH_PUBLIC_DEMO_ACTIONS=true`.
+- **demo-control** (the Lab's controller) deploys only by hand: its `Deploy` workflow (workflow_dispatch, type the project id).
+  demo-app deploys on merge to its `main`.
+- **Not known here:** the admin's merge cases (Settings → Auto-merge); the full `STARFISH_AGENT_EXTRA_ENV_VARS`. Ask for these
+  only when a task needs them.
+- **Assumptions that turned out wrong, so don't repeat them:** that the team deploys the engine from a terminal (GitHub does);
+  that the failing `Deploy web UI` workflow keeps UI changes off the site (the Mac script publishes them); that Retry with
+  agent starts a pass by itself for an operator (only an admin's or, with the open actions on, a visitor's does, #374, #377).
+- **Open as of 2026-10-16:** the `baseline-v2` tag in demo-app on `9c9a37c` (demo-app #56's merge; every planted fault present,
+  checked by all 23 evaluators) is not pushed yet, so demo-control #33 (CODE-04, the auto-mergeable scenario) waits on it.
+
 ## Sessions
 
 - Poll GitHub through the MCP tools, never `gh`.
