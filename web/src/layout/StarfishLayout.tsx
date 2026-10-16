@@ -121,17 +121,17 @@ export function StarfishLayout() {
               </NavLink>
             ))}
           </nav>
-          {guest ? (
+          {guest ? (!publicDemoActionsOn() && (
             <Link
               to={signInPath()}
               state={{ from: location }}
-              aria-label={publicDemoActionsOn() ? "Team sign-in" : "Sign in"}
-              title={publicDemoActionsOn() ? "Team sign-in" : "Sign in"}
+              aria-label="Sign in"
+              title="Sign in"
               className="mt-2 flex h-11 w-11 items-center justify-center rounded-lg text-gray-400 transition-colors hover:bg-gray-800 hover:text-white"
             >
               <LogIn className="h-5 w-5" />
             </Link>
-          ) : (
+          )) : (
             <button
               onClick={handleSignOut}
               aria-label="Sign out"

@@ -16,7 +16,7 @@
  */
 import { useEffect, useState } from "react";
 import { Link } from "react-router";
-import { useQuery } from "@tanstack/react-query";
+import { useQueries, useQuery } from "@tanstack/react-query";
 import PageMeta from "../components/PageMeta";
 import SettingsUnavailableNotice from "../components/SettingsUnavailableNotice";
 import StoreReadHint from "../components/StoreReadHint";
@@ -25,7 +25,7 @@ import { HourlyBars } from "../components/HourlyBars";
 import { AgentStatus } from "../components/AgentStatus";
 import { EngineStatus } from "../components/EngineStatus";
 import { formatRelativeTime } from "../lib/formatters";
-import { listIncidents } from "../lib/incidents";
+import { getIncident, listIncidents } from "../lib/incidents";
 import { subscribeCycles, subscribeLatestEvents } from "../lib/runs";
 import { PATH_LABELS, formatDuration, runStatus, type CycleRow } from "../lib/runsModel";
 import {
@@ -110,6 +110,19 @@ export default function Overview() {
   // refetch, and a runs listener that errored keeps its last rows, which may be another session's.
   const shownCycles = cyclesFailed ? null : cycles;
   const shownIncidents = incidents.isError ? undefined : incidents.data;
+  // Read by ID: a recently updated run can belong to an incident outside the 24-hour chart window.
+  const latestCycles = shownCycles?.slice(0, 5) ?? [];
+  const latestIncidentIds = [...new Set(latestCycles.map((c) => c.incidentId))];
+  const latestIncidentReads = useQueries({
+    queries: latestIncidentIds.map((id) => ({
+      queryKey: ["run-incident", environment, id],
+      queryFn: () => getIncident(id, environment),
+      enabled: ready,
+      staleTime: 5 * 60_000,
+      retry: false,
+    })),
+  });
+  const latestNames = new Map(latestIncidentIds.map((id, i) => [id, latestIncidentReads[i]?.data?.functionName]));
   const counts = shownCycles ? countCycles(shownCycles, now) : null;
   const incidentCounts = shownIncidents ? countIncidents(shownIncidents.rows) : null;
   const series = shownIncidents ? hourlySeries(shownIncidents.rows, now, WINDOW_HOURS) : null;
@@ -264,12 +277,12 @@ export default function Overview() {
             <p className="mt-2 text-sm text-gray-600 dark:text-gray-400">No runs yet.</p>
           ) : (
             <ul className="mt-2 divide-y divide-gray-200 text-sm dark:divide-gray-700">
-              {shownCycles.slice(0, 5).map((c) => {
+              {latestCycles.map((c) => {
                 const status = runStatus(c, now);
                 return (
                   <li key={c.id} className="flex flex-wrap items-center justify-between gap-2 py-2">
-                    <Link to={`/runs?run=${encodeURIComponent(c.id)}`} className="truncate font-mono text-xs text-brand-700 hover:underline dark:text-brand-400">
-                      {c.incidentId}
+                    <Link to={`/runs?run=${encodeURIComponent(c.id)}`} className="min-w-0 flex-1 truncate font-medium text-brand-700 hover:underline dark:text-brand-400" title={latestNames.get(c.incidentId) ?? c.incidentId}>
+                      {latestNames.get(c.incidentId) ?? c.incidentId}
                     </Link>
                     <span className="flex items-center gap-2">
                       <Badge tone={status.tone}>{status.label}</Badge>

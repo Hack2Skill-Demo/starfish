@@ -41,6 +41,7 @@ describe("GuestBar", () => {
     expect(bar).toHaveTextContent("No sign-in needed: triage, retry and run the agent");
     expect(bar).toHaveTextContent("limited per IP address to protect our cloud and model billing");
     expect(bar).not.toHaveTextContent("view only");
+    expect(screen.queryByRole("link", { name: /sign.in/i })).toBeNull();
   });
 
   it("asks a guest who did not choose the demo view to sign in, with the hint", () => {
