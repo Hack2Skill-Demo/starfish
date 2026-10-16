@@ -16,6 +16,9 @@ import {
   parseCycle,
   parseEvent,
   progressText,
+  autoReplaySpeed,
+  parseReplaySpeed,
+  replaySpeed,
   runFilter,
   runStatus,
   issueLink,
@@ -686,5 +689,26 @@ describe("pageOf: the Runs list, 10 at a time", () => {
     expect(pageIndexOf(ids, "10")).toBe(1);
     expect(pageIndexOf(ids, "26")).toBe(2);
     expect(pageIndexOf(ids, "x")).toBeNull();
+  });
+});
+
+describe("replay speed", () => {
+  it("plays a short run at its recorded pace and fits a long one into about a minute", () => {
+    expect(autoReplaySpeed(40_000)).toBe(1);
+    expect(autoReplaySpeed(90_000)).toBe(1);
+    expect(autoReplaySpeed(90_001)).toBe(2);
+    expect(autoReplaySpeed(10 * 60_000)).toBe(10);
+  });
+
+  it("uses a picked speed as is, and auto from the run's length", () => {
+    expect(replaySpeed(30, 40_000)).toBe(30);
+    expect(replaySpeed("auto", 10 * 60_000)).toBe(10);
+  });
+
+  it("reads back only a speed it offers; anything else is auto", () => {
+    expect(parseReplaySpeed("10")).toBe(10);
+    expect(parseReplaySpeed(60)).toBe(60);
+    expect(parseReplaySpeed("auto")).toBe("auto");
+    for (const raw of [null, undefined, "", "3", "-1", "fast", 1000, " "]) expect(parseReplaySpeed(raw), String(raw)).toBe("auto");
   });
 });

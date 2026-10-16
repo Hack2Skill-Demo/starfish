@@ -835,3 +835,24 @@ export function progressText(steps: readonly Pick<Step, "status">[]): string {
   const done = steps.filter(isReached).length;
   return `${done} of ${steps.length} steps recorded`;
 }
+
+/** The replay speeds a viewer can pick; "auto" plays a short run at its recorded pace and fits a long one into about a minute. */
+export const REPLAY_SPEEDS = ["auto", 1, 2, 5, 10, 30, 60] as const;
+export type ReplaySpeedChoice = (typeof REPLAY_SPEEDS)[number];
+
+/** The "auto" speed: recorded pace up to a minute and a half, else fast enough to finish in about a minute. */
+export function autoReplaySpeed(spanMs: number): number {
+  return spanMs > 90_000 ? Math.ceil(spanMs / 60_000) : 1;
+}
+
+/** How many recorded milliseconds a replay plays per millisecond on the page. */
+export function replaySpeed(choice: ReplaySpeedChoice, spanMs: number): number {
+  return choice === "auto" ? autoReplaySpeed(spanMs) : choice;
+}
+
+/** A stored or selected choice read back; anything not offered is "auto". */
+export function parseReplaySpeed(raw: unknown): ReplaySpeedChoice {
+  if (raw === "auto") return "auto";
+  const n = typeof raw === "string" && raw.trim() !== "" ? Number(raw) : raw;
+  return REPLAY_SPEEDS.find((s) => s === n) ?? "auto";
+}

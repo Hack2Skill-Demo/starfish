@@ -24,6 +24,7 @@ import {
   ExternalLink,
   FileText,
   FlaskConical,
+  Gauge,
   GitMerge,
   GitPullRequest,
   GitPullRequestClosed,
@@ -88,6 +89,11 @@ import {
   type Step,
   type StepStatus,
   type Waterfall,
+  REPLAY_SPEEDS,
+  autoReplaySpeed,
+  parseReplaySpeed,
+  replaySpeed,
+  type ReplaySpeedChoice,
 } from "../lib/runsModel";
 import { LEVELS, LEVEL_SHORT, judgedOnGitHub, stepDetail, type ReviewAttack, type StepDetail } from "../lib/runStepDetail";
 
@@ -100,6 +106,17 @@ function readListHidden(): boolean {
     return localStorage.getItem(LIST_HIDDEN_KEY) === "1";
   } catch {
     return false;
+  }
+}
+
+/** The replay speed a viewer picked; kept per browser, like the full-width choice. */
+const REPLAY_SPEED_KEY = "starfish.runs.replaySpeed";
+
+function readReplaySpeed(): ReplaySpeedChoice {
+  try {
+    return parseReplaySpeed(localStorage.getItem(REPLAY_SPEED_KEY));
+  } catch {
+    return "auto";
   }
 }
 
@@ -548,16 +565,20 @@ function RunDetail({
   });
 
   const status = runStatus(cycle, now);
-  // A replay plays the events the engine recorded back at their recorded pace (faster for a long run), as if a worker
-  // held the run. It is labelled a replay everywhere it shows, and it draws nothing the events do not hold.
-  const [replay, setReplay] = useState<{ startMs: number; speed: number } | null>(null);
+  // A replay plays the events the engine recorded back, as if a worker held the run, at the speed the viewer picked
+  // ("auto": the recorded pace, faster for a long run). It is labelled a replay everywhere it shows, and it draws nothing
+  // the events do not hold. It is anchored at a wall-clock moment and a recorded one, so a new speed carries on from
+  // where the replay is instead of starting again.
+  const [replay, setReplay] = useState<{ wallMs: number; atMs: number } | null>(null);
+  const [speedChoice, setSpeedChoice] = useState<ReplaySpeedChoice>(readReplaySpeed);
   // While a worker holds the run, or it replays, the timer and time bar move every second; otherwise the page's tick.
   const tick = useNow(status.live || replay ? 1000 : TICK_MS);
   const clock = Math.max(now, tick);
   const startMs = cycle.createdAt.getTime();
   const lastMs = events && events.length > 0 ? Math.max(...events.map((e) => e.at.getTime())) : startMs;
   const spanMs = lastMs - startMs;
-  const replayAt = replay ? startMs + Math.max(0, clock - replay.startMs) * replay.speed : null;
+  const speed = replaySpeed(speedChoice, spanMs);
+  const replayAt = replay ? replay.atMs + Math.max(0, clock - replay.wallMs) * speed : null;
   const replaying = replay !== null && replayAt !== null && replayAt < lastMs;
   const canReplay = !status.live && events !== null && spanMs > 0;
   // A run a person was told about, or that was declined, on an open incident, and with no pull request of its own: the
@@ -568,8 +589,20 @@ function RunDetail({
     incident !== undefined &&
     ["new", "acknowledged", "logged", "recurred"].includes(incident.status) &&
     prLink(cycle) === undefined;
-  const toggleReplay = () =>
-    setReplay(replaying ? null : { startMs: Date.now(), speed: spanMs > 90_000 ? Math.ceil(spanMs / 60_000) : 1 });
+  const toggleReplay = () => setReplay(replaying ? null : { wallMs: Date.now(), atMs: startMs });
+  const changeSpeed = (raw: string) => {
+    const next = parseReplaySpeed(raw);
+    // Re-anchored on the same clock replayAt was read with, so the replay neither jumps nor stalls. A replay that already
+    // ended is dropped: a slower speed would otherwise put its position back inside the run and resume it mid-way.
+    if (replaying && replayAt !== null) setReplay({ wallMs: clock, atMs: replayAt });
+    else setReplay(null);
+    setSpeedChoice(next);
+    try {
+      localStorage.setItem(REPLAY_SPEED_KEY, String(next));
+    } catch {
+      // Private mode: the choice just won't persist.
+    }
+  };
   const asLive: CycleRow | null =
     replaying && replayAt !== null ? { ...cycle, state: "running", leaseExpiresAt: new Date(replayAt + 60_000), updatedAt: new Date(replayAt) } : null;
   const trackClock = asLive && replayAt !== null ? replayAt : clock;
@@ -586,7 +619,6 @@ function RunDetail({
     return buildWaterfall(cycle, events, clock);
   }, [cycle, events, clock, asLive, replayAt]);
 
-  const speed = replay?.speed ?? 1;
   const shownStatus = asLive ? { label: speed > 1 ? `Replaying · ${speed}×` : "Replaying", tone: "info" as const, live: true } : status;
   const summary = !water
     ? status.label
@@ -636,6 +668,23 @@ function RunDetail({
                 {replaying ? <Square className="h-4 w-4" aria-hidden /> : <CirclePlay className="h-4 w-4" aria-hidden />}
                 {replaying ? "Stop replay" : "Watch replay"}
               </button>
+            )}
+            {canReplay && (
+              <label className={`${HERO_ACTION} cursor-pointer gap-2 pr-2 has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-offset-2 has-[:focus-visible]:outline-white`} title="How fast the replay plays the recorded steps back. Auto: the recorded pace, faster for a run longer than a minute and a half.">
+                <Gauge className="h-4 w-4" aria-hidden />
+                <select
+                  aria-label="Replay speed"
+                  value={String(speedChoice)}
+                  onChange={(e) => changeSpeed(e.target.value)}
+                  className="cursor-pointer rounded-md bg-transparent py-1 text-sm font-medium text-white focus-visible:outline-none [&>option]:text-gray-900"
+                >
+                  {REPLAY_SPEEDS.map((s) => (
+                    <option key={s} value={String(s)}>
+                      {s === "auto" ? `Auto (${autoReplaySpeed(spanMs)}×)` : `${s}×`}
+                    </option>
+                  ))}
+                </select>
+              </label>
             )}
             <Link to={`/incidents/${encodeURIComponent(cycle.incidentId)}`} className={HERO_ACTION}>
               <FileText className="h-4 w-4" aria-hidden />
