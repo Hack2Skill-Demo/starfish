@@ -17,6 +17,7 @@ import { useLocation, useNavigate } from "react-router";
 import { ExternalLink, LogIn, X } from "lucide-react";
 import { Button } from "./ui/Button";
 import { keepTabInside } from "./ui/dialogFocus";
+import { signInPath } from "../lib/dataSource";
 import { isWelcomeDismissed, markGuestViewChosen, setWelcomeDismissed, signInHint, visitorActions } from "../lib/demoGuide";
 
 const FLOW: { name: string; text: string }[] = [
@@ -91,7 +92,7 @@ export function DemoWelcome({
 
   const signIn = () => {
     onClose();
-    navigate("/signin", { state: { from: location } });
+    navigate(signInPath(), { state: { from: location } });
   };
   const toggleDontShowAgain = (checked: boolean) => {
     setDontShowAgain(checked);

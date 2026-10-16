@@ -51,6 +51,17 @@ export function publicDemoActionsOn(): boolean {
   return c.publicDemoActions && c.environment === PUBLIC_DEMO_ENVIRONMENT;
 }
 
+/**
+ * Where "sign in" leads. With the open actions on, /signin opens the demo by itself (SignIn.tsx), so a team member's
+ * way in is its form, `?team=1`; elsewhere /signin is the form.
+ */
+export function signInPath(): string {
+  return publicDemoActionsOn() ? `/signin?${TEAM_SIGNIN_PARAM}=1` : "/signin";
+}
+
+/** The query parameter that asks /signin for its form instead of opening the demo. */
+export const TEAM_SIGNIN_PARAM = "team";
+
 /** This viewer's actions go to the admin API instead of Firestore: a guest, with the open actions on and an admin API to call. */
 export function actsThroughAdminApi(): boolean {
   // The build flag first: with it off (every build but an open demo) nothing else is looked at.

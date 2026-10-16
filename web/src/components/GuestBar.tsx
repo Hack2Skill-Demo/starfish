@@ -7,6 +7,7 @@
 import { Link, useLocation } from "react-router";
 import { signInHint, visitorActions } from "../lib/demoGuide";
 import { SourceLink } from "./SourceLink";
+import { publicDemoActionsOn, signInPath } from "../lib/dataSource";
 
 export function GuestBar({ askToSignIn, onOpenGuide }: { askToSignIn: boolean; onOpenGuide?: () => void }) {
   const location = useLocation();
@@ -35,11 +36,11 @@ export function GuestBar({ askToSignIn, onOpenGuide }: { askToSignIn: boolean; o
           </button>
         )}
         <Link
-          to="/signin"
+          to={signInPath()}
           state={{ from: location }}
           className="font-medium text-brand-700 hover:underline dark:text-brand-400"
         >
-          Sign in
+          {publicDemoActionsOn() ? "Team sign-in" : "Sign in"}
         </Link>
       </span>
     </footer>
