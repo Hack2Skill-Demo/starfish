@@ -19,6 +19,14 @@ import { appAdminApi, correctTriageAsVisitor } from "../lib/adminApi";
 import type { IncidentRow } from "../lib/incidents";
 import { LEVELS, MAX_NOTE, type Level } from "../../../src/triageRules";
 
+const LEVEL_EFFECT: Record<Level, string> = {
+  noise: "Starfish will stop at noise: no fix or pull request will be attempted.",
+  log: "Starfish may record and report the incident, but will not attempt a fix or pull request.",
+  fix: "Starfish may attempt a fix and open a pull request if its checks pass. It will not automatically merge it.",
+  merge: "This removes your correction’s limit. Starfish may merge only when its own checks, settings and admin rules allow it.",
+};
+const NEXT_STEP = "Saving does not start the agent now. A declined run corrected above noise may be reconsidered on a later agent pass, within retry limits. For a failed run or one waiting for a person, use Retry with agent on its run page. Resolved or ignored incidents stay closed.";
+
 export function CorrectionControl({ row }: { row: IncidentRow }) {
   const { user, roles, guest } = useAuth();
   const viaApi = guest && actsThroughAdminApi();
@@ -27,6 +35,7 @@ export function CorrectionControl({ row }: { row: IncidentRow }) {
   const [level, setLevel] = useState<Level>(row.correction?.level ?? "log");
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
+  const [savedLevel, setSavedLevel] = useState<Level | null>(null);
   // Operators and admins; a public demo visitor where its open actions are on (sent through the admin API). Never on a
   // trimmed copy, which is not the stored incident.
   const allowed = user !== null && canOperate(roles, guest) && (!guest || viaApi) && !row.trimmed;
@@ -47,7 +56,8 @@ export function CorrectionControl({ row }: { row: IncidentRow }) {
       } else {
         await saveCorrection(firestore(), webConfig().incidentCollection, row.id, user.uid, level, note);
       }
-      toast.success("Correction saved. Starfish goes no further than this with the incident.");
+      toast.success(`Correction saved. ${LEVEL_EFFECT[level]}`);
+      setSavedLevel(level);
       setNote("");
       setOpen(false);
       await queryClient.invalidateQueries({ queryKey: ["incident"] });
@@ -69,6 +79,13 @@ export function CorrectionControl({ row }: { row: IncidentRow }) {
           {current.note ? `: ${current.note}` : ""}
         </p>
       )}
+      {!open && (savedLevel !== null || current) && (
+        <div role={savedLevel !== null ? "status" : undefined} className="space-y-1 text-sm text-gray-700 dark:text-gray-300">
+          {savedLevel !== null && <p className="font-medium">Correction saved.</p>}
+          <p>{LEVEL_EFFECT[savedLevel ?? current!.level]}</p>
+          <p>{NEXT_STEP}</p>
+        </div>
+      )}
       {!open ? (
         <Button variant="secondary" size="sm" onClick={() => setOpen(true)}>
           Correct triage
@@ -82,6 +99,7 @@ export function CorrectionControl({ row }: { row: IncidentRow }) {
           <label className="block text-sm text-gray-700 dark:text-gray-300">
             At most
             <select
+              aria-describedby="correction-effect"
               value={level}
               onChange={(e) => setLevel(e.target.value as Level)}
               className="mt-1 block w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm dark:border-gray-700 dark:bg-gray-800"
@@ -93,6 +111,11 @@ export function CorrectionControl({ row }: { row: IncidentRow }) {
               ))}
             </select>
           </label>
+          <div id="correction-effect" aria-live="polite" className="space-y-1 rounded-lg bg-gray-50 p-3 text-sm text-gray-700 dark:bg-gray-900 dark:text-gray-300">
+            <p className="font-medium">What happens after saving</p>
+            <p>{LEVEL_EFFECT[level]}</p>
+            <p>{NEXT_STEP}</p>
+          </div>
           <label className="block text-sm text-gray-700 dark:text-gray-300">
             Why (optional)
             <input
