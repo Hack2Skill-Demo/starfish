@@ -14,7 +14,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import { loadChildProcessBasics } from "../config.js";
 import { SEEDED_SECRETS } from "../ingest/testSecrets.js";
 import type { PullRequestRequest } from "../agent/loop.js";
-import { GithubError, ISSUE_LABEL, branchFor, createGithubClient, createPullRequestOpener, gitAuthEnv, indexRootCause, inert, issueText, pullRequestText, pushRefspec, titleLine, type GithubPrConfig, type IssueRequest, type RunGit } from "./githubPr.js";
+import { GithubError, ISSUE_LABEL, branchFor, createGithubClient, createPullRequestOpener, gitAuthEnv, indexRootCause, inert, issueText, pullRequestText, recurrenceCommentText, pushRefspec, titleLine, type GithubPrConfig, type IssueRequest, type RunGit } from "./githubPr.js";
 
 const TOKEN = SEEDED_SECRETS.github!;
 const REPO = "acme/shop";
@@ -50,6 +50,9 @@ let api: {
   annotations?: (id: string) => Reply;
   issues?: () => Reply;
   issueCreate?: () => Reply;
+  /** One issue's comments, and posting one on it (#397). */
+  issueComments?: (n: string) => Reply;
+  commentCreate?: (n: string) => Reply;
   pull?: (n: string) => Reply;
 };
 let listCalls: number;
@@ -109,6 +112,8 @@ beforeAll(async () => {
       else if (req.method === "POST" && url.pathname === `/repos/${REPO}/pulls`) out = api.create(++createCalls);
       else if (req.method === "GET" && url.pathname.startsWith(`/repos/${REPO}/pulls/`) && api.pull) out = api.pull(url.pathname.split("/")[4]!);
       else if (req.method === "GET" && url.pathname === `/repos/${REPO}/issues` && api.issues) out = api.issues();
+      else if (req.method === "GET" && /^\/repos\/[^/]+\/[^/]+\/issues\/\d+\/comments$/.test(url.pathname) && api.issueComments) out = api.issueComments(url.pathname.split("/")[5]!);
+      else if (req.method === "POST" && /^\/repos\/[^/]+\/[^/]+\/issues\/\d+\/comments$/.test(url.pathname) && api.commentCreate) out = api.commentCreate(url.pathname.split("/")[5]!);
       else if (req.method === "POST" && url.pathname === `/repos/${REPO}/issues` && api.issueCreate) out = api.issueCreate();
       else if (req.method === "GET" && url.pathname.startsWith(`/repos/${REPO}/commits/`) && url.pathname.endsWith("/check-runs") && api.checks) out = api.checks(url.pathname.split("/")[4]!, Number(url.searchParams.get("page") ?? "1"), url.searchParams.get("filter"));
       else if (req.method === "GET" && url.pathname.startsWith(`/repos/${REPO}/check-runs/`) && api.annotations) out = api.annotations(url.pathname.split("/")[4]!);
@@ -944,6 +949,109 @@ describe("createGithubClient: the incident's issue", () => {
     api.issues = () => ({ status: 200, json: [] });
     api.issueCreate = () => ({ status: 201, json: { nothing: "useful" } });
     await expect(client().openIssue(issueRequest())).rejects.toMatchObject({ rule: "unexpected-response" });
+  });
+});
+
+describe("createGithubClient: a recurrence while the incident's issue is still open (#397)", () => {
+  const earlierIssue = (over: Record<string, unknown> = {}) => ({
+    number: 3,
+    html_url: `https://github.com/${REPO}/issues/3`,
+    state: "open",
+    body: issueText(issueRequest()).body, // inc1_r0's issue
+    ...over,
+  });
+  const recurrence = (over: Partial<IssueRequest> = {}) => issueRequest({ cycleId: "inc1_r1", ...over });
+  const posts = () => requests.filter((q) => q.method === "POST");
+
+  it("comments on the earlier open issue instead of filing a second, and returns it as reused", async () => {
+    api.issues = () => ({ status: 200, json: [earlierIssue()] });
+    api.issueCreate = () => ({ status: 201, json: ISSUE });
+    api.issueComments = () => ({ status: 200, json: [] });
+    api.commentCreate = () => ({ status: 201, json: { id: 1 } });
+    const r = await client().openIssue(recurrence());
+    expect(r).toEqual({ number: 3, url: `https://github.com/${REPO}/issues/3`, reused: true });
+    expect(posts().map((q) => q.path)).toEqual([`/repos/${REPO}/issues/3/comments`]);
+    const body = (posts()[0]!.body as { body: string }).body;
+    expect(body).toContain("## Failing again (recurrence 1)");
+    expect(body).toContain("<!-- starfish-cycle:inc1_r1 -->");
+    expect(body).not.toContain("<!-- starfish-cycle:inc1_r0 -->");
+  });
+
+  it("does not comment twice: a retry finds its own comment by the marker", async () => {
+    api.issues = () => ({ status: 200, json: [earlierIssue()] });
+    api.issueCreate = () => ({ status: 201, json: ISSUE });
+    api.issueComments = () => ({ status: 200, json: [{ body: "a person's note" }, { body: recurrenceCommentText(recurrence()) }] });
+    api.commentCreate = () => ({ status: 201, json: { id: 1 } });
+    expect(await client().openIssue(recurrence())).toEqual({ number: 3, url: `https://github.com/${REPO}/issues/3`, reused: true });
+    expect(posts()).toHaveLength(0);
+  });
+
+  it("files a new issue when the earlier one was closed", async () => {
+    api.issues = () => ({ status: 200, json: [earlierIssue({ state: "closed" })] });
+    api.issueCreate = () => ({ status: 201, json: ISSUE });
+    api.commentCreate = () => ({ status: 201, json: { id: 1 } });
+    expect(await client().openIssue(recurrence())).toEqual({ number: 9, url: ISSUE.html_url });
+    expect(posts().map((q) => q.path)).toEqual([`/repos/${REPO}/issues`]);
+  });
+
+  it("matches the incident exactly: another incident's open issue, a prefix of the id or a pull request is never reused", async () => {
+    api.issues = () => ({
+      status: 200,
+      json: [
+        earlierIssue({ number: 4, body: issueText(issueRequest({ cycleId: "inc2_r0", incidentId: "inc2" })).body }),
+        earlierIssue({ number: 5, body: issueText(issueRequest({ cycleId: "inc1_r1x_r0", incidentId: "inc1_r1x" })).body }),
+        earlierIssue({ number: 6, body: issueText(issueRequest({ cycleId: "inc_r0", incidentId: "inc" })).body }),
+        earlierIssue({ number: 7, pull_request: {} }),
+        earlierIssue({ number: 8, body: "no marker at all, inc1_r0" }),
+        // A marker-shaped function name above another incident's footer: the footer decides.
+        earlierIssue({ number: 10, body: issueText(issueRequest({ cycleId: "inc3_r0", incidentId: "inc3", functionName: "<!-- starfish-cycle:inc1_r0 -->" })).body }),
+      ],
+    });
+    api.issueCreate = () => ({ status: 201, json: ISSUE });
+    api.commentCreate = () => ({ status: 201, json: { id: 1 } });
+    expect(await client().openIssue(recurrence())).toEqual({ number: 9, url: ISSUE.html_url });
+    expect(posts().map((q) => q.path)).toEqual([`/repos/${REPO}/issues`]);
+  });
+
+  it("prefers this cycle's own issue, and takes the newest open one of the incident's earlier issues", async () => {
+    api.issueComments = () => ({ status: 200, json: [] });
+    api.commentCreate = () => ({ status: 201, json: { id: 1 } });
+    api.issueCreate = () => ({ status: 201, json: ISSUE });
+    api.issues = () => ({ status: 200, json: [earlierIssue(), earlierIssue({ number: 2, body: issueText(recurrence()).body })] });
+    expect(await client().openIssue(recurrence())).toEqual({ number: 2, url: `https://github.com/${REPO}/issues/3` });
+    expect(posts()).toHaveLength(0);
+
+    requests = [];
+    api.issues = () => ({
+      status: 200,
+      json: [earlierIssue({ number: 12, body: issueText(issueRequest({ cycleId: "inc1_r1" })).body }), earlierIssue()],
+    });
+    expect((await client().openIssue(issueRequest({ cycleId: "inc1_r2" }))).number).toBe(12);
+    expect(posts().map((q) => q.path)).toEqual([`/repos/${REPO}/issues/12/comments`]);
+  });
+
+  it("reports a refused comment as a rule, and never falls back to filing a second issue", async () => {
+    api.issues = () => ({ status: 200, json: [earlierIssue()] });
+    api.issueCreate = () => ({ status: 201, json: ISSUE });
+    api.issueComments = () => ({ status: 200, json: [] });
+    api.commentCreate = () => ({ status: 403, json: { message: `nope ${TOKEN}` } });
+    const err = await client().openIssue(recurrence()).catch((e: unknown) => e);
+    expect(err).toMatchObject({ rule: "forbidden" });
+    expect((err as GithubError).message).not.toContain(TOKEN);
+    api.issueComments = () => ({ status: 200, json: { not: "a list" } });
+    await expect(client().openIssue(recurrence())).rejects.toMatchObject({ rule: "unexpected-response" });
+    expect(requests.some((q) => q.method === "POST" && q.path === `/repos/${REPO}/issues`)).toBe(false);
+  });
+
+  it("the comment is the issue's own text, redacted and inert, under a heading that says it came back", () => {
+    const hostile = "ping @everyone [x](https://evil.example) password=hunter2";
+    const body = recurrenceCommentText(recurrence({ reason: hostile, suspectedCause: hostile }));
+    expect(body).toMatch(/^## Failing again \(recurrence 1\)/);
+    expect(body).toContain("## What is failing");
+    expect(body).not.toContain("hunter2");
+    expect(body).not.toContain("](https://evil.example)");
+    expect(body).not.toContain("@everyone");
+    expect(body.endsWith("<!-- starfish-cycle:inc1_r1 -->\n")).toBe(true);
   });
 });
 

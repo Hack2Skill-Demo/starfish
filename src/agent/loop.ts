@@ -70,7 +70,7 @@ import {
   type DeclineDecision,
   type RunEvent,
 } from "./cycle.js";
-import type { IssueRequest } from "../integrations/githubPr.js";
+import type { IssueRequest, IssueResult } from "../integrations/githubPr.js";
 import type { AlertRequest, DeliveryResult, NotifyRequest } from "../integrations/slack.js";
 import { proposeFix, type FixRequest, type FixRule, type SourceFile } from "./fixer.js";
 import { reviewPatch, type Attack, type ReviewVerdict } from "./reviewer.js";
@@ -187,7 +187,7 @@ export interface LoopDeps {
    * on the cycle and the cycle goes on: the issue is the incident's history, not a step the fix depends on. In a dry run
    * nothing is filed and the record says so.
    */
-  openIssue?: (req: IssueRequest) => Promise<{ number: number; url: string }>;
+  openIssue?: (req: IssueRequest) => Promise<IssueResult>;
   /**
    * Tells a person (Slack, src/integrations/slack.ts) that this cycle needs them. Absent means nobody is told. It
    * never throws: a failed delivery is a result, recorded on the cycle (`summary.notify`) so it is visible. In a dry
@@ -432,7 +432,8 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
     // follows, so nothing is prepared for merging this one (#240). The merge step asks again before any merge.
     const mergeHeldBy = async (): Promise<string | null> => earlierMergeHolds(db, cfg, key.incidentId, id);
 
-    // The incident's GitHub issue: one per cycle Starfish acts on or escalates, none for a declined one. Recorded on the
+    // The incident's GitHub issue, for a cycle Starfish acts on or escalates, none for a declined one: filed once per
+    // incident while it stays open, a recurrence noting itself on it (githubPr.ts `openIssue`, #397). Recorded on the
     // cycle (`summary.issue`) so a resumed attempt reuses it, and so a failure is visible and not silent.
     let issue: { number: number; url: string } | undefined;
     // `mergeCase`: the admin's case Gemini named in triage (triage.ts), when it named one: only then may the issue say
@@ -452,7 +453,7 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
       await renew();
       const incident = loaded.subject.incident;
       const counter = incident.logCounterCheck;
-      let filed: { number: number; url: string };
+      let filed: IssueResult;
       try {
         filed = await deps.openIssue({
           cycleId: id,
@@ -481,13 +482,15 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
         await note({ stage: "issue", type: "failed", summary: `The issue could not be filed: ${rule}`, record: { state: "failed", reason: rule } });
         return;
       }
-      issue = filed;
+      issue = { number: filed.number, url: filed.url };
+      // A recurrence whose earlier issue is still open is noted there, not filed again (#397). The record is the same
+      // `opened` one either way: it is this run's issue, and its fix pull request references it.
       await note({
         stage: "issue",
         type: "opened",
-        summary: `Issue #${filed.number} filed`,
-        data: { number: filed.number },
-        record: { state: "opened", number: filed.number, url: filed.url },
+        summary: filed.reused === true ? `Recurrence noted on the incident's open issue #${filed.number}` : `Issue #${filed.number} filed`,
+        data: { number: filed.number, ...(filed.reused === true && { reused: true }) },
+        record: { state: "opened", number: filed.number, url: filed.url, ...(filed.reused === true && { reused: true }) },
       });
     };
 

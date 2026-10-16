@@ -999,6 +999,16 @@ describe("runCycle: the incident's GitHub issue (#17)", () => {
     expect(opened[0]!.issueNumber).toBe(12);
   });
 
+  it("records an earlier recurrence's open issue as this run's, says it was reused, and the pull request closes it (#397)", async () => {
+    const openIssue = async () => ({ ...ISSUE, reused: true as const });
+    const opened: PullRequestRequest[] = [];
+    await runCycle(deps(scripted({ triage: [act], fix: [fixOf(GOOD_PATCH)], review: [held] }), { openIssue }, opened), key);
+    expect(await summaryIssue()).toEqual({ state: "opened", number: 12, url: ISSUE.url, reused: true });
+    const noted = (await events()).find((e) => e.stage === "issue");
+    expect(noted).toMatchObject({ type: "opened", summary: "Recurrence noted on the incident's open issue #12" });
+    expect(opened[0]!.issueNumber).toBe(12);
+  });
+
   it("files one for an incident that needs a person, and links it from the Slack message", async () => {
     const { calls, openIssue } = recorder();
     const told: NotifyRequest[] = [];
