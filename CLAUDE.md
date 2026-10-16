@@ -557,8 +557,10 @@ Facts the team has confirmed (2026-10-15/16). Don't ask them again; check here f
 - **Assumptions that turned out wrong, so don't repeat them:** that the team deploys the engine from a terminal (GitHub does);
   that the failing `Deploy web UI` workflow keeps UI changes off the site (the Mac script publishes them); that Retry with
   agent starts a pass by itself for an operator (only an admin's or, with the open actions on, a visitor's does, #374, #377).
-- **Open as of 2026-10-16:** the `baseline-v2` tag in demo-app on `9c9a37c` (demo-app #56's merge; every planted fault present,
-  checked by all 23 evaluators) is not pushed yet, so demo-control #33 (CODE-04, the auto-mergeable scenario) waits on it.
+- **demo-app's baseline is `baseline-v2`** (pushed 2026-10-16, annotated, on `9c9a37c`, demo-app #56's merge: every planted
+  fault, CODE-04's included, checked by all 23 evaluators). demo-control resets from it (`BASELINE_TAG`, demo-control #35) and
+  has CODE-04, the scenario whose fix the merge floor allows (#33). Still to do by hand: demo-control's `Deploy` workflow, so
+  the Lab offers CODE-04.
 
 ## Sessions
 
