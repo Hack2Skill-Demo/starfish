@@ -487,7 +487,10 @@ React 19, Vite, Tailwind 4, react-router, TanStack Query; Starfish's own theme i
   engine-written gate `starfish_runs/public_access` says `enabled: true, environment: 'demo'` (`publicAccessOn`). Limits per IP
   address and in all (src/publicDemoLimit.ts) answer 429 with their reason, shown as is; the guest bar, welcome guide and
   /signin say no sign-in is needed and that actions are limited per IP to protect billing, quoting `VITE_STARFISH_PUBLIC_*`
-  (which must match the engine's), and only when the flag is on. docs/deploy.md has the risks.
+  (which must match the engine's), and only when the flag is on. With the flag on, /signin asks nobody to sign in: it opens
+  the demo by itself and goes on to the page asked for (`auth/SignIn.tsx`); the form is the team's, at `/signin?team=1`
+  (`signInPath`), where every "Sign in"/"Team sign-in" link and sign-out lead, and is shown if the demo cannot open.
+  docs/deploy.md has the risks.
 - **Data:** the UI reads and triages incidents straight from Firestore, filtered to its own
   environment. `firestore.rules` is the security boundary and enforces the status
   transitions; `pnpm test:emulator` runs it against the emulator (Java needed).

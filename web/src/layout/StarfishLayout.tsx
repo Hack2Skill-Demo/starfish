@@ -18,7 +18,7 @@ import { useTheme } from "../theme/useTheme";
 import { useEnvironment } from "../lib/useSettings";
 import { StarfishLogo } from "./StarfishLogo";
 import { menuItems, visibleMenuItems, activeMenuItem } from "./menuConfig";
-import { offersGuestView, publicDemoActionsOn } from "../lib/dataSource";
+import { offersGuestView, publicDemoActionsOn, signInPath } from "../lib/dataSource";
 import { hasChosenGuestView, markWelcomeShownThisSession, shouldAutoOpenWelcome } from "../lib/demoGuide";
 import { DemoWelcome } from "../components/DemoWelcome";
 import { DemoLabButton } from "../components/DemoAppLink";
@@ -72,7 +72,8 @@ export function StarfishLayout() {
 
   const handleSignOut = async () => {
     await signOut();
-    navigate("/signin", { replace: true });
+    // To the form, not back into the demo: on the open demo /signin alone would start a guest session (SignIn.tsx).
+    navigate(signInPath(), { replace: true });
   };
 
   const ThemeIcon = themePreference === "dark" ? Moon : themePreference === "system" ? Monitor : Sun;
@@ -122,10 +123,10 @@ export function StarfishLayout() {
           </nav>
           {guest ? (
             <Link
-              to="/signin"
+              to={signInPath()}
               state={{ from: location }}
-              aria-label="Sign in"
-              title="Sign in"
+              aria-label={publicDemoActionsOn() ? "Team sign-in" : "Sign in"}
+              title={publicDemoActionsOn() ? "Team sign-in" : "Sign in"}
               className="mt-2 flex h-11 w-11 items-center justify-center rounded-lg text-gray-400 transition-colors hover:bg-gray-800 hover:text-white"
             >
               <LogIn className="h-5 w-5" />

@@ -6,9 +6,13 @@
  * There it also says where the sign-in details are (`signInHint`, never the credentials) and that a visitor without
  * them can still look around in the view-only demo, with fewer details and features, and choosing the
  * demo view is remembered (`markGuestViewChosen`) so the app stops asking that visitor to sign in.
+ *
+ * With the open actions on (`publicDemoActionsOn`), a visitor has every operator action already, so /signin does not ask
+ * them for anything: it opens the demo by itself and goes on to the page they asked for. The form is the team's, behind
+ * a "Team sign-in" link (`?team=1`, `signInPath`); it is also what shows when the demo cannot be opened.
  */
-import { useEffect, useState } from "react";
-import { Link, useLocation, useNavigate } from "react-router";
+import { useEffect, useRef, useState } from "react";
+import { Link, useLocation, useNavigate, useSearchParams } from "react-router";
 import { signInWithEmailAndPassword } from "firebase/auth";
 import { Loader2, Eye, EyeOff, AlertCircle } from "lucide-react";
 import PageMeta from "../components/PageMeta";
@@ -16,7 +20,7 @@ import { SourceLink } from "../components/SourceLink";
 import { Button } from "../components/ui/Button";
 import { firebaseAuth } from "../lib/firebase";
 import { StarfishLogo } from "../layout/StarfishLogo";
-import { offersGuestView, publicDemoActionsOn } from "../lib/dataSource";
+import { offersGuestView, publicDemoActionsOn, TEAM_SIGNIN_PARAM } from "../lib/dataSource";
 import { markGuestViewChosen, signInHint } from "../lib/demoGuide";
 import { useAuth } from "./authCore";
 
@@ -61,24 +65,80 @@ export function SignIn() {
   const [showPassword, setShowPassword] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const { user, guest, enterAsGuest } = useAuth();
+  const { user, guest, loading, enterAsGuest } = useAuth();
   const [enteringGuest, setEnteringGuest] = useState(false);
+  const [params] = useSearchParams();
+  // The open demo, for anyone not signed in to an account and not asking for the form: no sign-in at all.
+  const demoFirst = publicDemoActionsOn() && params.get(TEAM_SIGNIN_PARAM) === null && (guest || !user);
+  const [demoFailed, setDemoFailed] = useState(false);
+  const autoStarted = useRef(false);
 
   // The guest session is in once the token event has set it: navigating before that would
-  // reach the route guard with nobody signed in.
+  // reach the route guard with nobody signed in. The open demo goes on to the page asked for. A visitor who chose Team
+  // sign-in while the demo was still opening stays on the form when the session lands: only the demo view's own button
+  // (`enteringGuest`) or the open demo's page leaves it.
   useEffect(() => {
-    if (enteringGuest && guest) navigate("/overview", { replace: true });
-  }, [enteringGuest, guest, navigate]);
+    if (!guest) return;
+    if (demoFirst && !demoFailed) navigate(returnPath(location.state), { replace: true });
+    else if (enteringGuest) navigate("/overview", { replace: true });
+  }, [enteringGuest, demoFirst, demoFailed, guest, navigate, location.state]);
+
+  const unavailable = "The demo view isn't available right now. Please try again later.";
+  const startGuest = async (): Promise<boolean> => {
+    markGuestViewChosen();
+    return enterAsGuest({ requested: true });
+  };
 
   const handleGuest = async () => {
     setError(null);
-    markGuestViewChosen();
     setEnteringGuest(true);
-    if (!(await enterAsGuest({ requested: true }))) {
+    if (!(await startGuest())) {
       setEnteringGuest(false);
-      setError("The demo view isn't available right now. Please try again later.");
+      setError(unavailable);
     }
   };
+
+  // The open demo starts the guest session itself, once; if it cannot, the form is shown with the reason.
+  useEffect(() => {
+    if (!demoFirst || loading || user || autoStarted.current) return;
+    autoStarted.current = true;
+    void startGuest().then((ok) => {
+      if (ok) return;
+      setError(unavailable);
+      setDemoFailed(true);
+    });
+  });
+
+  if (demoFirst && !demoFailed) {
+    return (
+      <>
+        <PageMeta title="Starfish demo" description="Opening the public demo" />
+        <div className="flex min-h-screen flex-col items-center justify-center gap-6 bg-gray-50 px-4 text-center dark:bg-gray-900">
+          <h1 className="sr-only">Starfish</h1>
+          <div className="dark:hidden">
+            <StarfishLogo variant="lockup" tone="light" size={56} title="" />
+          </div>
+          <div className="hidden dark:block">
+            <StarfishLogo variant="lockup" tone="dark" size={56} title="" />
+          </div>
+          <p role="status" className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
+            <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
+            Opening the demo…
+          </p>
+          <p className="max-w-sm text-xs text-gray-500 dark:text-gray-400">
+            No sign-in needed. Actions are limited per IP address to protect our cloud and model billing.
+          </p>
+          <Link
+            to={`/signin?${TEAM_SIGNIN_PARAM}=1`}
+            state={location.state}
+            className="text-xs font-medium text-brand-700 hover:underline dark:text-brand-400"
+          >
+            Team sign-in
+          </Link>
+        </div>
+      </>
+    );
+  }
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
