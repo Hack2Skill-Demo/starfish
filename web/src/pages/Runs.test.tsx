@@ -823,11 +823,21 @@ describe("Runs page", () => {
       // Recorded 10 s and 40 s into the run.
       act(() => mocks.eventsCb!([event(1, "triage", "decision", "Act", 50_000), event(2, "fix", "declined", "No fix", 20_000)]));
       const detail = screen.getByRole("region", { name: "Run detail" });
-      const speed = within(detail).getByRole("combobox", { name: "Replay speed" });
-      expect(speed).toHaveValue("auto");
-      expect(within(speed).getByRole("option", { name: "Auto (1×)" })).toBeInTheDocument();
-
-      fireEvent.change(speed, { target: { value: "10" } });
+      // One split button: the speed half shows the current speed and opens the menu.
+      const speedButton = () => within(detail).getByRole("button", { name: /^Replay speed:/ });
+      const pickSpeed = (name: RegExp) => {
+        fireEvent.click(speedButton());
+        fireEvent.click(within(detail).getByRole("menuitemradio", { name }));
+      };
+      expect(speedButton()).toHaveAccessibleName("Replay speed: Auto (1×)");
+      expect(speedButton()).toHaveTextContent("Auto · 1×");
+      fireEvent.click(speedButton());
+      expect(within(detail).getByRole("menuitemradio", { name: /^Auto \(1×\)/ })).toHaveAttribute("aria-checked", "true");
+      // Each speed says how long this 40 s run takes at it.
+      expect(within(detail).getByRole("menuitemradio", { name: /^10×/ })).toHaveTextContent("This run in 4 s.");
+      fireEvent.click(within(detail).getByRole("menuitemradio", { name: /^10×/ }));
+      expect(within(detail).queryByRole("menu")).toBeNull();
+      expect(speedButton()).toHaveTextContent("10×");
       expect(localStorage.getItem("starfish.runs.replaySpeed")).toBe("10");
       fireEvent.click(within(detail).getByRole("button", { name: "Watch replay" }));
       expect(within(detail).getByText("Replaying · 10×")).toBeInTheDocument();
@@ -841,7 +851,7 @@ describe("Runs page", () => {
       expect(status("fix")).not.toBe("done");
 
       // Slower from here: it carries on at 20 s in rather than starting again, so triage stays recorded.
-      fireEvent.change(speed, { target: { value: "1" } });
+      pickSpeed(/^1×/);
       expect(within(detail).getByText("Replaying")).toBeInTheDocument();
       act(() => vi.advanceTimersByTime(2000));
       expect(status("triage")).toBe("done");
@@ -849,10 +859,10 @@ describe("Runs page", () => {
       expect(within(detail).getByRole("button", { name: "Stop replay" })).toBeInTheDocument();
 
       // Once it has played to the end, a slower speed does not bring it back mid-way.
-      fireEvent.change(speed, { target: { value: "60" } });
+      pickSpeed(/^60×/);
       act(() => vi.advanceTimersByTime(2000));
       expect(within(detail).getByRole("button", { name: "Watch replay" })).toBeInTheDocument();
-      fireEvent.change(speed, { target: { value: "1" } });
+      pickSpeed(/^1×/);
       act(() => vi.advanceTimersByTime(1000));
       expect(within(detail).getByRole("button", { name: "Watch replay" })).toBeInTheDocument();
       expect(status("fix")).toBe("done");
@@ -866,7 +876,7 @@ describe("Runs page", () => {
     renderRuns();
     act(() => mocks.cyclesCb!([cycle("inc-a_r0", { state: "waiting-human", leaseExpiresAt: null, path: "human" })], false));
     act(() => mocks.eventsCb!([event(1, "triage", "decision", "Act", 50_000)]));
-    expect(screen.getByRole("combobox", { name: "Replay speed" })).toHaveValue("30");
+    expect(screen.getByRole("button", { name: "Replay speed: 30×" })).toHaveTextContent("30×");
   });
 
   it("offers no replay while a worker holds the run", () => {
@@ -874,7 +884,7 @@ describe("Runs page", () => {
     act(() => mocks.cyclesCb!([cycle("inc-a_r0")], false));
     act(() => mocks.eventsCb!([event(1, "triage", "decision", "Act", 30_000)]));
     expect(screen.queryByRole("button", { name: "Watch replay" })).toBeNull();
-    expect(screen.queryByRole("combobox", { name: "Replay speed" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Replay speed/ })).toBeNull();
   });
 
   it("opens with the run's story on the hero card: the error, its count and how far the run got", async () => {

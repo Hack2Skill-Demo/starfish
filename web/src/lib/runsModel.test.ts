@@ -19,6 +19,8 @@ import {
   autoReplaySpeed,
   parseReplaySpeed,
   replaySpeed,
+  replaySpeedHint,
+  replaySpeedLabel,
   runFilter,
   runStatus,
   issueLink,
@@ -710,5 +712,18 @@ describe("replay speed", () => {
     expect(parseReplaySpeed(60)).toBe(60);
     expect(parseReplaySpeed("auto")).toBe("auto");
     for (const raw of [null, undefined, "", "3", "-1", "fast", 1000, " "]) expect(parseReplaySpeed(raw), String(raw)).toBe("auto");
+  });
+});
+
+describe("replay speed menu text", () => {
+  it("names a speed, with Auto's speed for this run", () => {
+    expect(replaySpeedLabel(10, 40_000)).toBe("10×");
+    expect(replaySpeedLabel("auto", 144_000)).toBe("Auto (3×)");
+  });
+
+  it("says how long the run takes at each speed", () => {
+    expect(replaySpeedHint(1, 144_000)).toBe("As it happened: 2 min 24 s.");
+    expect(replaySpeedHint(10, 144_000)).toBe("This run in 14 s.");
+    expect(replaySpeedHint("auto", 144_000)).toBe("Recorded pace; a long run fits in about a minute. This run: 48 s.");
   });
 });

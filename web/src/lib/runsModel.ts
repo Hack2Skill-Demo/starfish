@@ -856,3 +856,15 @@ export function parseReplaySpeed(raw: unknown): ReplaySpeedChoice {
   const n = typeof raw === "string" && raw.trim() !== "" ? Number(raw) : raw;
   return REPLAY_SPEEDS.find((s) => s === n) ?? "auto";
 }
+
+/** A speed's name in the replay menu: "10×", or "Auto (2×)" with the speed auto picks for this run. */
+export function replaySpeedLabel(choice: ReplaySpeedChoice, spanMs: number): string {
+  return choice === "auto" ? `Auto (${autoReplaySpeed(spanMs)}×)` : `${choice}×`;
+}
+
+/** The line under a speed in the replay menu: how long this run takes to play back at it, so nobody does the maths. */
+export function replaySpeedHint(choice: ReplaySpeedChoice, spanMs: number): string {
+  const takes = formatDuration(spanMs / replaySpeed(choice, spanMs));
+  if (choice === "auto") return `Recorded pace; a long run fits in about a minute. This run: ${takes}.`;
+  return choice === 1 ? `As it happened: ${takes}.` : `This run in ${takes}.`;
+}
