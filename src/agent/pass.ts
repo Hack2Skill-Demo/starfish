@@ -125,7 +125,7 @@ async function collectCandidates(
     const data = cycles[i]?.data();
     const state = data?.state as CycleState | undefined;
     const recurred = incidents.get(c.incidentId)?.status === "recurred";
-    if ((state === "declined" || state === "waiting-human") && data && reconsider) {
+    if ((state === "declined" || state === "waiting-human" || state === "failed") && data && reconsider) {
       const trigger = reconsiderTrigger(data, incidents.get(c.incidentId), reconsider, now);
       if (trigger !== null) found.push({ candidate: { ...c, reconsider: trigger }, rank: recurred ? 0 : 2 });
       return;

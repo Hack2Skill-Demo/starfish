@@ -582,7 +582,7 @@ function RunDetail({
   // A run a person was told about, or that was declined, on an open incident, and with no pull request of its own: the
   // engine reopens that same run on request (src/agent/reconsider.ts), so it opens no second issue or pull request.
   const canRetry =
-    (cycle.state === "waiting-human" || cycle.state === "declined") &&
+    (cycle.state === "waiting-human" || cycle.state === "declined" || cycle.state === "failed") &&
     !status.live &&
     incident !== undefined &&
     ["new", "acknowledged", "logged", "recurred"].includes(incident.status) &&

@@ -6,7 +6,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { deleteApp, initializeApp } from "firebase-admin/app";
-import { getFirestore } from "firebase-admin/firestore";
+import { getFirestore, Timestamp } from "firebase-admin/firestore";
 import type { Firestore } from "firebase-admin/firestore";
 import { acquireLease, appendEventsInTransaction, countSpend, cycleId, finishCycle, recordEvent, recordPrState, releaseLease, renewLease, sanitizeEvent, type CycleConfig, type CycleKey, type PrStateRecord } from "./cycle.js";
 import { SEEDED_SECRETS } from "../ingest/testSecrets.js";
@@ -443,6 +443,22 @@ describe("reconsidering a declined cycle (#8)", () => {
       causeClass: CAUSE,
     });
   }
+
+  it("retries an exhausted run on request with fresh bounds, preserving its issue and index operation", async () => {
+    await declineAtStart();
+    const operation = "projects/demo-app-1/databases/(default)/operations/ABC123";
+    await db.collection(cfg.cycleCollection).doc("inc1_r0").update({ state: "failed", attempts: 3, outcome: "retries-exhausted", path: "failed", "summary.index": { state: "building", operation, attemptedAt: t0.toISOString() } });
+    expect(await acquireLease(db, cfg, key, "b", mins(61), { reconsider: policy() })).toMatchObject({ acquired: false });
+    await setIncident({ retriageRequestedAt: Timestamp.fromDate(mins(61)) });
+    const r = await acquireLease(db, cfg, key, "b", mins(62), { reconsider: policy() });
+    expect(r).toMatchObject({ acquired: true, cycleId: "inc1_r0", attempt: 1, reconsidered: "operator", reopenedFrom: "failed" });
+    const c = await cycle();
+    expect(c.summary.issue.number).toBe(7);
+    expect(c.summary.index.operation).toBe(operation);
+    expect(c.deadlineAt.toMillis()).toBe(mins(122).getTime());
+    expect(c.history[0].outcome).toBe("retries-exhausted");
+    expect(await acquireLease(db, cfg, key, "c", mins(62), { reconsider: policy() })).toMatchObject({ acquired: false, reason: "held" });
+  });
 
   it("keeps what the decline was decided on: when, the rule, the evidence and its window", async () => {
     await declineAtStart();

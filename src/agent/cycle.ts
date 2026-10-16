@@ -84,7 +84,7 @@ export type AcquireResult =
       leaseExpiresAt: Date;
       reconsidered?: ReconsiderTrigger;
       /** With `reconsidered`: the state the cycle was reopened from, so the run's note says what it was (#366). */
-      reopenedFrom?: "declined" | "waiting-human";
+      reopenedFrom?: "declined" | "waiting-human" | "failed";
       /** What earlier attempts of this cycle (this consideration) spent: model calls, revisions (#182). */
       modelCalls: number;
       revisions: number;
@@ -175,8 +175,8 @@ export async function acquireLease(db: Firestore, cfg: CycleConfig, key: CycleKe
 
     const d = snap.data() as Record<string, unknown>;
     const state = d.state as CycleState;
-    if ((state === "declined" || state === "waiting-human") && reconsider && incidentRef) {
-      // Read in this transaction (and only for a declined or waiting-human cycle, so an ordinary acquire never holds the incident that
+    if ((state === "declined" || state === "waiting-human" || state === "failed") && reconsider && incidentRef) {
+      // Read in this transaction (and only for a declined, waiting-human or failed cycle, so an ordinary acquire never holds the incident that
       // ingest writes): a concurrent operator ignore, or a second worker, cannot both pass the check and reopen.
       const incidentSnap = await tx.get(incidentRef);
       const trigger = reconsiderTrigger(d, incidentSnap.data(), reconsider, now);

@@ -284,7 +284,7 @@ export async function applyAction(row: IncidentRow, action: IncidentAction, uid:
 
 /**
  * Ask the agent to run an incident's cycle again (src/agent/reconsider.ts: `retriageRequestedAt`). For a run that ended
- * waiting for a person, or declined, when what stopped it was Starfish's own fault and has since been fixed. It is a
+ * waiting for a person, failed, or declined, when what stopped it was Starfish's own fault and has since been fixed. It is a
  * request, not an action: the next agent pass takes it, once, and the same cycle is reused, so no second issue, alert,
  * message or pull request. firestore.rules allows only these two fields, the server's time and the caller.
  */

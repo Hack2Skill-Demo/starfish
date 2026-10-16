@@ -29,6 +29,9 @@
  * messages are sent again, once for the new round and worded as a retry (loop.ts `deliverOnce`), so the team learns
  * what the retry did. Nothing else reopens it: a burst or a new cause is not a reason to redo what a person was told.
  *
+ * Failed cycles likewise reopen only on a fresh operator request, under the same daily and incident guards.
+ * Their existing issue and index operation remain on the same cycle.
+ *
  * Pure functions: cycle.ts applies them inside the transaction that reopens the cycle, pass.ts to pick candidates.
  */
 import { createHash } from "node:crypto";
@@ -98,13 +101,13 @@ export function stoppedByClose(cycle: Record<string, unknown>): boolean {
 }
 
 /**
- * Why the declined (or, on a person's request, waiting-human) cycle `cycle` should be triaged again now, given the incident document `incident` as stored, or null.
- * Only a `declined` cycle qualifies on evidence; a `waiting-human` one only on an operator's request. A decline with no `decision` has no evidence baseline to compare the burst and cause
+ * Why the declined (or, on a person's request, waiting-human or failed) cycle `cycle` should be triaged again now, given the incident document `incident` as stored, or null.
+ * Only a `declined` cycle qualifies on evidence; a `waiting-human` or `failed` one only on an operator's request. A decline with no `decision` has no evidence baseline to compare the burst and cause
  * triggers against: it is reconsidered on an operator's request, or, when the loop stopped it because the incident was
  * closed, once the incident is open again (`reopened`, after the cooldown, #227).
  */
 export function reconsiderTrigger(cycle: Record<string, unknown>, incident: Record<string, unknown> | undefined, policy: ReconsiderPolicy, now: Date): ReconsiderTrigger | null {
-  if ((cycle.state !== "declined" && cycle.state !== "waiting-human") || incident === undefined) return null;
+  if ((cycle.state !== "declined" && cycle.state !== "waiting-human" && cycle.state !== "failed") || incident === undefined) return null;
   if (incident.retired === true || !(OPEN_INCIDENT_STATUSES as readonly string[]).includes(String(incident.status))) return null;
   // The cycle is this recurrence's: a regression since has its own cycle.
   const recurrence = typeof incident.recurrenceCount === "number" ? incident.recurrenceCount : 0;
@@ -114,7 +117,7 @@ export function reconsiderTrigger(cycle: Record<string, unknown>, incident: Reco
   // A person was told: only a person's request starts it over. Their request counts when it came after the cycle last
   // settled, which is also what makes it once-only: the reopened run settles again later, so the same request is not
   // later again. Events appended since (an escalation's calls) move `updatedAt`, not the settle time.
-  if (cycle.state === "waiting-human") {
+  if (cycle.state === "waiting-human" || cycle.state === "failed") {
     // A pull request opened for this recurrence is its one: starting over could not be told from a second one.
     const summary = (cycle.summary ?? undefined) as Record<string, unknown> | undefined;
     const pr = (summary?.pr ?? undefined) as Record<string, unknown> | undefined;
