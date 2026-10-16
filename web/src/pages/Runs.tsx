@@ -580,7 +580,7 @@ function RunDetail({
   const replaying = replay !== null && replayAt !== null && replayAt < lastMs;
   const canReplay = !status.live && events !== null && spanMs > 0;
   // A run a person was told about, or that was declined, on an open incident, and with no pull request of its own: the
-  // engine reopens that same run on request (src/agent/reconsider.ts), so it files and sends nothing twice.
+  // engine reopens that same run on request (src/agent/reconsider.ts), so it opens no second issue or pull request.
   const canRetry =
     (cycle.state === "waiting-human" || cycle.state === "declined") &&
     !status.live &&

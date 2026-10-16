@@ -1,8 +1,8 @@
 /**
  * "Retry with agent": asks the agent to run a finished incident's cycle again, with the engine as it is now. Only for a
  * run a person was told about or that was declined, on an open incident; for anyone with a role (the rules check the
- * role again). The retry is idempotent: the same cycle is reused, so it files no second issue, sends no second alert or
- * message and opens no second pull request.
+ * role again). The same cycle is reused, so it files no second issue and opens no second pull request; its Slack
+ * messages go out again for the new round, worded as a retry.
  *
  * The request alone runs on the next agent pass. For an admin on a build with the admin API it also starts that pass at
  * once (`POST /api/agent/run`, #276), as "Run agent now" does, so the retry runs without waiting for the schedule; the

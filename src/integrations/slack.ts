@@ -25,7 +25,9 @@
  * missed escalation is worse than a repeated one.
  *
  * A second, optional channel (the design's `#ops-alerts`) gets the "new incident" message, `buildNewIncidentMessage`,
- * through its own webhook: once per cycle Starfish acts on or escalates, recorded the same way (`summary.alert`).
+ * through its own webhook: once per round of a cycle Starfish acts on or escalates, recorded the same way (`summary.alert`).
+ * A run's later round (reconsider.ts) sends each message again, worded as a retry ("Incident retried (round 2)",
+ * "Needs a human (round 2)") with why it was reopened, so a retry's outcome reaches the team.
  *
  * When an urgent "needs a human" message goes unacknowledged, the phone escalation (src/oncall/, #37) calls the on-call
  * people; this file is not part of it. Not built: the `#ops-log` channel (a merged fix, healed). Tested over local HTTP
@@ -52,6 +54,10 @@ export interface NotifyRequest {
   reason: string;
   /** The incident's GitHub issue (#17), when one was filed: a third link on the message. */
   issueUrl?: string;
+  /** From the run's second round on (reconsider.ts): which round, so the message reads as a retry, not a repeat. */
+  round?: number;
+  /** With `round`: why the run was reopened, in Starfish's own fixed words (loop.ts), never incident text. */
+  retriedBecause?: string;
 }
 
 export interface DeliveryResult {
@@ -112,13 +118,14 @@ export const slackEscape = (text: string): string => text.replace(/&/g, "&amp;")
 /** The message for a cycle that needs a person. Pure: the same request gives the same payload. */
 export function buildNeedsHumanMessage(req: NotifyRequest, uiBaseUrl: string): SlackPayload {
   const what = `${clip(req.functionName, MAX_FIELD)} (${clip(req.errorType, 60)})`;
+  const retry = retryParts(req.round, req.retriedBecause);
   const headline =
     req.path === "notify"
-      ? `Needs a human: ${what}. No code change helps.`
-      : `Needs a human: ${what}. Starfish tried a fix and could not finish it.`;
+      ? `Needs a human${retry.suffix}: ${what}. No code change helps.`
+      : `Needs a human${retry.suffix}: ${what}. Starfish tried a fix and could not finish it.`;
   const blocks: unknown[] = [
-    { type: "header", text: plain(req.path === "notify" ? "Needs a human" : "Needs a human: fix not finished") },
-    { type: "section", text: plain(`${clip(req.functionName, MAX_FIELD)} failed${howOften(req.occurrenceCount)}.\n${clip(req.reason, MAX_REASON)}`) },
+    { type: "header", text: plain(`${req.path === "notify" ? "Needs a human" : "Needs a human: fix not finished"}${retry.suffix}`) },
+    { type: "section", text: plain(`${clip(req.functionName, MAX_FIELD)} failed${howOften(req.occurrenceCount)}.\n${clip(req.reason, MAX_REASON)}${retry.line}`) },
     {
       type: "section",
       fields: [
@@ -219,15 +226,31 @@ export interface AlertRequest {
   /** Triage's one-line reason. Redacted and cut here. */
   reason: string;
   issueUrl?: string;
+  /** From the run's second round on: which round, so the message reads as a retry, not a second incident. */
+  round?: number;
+  /** With `round`: why the run was reopened, in Starfish's own fixed words (loop.ts). */
+  retriedBecause?: string;
+}
+
+/** Round 2 on: " (round 2)" for a header, and the line saying why it was retried; nothing for a first round. */
+function retryParts(round: number | undefined, retriedBecause: string | undefined): { suffix: string; line: string } {
+  if (round === undefined || !Number.isSafeInteger(round) || round < 2) return { suffix: "", line: "" };
+  return { suffix: ` (round ${round})`, line: retriedBecause ? `\nRetried because ${clip(retriedBecause, 160)}.` : "\nRetried." };
 }
 
 /** The "new incident" message. Pure; the same escaping and plain-text rules as the needs-a-human one. */
 export function buildNewIncidentMessage(req: AlertRequest, uiBaseUrl: string): SlackPayload {
   const what = `${clip(req.functionName, MAX_FIELD)} (${clip(req.errorType, 60)})`;
-  const next = req.path === "act" ? "Starfish is drafting a fix; it stops at a pull request." : "No code change helps; a person is being told.";
+  const retry = retryParts(req.round, req.retriedBecause);
+  // A later round is the same incident worked again, not a new one: said so, so the channel does not read two incidents.
+  const title = retry.suffix ? `Incident retried${retry.suffix}` : "New incident";
+  const next =
+    req.path === "act"
+      ? `Starfish is drafting a fix${retry.suffix ? " again" : ""}; it stops at a pull request.`
+      : "No code change helps; a person is being told.";
   const blocks: unknown[] = [
-    { type: "header", text: plain("New incident") },
-    { type: "section", text: plain(`${clip(req.functionName, MAX_FIELD)} failed${howOften(req.occurrenceCount)}.\n${clip(req.reason, MAX_REASON)}`) },
+    { type: "header", text: plain(title) },
+    { type: "section", text: plain(`${clip(req.functionName, MAX_FIELD)} failed${howOften(req.occurrenceCount)}.\n${clip(req.reason, MAX_REASON)}${retry.line}`) },
     {
       type: "section",
       fields: [plain(`Service: ${clip(req.service, 80)}`), plain(`Error type: ${clip(req.errorType, 60)}`), plain(`Next: ${next}`)],
@@ -239,7 +262,7 @@ export function buildNewIncidentMessage(req: AlertRequest, uiBaseUrl: string): S
     { label: "Open the issue", url: safeHttpsUrl(req.issueUrl) },
   ].filter((l): l is { label: string; url: string } => l.url !== null);
   if (links.length > 0) blocks.push({ type: "actions", elements: links.map((l) => ({ type: "button", text: plain(l.label), url: l.url })) });
-  return { text: slackEscape(`New incident: ${what}. ${next}`), mrkdwn: false, blocks };
+  return { text: slackEscape(`${title}: ${what}. ${next}`), mrkdwn: false, blocks };
 }
 
 /** The alerter the loop calls: posts to the alerts channel's own webhook. */

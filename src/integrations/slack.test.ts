@@ -162,6 +162,43 @@ describe("buildNewIncidentMessage (#ops-alerts)", () => {
   });
 });
 
+describe("a retried round's wording", () => {
+  const alert: AlertRequest = {
+    cycleId: "inc1_r0",
+    incidentId: "inc1",
+    functionName: "orders-create",
+    service: "orders",
+    errorType: "TypeError",
+    occurrenceCount: 12,
+    path: "act",
+    reason: "A null customer reaches the total.",
+  };
+  const headerOf = (m: { blocks: unknown[] }) => (m.blocks[0] as { text: { text: string } }).text.text;
+
+  it("says round 2 and why on the needs-a-human message", () => {
+    const m = buildNeedsHumanMessage({ ...req, round: 2, retriedBecause: "an operator asked for a retriage" }, UI);
+    expect(headerOf(m)).toBe("Needs a human (round 2)");
+    expect(m.text).toBe("Needs a human (round 2): invoices-renderPdf (PermissionDenied). No code change helps.");
+    expect(JSON.stringify(m)).toContain("Retried because an operator asked for a retriage.");
+  });
+
+  it("reads as the same incident retried on the alerts channel, not a new one", () => {
+    const m = buildNewIncidentMessage({ ...alert, round: 3, retriedBecause: "an operator asked for a retriage" }, UI);
+    expect(headerOf(m)).toBe("Incident retried (round 3)");
+    expect(m.text).toBe("Incident retried (round 3): orders-create (TypeError). Starfish is drafting a fix again; it stops at a pull request.");
+    expect(JSON.stringify(m)).not.toContain("New incident");
+  });
+
+  it("says only 'Retried.' when the reason is unknown, and nothing at all for a first round", () => {
+    expect(JSON.stringify(buildNewIncidentMessage({ ...alert, round: 2 }, UI))).toContain("\\nRetried.");
+    for (const round of [undefined, 1, 0, 1.5]) {
+      const m = buildNewIncidentMessage({ ...alert, ...(round !== undefined && { round }) }, UI);
+      expect(headerOf(m), String(round)).toBe("New incident");
+      expect(JSON.stringify(m)).not.toContain("Retried");
+    }
+  });
+});
+
 describe("slackEscape", () => {
   it("escapes & first, so an escape is not escaped twice", () => {
     expect(slackEscape("<&>")).toBe("&lt;&amp;&gt;");

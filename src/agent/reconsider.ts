@@ -25,8 +25,9 @@
  * than the cycle settled (`settledAt`, never its last write: the phone escalation and Twilio's webhooks append events to
  * a waiting cycle, and a retry asked before one of those must still count, #365). It is for a result Starfish itself got wrong (a fix refused by its own gate for a reason
  * that has since been fixed in Starfish); the new consideration starts from triage again and, being the same cycle, it
- * files no second issue, sends no second alert or message, and opens no second pull request: those are recorded on the
- * cycle and are reused. Nothing else reopens it: a burst or a new cause is not a reason to redo what a person was told.
+ * files no second issue and opens no second pull request: those are recorded on the cycle and are reused. Its Slack
+ * messages are sent again, once for the new round and worded as a retry (loop.ts `deliverOnce`), so the team learns
+ * what the retry did. Nothing else reopens it: a burst or a new cause is not a reason to redo what a person was told.
  *
  * Pure functions: cycle.ts applies them inside the transaction that reopens the cycle, pass.ts to pick candidates.
  */
