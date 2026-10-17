@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { gzipSync } from "node:zlib";
+import { gunzipSync, gzipSync } from "node:zlib";
 import { packBundle, unpackBundle } from "./verifyBundle.js";
 import { MAX_BUNDLE_BYTES, MAX_UNPACKED_BYTES, VerifyRunnerError } from "./verifyProtocol.js";
 import { runVerifier } from "./verifyRunner.js";
@@ -212,6 +212,18 @@ describe("runVerifier", () => {
       await expect(unpackBundle(bytes, dest)).rejects.toThrow("expands beyond the limit");
       expect(readdirSync(dest)).toEqual([]);
     }, 60_000);
+
+    it("unpacks an archive whose end marker tar reaches before the padding after it is written (a write that fails after tar exited 0)", async () => {
+      // tar stops reading at the end-of-archive marker; 8 MB of padding behind it is more than the pipe holds, so tar exits
+      // while the writer still has data and the write fails. That used to fail a valid bundle, depending only on timing.
+      const bundle = await packBundle(src, PATCH, tmp);
+      const padded = gzipSync(Buffer.concat([gunzipSync(bundle), Buffer.alloc(8 * 1024 * 1024)]));
+      const dest = join(tmp, "dest-padded");
+      mkdirSync(dest);
+      const out = await unpackBundle(padded, dest);
+      expect(out.tree).toBe(join(dest, "tree"));
+      expect(readdirSync(join(dest, "tree"))).toContain("greeting.txt");
+    });
 
     it("empties the directory when the bundle is not a tar, and when it lacks a tree", async () => {
       const dest = join(tmp, "dest2");

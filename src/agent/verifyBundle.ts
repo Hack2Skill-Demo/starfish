@@ -82,8 +82,12 @@ function extract(dest: string, source: Readable): Promise<void> {
     });
     child.on("close", (code) => {
       clearTimeout(timer);
-      if (failure) reject(failure instanceof VerifyRunnerError ? failure : new VerifyRunnerError("the bundle could not be unpacked"));
+      // Over the byte budget is a failure whatever tar made of what it got.
+      if (failure instanceof VerifyRunnerError) reject(failure);
+      // tar stops reading at the archive's end marker and may exit 0 while the padding after it is still being written: the
+      // write then fails (EPIPE), and that is not a failure of an archive tar accepted whole.
       else if (code === 0) resolve();
+      else if (failure) reject(new VerifyRunnerError("the bundle could not be unpacked"));
       else reject(new VerifyRunnerError(`tar failed: ${stderr.slice(0, 200) || `exit ${String(code)}`}`));
     });
   });
