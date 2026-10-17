@@ -6,7 +6,7 @@
  * query is an equality on `environment` plus a range + order on `lastOccurredAt`,
  * served by the composite index in firestore.indexes.json (the environment filter
  * is also what lets the rules serve a guest's query). Status, service and function
- * filters apply client-side over that window.
+ * filters apply client-side over the pages read (cursor paging, #388).
  *
  * A guest reads the trimmed copies instead (`dataSource`, #18): the same query over the engine's projection, which keeps
  * the stored field names, so `toRow` reads both. A field the copy leaves out is absent from the row, and shown as nothing.
@@ -20,7 +20,9 @@ import {
   orderBy,
   query,
   serverTimestamp,
+  startAfter,
   Timestamp,
+  type QueryDocumentSnapshot,
   updateDoc,
   where,
   deleteField,
@@ -212,14 +214,23 @@ export function toRow(id: string, d: Record<string, unknown>, windowHours: numbe
   };
 }
 
+/** One page of the window, newest first. `capped` = the page was full, so older incidents in the window may remain. */
+export interface IncidentPage {
+  rows: IncidentRow[];
+  capped: boolean;
+  /** The last document read: pass it back as `after` to read the next page. Absent on an empty page. */
+  cursor?: QueryDocumentSnapshot;
+}
+
 /**
+ * One page (SCAN_LIMIT incidents) of the window, newest first, after `after` when given (#388). Paging by cursor is how
+ * an incident outside the first page is reached: the status, service and function filters apply client-side over the
+ * pages read, so they find only what has been read, which `capped` on the last page says.
+ *
  * `environment` is the label to filter by: the runtime settings' override when
  * there is one, else the build-time label (see useEnvironment).
  */
-export async function listIncidents(
-  windowHours: number,
-  environment: string
-): Promise<{ rows: IncidentRow[]; capped: boolean }> {
+export async function listIncidentsPage(windowHours: number, environment: string, after?: QueryDocumentSnapshot): Promise<IncidentPage> {
   const since = Timestamp.fromMillis(Date.now() - windowHours * MS_PER_HOUR);
   const snap = await getDocs(
     query(
@@ -230,15 +241,24 @@ export async function listIncidents(
       where("environment", "==", environment),
       where("lastOccurredAt", ">=", since),
       orderBy("lastOccurredAt", "desc"),
+      ...(after ? [startAfter(after)] : []),
       limit(SCAN_LIMIT)
     )
   );
   const now = Date.now();
+  const last = snap.docs[snap.docs.length - 1];
   return {
     // A retired incident (src/ingest/retire.ts) is closed for good and gone from every list, as it is to the store.
     rows: snap.docs.filter((d) => d.data().retired !== true).map((d) => toRow(d.id, d.data(), windowHours, now)),
     capped: snap.size >= SCAN_LIMIT,
+    ...(last && { cursor: last }),
   };
+}
+
+/** The newest page only: what the Overview's figures are read from. */
+export async function listIncidents(windowHours: number, environment: string): Promise<{ rows: IncidentRow[]; capped: boolean }> {
+  const { rows, capped } = await listIncidentsPage(windowHours, environment);
+  return { rows, capped };
 }
 
 /**
