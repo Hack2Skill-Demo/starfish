@@ -126,16 +126,16 @@ Industry practice in 2026:
 Starfish has built the whole loop. The Monitor half runs on the demo project. Of the Analyze, Plan and
 Execute half, the agent job (triage, fixer, verify gate, reviewer, PR) is deployed there and has run on
 real incidents since 2026-10-08; since 2026-10-12 its fixes have passed the verify step and the review and
-reached pull requests on the demo app (demo-app #41, #42 and #49), none merged. Auto-merge, fast-revert
+reached pull requests on the demo app (demo-app #41, #42 and #49); a person merged two of them (#49, #41), Starfish merged none. Auto-merge, fast-revert
 and the missing-index heal are built behind default-off switches and have never run against real GitHub or
-Google (see the README's Status section and [the auto-merge policy](../design/auto-merge-policy.md)).
+Google (see [status.md](../status.md) and [the auto-merge policy](../design/auto-merge-policy.md)).
 
 | Piece | Status |
 | --- | --- |
 | Ingest: Cloud Logging, classification, fingerprint dedup, counter-check | Built; runs on the demo project |
 | Operator UI: incidents, runs, evidence and settings | Built; deployed to the demo project |
 | Gemini fix-quality spike harness | Built, not yet run against Vertex |
-| Triage, fixer, deterministic verify gate, adversarial reviewer, PR | Built; the agent job is deployed to the demo project and runs on real incidents. All five have run there: triage and the fixer since 2026-10-08, the verify step (the demo app's own CI), the reviewer and real PRs since 2026-10-12 (demo-app #41, #42 and #49); nothing merged |
+| Triage, fixer, deterministic verify gate, adversarial reviewer, PR | Built; the agent job is deployed to the demo project and runs on real incidents. All five have run there: triage and the fixer since 2026-10-08, the verify step (the demo app's own CI), the reviewer and real PRs since 2026-10-12 (demo-app #41, #42 and #49); Starfish merged none, a person merged two |
 | Scoped auto-merge, missing-index heal, fast-revert | Built behind default-off switches; tested against fakes and the emulator, never run against real GitHub or Google |
 | Feedback engine: a human reclassification becomes a rule override and a replay test | Built (#267): an operator's correction caps the incident and becomes a replay case; not yet run on a real incident |
 

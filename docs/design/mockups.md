@@ -2,7 +2,7 @@
 
 > **Status: design mockups, partly built.** These are the designs of the operator UI and the demo, drawn before the
 > pages were built. The data on every screen is illustrative, not real, and no screen here is a capture of the product:
-> for that, see the README's captures of the public demo (`docs/screenshots/`). Where a page is now built, it differs
+> for that, see the captures of the public demo in [`../ui.md`](../ui.md) (`docs/screenshots/`). Where a page is now built, it differs
 > from its mockup; the table below says which screens have a built page and how they differ.
 
 | Mockup | Built page | How the built page differs |

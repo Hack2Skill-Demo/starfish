@@ -10,7 +10,7 @@
 > draft, the verify gate, review, Slack, phone escalation, auto-merge and the index heal. Ingest runs on a schedule on
 > the demo project, and triage, the fix draft, the verify step (the demo app's own CI), review, the incident's issue,
 > both Slack messages and pull requests have run there against the demo app (demo-app #41, #42 and #49). Auto-merge has
-> merged nothing, and the index heal and phone calls have never run for real. The rest of this page is as written; it
+> merged nothing (a person merged two of the pull requests, #49 and #41), and the index heal and phone calls have never run for real. The rest of this page is as written; it
 > does not track the demo app repositories' own state.
 
 ## Summary
