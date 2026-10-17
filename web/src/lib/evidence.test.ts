@@ -250,6 +250,20 @@ describe("buildEvidence: the pull request afterwards (#17)", () => {
     expect(pr.note).toContain("not proof the incident is healed");
   });
 
+  it("shows whether the merged fix was deployed and the error stopped, and what that rests on (#390)", () => {
+    const prState = { state: "merged", mergedAt: new Date(NOW - 5 * 3600_000).toISOString(), checks: "passed", headSha: "c".repeat(40), checkedAt: new Date(NOW - 60_000).toISOString() };
+    const recovery = { state: "unverified", reason: "low-traffic", mergeCommitSha: "d".repeat(40), mergedAt: prState.mergedAt, deployedAt: new Date(NOW - 3 * 3600_000).toISOString(), expectedOccurrences: 0.4, checkedAt: new Date(NOW - 30_000).toISOString() };
+    const pr = stage(buildEvidence(row, cycle({ pr: opened, prState, recovery }), NOW), "pr");
+    expect(pr.fields.find((f) => f.label === "Recovery")?.value).toBe("Not verified: the error was too rare before the merge for silence to show it stopped");
+    expect(pr.fields.find((f) => f.label === "Recovery evidence")?.value).toContain("Deployed 3h ago");
+    expect(pr.fields.find((f) => f.label === "Recovery observed")?.value).toBe(recovery.checkedAt);
+    expect(pr.note).toContain("Recovery line");
+    // No record: no claim, and the note is the old one.
+    const bare = stage(buildEvidence(row, cycle({ pr: opened, prState }), NOW), "pr");
+    expect(bare.fields.some((f) => f.label === "Recovery")).toBe(false);
+    expect(bare.note).not.toContain("Recovery line");
+  });
+
   it("adds nothing for a cycle that opened no pull request", () => {
     const e = buildEvidence(row, cycle({ pr: { opened: false, reason: "dry-run" } }), NOW);
     expect(stage(e, "pr").fields.some((f) => f.label === "State now")).toBe(false);

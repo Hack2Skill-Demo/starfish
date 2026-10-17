@@ -592,6 +592,23 @@ export interface PullRequestState {
   mergeCommitSha?: string;
 }
 
+/**
+ * Whether a merged commit has been DEPLOYED, as GitHub's Deployments API says it (#390): a deployment in the configured
+ * environment, created after the merge, whose commit is the merge commit or contains it, with a `success` status. The
+ * target's own workflow creates the deployment (a job that runs in an `environment:` does, with the job's result as its
+ * status), so a human-merged pull request is covered the same as Starfish's own.
+ *   - `none`: no deployment of it (yet) in the newest deployments of the environment.
+ *   - `pending`: one exists and has not finished (queued, pending, in progress).
+ *   - `failed`: the only ones that contain it ended in failure or error; a later successful one can still follow.
+ *   - `deployed`: the EARLIEST successful one that contains it; `completedAt` is when GitHub got that status, the
+ *     moment from which the fix can be judged. `exact` = the deployment's commit is the merge commit itself.
+ */
+export type DeploymentObservation =
+  | { state: "none" }
+  | { state: "pending"; deploymentId: number; sha: string }
+  | { state: "failed"; deploymentId: number; sha: string; failedAt: string }
+  | { state: "deployed"; deploymentId: number; sha: string; completedAt: string; exact: boolean };
+
 /** What a revert of Starfish's own merge says (#9, src/agent/fastRevert.ts). Redacted and bounded here. */
 export interface RevertRequest {
   /** The cycle whose merge is reverted: the revert's branch is `starfish/revert-<cycleId>`. */
@@ -635,6 +652,13 @@ export interface GithubClient {
    */
   findPullRequest: (cycleId: string) => Promise<PullRequestResult | null>;
   listCheckRuns: (commit: string) => Promise<CheckRun[]>;
+  /**
+   * Whether `commit` (a merge commit on the base branch) has been deployed to `environment`, per GitHub's Deployments API
+   * (#390). Read-only GETs, bounded: the newest deployments of the environment created at or after `mergedAt`, and at most
+   * `MAX_DEPLOYMENT_COMPARES` ancestry checks. A deployment of a commit that is not the merge commit counts only when
+   * GitHub's compare says it is ahead of (or the same as) the merge commit.
+   */
+  deploymentOfCommit: (commit: string, environment: string, mergedAt: string) => Promise<DeploymentObservation>;
   annotations: (checkRunId: number) => Promise<CheckAnnotation[]>;
   /**
    * Squash-merge ONE pull request Starfish opened from `starfish/<cycleId>` (#9), only while its head is exactly `sha`:
@@ -899,6 +923,73 @@ export function createGithubClient(cfg: GithubPrConfig, deps: GithubPrDeps): Git
       }
       if (page >= MAX_CHECK_PAGES) throw new GithubError("too-many-check-runs", `More than ${MAX_CHECKS * MAX_CHECK_PAGES} check runs on the commit: not judged on part of them.`);
     }
+  }
+
+  /** The deployments read per observation, newest first, and the ancestry checks made among them (#390). */
+  const MAX_DEPLOYMENTS = 30;
+  const MAX_DEPLOYMENT_COMPARES = 5;
+  const MAX_DEPLOYMENT_STATUSES = 30;
+  const ENVIRONMENT_RE = /^[A-Za-z0-9][A-Za-z0-9 ._:/-]{0,99}$/;
+  /** Deployments are created a moment after the merge; this much clock skew between GitHub's own stamps is tolerated. */
+  const DEPLOYMENT_SKEW_MS = 60_000;
+
+  async function deploymentOfCommit(commit: string, environment: string, mergedAt: string): Promise<DeploymentObservation> {
+    if (!/^[0-9a-f]{40}$/.test(commit)) throw new GithubError("invalid-request", "A deployment is looked up by the full merge commit.");
+    if (!ENVIRONMENT_RE.test(environment)) throw new GithubError("invalid-request", "The deployment environment is not a plain name.");
+    const sinceMs = Date.parse(mergedAt);
+    if (!Number.isFinite(sinceMs)) throw new GithubError("invalid-request", "A deployment is looked up from the merge time.");
+    const listed = await call("GET", `/repos/${cfg.githubRepo}/deployments?environment=${encodeURIComponent(environment)}&per_page=${MAX_DEPLOYMENTS}`);
+    if (listed.status !== 200) throw failure(listed.status, listed.headers, listed.json);
+    if (!Array.isArray(listed.json)) throw new GithubError("unexpected-response", "GitHub's list of deployments was not a list");
+    if (listed.json.length > MAX_DEPLOYMENTS) throw new GithubError("unexpected-response", "GitHub sent a longer page of deployments than was asked for");
+    // Oldest first among those made at or after the merge: the first one that holds the commit is the one that put it live.
+    const candidates = (listed.json as unknown[])
+      .filter((d): d is { id?: unknown; sha?: unknown; created_at?: unknown; environment?: unknown } => typeof d === "object" && d !== null)
+      .map((d) => ({
+        id: d.id,
+        sha: d.sha,
+        createdMs: typeof d.created_at === "string" ? Date.parse(d.created_at) : NaN,
+        environment: d.environment,
+      }))
+      .filter((d): d is { id: number; sha: string; createdMs: number; environment: unknown } =>
+        typeof d.id === "number" && Number.isInteger(d.id) && d.id > 0 && typeof d.sha === "string" && /^[0-9a-f]{40}$/.test(d.sha) && Number.isFinite(d.createdMs) && d.createdMs >= sinceMs - DEPLOYMENT_SKEW_MS
+      )
+      // Asked for one environment; a reply that carries another is not trusted for it.
+      .filter((d) => d.environment === undefined || d.environment === environment)
+      .sort((a, b) => a.createdMs - b.createdMs);
+
+    let compares = 0;
+    let pending: Extract<DeploymentObservation, { state: "pending" }> | undefined;
+    let failed: Extract<DeploymentObservation, { state: "failed" }> | undefined;
+    for (const d of candidates) {
+      const exact = d.sha === commit;
+      if (!exact) {
+        if (compares >= MAX_DEPLOYMENT_COMPARES) break;
+        compares += 1;
+        const cmp = await call("GET", `/repos/${cfg.githubRepo}/compare/${commit}...${d.sha}?per_page=1`);
+        // A commit GitHub cannot compare (a force-pushed away deployment) holds nothing we can show it contains.
+        if (cmp.status === 404 || cmp.status === 422) continue;
+        if (cmp.status !== 200) throw failure(cmp.status, cmp.headers, cmp.json);
+        const status = (cmp.json as { status?: unknown } | null)?.status;
+        if (status !== "ahead" && status !== "identical") continue;
+      }
+      const st = await call("GET", `/repos/${cfg.githubRepo}/deployments/${d.id}/statuses?per_page=${MAX_DEPLOYMENT_STATUSES}`);
+      if (st.status !== 200) throw failure(st.status, st.headers, st.json);
+      if (!Array.isArray(st.json)) throw new GithubError("unexpected-response", "GitHub's list of deployment statuses was not a list");
+      const statuses = (st.json as unknown[])
+        .slice(0, MAX_DEPLOYMENT_STATUSES)
+        .filter((x): x is { state?: unknown; created_at?: unknown } => typeof x === "object" && x !== null)
+        .map((x) => ({ state: x.state, atMs: typeof x.created_at === "string" ? Date.parse(x.created_at) : NaN }))
+        .filter((x): x is { state: string; atMs: number } => typeof x.state === "string" && Number.isFinite(x.atMs))
+        .sort((a, b) => a.atMs - b.atMs);
+      // The EARLIEST success: later ones are redeploys of the same commit or of a descendant, and `inactive` follows a success.
+      const success = statuses.find((x) => x.state === "success");
+      if (success) return { state: "deployed", deploymentId: d.id, sha: d.sha, completedAt: new Date(success.atMs).toISOString(), exact };
+      const last = statuses[statuses.length - 1];
+      if (last && (last.state === "failure" || last.state === "error")) failed ??= { state: "failed", deploymentId: d.id, sha: d.sha, failedAt: new Date(last.atMs).toISOString() };
+      else pending ??= { state: "pending", deploymentId: d.id, sha: d.sha };
+    }
+    return pending ?? failed ?? { state: "none" };
   }
 
   async function annotations(checkRunId: number): Promise<CheckAnnotation[]> {
@@ -1175,6 +1266,7 @@ export function createGithubClient(cfg: GithubPrConfig, deps: GithubPrDeps): Git
     deleteBranch,
     findPullRequest,
     listCheckRuns,
+    deploymentOfCommit,
     annotations,
     mergePullRequest,
     commentOnPullRequest,

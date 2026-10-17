@@ -89,6 +89,11 @@
 #                        of the same name posted by any other app is ignored, by the verify step and when an opened pull
 #                        request's checks are read. Lowercase letters, digits and hyphens. Default: the engine's own,
 #                        github-actions. Always set on the agent job, empty included, so clearing it restores the default (#229)
+#   DEPLOY_ENVIRONMENT   the name of the GitHub deployment environment the TARGET's pipeline deploys to, e.g. production
+#                        (STARFISH_DEPLOY_ENVIRONMENT, #390). With it, the agent reads that environment's deployments to say, for a
+#                        pull request that was merged (by anyone), whether the merge was deployed and the error stopped
+#                        (src/agent/recovery.ts); the agent's GitHub token then needs read access to deployments. Always set on the
+#                        agent job, empty included: empty means a merge can only be reported unverified, never recovered
 #   VERIFY_COMMAND       cloud-run-job: the command that proves a patch (STARFISH_VERIFY_COMMAND), run in the verify
 #                        job, e.g. "pnpm install --frozen-lockfile && pnpm run verify". That job's image is this
 #                        repo's engine image (node, pnpm, git): a target that needs another toolchain needs another
@@ -157,6 +162,7 @@ ADMIN_SERVICE_NAME="${ADMIN_SERVICE_NAME:-starfish-admin}"
 VERIFY_ISOLATION="${VERIFY_ISOLATION:-github-actions}"
 VERIFY_CHECKS="${VERIFY_CHECKS:-}"
 VERIFY_CHECK_APP="${VERIFY_CHECK_APP:-}"
+DEPLOY_ENVIRONMENT="${DEPLOY_ENVIRONMENT:-}"
 VERIFY_COMMAND="${VERIFY_COMMAND:-}"
 VERIFY_TIMEOUT_SECONDS="${VERIFY_TIMEOUT_SECONDS:-600}"
 VERIFY_BUCKET="${VERIFY_BUCKET:-$PROJECT_ID-starfish-verify}"
@@ -340,6 +346,10 @@ if [ "$DEPLOY_AGENT" = "1" ]; then
   case "$VERIFY_CHECK_APP" in
     *[!a-z0-9-]*|-*|*-) die "VERIFY_CHECK_APP must be a GitHub App's slug (lowercase letters, digits and hyphens), e.g. github-actions: $VERIFY_CHECK_APP" ;;
   esac
+  # A deployment environment's name goes into a GitHub API path and the job's "@"-separated settings (empty: none).
+  if [ -n "$DEPLOY_ENVIRONMENT" ] && ! [[ "$DEPLOY_ENVIRONMENT" =~ ^[A-Za-z0-9][A-Za-z0-9._:/-]{0,99}$ ]]; then
+    die "DEPLOY_ENVIRONMENT must be a plain deployment environment name such as production (letters, digits and . _ : / -): $DEPLOY_ENVIRONMENT"
+  fi
   case "$VERIFY_TIMEOUT_SECONDS" in
     ''|*[!0-9]*|0) die "VERIFY_TIMEOUT_SECONDS must be a whole number of seconds above zero: $VERIFY_TIMEOUT_SECONDS" ;;
   esac
@@ -479,6 +489,8 @@ if [ "$DEPLOY_AGENT" = "1" ]; then
   # Whose check runs count (#229), with either isolation: the agent also reads its opened pull requests' checks. Always
   # set, empty included (the engine's default, github-actions), so clearing VERIFY_CHECK_APP restores the default.
   AGENT_ENV="$AGENT_ENV@STARFISH_VERIFY_CHECK_APP=$VERIFY_CHECK_APP"
+  # Which deployments say a merged fix went live (#390). Always set, empty included, so clearing DEPLOY_ENVIRONMENT turns it off.
+  AGENT_ENV="$AGENT_ENV@STARFISH_DEPLOY_ENVIRONMENT=$DEPLOY_ENVIRONMENT"
   AGENT_WAIT_SECONDS=$((VERIFY_TIMEOUT_SECONDS + 600))
   if [ "$VERIFY_ISOLATION" = "github-actions" ]; then
     AGENT_ENV="$AGENT_ENV@STARFISH_VERIFY_CHECKS=$VERIFY_CHECKS"

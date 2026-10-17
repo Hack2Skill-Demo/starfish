@@ -662,6 +662,11 @@ describe("loadConfig: auto-merge and fast-revert (#9)", () => {
     "STARFISH_MERGE_CHECK_WAIT_MINUTES",
     "STARFISH_FAST_REVERT_MINUTES",
     "STARFISH_FAST_REVERT_GRACE_MINUTES",
+    "STARFISH_DEPLOY_ENVIRONMENT",
+    "STARFISH_RECOVERY_QUIET_MINUTES",
+    "STARFISH_RECOVERY_GRACE_MINUTES",
+    "STARFISH_RECOVERY_MIN_EXPECTED",
+    "STARFISH_RECOVERY_GIVE_UP_HOURS",
     "STARFISH_MERGE_CASES",
     "STARFISH_CLASS_RULES",
   ];
@@ -712,6 +717,21 @@ describe("loadConfig: auto-merge and fast-revert (#9)", () => {
       expect(() => loadConfig()).toThrow("STARFISH_MERGE_CASES");
     }
   );
+
+  it("reads the recovery settings, with no deployment environment assumed (#390)", () => {
+    expect(loadConfig()).toMatchObject({ deployEnvironment: "", recoveryQuietMinutes: 60, recoveryGraceMinutes: 5, recoveryMinExpected: 5, recoveryGiveUpHours: 24 });
+    vi.stubEnv("STARFISH_DEPLOY_ENVIRONMENT", " production ");
+    vi.stubEnv("STARFISH_RECOVERY_QUIET_MINUTES", "30");
+    vi.stubEnv("STARFISH_RECOVERY_GRACE_MINUTES", "2");
+    vi.stubEnv("STARFISH_RECOVERY_MIN_EXPECTED", "8");
+    vi.stubEnv("STARFISH_RECOVERY_GIVE_UP_HOURS", "12");
+    expect(loadConfig()).toMatchObject({ deployEnvironment: "production", recoveryQuietMinutes: 30, recoveryGraceMinutes: 2, recoveryMinExpected: 8, recoveryGiveUpHours: 12 });
+    for (const [name, value] of [["STARFISH_DEPLOY_ENVIRONMENT", "prod?x=1"], ["STARFISH_RECOVERY_QUIET_MINUTES", "0"], ["STARFISH_RECOVERY_MIN_EXPECTED", "-3"]] as const) {
+      vi.stubEnv(name, value);
+      expect(() => loadConfig(), `${name}=${value}`).toThrow(name);
+      vi.stubEnv(name, undefined as unknown as string);
+    }
+  });
 
   it("reads every value", () => {
     vi.stubEnv("STARFISH_AUTO_MERGE", "true");

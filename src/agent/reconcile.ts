@@ -89,7 +89,10 @@ export async function selectPrCycles(db: Firestore, cfg: ReconcileConfig, limit:
     // A seeded synthetic cycle (seedDemo.ts) names a pull request that does not exist: never read from GitHub (#192).
     if (d.synthetic === true || d.state !== "done" || pr?.opened !== true || typeof pr.number !== "number" || !Number.isInteger(pr.number) || pr.number < 1) continue;
     const prior = d.summary?.prState as { state?: unknown; checks?: unknown; checkedAt?: unknown } | undefined;
-    if (prior?.state === "merged" && SETTLED_CHECKS.includes(String(prior.checks))) continue;
+    // A merged PR whose checks are settled is left alone, once its merge commit is on the record: recovery (#390) matches a
+    // deployment against it, so a merge recorded before that was kept is read once more.
+    const priorMerge = (prior as { mergeCommitSha?: unknown } | undefined)?.mergeCommitSha;
+    if (prior?.state === "merged" && SETTLED_CHECKS.includes(String(prior.checks)) && typeof priorMerge === "string") continue;
     const checked = typeof prior?.checkedAt === "string" ? Date.parse(prior.checkedAt) : NaN;
     const key =
       typeof d.incidentId === "string" && typeof d.environment === "string" && Number.isInteger(d.recurrence)
@@ -141,6 +144,7 @@ export async function reconcilePullRequests(deps: ReconcileDeps): Promise<Reconc
         mergedAt: pr.mergedAt,
         closedAt: pr.closedAt,
         headSha: pr.headSha,
+        ...(pr.mergeCommitSha !== undefined && { mergeCommitSha: pr.mergeCommitSha }),
         ...summarizeChecks(runs, cfg.verifyChecks, cfg.verifyCheckApp),
         checkedAt,
       });

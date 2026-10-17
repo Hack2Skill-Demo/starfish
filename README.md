@@ -55,8 +55,9 @@ Precisely, as of 2026-10-17 (the evidence for every line is in [`docs/status.md`
 - **Proposed:** three verified, reviewed pull requests on the demo app (demo-app #41, #42, #49), from real incidents (#41, #42 and #49 are one bug, found again after the first fix attempt).
 - **Merged:** two of them, by a person (#49 on 2026-10-13, #41 on 2026-10-15). **Starfish has merged nothing itself.**
 - **Deployed:** the target's own pipeline deployed both merges. Starfish does not observe deployment.
-- **Verified recovery:** none. Starfish does not yet check that a merged fix stopped its error; it has that check only for the
-  missing-index path and a watch for a merge of its own, neither of which has run. See
+- **Verified recovery:** none. Starfish has built the check that a merged fix was deployed and its error stopped (for a merge by
+  anyone: it waits for a confirmed deployment, then for a window where the error's old rate would have shown), and the same for the
+  missing-index path and for a merge of its own. None of them has run on a real project. See
   [what recovery covers](docs/status.md#what-recovery-covers-today-and-what-it-does-not-390).
 
 "Built", "tested", "validated against the real service" and "observed in the deployment" are four different claims; the

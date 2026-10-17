@@ -65,6 +65,7 @@ import {
   pageIndexOf,
   pageOf,
   prStateView,
+  recoveryView,
   progressText,
   runFilter,
   runStatus,
@@ -609,6 +610,7 @@ function RunDetail({
   const issue = issueLink(cycle);
   const finding = triageFinding(cycle);
   const prNow = prStateView(cycle, now);
+  const recoveryNow = recoveryView(cycle, now);
   const indexNow = indexRuntimeView(cycle);
   const water = useMemo(() => {
     if (!events) return null;
@@ -772,6 +774,16 @@ function RunDetail({
                   {prNow.checkedAt && (
                     <span className="block text-xs text-gray-600 dark:text-gray-400">read from GitHub {formatRelativeTime(prNow.checkedAt, "never", now)}</span>
                   )}
+                </Fact>
+              )}
+              {recoveryNow && (
+                <Fact label="Recovery">
+                  <Badge tone={recoveryNow.tone}>{recoveryNow.text}</Badge>
+                  {recoveryNow.details.map((d) => (
+                    <span key={d} className="block text-xs text-gray-600 dark:text-gray-400">
+                      {d}
+                    </span>
+                  ))}
                 </Fact>
               )}
               <Fact label="Started">{formatDateTime(cycle.createdAt)}</Fact>

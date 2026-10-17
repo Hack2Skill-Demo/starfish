@@ -45,6 +45,7 @@ import { createGitCheckout, createLoader } from "./agent/assemble.js";
 import { giveUpStrandedCycles, runCycle } from "./agent/loop.js";
 import { countCyclesStartedToday, findStrandedCycles, runAgentPass, selectCandidates } from "./agent/pass.js";
 import { reconcilePullRequests } from "./agent/reconcile.js";
+import { observeRecoveries } from "./agent/recoveryStep.js";
 import { recordIntegrations } from "./agent/integrations.js";
 import { agentPreflight } from "./agent/preflight.js";
 import { createCloudRunJobStarter, createGcsStore } from "./agent/cloudRunJob.js";
@@ -284,6 +285,23 @@ async function runPass(): Promise<number> {
       } catch (err) {
         console.error(`agent: reading pull requests back failed: ${redactPii(err instanceof Error ? err.message : String(err)).slice(0, 300)}`);
         noteFailedStep(report, "pull-requests");
+      }
+
+      // Whether a MERGED fix (anyone's merge) was deployed and the error stopped (#390): reads GitHub's deployments of the merge
+      // commit, the incident and ingest's checkpoint; records `summary.recovery` on the cycle. Observes only: it never resolves
+      // the incident, reverts or notifies. Without STARFISH_DEPLOY_ENVIRONMENT every merge is reported unverified.
+      try {
+        const r = await observeRecoveries({ db, config: cfg, client: github, now: () => new Date() });
+        console.log(`agent: recovery: ${r.considered} merged fix(es) observed, ${r.recorded} recorded, ${r.decided.length} reached a final answer`);
+        for (const d of r.decided) console.log(`  ${d.cycleId}: recovery ${d.state}${d.reason ? ` (${d.reason})` : ""}`);
+        for (const e of r.errors) console.error(`  ${e.cycleId}: recovery not observed: ${e.message}`);
+        if (r.stoppedBecause) {
+          console.error(`agent: stopped observing recovery: ${r.stoppedBecause}`);
+          noteFailedStep(report, "recovery");
+        }
+      } catch (err) {
+        console.error(`agent: observing recovery failed: ${redactPii(err instanceof Error ? err.message : String(err)).slice(0, 300)}`);
+        noteFailedStep(report, "recovery");
       }
 
       // The fast-revert watch on Starfish's own merges, then auto-merge: a merge that failed is reverted before anything

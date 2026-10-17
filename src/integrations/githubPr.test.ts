@@ -54,6 +54,10 @@ let api: {
   issueComments?: (n: string) => Reply;
   commentCreate?: (n: string) => Reply;
   pull?: (n: string) => Reply;
+  /** The environment's deployments, a deployment's statuses, and the compare of two commits (#390). */
+  deployments?: (environment: string | null) => Reply;
+  deploymentStatuses?: (id: string) => Reply;
+  compare?: (base: string, head: string) => Reply;
 };
 let listCalls: number;
 let createCalls: number;
@@ -116,7 +120,12 @@ beforeAll(async () => {
       else if (req.method === "POST" && /^\/repos\/[^/]+\/[^/]+\/issues\/\d+\/comments$/.test(url.pathname) && api.commentCreate) out = api.commentCreate(url.pathname.split("/")[5]!);
       else if (req.method === "POST" && url.pathname === `/repos/${REPO}/issues` && api.issueCreate) out = api.issueCreate();
       else if (req.method === "GET" && url.pathname.startsWith(`/repos/${REPO}/commits/`) && url.pathname.endsWith("/check-runs") && api.checks) out = api.checks(url.pathname.split("/")[4]!, Number(url.searchParams.get("page") ?? "1"), url.searchParams.get("filter"));
-      else if (req.method === "GET" && url.pathname.startsWith(`/repos/${REPO}/check-runs/`) && api.annotations) out = api.annotations(url.pathname.split("/")[4]!);
+      else if (req.method === "GET" && url.pathname === `/repos/${REPO}/deployments` && api.deployments) out = api.deployments(url.searchParams.get("environment"));
+      else if (req.method === "GET" && /^\/repos\/[^/]+\/[^/]+\/deployments\/\d+\/statuses$/.test(url.pathname) && api.deploymentStatuses) out = api.deploymentStatuses(url.pathname.split("/")[5]!);
+      else if (req.method === "GET" && url.pathname.startsWith(`/repos/${REPO}/compare/`) && api.compare) {
+        const [base, head] = decodeURIComponent(url.pathname.slice(`/repos/${REPO}/compare/`.length)).split("...");
+        out = api.compare(base!, head!);
+      } else if (req.method === "GET" && url.pathname.startsWith(`/repos/${REPO}/check-runs/`) && api.annotations) out = api.annotations(url.pathname.split("/")[4]!);
       else if (req.method === "DELETE" && url.pathname.startsWith(`/repos/${REPO}/git/refs/heads/`)) {
         // Like GitHub: the branch is really gone afterwards.
         const ref = `refs/heads/${decodeURIComponent(url.pathname.slice(`/repos/${REPO}/git/refs/heads/`.length))}`;
@@ -1169,5 +1178,88 @@ describe("pullRequestText: the missing-index evidence pull request (#11)", () =>
 
     it("a code fix without a verify result says so instead of inventing one", () => {
     expect(pullRequestText(request({ verify: undefined })).body).toContain("## Verify gate\n\nNot run.");
+  });
+});
+
+describe("createGithubClient: deploymentOfCommit (#390)", () => {
+  const MERGE = "a".repeat(40);
+  const LATER = "b".repeat(40);
+  const OTHER = "c".repeat(40);
+  const MERGED_AT = "2026-10-15T03:36:40Z";
+  const dep = (id: number, sha: string, created: string, environment = "production") => ({ id, sha, environment, created_at: created });
+  const status = (state: string, at: string) => ({ state, created_at: at });
+  /** A fake API: these deployments (newest first, like GitHub), their statuses, and which shas are ahead of the merge. */
+  const serve = (deployments: unknown[], statuses: Record<number, unknown[]>, ahead: Record<string, string> = {}) => {
+    api.deployments = () => ({ status: 200, json: deployments });
+    api.deploymentStatuses = (id) => ({ status: 200, json: statuses[Number(id)] ?? [] });
+    api.compare = (_base, head) => (ahead[head] ? { status: 200, json: { status: ahead[head] } } : { status: 404, json: { message: "Not Found" } });
+  };
+  const observe = () => client().deploymentOfCommit(MERGE, "production", MERGED_AT);
+
+  it("is deployed when a deployment of the merge commit itself succeeded, at the time of its success status", async () => {
+    serve([dep(5, MERGE, "2026-10-15T03:37:00Z")], { 5: [status("success", "2026-10-15T03:42:20Z"), status("in_progress", "2026-10-15T03:37:05Z"), status("queued", "2026-10-15T03:37:00Z")] });
+    expect(await observe()).toEqual({ state: "deployed", deploymentId: 5, sha: MERGE, completedAt: "2026-10-15T03:42:20.000Z", exact: true });
+    // Read-only GETs, for that environment, and no compare for the commit itself.
+    expect(requests.map((r) => r.method)).toEqual(["GET", "GET"]);
+    expect(requests[0]!.path).toBe(`/repos/${REPO}/deployments?environment=production&per_page=30`);
+  });
+
+  it("counts a later deployment that contains the merge (ahead or identical), the earliest one that succeeded", async () => {
+    serve(
+      [dep(9, OTHER, "2026-10-15T09:00:00Z"), dep(7, LATER, "2026-10-15T05:00:00Z")],
+      { 7: [status("success", "2026-10-15T05:04:00Z")], 9: [status("success", "2026-10-15T09:04:00Z")] },
+      { [LATER]: "ahead", [OTHER]: "ahead" }
+    );
+    expect(await observe()).toMatchObject({ state: "deployed", deploymentId: 7, sha: LATER, completedAt: "2026-10-15T05:04:00.000Z", exact: false });
+  });
+
+  it("does not count a deployment that does not contain the merge, one made before it, or another environment's", async () => {
+    serve(
+      [dep(9, OTHER, "2026-10-15T09:00:00Z"), dep(8, LATER, "2026-10-15T08:00:00Z", "staging"), dep(2, MERGE, "2026-10-14T01:00:00Z")],
+      { 9: [status("success", "2026-10-15T09:04:00Z")], 8: [status("success", "2026-10-15T08:04:00Z")], 2: [status("success", "2026-10-14T01:04:00Z")] },
+      { [OTHER]: "behind" }
+    );
+    expect(await observe()).toEqual({ state: "none" });
+  });
+
+  it("is none when the environment has no deployments, and pending while the one that holds it has not finished", async () => {
+    serve([], {});
+    expect(await observe()).toEqual({ state: "none" });
+    serve([dep(5, MERGE, "2026-10-15T03:37:00Z")], { 5: [status("in_progress", "2026-10-15T03:37:05Z"), status("queued", "2026-10-15T03:37:00Z")] });
+    expect(await observe()).toEqual({ state: "pending", deploymentId: 5, sha: MERGE });
+    // A deployment with no status yet is still pending, never deployed.
+    serve([dep(5, MERGE, "2026-10-15T03:37:00Z")], { 5: [] });
+    expect((await observe()).state).toBe("pending");
+  });
+
+  it("is failed when the only deployment that holds it failed, and a later success still wins", async () => {
+    serve([dep(5, MERGE, "2026-10-15T03:37:00Z")], { 5: [status("failure", "2026-10-15T03:40:00Z"), status("in_progress", "2026-10-15T03:37:05Z")] });
+    expect(await observe()).toEqual({ state: "failed", deploymentId: 5, sha: MERGE, failedAt: "2026-10-15T03:40:00.000Z" });
+    serve([dep(6, LATER, "2026-10-15T04:00:00Z"), dep(5, MERGE, "2026-10-15T03:37:00Z")], { 5: [status("error", "2026-10-15T03:40:00Z")], 6: [status("success", "2026-10-15T04:05:00Z")] }, { [LATER]: "ahead" });
+    expect(await observe()).toMatchObject({ state: "deployed", deploymentId: 6 });
+  });
+
+  it("reads a success that a later `inactive` follows as the success it was", async () => {
+    serve([dep(5, MERGE, "2026-10-15T03:37:00Z")], { 5: [status("inactive", "2026-10-15T08:00:00Z"), status("success", "2026-10-15T03:42:00Z")] });
+    expect(await observe()).toMatchObject({ state: "deployed", completedAt: "2026-10-15T03:42:00.000Z" });
+  });
+
+  it("bounds the ancestry checks, and says none rather than guess past them", async () => {
+    const many = Array.from({ length: 8 }, (_, i) => dep(100 + i, String(i + 1).repeat(40), `2026-10-15T0${i + 4}:00:00Z`));
+    serve(many, {}, {});
+    expect(await observe()).toEqual({ state: "none" });
+    expect(requests.filter((r) => r.path.includes("/compare/")).length).toBe(5);
+  });
+
+  it("skips malformed items and refuses malformed answers and arguments", async () => {
+    serve([null, "junk", { id: "x", sha: MERGE }, { id: 3, sha: "short", created_at: "2026-10-15T04:00:00Z" }, dep(5, MERGE, "2026-10-15T03:37:00Z")], { 5: [{ state: 3 }, status("success", "2026-10-15T03:42:00Z"), "junk"] });
+    expect(await observe()).toMatchObject({ state: "deployed", deploymentId: 5 });
+    api.deployments = () => ({ status: 200, json: { not: "a list" } });
+    await expect(observe()).rejects.toMatchObject({ rule: "unexpected-response" });
+    api.deployments = () => ({ status: 403, json: { message: "Resource not accessible by integration" } });
+    await expect(observe()).rejects.toMatchObject({ rule: "forbidden" });
+    await expect(client().deploymentOfCommit("short", "production", MERGED_AT)).rejects.toMatchObject({ rule: "invalid-request" });
+    await expect(client().deploymentOfCommit(MERGE, "prod?x=1&y", MERGED_AT)).rejects.toMatchObject({ rule: "invalid-request" });
+    await expect(client().deploymentOfCommit(MERGE, "production", "yesterday")).rejects.toMatchObject({ rule: "invalid-request" });
   });
 });

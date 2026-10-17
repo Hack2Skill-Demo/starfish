@@ -426,6 +426,7 @@ defaults when empty.
 | `STARFISH_INDEX_TARGETS` | `INDEX_TARGETS` | with the agent: the databases the missing-index repair may create an index in, `project/database` comma-separated (`STARFISH_INDEX_ALLOWED_TARGETS`). Grants the agent `roles/datastore.indexAdmin` and `roles/datastore.viewer` on each, conditioned to that database. Creating still needs `STARFISH_INDEX_AUTO_APPLY=true` in `STARFISH_AGENT_EXTRA_ENV_VARS`. Run `setup-github-deploy.sh` again with the same `INDEX_TARGETS` first, so the deployer may grant them |
 | `STARFISH_DEPLOY_AGENT`, `STARFISH_AGENT_REPO` | `DEPLOY_AGENT`, `AGENT_REPO` | set `1` and `owner/name` to deploy the agent too ([below](#the-agent-and-where-its-tests-run-74)); default off |
 | `STARFISH_VERIFY_ISOLATION`, `STARFISH_VERIFY_CHECKS`, `STARFISH_VERIFY_COMMAND` | `VERIFY_ISOLATION`, `VERIFY_CHECKS`, `VERIFY_COMMAND` | `github-actions` (default) with the check names that must pass, or `cloud-run-job` with a command |
+| `STARFISH_DEPLOY_ENVIRONMENT` | `DEPLOY_ENVIRONMENT` | the GitHub deployment environment the **target's** pipeline deploys to, e.g. `production` (#390): with it the agent says, for a merged pull request (anyone's merge), whether it was deployed and the error stopped ([`status.md`](status.md#what-recovery-covers-today-and-what-it-does-not-390)). The agent's GitHub token needs read access to deployments. Always set on the agent job, so emptying it turns it off and a merge is then only ever reported unverified |
 | `STARFISH_VERIFY_CHECK_APP` | `VERIFY_CHECK_APP` | the slug of the GitHub App whose check runs count (#229); default the engine's, `github-actions`. Always set on the agent job, so emptying it restores the default |
 | `STARFISH_VERIFY_TIMEOUT_SECONDS`, `STARFISH_VERIFY_BUCKET`, `STARFISH_AGENT_BASE_BRANCH`, `STARFISH_AGENT_SCHEDULE`, `STARFISH_AGENT_EXTRA_ENV_VARS` | `VERIFY_TIMEOUT_SECONDS`, `VERIFY_BUCKET`, `AGENT_BASE_BRANCH`, `AGENT_SCHEDULE`, `AGENT_EXTRA_ENV_VARS` | default 600, `<project>-starfish-verify`, `main`, `30 * * * *`. The base branch is always set on the agent job, so emptying it restores `main` (#233). The schedule is also set on the agent job as `STARFISH_AGENT_SCHEDULE`, so the UI's agent line can say when the next pass is expected (#274) |
 | `STARFISH_DEPLOY_ADMIN_API`, `STARFISH_ADMIN_API_ORIGINS` | `DEPLOY_ADMIN_API`, `ADMIN_API_ORIGINS` | set `1` and the site's origin to deploy the admin API too ([below](#the-admin-api-run-ingest-now-and-retire-an-incident-63-65)); default off. Its service name is kept out of ingest either way (#177) |
@@ -664,6 +665,13 @@ jobs:
   test log. Make the workflow emit annotations (`::error file=...::message`) for failures if you want better revisions.
 - Only **check runs** are read (what GitHub Actions creates); a CI that reports commit statuses instead is not seen. The
   token needs read access to checks as well as write access to contents.
+- **Recovery of a merged fix (#390)** reads the target's **deployments** (`GET /repos/<repo>/deployments` and their statuses, and
+  a commit compare), so the token also needs read access to deployments (a fine-grained token's "Deployments: read"). Set
+  `STARFISH_DEPLOY_ENVIRONMENT` (the script's `DEPLOY_ENVIRONMENT`) to the environment name the target's deploy job runs in
+  (`environment: production` records a Deployment, with the job's result as its status). Without the name, or without the
+  permission (the pass records `deploy-unreadable` and says so), a merge is reported `unverified`, never `recovered`. It reads
+  the newest 30 deployments of that environment and makes at most 5 ancestry checks per merge. Written and tested against a fake
+  GitHub; never run against real GitHub.
 - Only runs posted by **one GitHub App** count (`STARFISH_VERIFY_CHECK_APP`, default `github-actions`); a run of the same
   name from any other app is ignored. A CI that posts as another app (its slug, e.g. `my-ci-app`) is named with the script's
   `VERIFY_CHECK_APP` (#229; neither extra list may set a `STARFISH_VERIFY_*` name). The script sets it on every deploy,

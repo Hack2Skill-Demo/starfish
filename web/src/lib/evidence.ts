@@ -12,7 +12,7 @@
  * request was opened, the fix stage links to its diff on GitHub instead (#39).
  */
 import type { IncidentRow } from "./incidents";
-import { indexRuntimeView, isIndexCycle, prStateView, safeUrl, type CycleRow } from "./runsModel";
+import { indexRuntimeView, isIndexCycle, prStateView, recoveryView, safeUrl, type CycleRow } from "./runsModel";
 
 export type EvidenceStatus = "recorded" | "not-reached" | "not-stored";
 
@@ -129,6 +129,18 @@ function prNowFields(cycle: CycleRow | null, nowMs: number): EvidenceField[] {
     { label: "State now", value: view.text },
     ...(view.checkedAt ? [{ label: "Read from GitHub", value: view.checkedAt.toISOString() }] : []),
     ...(view.checkedAt && typeof headSha === "string" && headSha !== "" ? [{ label: "Head commit", value: headSha, mono: true }] : []),
+    ...recoveryFields(cycle, nowMs),
+  ];
+}
+
+/** Whether the merged fix was deployed and the error stopped, as the engine observed it (#390): the answer and what it rests on. */
+function recoveryFields(cycle: CycleRow | null, nowMs: number): EvidenceField[] {
+  const view = cycle ? recoveryView(cycle, nowMs) : undefined;
+  if (!view) return [];
+  return [
+    { label: "Recovery", value: view.text },
+    ...view.details.map((value, i) => ({ label: i === 0 ? "Recovery evidence" : "", value })),
+    ...(view.checkedAt ? [{ label: "Recovery observed", value: view.checkedAt.toISOString() }] : []),
   ];
 }
 
@@ -276,7 +288,10 @@ export function buildEvidence(row: IncidentRow, cycle: CycleRow | null, nowMs = 
   ];
   // A merge is about the pull request, not the incident: say so wherever the PR's later state is shown.
   const pr = stages.find((s) => s.id === "pr")!;
-  if (cycle && prStateView(cycle, nowMs)) pr.note = "A merged pull request is not proof the incident is healed: that needs the error to stop in production.";
+  if (cycle && prStateView(cycle, nowMs)) {
+    pr.note = "A merged pull request is not proof the incident is healed: that needs the error to stop in production.";
+    if (recoveryView(cycle, nowMs)) pr.note += " The Recovery line is Starfish's own check of that, from the deployment onward.";
+  }
 
   const hashes = (["verify", "review", "pr"] as const)
     .map((k) => rec[k]?.patchSha256)
