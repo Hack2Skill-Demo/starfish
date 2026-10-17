@@ -112,6 +112,15 @@ describe("stepDetail", () => {
     expect(stepDetail(step("notify", T, { status: "failed" }), c, [ev(1, "notify", T)]).delivery).toEqual({ state: "failed", attempts: 3, reason: "HTTP 500" });
   });
 
+  it("reads why the missing-index step stopped, and nothing when a guest's copy kept no text", () => {
+    const reason = "The configured query already succeeds, so this index is not what it needs; nothing was created.";
+    const stored = cycle({ index: { state: "refused", rule: "probe-not-confirmed", reason } });
+    expect(stepDetail(step("index", T), stored, [ev(1, "index", T)]).index).toEqual({ reason });
+    const guest = cycle({ index: { state: "refused", rule: "probe-not-confirmed" } });
+    expect(stepDetail(step("index", T), guest, [ev(1, "index", T)]).index).toBeUndefined();
+    expect(stepDetail(step("index", T), cycle({ index: { state: "ready" } }), [ev(1, "index", T)]).index).toBeUndefined();
+  });
+
   it("gives nothing for a step that was not reached, or a guest's copy that kept no text", () => {
     const c = cycle({ review: { verdict: "block", attacks: 3, held: 3 } });
     expect(stepDetail({ stage: "review", title: "r", status: "not-reached" }, c, [])).toEqual({});

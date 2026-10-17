@@ -1437,6 +1437,8 @@ function StepDetails({
         </p>
       )}
 
+      {detail.index?.reason && <p className={`whitespace-pre-wrap ${BODY}`}>{detail.index.reason}</p>}
+
       {step.stage === "issue" && done && issue && (
         <div className="rounded-xl border border-gray-200 px-4 py-3 dark:border-gray-700">
           <GitHubRef url={issue.url} what="issue" repo={issue.repo} number={issue.number} icon={<CircleDot className="h-4 w-4 shrink-0" aria-hidden />} />
