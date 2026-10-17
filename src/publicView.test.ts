@@ -228,6 +228,7 @@ const storedCycle = (over: Record<string, unknown> = {}): Record<string, unknown
     issue: { state: "opened", number: 30, url: "https://github.com/o/r/issues/30" },
     pr: { opened: true, number: 42, url: "https://github.com/o/r/pull/42", patchSha256: "b".repeat(64) },
     prState: { number: 42, state: "merged", mergedAt: "2026-10-08T11:00:00.000Z", closedAt: null, headSha: "d".repeat(40), checks: "passed", checksPassed: 1, checksRequired: 1, checkedAt: "2026-10-08T11:30:00.000Z" },
+    recovery: { state: "recovered", reason: "waiting-for-window", mergeCommitSha: "e".repeat(40), mergedAt: "2026-10-08T11:00:00.000Z", deployedAt: "2026-10-08T11:06:00.000Z", windowEnd: "2026-10-08T12:11:00.000Z", expectedOccurrences: 10, baselineTaken: true, baselinePerHour: 10, baselineHours: 24, deploymentId: 26, deploymentSha: "e".repeat(40), readError: "forbidden", checkedAt: "2026-10-08T12:30:00.000Z" },
     notify: { state: "sent", attempts: 1 },
     merge: { state: "pending" },
     escalation: { state: "calling", to: "+1•••0100" },
@@ -246,7 +247,7 @@ describe("toPublicCycle", () => {
     );
     expect(copy.leaseExpiresAt).toBeNull();
     const summary = copy.summary as Record<string, Record<string, unknown>>;
-    expect(Object.keys(summary).sort()).toEqual(["fix", "issue", "pr", "prState", "review", "triage", "verify"]);
+    expect(Object.keys(summary).sort()).toEqual(["fix", "issue", "pr", "prState", "recovery", "review", "triage", "verify"]);
     expect(summary.issue).toEqual({ state: "opened", number: 30, url: "https://github.com/o/r/issues/30" });
     expect(summary.triage).toEqual({ decision: "act", rule: "model-act", model: "gemini-3.1-pro-preview", counterCount: null });
     expect(summary.fix).toEqual({ outcome: "proposed", rule: "ok", testAdded: true, revisions: 1 });
@@ -254,6 +255,8 @@ describe("toPublicCycle", () => {
     expect(summary.review).toEqual({ verdict: "approve", rule: "ok", attacks: 2, held: 2, flagged: 0, broken: 0, patchSha256: "b".repeat(64) });
     expect(summary.pr).toEqual({ opened: true, number: 42, url: "https://github.com/o/r/pull/42", patchSha256: "b".repeat(64) });
     expect(summary.prState).toMatchObject({ state: "merged", closedAt: null, checks: "passed" });
+    // The recovery answer, why and when: never the error's rate, the deployment's id or what GitHub could not be read for (#390).
+    expect(summary.recovery).toEqual({ state: "recovered", reason: "waiting-for-window", mergeCommitSha: "e".repeat(40), mergedAt: "2026-10-08T11:00:00.000Z", deployedAt: "2026-10-08T11:06:00.000Z", windowEnd: "2026-10-08T12:11:00.000Z", expectedOccurrences: 10, checkedAt: "2026-10-08T12:30:00.000Z" });
   });
 
   it("keeps a failed filing's state, never its reason, and drops a link that is not https", () => {
@@ -299,7 +302,7 @@ describe("toPublicCycle", () => {
   });
 
   it("covers only what the UI renders: every allowlisted stage is one the evidence or Runs page reads", () => {
-    expect(Object.keys(PUBLIC_SUMMARY).sort()).toEqual(["fix", "index", "issue", "pr", "prState", "review", "triage", "verify"]);
+    expect(Object.keys(PUBLIC_SUMMARY).sort()).toEqual(["fix", "index", "issue", "pr", "prState", "recovery", "review", "triage", "verify"]);
   });
 });
 

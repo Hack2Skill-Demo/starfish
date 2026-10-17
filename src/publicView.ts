@@ -253,6 +253,9 @@ export const PUBLIC_SUMMARY: Readonly<Record<string, Readonly<Record<string, Sha
     failedChecks: ident,
     checkedAt: iso,
   },
+  // Whether a merged fix was deployed and the error stopped (#390, src/agent/recoveryStep.ts): the answer, why, and when. Engine
+  // tokens and times only; never the error's rate, the deployment's id or what GitHub could not be read for.
+  recovery: { state: token, reason: token, mergeCommitSha: hex, mergedAt: iso, deployedAt: iso, windowStart: iso, windowEnd: iso, expectedOccurrences: nonNegative, recurredAt: iso, checkedAt: iso },
   index: {
     state: token,
     rule: token,

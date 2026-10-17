@@ -21,10 +21,11 @@ export const AGENT_LAST_RUN_DOC = "agent_last_run";
  *   sweep          the sweep for stranded cycles failed
  *   index-heals    checking earlier index heals failed
  *   pull-requests  reading opened pull requests back stopped or failed
+ *   recovery       reading deployments for merged fixes stopped on an error every one would hit (credentials, rate limit)
  *   merge-steps    the fast-revert or auto-merge step failed as a whole
  *   escalation     the phone escalation tick failed
  */
-export const AGENT_PASS_STEPS = ["cycles", "sweep", "index-heals", "pull-requests", "merge-steps", "escalation"] as const;
+export const AGENT_PASS_STEPS = ["cycles", "sweep", "index-heals", "pull-requests", "recovery", "merge-steps", "escalation"] as const;
 export type AgentPassStep = (typeof AGENT_PASS_STEPS)[number];
 
 /** The `error` of a pass that refused to start because the agent's preflight refused its configuration. */

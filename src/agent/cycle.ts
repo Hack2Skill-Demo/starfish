@@ -556,6 +556,8 @@ export interface PrStateRecord {
   mergedAt: string | null;
   closedAt: string | null;
   headSha: string;
+  /** The commit the merge made on the base branch, once merged: what a deployment is matched against (#390). */
+  mergeCommitSha?: string;
   /** The named required checks on `headSha`: all passed, one failed, some still running or not reported, or none named. */
   checks: "passed" | "failed" | "pending" | "missing" | "not-configured";
   checksPassed: number;
@@ -593,6 +595,7 @@ export async function recordPrState(db: Firestore, cfg: CycleConfig, id: string,
     !PR_STATES.includes(observed.state) ||
     !CHECK_STATES.includes(observed.checks) ||
     !/^[0-9a-f]{40}$/.test(observed.headSha) ||
+    (observed.mergeCommitSha !== undefined && !/^[0-9a-f]{40}$/.test(observed.mergeCommitSha)) ||
     isoMs(observed.checkedAt) === null
   ) {
     return { ok: false, reason: "invalid" };
@@ -611,6 +614,84 @@ export async function recordPrState(db: Firestore, cfg: CycleConfig, id: string,
     if (prior?.state === "merged" && observed.state !== "merged") return { ok: true, applied: false, reason: "merged-is-final" };
     wrote(d.environment);
     tx.update(ref, { "summary.prState": record });
+    return { ok: true, applied: true };
+  });
+}
+
+/**
+ * What the recovery observer (recovery.ts, #390) recorded about a MERGED pull request's fix: `summary.recovery`. Flat, like
+ * every record here (no nested values): times are ISO strings, the baseline two numbers.
+ */
+export interface RecoveryRecord {
+  /** `awaiting-deploy`, `observing`, `recovered`, `recurred` or `unverified`. */
+  state: "awaiting-deploy" | "observing" | "recovered" | "recurred" | "unverified";
+  /** Why it is unverified, or what it still waits for (recovery.ts `RecoveryReason`). */
+  reason?: string;
+  /** The merge this is about: must be the one `summary.prState` recorded. */
+  mergeCommitSha: string;
+  mergedAt: string;
+  /** The deployment that put the merge live (GitHub's Deployments API), once there is one. */
+  deployedAt?: string;
+  deploymentId?: number;
+  deploymentSha?: string;
+  /** The quiet window judged, once deployed and the traffic could say anything about silence. */
+  windowStart?: string;
+  windowEnd?: string;
+  /** About how many occurrences the error's rate before the merge predicts over the window. */
+  expectedOccurrences?: number;
+  /** The error's rate before the merge, taken once when the merge was first seen; `baselineTaken` without the two = none usable. */
+  baselineTaken?: boolean;
+  baselinePerHour?: number;
+  baselineHours?: number;
+  /** When the error was seen again after the deployment, if it was. */
+  recurredAt?: string;
+  /** What the Deployments API could not be read for (a rule name), while it could not. */
+  readError?: string;
+  checkedAt: string;
+}
+
+export type RecoveryWrite =
+  | { ok: true; applied: true }
+  | { ok: true; applied: false; reason: "stale" | "final" }
+  | { ok: false; reason: "no-such-cycle" | "not-merged" | "invalid" };
+
+const RECOVERY_STATES: readonly string[] = ["awaiting-deploy", "observing", "recovered", "recurred", "unverified"];
+const RECOVERY_FINAL: readonly string[] = ["recovered", "recurred", "unverified"];
+
+/**
+ * Record a merged fix's recovery state on its finished cycle. Like `recordPrState`: no lease (the cycle is done), only
+ * `summary.recovery` is written, in a transaction, and only for the merge `summary.prState` recorded. It never changes the
+ * cycle's state, path, outcome or `updatedAt`, and never touches the incident: an observation is not a resolution.
+ *   - a result already final (`recovered`, `recurred`, `unverified`) is never replaced: it is a fact about what was seen then;
+ *   - one read no later than the recorded one is ignored (`stale`).
+ */
+export async function recordRecovery(db: Firestore, cfg: CycleConfig, id: string, observed: RecoveryRecord): Promise<RecoveryWrite> {
+  const times = [observed.mergedAt, observed.checkedAt, observed.deployedAt, observed.windowStart, observed.windowEnd, observed.recurredAt];
+  if (
+    !ID_RE.test(id) ||
+    !RECOVERY_STATES.includes(observed.state) ||
+    !/^[0-9a-f]{40}$/.test(observed.mergeCommitSha) ||
+    (observed.deploymentSha !== undefined && !/^[0-9a-f]{40}$/.test(observed.deploymentSha)) ||
+    times.some((t) => t !== undefined && isoMs(t) === null) ||
+    [observed.expectedOccurrences, observed.baselinePerHour, observed.baselineHours].some((n) => n !== undefined && (typeof n !== "number" || !Number.isFinite(n) || n < 0)) ||
+    (observed.deploymentId !== undefined && (!Number.isInteger(observed.deploymentId) || observed.deploymentId < 1))
+  ) {
+    return { ok: false, reason: "invalid" };
+  }
+  const record = sanitizeFlat({ ...observed });
+  const ref = cycleRef(db, cfg, id);
+  return cycleTransaction(db, cfg, id, async (tx, wrote): Promise<RecoveryWrite> => {
+    const snap = await tx.get(ref);
+    if (!snap.exists) return { ok: false, reason: "no-such-cycle" };
+    const d = snap.data() as Record<string, unknown>;
+    const summary = (d.summary ?? {}) as { prState?: { state?: unknown; mergeCommitSha?: unknown }; recovery?: { state?: unknown; checkedAt?: unknown } };
+    if (d.state !== "done" || summary.prState?.state !== "merged" || summary.prState.mergeCommitSha !== observed.mergeCommitSha) return { ok: false, reason: "not-merged" };
+    const prior = summary.recovery;
+    if (typeof prior?.state === "string" && RECOVERY_FINAL.includes(prior.state)) return { ok: true, applied: false, reason: "final" };
+    const priorAt = isoMs(prior?.checkedAt);
+    if (priorAt !== null && isoMs(observed.checkedAt)! <= priorAt) return { ok: true, applied: false, reason: "stale" };
+    wrote(d.environment);
+    tx.update(ref, { "summary.recovery": record });
     return { ok: true, applied: true };
   });
 }

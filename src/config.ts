@@ -294,6 +294,24 @@ export interface StarfishConfig {
   fastRevertMinutes: number;
   fastRevertGraceMinutes: number;
   /**
+   * Recovery observation for MERGED pull requests, whoever merged them (#390, src/agent/recovery.ts). The target's
+   * deployment is read from GitHub's Deployments API: the name of the deployment environment its pipeline deploys to
+   * (`production`). Empty by default: no deployment can be confirmed, so a merge is reported `unverified` and never
+   * `recovered`. The token needs read access to deployments.
+   */
+  deployEnvironment: string;
+  /**
+   * After the deployment completes: `recoveryGraceMinutes` for instances still draining the old revision, then a quiet
+   * window of `recoveryQuietMinutes`, lengthened so that, at the error's rate before the merge, at least
+   * `recoveryMinExpected` occurrences would have shown if the fix had not worked: silence over a window where the
+   * error was not expected to show proves nothing. A merge not deployed (or not observable) within
+   * `recoveryGiveUpHours` of the merge is reported `unverified`.
+   */
+  recoveryQuietMinutes: number;
+  recoveryGraceMinutes: number;
+  recoveryMinExpected: number;
+  recoveryGiveUpHours: number;
+  /**
    * Browser origins allowed to call the admin API (src/adminApi.ts) from another site: the operator UI's
    * origin, e.g. `https://my-site.web.app`. Empty by default: no browser may. Each entry is an exact origin
    * (https, or http only for localhost); a typo throws at startup instead of widening who may call.
@@ -682,6 +700,11 @@ export function loadConfig(): StarfishConfig {
     mergeCheckWaitMinutes: positiveNumber(process.env.STARFISH_MERGE_CHECK_WAIT_MINUTES, 120, "STARFISH_MERGE_CHECK_WAIT_MINUTES"),
     fastRevertMinutes: positiveNumber(process.env.STARFISH_FAST_REVERT_MINUTES, 60, "STARFISH_FAST_REVERT_MINUTES"),
     fastRevertGraceMinutes: positiveNumber(process.env.STARFISH_FAST_REVERT_GRACE_MINUTES, 10, "STARFISH_FAST_REVERT_GRACE_MINUTES"),
+    deployEnvironment: deploymentEnvironment(process.env.STARFISH_DEPLOY_ENVIRONMENT),
+    recoveryQuietMinutes: positiveNumber(process.env.STARFISH_RECOVERY_QUIET_MINUTES, 60, "STARFISH_RECOVERY_QUIET_MINUTES"),
+    recoveryGraceMinutes: positiveNumber(process.env.STARFISH_RECOVERY_GRACE_MINUTES, 5, "STARFISH_RECOVERY_GRACE_MINUTES"),
+    recoveryMinExpected: positiveNumber(process.env.STARFISH_RECOVERY_MIN_EXPECTED, 5, "STARFISH_RECOVERY_MIN_EXPECTED"),
+    recoveryGiveUpHours: positiveNumber(process.env.STARFISH_RECOVERY_GIVE_UP_HOURS, 24, "STARFISH_RECOVERY_GIVE_UP_HOURS"),
     adminApiOrigins: validOrigins(parseList(process.env.STARFISH_ADMIN_API_ORIGINS, ",") ?? []),
     adminApiPort: positiveNumber(process.env.PORT, 8080, "PORT"),
     adminApiRateLimitPerMinute: positiveInteger(process.env.STARFISH_ADMIN_API_RATE_LIMIT_PER_MINUTE, 30, "STARFISH_ADMIN_API_RATE_LIMIT_PER_MINUTE"),
@@ -1008,6 +1031,14 @@ function validApiRoot(raw: string | undefined, fallback: string, name: string): 
 }
 
 /** The value trimmed, or the default when it is unset or blank. */
+/** A GitHub deployment environment name: plain characters only, or startup stops (it goes into an API path). */
+function deploymentEnvironment(raw: string | undefined): string {
+  const v = (raw ?? "").trim();
+  if (v === "") return "";
+  if (!/^[A-Za-z0-9][A-Za-z0-9 ._:/-]{0,99}$/.test(v)) throw new Error("STARFISH_DEPLOY_ENVIRONMENT must be a plain deployment environment name such as production.");
+  return v;
+}
+
 function textOr(raw: string | undefined, fallback: string): string {
   return (raw ?? "").trim() || fallback;
 }

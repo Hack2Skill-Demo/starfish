@@ -3,6 +3,7 @@ import {
   ago,
   buildWaterfall,
   prStateView,
+  recoveryView,
   formatClock,
   formatDuration,
   groupByDay,
@@ -513,6 +514,41 @@ describe("prStateView: the pull request as the engine last read it back (#17)", 
     expect(ago(NOW - 10_000, NOW)).toBe("just now");
     expect(ago(NOW - 5 * 60_000, NOW)).toBe("5 min ago");
     expect(ago(NOW + 60_000, NOW)).toBe("just now");
+  });
+});
+
+describe("recoveryView: a merged fix, deployed, and whether the error stopped (#390)", () => {
+  const NOW = Date.UTC(2026, 9, 15, 12, 0, 0);
+  const at = (msAgo: number) => new Date(NOW - msAgo).toISOString();
+  const merged = { state: "merged", mergedAt: at(5 * 3600_000), checks: "passed", checkedAt: at(60_000) };
+  const withRecovery = (recovery?: Record<string, string | number | boolean>, prState: Record<string, string | number | null> = merged) =>
+    cycle({ state: "done", summary: { pr: { opened: true, number: 7, url: "https://github.com/o/r/pull/7" }, prState, ...(recovery && { recovery }) } });
+  const base = { mergeCommitSha: "a".repeat(40), mergedAt: at(5 * 3600_000), checkedAt: at(60_000) };
+
+  it("says nothing until the observer has recorded something, and nothing for a pull request that was not merged", () => {
+    expect(recoveryView(withRecovery(), NOW)).toBeUndefined();
+    expect(recoveryView(withRecovery({ ...base, state: "recovered" }, { state: "open", checks: "pending", checkedAt: at(0) }), NOW)).toBeUndefined();
+    expect(recoveryView(withRecovery({ ...base, state: "recovered", checkedAt: "garbage" }), NOW)).toBeUndefined();
+    expect(recoveryView(withRecovery({ ...base, state: "healed" }), NOW)).toBeUndefined();
+  });
+
+  it("reads each state in plain words, with the facts it rests on", () => {
+    expect(recoveryView(withRecovery({ ...base, state: "awaiting-deploy", reason: "waiting-for-deployment" }), NOW)).toMatchObject({ text: "Merged; waiting for the deployment", tone: "info", details: [] });
+    const observing = recoveryView(withRecovery({ ...base, state: "observing", reason: "waiting-for-window", deployedAt: at(2 * 3600_000), windowStart: at(110 * 60_000), windowEnd: at(50 * 60_000), expectedOccurrences: 10 }), NOW)!;
+    expect(observing).toMatchObject({ text: "Deployed; watching for the error to come back", tone: "info" });
+    expect(observing.details).toEqual([expect.stringContaining("Deployed 2h ago"), expect.stringContaining("Judged from"), "About 10 occurrences expected in that window at the error's rate before the merge"]);
+    expect(recoveryView(withRecovery({ ...base, state: "observing", reason: "waiting-for-ingest" }), NOW)?.text).toContain("waiting for ingest to read through the window");
+    expect(recoveryView(withRecovery({ ...base, state: "recovered", deployedAt: at(3600_000) }), NOW)).toMatchObject({ text: "Recovered: deployed, and the error stayed away for the whole window", tone: "success" });
+    expect(recoveryView(withRecovery({ ...base, state: "recurred", recurredAt: at(20 * 60_000) }), NOW)).toMatchObject({ text: "The error came back after the deployment (20 min ago)", tone: "warning" });
+  });
+
+  it("names why a fix is unverified, and never as recovered", () => {
+    for (const reason of ["no-deployment-environment", "deploy-failed", "deploy-not-observed", "deploy-unreadable", "incident-gone", "low-traffic", "ingest-not-covering"]) {
+      const v = recoveryView(withRecovery({ ...base, state: "unverified", reason }), NOW)!;
+      expect(v.text.startsWith("Not verified")).toBe(true);
+      expect(v.tone).toBe("neutral");
+    }
+    expect(recoveryView(withRecovery({ ...base, state: "unverified", reason: "something-new" }), NOW)?.text).toBe("Not verified");
   });
 });
 

@@ -1024,6 +1024,29 @@ describe("scripts/deploy-gcp.sh: settings that must revert when cleared (#229, #
     expect(values(both.out, adminService, "STARFISH_VERIFY_CHECK_APP")).toEqual([]);
   });
 
+  it("sets which GitHub deployment environment says a merged fix went live, on the agent only, empty meaning off (#390)", () => {
+    const unset = deploy(agent);
+    expect(unset.status).toBe(0);
+    expect(values(unset.out, agentJob, "STARFISH_DEPLOY_ENVIRONMENT")).toEqual([""]);
+    const set = deploy({ ...agent, DEPLOY_ENVIRONMENT: "production" });
+    expect(set.status).toBe(0);
+    expect(values(set.out, agentJob, "STARFISH_DEPLOY_ENVIRONMENT")).toEqual(["production"]);
+    // The ingest job and the admin API read no deployments.
+    const both = deploy({ ...agent, DEPLOY_ADMIN_API: "1", DEPLOY_ENVIRONMENT: "production" });
+    expect(values(both.out, "gcloud run jobs deploy starfish-ingest", "STARFISH_DEPLOY_ENVIRONMENT")).toEqual([]);
+    expect(values(both.out, adminService, "STARFISH_DEPLOY_ENVIRONMENT")).toEqual([]);
+    for (const bad of ["prod?x=1", "a@b", "a b", "-x", "a,b"]) {
+      const r = deploy({ ...agent, DEPLOY_ENVIRONMENT: bad });
+      expect(r.status, bad).not.toBe(0);
+      expect(r.out, bad).toContain("DEPLOY_ENVIRONMENT must be a plain deployment environment name");
+      expect(r.out, bad).not.toContain("gcloud ");
+    }
+    for (const list of ["EXTRA_ENV_VARS", "AGENT_EXTRA_ENV_VARS"]) {
+      const r = deploy({ ...agent, [list]: "STARFISH_DEPLOY_ENVIRONMENT=other" });
+      expect(r.status, list).not.toBe(0);
+    }
+  });
+
   it("refuses a check app that is not a GitHub App's slug, and the setting through either extra list", () => {
     for (const bad of ["My-App", "a_b", "a b", "a@b", "-ci", "ci-", "ci/app", "a,b"]) {
       const r = deploy({ ...agent, VERIFY_CHECK_APP: bad });

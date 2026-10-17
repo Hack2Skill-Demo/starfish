@@ -98,10 +98,22 @@ describe("selectPrCycles", () => {
   });
 
   it("leaves a merged PR whose checks are settled alone, and keeps reading a merged one whose checks are not", async () => {
-    await seed("a_r0", 1, { summary: { pr: { opened: true, number: 1 }, prState: { state: "merged", checks: "passed", checkedAt: "2026-10-06T11:00:00.000Z" } } });
-    await seed("b_r0", 2, { summary: { pr: { opened: true, number: 2 }, prState: { state: "merged", checks: "pending", checkedAt: "2026-10-06T11:00:00.000Z" } } });
+    const merge = "d".repeat(40);
+    await seed("a_r0", 1, { summary: { pr: { opened: true, number: 1 }, prState: { state: "merged", mergeCommitSha: merge, checks: "passed", checkedAt: "2026-10-06T11:00:00.000Z" } } });
+    await seed("b_r0", 2, { summary: { pr: { opened: true, number: 2 }, prState: { state: "merged", mergeCommitSha: merge, checks: "pending", checkedAt: "2026-10-06T11:00:00.000Z" } } });
     await seed("c_r0", 3, { summary: { pr: { opened: true, number: 3 }, prState: { state: "closed", checks: "failed", checkedAt: "2026-10-06T11:00:00.000Z" } } });
     expect((await selectPrCycles(db, cfg, 10)).map((c) => c.cycleId).sort()).toEqual(["b_r0", "c_r0"]);
+  });
+
+  it("reads a settled merged PR once more when its merge commit was never recorded, which recovery needs (#390)", async () => {
+    await seed("a_r0", 1, { summary: { pr: { opened: true, number: 1 }, prState: { state: "merged", checks: "passed", checkedAt: "2026-10-06T11:00:00.000Z" } } });
+    expect((await selectPrCycles(db, cfg, 10)).map((c) => c.cycleId)).toEqual(["a_r0"]);
+    // Read: the merge commit is recorded, and the cycle is settled from then on.
+    const merge = "d".repeat(40);
+    const gh = fakeGithub({ 1: { state: "merged", mergedAt: "2026-10-06T11:30:00.000Z", mergeCommitSha: merge } }, [success]);
+    await reconcilePullRequests({ db, config: cfg, client: gh.client, now: () => t0 });
+    expect((await doc("a_r0")).summary.prState.mergeCommitSha).toBe(merge);
+    expect(await selectPrCycles(db, cfg, 10)).toEqual([]);
   });
 
   it("looks only at the newest cycles, a bounded read", async () => {

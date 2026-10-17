@@ -339,6 +339,65 @@ export function prStateView(c: CycleRow, nowMs: number): PrStateView | undefined
   return { text: `${state} · ${checks}`, tone, checkedAt: new Date(checkedMs) };
 }
 
+export interface RecoveryView {
+  /** "Recovered: deployed, and quiet through the window". */
+  text: string;
+  tone: RunTone;
+  /** The facts behind it, one short line each: when it was deployed, the window, what was expected. */
+  details: string[];
+  checkedAt?: Date;
+}
+
+const UNVERIFIED_TEXT: Record<string, string> = {
+  "no-deployment-environment": "Not verified: no deployment environment is configured, so Starfish cannot tell when the fix went live",
+  "deploy-failed": "Not verified: the deployment of the merge failed",
+  "deploy-not-observed": "Not verified: no deployment of the merge was seen",
+  "deploy-unreadable": "Not verified: GitHub's deployments could not be read",
+  "incident-gone": "Not verified: the incident was retired, so a return of the error would be a new incident",
+  "low-traffic": "Not verified: the error was too rare before the merge for silence to show it stopped",
+  "ingest-not-covering": "Not verified: ingest did not read the logs through the window",
+};
+
+/**
+ * Whether a MERGED fix was deployed and the error stopped, as the engine last observed it (`summary.recovery`,
+ * src/agent/recoveryStep.ts, #390). Absent unless the pull request was merged and the observer has recorded something: a
+ * merge says nothing about recovery, and neither does an absent record. "Recovered" is only what the engine recorded.
+ */
+export function recoveryView(c: CycleRow, nowMs: number): RecoveryView | undefined {
+  const pr = c.summary.prState;
+  const r = c.summary.recovery;
+  const checkedMs = isoMs(r?.checkedAt);
+  if (pr?.state !== "merged" || !r || checkedMs === null) return undefined;
+  const at = (v: unknown) => {
+    const ms = isoMs(v);
+    return ms === null ? undefined : ms;
+  };
+  const deployed = at(r.deployedAt);
+  const end = at(r.windowEnd);
+  const details: string[] = [];
+  if (deployed !== undefined) details.push(`Deployed ${ago(deployed, nowMs)} (${new Date(deployed).toISOString()})`);
+  if (end !== undefined && typeof r.windowStart === "string") details.push(`Judged from ${r.windowStart} to ${new Date(end).toISOString()}`);
+  if (typeof r.expectedOccurrences === "number") details.push(`About ${Math.round(r.expectedOccurrences * 10) / 10} occurrences expected in that window at the error's rate before the merge`);
+  const base = { details, checkedAt: new Date(checkedMs) };
+  const reason = String(r.reason ?? "");
+  switch (r.state) {
+    case "awaiting-deploy":
+      return { ...base, tone: "info", text: reason === "waiting-for-deployment" ? "Merged; waiting for the deployment" : "Merged; waiting" };
+    case "observing":
+      return { ...base, tone: "info", text: reason === "waiting-for-ingest" ? "Deployed; quiet so far, waiting for ingest to read through the window" : "Deployed; watching for the error to come back" };
+    case "recovered":
+      return { ...base, tone: "success", text: "Recovered: deployed, and the error stayed away for the whole window" };
+    case "recurred": {
+      const when = at(r.recurredAt);
+      return { ...base, tone: "warning", text: `The error came back after the deployment${when !== undefined ? ` (${ago(when, nowMs)})` : ""}` };
+    }
+    case "unverified":
+      return { ...base, tone: "neutral", text: UNVERIFIED_TEXT[reason] ?? "Not verified" };
+    default:
+      return undefined;
+  }
+}
+
 // ---- Waterfall ---------------------------------------------------------------------------------
 
 /** The stages the loop runs, in order, with the words the screen uses for them. */

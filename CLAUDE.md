@@ -253,7 +253,7 @@ src/
                    evidence comment, squash merge with `sha`. Any failure: PR stays open + notify. Fakes + emulator
                    tested, never run against real GitHub
   agent/fastRevert.ts  the watch every merge starts: the incident seen again after a grace and within N minutes of the
-                   MERGE (deploy completion is not observable; counted by the hour, so an error that keeps firing past
+                   MERGE (the watch's window starts at the merge: recovery.ts reads deployments, this does not; counted by the hour, so an error that keeps firing past
                    the window is still seen) -> revert PR of Starfish's own merge commit, merged on
                    green checks; a later change to the same files escalates; a revert is never reverted. Cleared only
                    once the ingest checkpoint has read through the window, else a person is told after a day (#241).
@@ -267,6 +267,18 @@ src/
                    `summary.prState` via cycle.ts `recordPrState` (no lease; never changes the cycle's state; newest read wins;
                    merged is final; never marks an incident healed; copies the state to the incident's `githubPrState`).
                    Fake GitHub + emulator tested, never run against real GitHub
+  agent/recovery.ts + recoveryStep.ts  recovery of a MERGED fix, anyone's merge (#390): per merged cycle (reconcile now keeps the
+                   merge commit, `prState.mergeCommitSha`, re-reading a settled merge that lacks it once) the pass reads GitHub's
+                   Deployments API for that commit in `STARFISH_DEPLOY_ENVIRONMENT` (`githubPr.ts` `deploymentOfCommit`: newest 30
+                   deployments, <= 5 compare checks, strictly parsed), the incident and ingest's checkpoint, and records
+                   `summary.recovery` (`recordRecovery`, no lease, a final answer final): awaiting-deploy, observing, recovered,
+                   recurred, or unverified with a reason, never recovered from silence (the window starts at the deployment's
+                   completion + `STARFISH_RECOVERY_GRACE_MINUTES`, is `STARFISH_RECOVERY_QUIET_MINUTES` lengthened until the error's
+                   pre-merge rate, recorded once as a baseline, expects `STARFISH_RECOVERY_MIN_EXPECTED` occurrences, and ingest's
+                   checkpoint must have read through it; too rare, retired, no environment, no deployment seen, or unreadable =
+                   unverified). Observes only: never resolves, reverts, merges or notifies. The Runs and evidence pages show it; the
+                   guests' copy carries the answer, reason and times. Pure decision unit-tested; the whole sequence (a person's merge,
+                   the deployment, recovered, recurred, every unverified path) emulator-tested against a fake GitHub; never run against real GitHub
   agent/incidentLinks.ts  copies the issue and PR (number, URL, state) from the cycle onto the incident for the UI's links (#194):
                    only those fields, only while the incident is in the cycle's recurrence; a `new` incident becomes `logged`
                    in the same write (any other status kept; never `resolved`), which an operator can still acknowledge
@@ -570,6 +582,9 @@ Facts the team has confirmed (2026-10-15/16). Don't ask them again; check here f
   `pnpm dlx firebase-tools@14.27.0 deploy --only functions:demo-control --project hack2skill-demo --non-interactive` on its
   `main` (its docs/deploy.md step 8; its GitHub "Deploy functions" workflow exists but is not how it ships).
   demo-app deploys on merge to its `main`.
+- **Recovery of merged fixes (#390) is built and off here:** `STARFISH_DEPLOY_ENVIRONMENT` (repo variable, `production` for demo-app, whose
+  deploy job runs in `environment: production`) is not among the variables listed above, and whether the agent's GitHub token can read
+  deployments is unknown. Until both are done every merge is reported `unverified`. Setting it is a person's step (`docs/deploy.md`).
 - **Not known here:** the admin's merge cases (Settings → Auto-merge); the full `STARFISH_AGENT_EXTRA_ENV_VARS`. Ask for these
   only when a task needs them.
 - **Assumptions that turned out wrong, so don't repeat them:** that the team deploys the engine from a terminal (GitHub does);
