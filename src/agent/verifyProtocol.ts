@@ -24,6 +24,13 @@ export const BUNDLE_PATCH_FILE = "patch.diff";
 export const BUNDLE_TREE_DIR = "tree";
 /** A bigger bundle is refused on both sides: a checkout this size is not what a hotfix is written against. */
 export const MAX_BUNDLE_BYTES = 100 * 1024 * 1024;
+/**
+ * What a bundle may expand to (#389). The compressed cap does not bound this: a few kilobytes of gzip can hold
+ * gigabytes of zeros. Counted on the decompressed tar stream, so headers and padding count too.
+ */
+export const MAX_UNPACKED_BYTES = 500 * 1024 * 1024;
+/** One transfer's deadline (the bundle's download, the result's upload): the job's own, not Cloud Run's task timeout (#389). */
+export const TRANSFER_TIMEOUT_MS = 5 * 60 * 1000;
 export const MAX_RESULT_BYTES = 200_000;
 
 export interface RunnerRequest {

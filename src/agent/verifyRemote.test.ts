@@ -148,7 +148,7 @@ describe("createRemoteVerifier + runVerifier", () => {
     const v = createRemoteVerifier({ verifyTimeoutSeconds: 10 }, { store: spy, startJob: realJob, tmpDir: tmp, newId: nextId, pollMs: 25 });
     await v(request());
     const dest = mkdtempSync(join(tmp, "unpacked-"));
-    const { tree, patch } = await unpackBundle(captured!, dest, tmp);
+    const { tree, patch } = await unpackBundle(captured!, dest);
     expect(readFileSync(join(tree, "greeting.txt"), "utf8")).toBe("hello old\n");
     expect(readFileSync(patch, "utf8")).toBe(GOOD_PATCH);
     expect(() => readFileSync(join(tree, ".git", "HEAD"))).toThrow();
