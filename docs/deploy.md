@@ -495,8 +495,16 @@ each one not `READY`: a new index takes minutes to build, and the queries it ser
 label it ends by printing the guests' copies backfill (`pnpm public-view -- --apply --project=<p>`), which it does not run.
 A dry run prints these reads and makes none of them. The deployer's `roles/firebaserules.admin` and `roles/datastore.owner`
 (`scripts/setup-github-deploy.sh`) cover the two reads. With deploy-on-merge on, a merge that changes both the rules and
-the UI starts both workflows at once, and Deploy web UI may stop because Deploy engine has not published the rules yet:
-run it again once Deploy engine has finished. **Tested against stubs and in dry runs only; never run against Google.** The release name
+the UI starts both workflows at once, in separate concurrency groups; the engine deploy publishes the rules. On a push,
+Deploy web UI therefore first waits (`scripts/wait-for-engine-deploy.sh`, #373) for the Deploy engine run of the same commit
+to finish: up to `APPEAR_SECONDS` (90) for such a run to exist, then up to `WAIT_SECONDS` (1200) for it to end, which may
+include a reviewer's approval of the `deploy` environment. It only orders the two and never fails the job: whatever it
+finds (no run, a failed or skipped run, a timeout, runs it cannot read), the rules check above then decides from what is
+live, so an engine run that failed after publishing the rules does not block the UI, and one that did not stops the web
+deploy there. A hand-started run does not wait: run Deploy engine first. If the engine deploy is still waiting for its
+reviewer after 20 minutes, the web job goes on, stops at the rules check, and is re-run once the engine has finished. The
+wait step holds the workflow's token with `actions: read` (the job's only addition) and the deploy step never sees it.
+**Tested against stubs and in dry runs only; never run against Google, and the wait has never run on GitHub.** The release name
 `cloud.firestore/<database>` is the one `firebase deploy --only firestore` releases a named database's rules to (read in
 firebase-tools 14.27's source, `deploy/firestore/release.js`), not yet seen on a real project: if a real run disagrees,
 the check stops every web deploy with "no Firestore rules are released", and `ALLOW_RULES_DRIFT=1` from a terminal is the
@@ -892,6 +900,46 @@ kill switch, the auto-merge switches), On-call (phone numbers and the Twilio rou
 > writes, the counters under concurrent claims, the gate, and `firestore.rules`: a guest still writes nothing and reads the
 > full records only with the gate on). Never run on the real project.**
 
+## Alerting on a stopped ingest (#387)
+
+The Hosting uptime check ([above](#app-check-and-the-uptime-check-12)) proves the site serves the UI. It says nothing about the
+ingest: the job can stop, or fall behind, while the site stays green, and the UI's "engine stopped" line is only read by
+someone who opens it. `scripts/setup-ingest-alerts.sh` provisions two Cloud Monitoring alert policies that do not depend on
+the job or on the uptime check:
+
+| Policy | Fires when | Reads |
+|---|---|---|
+| `starfish ingest: no successful run (<job>)` | the job has had no **successful** execution for `INGEST_ALERT_MISSED_MINUTES` (default 180, three hourly ticks; 5 to 1410) | Cloud Run's own `run.googleapis.com/job/completed_execution_count`, `result=succeeded`: written by Google, so it covers a job that never starts (scheduler paused or failing, job deleted), one killed before it records anything, and one that exits non-zero every time |
+| `starfish ingest: checkpoint behind (<job>)` | a run leaves the checkpoint more than `INGEST_ALERT_LAG_MINUTES` (default 120) behind the newest logs it could read | a log-based metric, `starfish_ingest_checkpoint_lag_seconds`, over the one JSON line each run prints (`src/ingest/lagLog.ts`): the case of a run that records `ok` while it falls behind under a flood (#297) |
+
+```bash
+PROJECT_ID=<p> INGEST_ALERT_NOTIFICATION_CHANNELS=projects/<p>/notificationChannels/<id> scripts/setup-ingest-alerts.sh
+DRY_RUN=1 PROJECT_ID=<p> scripts/setup-ingest-alerts.sh        # prints the metric and both policies, calls nothing
+```
+
+`INGEST_ALERT_NOTIFICATION_CHANNELS` takes channels you created in the console (Monitoring → Alerting → Edit notification
+channels: email, Slack, SMS, PagerDuty). Without one the policies open incidents in the console and notify nobody, and the
+script says so. It creates what is missing and never changes what exists (the names carry the job, not the thresholds): edit
+a threshold in the console, or delete the policy and run it again. The person running it needs
+`roles/monitoring.alertPolicyEditor` and `roles/logging.configWriter` on the project; the Actions deployer has neither, on
+purpose, so this is not part of Deploy engine.
+
+**Recovery.** Nothing needs doing to the job: the next successful run reads the windows it missed from its checkpoint, so no
+errors are lost, and the missed-run alert closes when a success arrives. The lag alert closes when a run leaves the checkpoint
+under the threshold (or after a day with no data). The policy text says where to look first: the Scheduler job, the job's last
+executions, `pnpm status`.
+
+**What it does not do.**
+- A Monitoring absence condition fires only for a series that has reported before. A job that has never succeeded in this
+  project raises nothing from the missed-run policy, and after a long stop (the series more than a day old) it goes quiet
+  again. Run the ingest once (`scripts/smoke-gcp.sh` does) before relying on it.
+- The lag policy sees a run's lag only when a run prints it. A job that stops running is the missed-run policy's case.
+- A user-defined log-based metric is chargeable under Cloud Monitoring's pricing beyond its free allotment (one small data
+  point per run); alert policies are not.
+- To see it fire: pause the scheduler job (`gcloud scheduler jobs pause <job>-tick`) past the threshold, or create the
+  policy with a small `INGEST_ALERT_MISSED_MINUTES`. **Written and stub-tested; the metric and filter names are from Google's
+  documentation, and neither policy nor metric has been created in a real project.**
+
 ## Recording the demo: a shorter tick, and a run now (#65)
 
 `scripts/ingest-cadence.sh` changes the Scheduler job's cron and puts it back; it holds no state between calls, so
@@ -933,7 +981,8 @@ workflow's two runs failed before publishing (#265). The likely first failures o
 - **The web UI** deploys to Hosting with `scripts/deploy-web.sh`, from a terminal (run once, on the demo project,
   2026-10-05) or from the Deploy web UI workflow above (its two runs failed before publishing, #265; it needs
   `setup-github-deploy.sh` run again).
-- **An alert when ingestion stops.** The UI shows it; nothing pages anyone (an item on #6).
+- **An alert when ingestion stops is a script a person runs, and has never run.** `scripts/setup-ingest-alerts.sh` (#387) is written and
+  stub-tested ([above](#alerting-on-a-stopped-ingest-387)); until someone runs it on the project, the UI shows a stopped ingest and nothing pages anyone.
 - **The admin API has run once, not fully.** It was deployed to the demo project on 2026-10-07 and "Run ingest now" worked from the UI
   ([above](#the-admin-api-run-ingest-now-and-retire-an-incident-63-65)); Retire and "Run agent now" have not been tried against it. The UI's three buttons appear only once the site is built with the service's URL. Without it, for recording a demo, see [the cadence script](#recording-the-demo-a-shorter-tick-and-a-run-now-65).
 - **The agent has not merged anything.** Deployed to the demo project on 2026-10-07, dry run off since 2026-10-10; triage and

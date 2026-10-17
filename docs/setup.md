@@ -115,7 +115,8 @@ Be honest with yourself about this list before the demo:
   messages, since 2026-10-11) and GitHub (issues and pull requests through `src/integrations/githubPr.ts`, since
   2026-10-12) do run from the deployed agent job; Starfish merging a pull request, its evidence comment and the fast
   revert have never run against real GitHub (#330).
-- **No alert when ingestion stops**, only the UI's "engine stopped" line (#6).
+- **No alert when ingestion stops unless you run `scripts/setup-ingest-alerts.sh`** (#387), which has never been run on a real
+  project; until then there is only the UI's "engine stopped" line (#6). [`deploy.md`](deploy.md#alerting-on-a-stopped-ingest-387).
 - **No App Check unless you set it up, and no enforcement unless you switch it on** (#12). The UI initialises App Check
   only when built with `VITE_STARFISH_APPCHECK_SITE_KEY`; requiring it on Firestore is a console step that is set per
   product, not per database (unverified), so in a project shared with the watched app it would affect that app too. Steps and caveats:

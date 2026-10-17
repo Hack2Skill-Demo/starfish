@@ -218,6 +218,24 @@ describe(".github/workflows/deploy-web.yml", () => {
   });
 
   // The script refuses a UI whose rules are not deployed (#262); a run from Actions must not be able to skip that.
+  // #373: a push that changes the rules and the UI starts both deploys at once, and the engine's is what publishes the rules.
+  it("waits for the engine deploy of the same push before it deploys, with a read-only token that only that step holds", () => {
+    const body = code(web);
+    const step = body.split("- name: Wait for the engine deploy of this push")[1]?.split(/\n {6}- /)[0] ?? "";
+    expect(step).toMatch(/^ {8}if: github\.event_name == 'push'$/m);
+    expect(step).toContain("run: scripts/wait-for-engine-deploy.sh");
+    expect(step).toMatch(/^ {10}GH_TOKEN: \$\{\{ github\.token \}\}$/m);
+    expect(step).toMatch(/^ {10}SHA: \$\{\{ github\.sha \}\}$/m);
+    // Before the deploy, so the rules check runs after the engine's run; the token is in no other step.
+    expect(body.indexOf("- name: Wait for the engine deploy")).toBeLessThan(body.indexOf("- name: Deploy\n"));
+    expect(body.match(/github\.token/g)).toHaveLength(1);
+    // Read access to Actions runs, and nothing wider than the job already had.
+    expect(body).toMatch(/^ {6}actions: read$/m);
+    expect(body).not.toMatch(/(actions|contents|packages|issues|pull-requests): write/);
+    // It orders the two and never fails the job: the rules check stays the gate.
+    expect(readFileSync(new URL("./wait-for-engine-deploy.sh", import.meta.url), "utf8")).toMatch(/exits 0 whatever it finds/);
+  });
+
   it("never passes the override of the rules check", () => {
     expect(code(web)).not.toContain("ALLOW_RULES_DRIFT");
     expect(webScript).toMatch(/^# {3}ALLOW_RULES_DRIFT=1\b/m);
