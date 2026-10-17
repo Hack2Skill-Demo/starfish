@@ -553,6 +553,21 @@ export interface EarlierStep {
   at: Date;
   /** Its outcome is one that means it went wrong (`failedUnexpectedly`). */
   failed: boolean;
+  /** Its last event's data, when it carried any (a guest's copy never does). */
+  data?: Flat;
+}
+
+/** An earlier round's step drawn like any other step of the log, so a reopened run keeps the first round's details. */
+export function earlierAsStep(e: EarlierStep): Step {
+  return {
+    stage: e.stage,
+    title: e.title,
+    status: e.failed ? "failed" : "done",
+    ...(e.outcome && { outcome: e.outcome }),
+    ...(e.summary && { summary: e.summary }),
+    at: e.at,
+    ...(e.data && { data: e.data }),
+  };
 }
 
 /** The step an earlier round of a reopened run ended on (#285), and every step it reached. */
@@ -657,6 +672,7 @@ export function buildWaterfall(cycle: CycleRow, events: readonly EventRow[], now
           ...(e.summary && { summary: e.summary }),
           at: e.at,
           failed: failedUnexpectedly(e.stage, e.type),
+          ...(Object.keys(e.data).length > 0 && { data: e.data }),
         })
       );
     return [

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   ago,
   buildWaterfall,
+  earlierAsStep,
   prStateView,
   recoveryView,
   formatClock,
@@ -324,6 +325,25 @@ describe("small helpers", () => {
         ["fix", "proposed", false],
         ["triage", "decision", false],
       ]);
+    });
+
+    it("keeps an earlier step's event data, and draws it as a step of the log so its details are not lost (#285)", () => {
+      const first = ev("triage", "decision", 1000, "the first round's reasoning");
+      first.data = { level: "log", rule: "model-notify" };
+      const events = [first, ev("cycle", "reconsidered", HOUR, "Retried at an operator's request"), ev("triage", "decision", HOUR + 1000)];
+      const w = buildWaterfall(cycle({ state: "waiting-human", leaseExpiresAt: null, updatedAt: new Date(T0 + HOUR + 1000) }), events, T0 + 2 * HOUR);
+      const step = w.earlier[0]!.steps[0]!;
+      expect(step.data).toEqual({ level: "log", rule: "model-notify" });
+      expect(earlierAsStep(step)).toEqual({
+        stage: "triage",
+        title: "Triage",
+        status: "done",
+        outcome: "decision",
+        summary: "the first round's reasoning",
+        at: new Date(T0 + 1000),
+        data: { level: "log", rule: "model-notify" },
+      });
+      expect(earlierAsStep({ ...step, failed: true }).status).toBe("failed");
     });
 
     it("draws a step this round did not reach with where an earlier round got, never as if it never ran", () => {
