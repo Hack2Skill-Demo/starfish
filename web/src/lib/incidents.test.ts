@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const getDoc = vi.hoisted(() => vi.fn());
 const getDocs = vi.hoisted(() => vi.fn());
@@ -6,12 +6,12 @@ const fsDoc = vi.hoisted(() => vi.fn((...path: unknown[]) => ({ path })));
 const fsCollection = vi.hoisted(() => vi.fn((...path: unknown[]) => ({ path })));
 /** The signed-in user the data layer asks (dataSource.ts): null, an operator, or an anonymous guest. */
 const auth = vi.hoisted(() => ({ currentUser: null as null | { isAnonymous: boolean } }));
-vi.mock("firebase/firestore", async (orig) => ({ ...(await orig<typeof import("firebase/firestore")>()), getDoc, getDocs, doc: fsDoc, collection: fsCollection, query: vi.fn(() => ({})), where: vi.fn(), orderBy: vi.fn(), limit: vi.fn() }));
+vi.mock("firebase/firestore", async (orig) => ({ ...(await orig<typeof import("firebase/firestore")>()), getDoc, getDocs, doc: fsDoc, collection: fsCollection, query: vi.fn(() => ({})), where: vi.fn(), orderBy: vi.fn(), limit: vi.fn(), startAfter: vi.fn((c: unknown) => ({ startAfter: c })) }));
 vi.mock("./firebase", () => ({ firestore: vi.fn(), firebaseAuth: () => auth }));
 vi.mock("./config", () => ({ webConfig: () => ({ incidentCollection: "incidents", publicIncidentCollection: "starfish_public_incidents" }) }));
 
-import { Timestamp } from "firebase/firestore";
-import { countInWindow, getIncident, listIncidents, nextStatus, toRow, type IncidentRow } from "./incidents";
+import { Timestamp, query as fsQuery, startAfter as fsStartAfter } from "firebase/firestore";
+import { countInWindow, getIncident, listIncidents, listIncidentsPage, nextStatus, toRow, type IncidentRow } from "./incidents";
 import { hourlySeries } from "./overviewModel";
 
 const HOUR = 3600_000;
@@ -261,11 +261,36 @@ describe("the guest data path (#18)", () => {
 });
 
 describe("listIncidents", () => {
+  beforeEach(() => vi.mocked(fsStartAfter).mockClear());
   it("leaves a retired incident out of the list, as it is to the store and to the evidence page", async () => {
     const d = (id: string, data: Record<string, unknown>) => ({ id, data: () => ({ functionName: id, environment: "demo", status: "resolved", ...data }) });
     getDocs.mockResolvedValue({ docs: [d("live", {}), d("gone", { retired: true })], size: 2 });
     const { rows, capped } = await listIncidents(24, "demo");
     expect(rows.map((r) => r.id)).toEqual(["live"]);
     expect(capped).toBe(false);
+  });
+
+  it("pages by cursor: a full page says more may follow, and the next read starts after its last document (#388)", async () => {
+    const d = (id: string, data: Record<string, unknown> = {}) => ({ id, data: () => ({ functionName: id, environment: "demo", status: "new", ...data }) });
+    const full = Array.from({ length: 200 }, (_, i) => d(`i${i}`, { retired: i === 3 }));
+    getDocs.mockResolvedValueOnce({ docs: full, size: 200 });
+    const first = await listIncidentsPage(24, "demo");
+    expect(first.capped).toBe(true);
+    expect(first.rows).toHaveLength(199);
+    expect(first.cursor).toBe(full[199]);
+    expect(fsStartAfter).not.toHaveBeenCalled();
+
+    // The unresolved incident outside the first 200 is on the second page.
+    getDocs.mockResolvedValueOnce({ docs: [d("deep")], size: 1 });
+    const second = await listIncidentsPage(24, "demo", first.cursor);
+    expect(fsStartAfter).toHaveBeenCalledWith(full[199]);
+    expect(vi.mocked(fsQuery).mock.calls.at(-1)).toContainEqual({ startAfter: full[199] });
+    expect(second.rows.map((r) => r.id)).toEqual(["deep"]);
+    expect(second.capped).toBe(false);
+  });
+
+  it("has no cursor for an empty page", async () => {
+    getDocs.mockResolvedValueOnce({ docs: [], size: 0 });
+    expect(await listIncidentsPage(24, "demo")).toEqual({ rows: [], capped: false });
   });
 });

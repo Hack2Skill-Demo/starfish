@@ -51,6 +51,7 @@ PROJECT_ID=<p> scripts/deploy-gcp.sh   # Cloud Run job + Scheduler + Secret Mana
 # The whole setup, in order (docs/setup.md): scripts/preflight-gcp.sh → deploy-gcp.sh → pnpm grant-operator →
 # scripts/smoke-gcp.sh → scripts/deploy-web.sh. pnpm status: is the deployed engine alive? Run once on the demo project (2026-10-05), the smoke test included; the agent job was deployed there on 2026-10-07 and, since the Deploy engine workflow's first run (2026-10-10), runs hourly with dry run off and auto-merge on for the demo target; real incidents have gone through it as far as a PR on the demo app (demo-app #41, #42, #49); nothing merged.
 scripts/setup-github-deploy.sh   # one-time (re-run after it changes): lets GitHub Actions deploy with no key (WIF); deploy-on-merge is then a repo variable that needs required reviewers on `deploy` (#301) (docs/deploy.md); run on the demo project 2026-10-10, before it granted Hosting for the web UI (#265), required a run on main in the provider's condition (#299) and refused an Editor/Owner build account (#300, which preflight-gcp.sh also FAILs on); those two are written and tested with stubs, not run: re-run it there
+scripts/setup-ingest-alerts.sh   # alert policies for a missed ingest run and a checkpoint that falls behind (#387, docs/deploy.md); DRY_RUN=1 prints; written and stub-tested, never run on a real project
 scripts/ingest-cadence.sh status|recording|restore|now   # the ingest's tick for recording the demo, and a run now (#65); DRY_RUN=1 prints
 pnpm scoreboard       # scoreboard/RESULTS.md from recorded runs (#10; format in scoreboard/FORMAT.md; no run recorded yet)
 pnpm feedback-corpus -- --out=<new dir>   # operators' noise/log corrections -> a replay corpus (#267); reads the store, writes local files; never run on a real project
@@ -284,6 +285,8 @@ src/
   scoreboard/      the results format (strict parser), the metrics (ratios keep numerator and denominator; an error or timeout counts
                    against the agent; each path apart) and the Markdown table: `pnpm scoreboard`. `replay.ts`/`corpus.ts` (`pnpm replay`) run
                    the loop's own stages over a frozen corpus with hidden evaluators and write a results file; no real run recorded
+  ingest/lagLog.ts the one JSON line a run prints with its checkpoint lag (#387): `scripts/setup-ingest-alerts.sh` turns it into a log-based
+                   metric and an alert, beside the missed-run alert on Cloud Run's own execution metric. Unit- and stub-tested; never run on a real project
   startupLog.ts    one JSON line as each deployed CLI starts (ingest, agent, admin API, verify runner): its uptime when its
                    code starts and once its modules have loaded, to tell Cloud Run's start delay from module loading (#275);
                    not yet read from a deployed run
@@ -297,7 +300,12 @@ src/
   agent/verifyRemote.ts  the agent's side of the isolated verify: bundle → signed URLs → start the job → validated result.
                    Infra failures throw (the cycle resumes); a failed command is a result
   agent/verifyRunner.ts  the verify job's side (`src/verifyRunnerCli.ts`): fetch the bundle, run the gate, write the result.
-                   Starts as root only to run the command as uid 65534 (docker-entrypoint.sh)
+                   Starts as root only to run the command as uid 65534 (docker-entrypoint.sh). Resource limits (#389,
+                   `verifyBundle.ts`/`verifyProtocol.ts`): the download is counted as it streams and stopped above
+                   `MAX_BUNDLE_BYTES` whatever Content-Length says; the download and the result upload each have a deadline
+                   (`TRANSFER_TIMEOUT_MS`, 5 min); the archive is unpacked through a decompressed-byte budget
+                   (`MAX_UNPACKED_BYTES`, 500 MB) and the scratch directory is emptied on failure. Unit-tested with
+                   fakes (streamed oversize, missing/understated headers, stalls, a gzip bomb); never run on a real project
   agent/verifyProtocol.ts  the request/result contract and its strict checks (bounded BEFORE redactPii: #96)
   agent/cloudRunJob.ts  production adapters (GCS signed URLs, Cloud Run `jobs.run`): the part never run on a real project
   agent/integrations.ts  at the start of each `pnpm agent` pass: which credentials the agent job holds (GitHub token, the two Slack
@@ -427,7 +435,7 @@ The operator UI: sign-in, an auth provider with race guards, a two-level layout,
 page (the landing page; counts of stored records only, `lib/overviewModel.ts`; "healed on its own" is only an index run
 the engine recorded healed, `isHealedRun`; its activity feed is a
 collection-group query over `events`, with its own rule and index; a guest's reads `starfish_public_events`), the
-**Incidents** page (under each error, the incident's current run: its state, triage's reason and a link to it, `lib/useIncidentRuns.ts`; with `VITE_STARFISH_DEMO_APP_URL`, a link to the demo app's Lab, `components/DemoAppLink.tsx`, also every page's header as a flask button opening it in a dialog), a **Runs** page (live subscription to `{cycleCollection}` and its newest 200 events, read newest first by `seq`; a run
+**Incidents** page (read by cursor, 200 incidents a page: "Load more" reaches an incident past the first page, the status/service/function filters and the status counts cover the pages loaded and say so, a "+" on a count that may be higher, #388; under each error, the incident's current run: its state, triage's reason and a link to it, `lib/useIncidentRuns.ts`; with `VITE_STARFISH_DEMO_APP_URL`, a link to the demo app's Lab, `components/DemoAppLink.tsx`, also every page's header as a flask button opening it in a dialog), a **Runs** page (live subscription to `{cycleCollection}` and its newest 200 events, read newest first by `seq`; a run
 with more says older ones are not drawn, #326,
 `web/src/lib/runs.ts`; the run list shows 10 runs a page (`pageOf` in `runsModel.ts`, a linked run opens on its page, "Show
 older runs" on the last page, incidents read for the page shown only); a run waiting for the person it told, on an open incident, gets a "What you can do now" card
@@ -538,7 +546,10 @@ Facts the team has confirmed (2026-10-15/16). Don't ask them again; check here f
   `~/redeploy-starfish.sh` (not in this repo): it checks Node 22+ and the gcloud account, checks `web/.env` exists, pulls
   `main`, `pnpm install`, sets project `hack2skill-demo`, exports `PROJECT_ID=hack2skill-demo GOOGLE_CLOUD_PROJECT=hack2skill-demo
   STARFISH_ENV=demo`, runs `HOSTING_SITE=ocean-starfish scripts/deploy-web.sh`, then `pnpm status`. The GitHub `Deploy web UI`
-  workflow fails (#370, #373), and that does not block the live UI: the Mac script is how it ships. Don't tell the team to deploy
+  workflow fails (#370, #373), and that does not block the live UI: the Mac script is how it ships. #373 (the race with
+  Deploy engine on a push that changes the rules and the UI) is addressed in the workflow by a bounded wait for the
+  engine's run on the same commit (`scripts/wait-for-engine-deploy.sh`, written and stub-tested, not yet run on GitHub);
+  #370 (the 403) needs `setup-github-deploy.sh` re-run on the demo project by a person with IAM rights, and no code. Don't tell the team to deploy
   the engine from a terminal: `deploy-gcp.sh` re-applies every setting, and a local run without the exact variables below
   (`STARFISH_AGENT_EXTRA_ENV_VARS` especially) would silently reset them.
 - **Repository variables (Actions) already set:** `GCP_DEPLOY_SERVICE_ACCOUNT` (starfish-deployer@hack2skill-demo),

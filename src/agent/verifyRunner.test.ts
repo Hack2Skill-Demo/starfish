@@ -1,10 +1,11 @@
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { packBundle } from "./verifyBundle.js";
-import { VerifyRunnerError } from "./verifyProtocol.js";
+import { gzipSync } from "node:zlib";
+import { packBundle, unpackBundle } from "./verifyBundle.js";
+import { MAX_BUNDLE_BYTES, MAX_UNPACKED_BYTES, VerifyRunnerError } from "./verifyProtocol.js";
 import { runVerifier } from "./verifyRunner.js";
 
 const PATCH = "--- a/greeting.txt\n+++ b/greeting.txt\n@@ -1 +1 @@\n-hello old\n+hello new\n";
@@ -120,5 +121,103 @@ describe("runVerifier", () => {
     const { f } = fakeFetch(await packBundle(src, PATCH, tmp));
     await runVerifier(req(), { fetch: f, tmpDir: tmp });
     expect(readdirSync(tmp).length).toBe(before);
+  });
+
+  describe("resource limits (#389)", () => {
+    const streamOf = (chunks: Uint8Array[], then?: "stall") =>
+      new ReadableStream<Uint8Array>({
+        pull(c) {
+          const next = chunks.shift();
+          if (next) c.enqueue(next);
+          else if (then !== "stall") c.close();
+          else return new Promise<void>(() => undefined);
+        },
+      });
+    /** A fetch whose GET body is `body` with the given headers, and whose PUT may never answer. */
+    const serving = (body: ReadableStream<Uint8Array>, headers: Record<string, string> = {}, stallPut = false) => {
+      let read = 0;
+      const counted = body.pipeThrough(
+        new TransformStream<Uint8Array, Uint8Array>({
+          transform(chunk, c) {
+            read += chunk.length;
+            c.enqueue(chunk);
+          },
+        }),
+      );
+      const f = (async (_url: string, init?: RequestInit) => {
+        if ((init?.method ?? "GET") === "GET") return new Response(counted, { status: 200, headers });
+        if (!stallPut) return new Response("", { status: 200 });
+        return new Promise<Response>((_, reject) => init?.signal?.addEventListener("abort", () => reject(new Error("aborted"))));
+      }) as unknown as typeof fetch;
+      return { f, bytesRead: () => read };
+    };
+
+    it("stops reading a body with no Content-Length once it passes the cap", async () => {
+      const chunk = new Uint8Array(8 * 1024 * 1024);
+      // 20 chunks would be 160 MiB; the reader must give up after the 100 MiB cap, not after the body.
+      const { f, bytesRead } = serving(streamOf(Array.from({ length: 20 }, () => chunk)));
+      await expect(runVerifier(req(), { fetch: f, tmpDir: tmp })).rejects.toThrow("larger than the limit");
+      expect(bytesRead()).toBeLessThan(MAX_BUNDLE_BYTES + 3 * chunk.length);
+    });
+
+    it("stops a body that is larger than the Content-Length it declared", async () => {
+      const chunk = new Uint8Array(8 * 1024 * 1024);
+      const { f } = serving(streamOf(Array.from({ length: 20 }, () => chunk)), { "content-length": "10" });
+      await expect(runVerifier(req(), { fetch: f, tmpDir: tmp })).rejects.toThrow("larger than the limit");
+    });
+
+    it("gives up on a download that stalls, with no URL in the message", async () => {
+      const { f } = serving(streamOf([new Uint8Array(10)], "stall"));
+      const e = await runVerifier(req(), { fetch: f, tmpDir: tmp, transferTimeoutMs: 50 }).catch((err: Error) => err);
+      expect((e as Error).message).toBe("the bundle could not be fetched (timed out)");
+    });
+
+    it("gives up on a result upload that never answers", async () => {
+      const bundle = await packBundle(src, PATCH, tmp);
+      const { f } = serving(streamOf([new Uint8Array(bundle)]), {}, true);
+      const e = await runVerifier(req(), { fetch: f, tmpDir: tmp, transferTimeoutMs: 2000 }).catch((err: Error) => err);
+      expect((e as Error).message).toBe("the result could not be written (timed out)");
+    });
+
+    it("refuses a small bundle that expands past the byte budget, and empties the directory it was unpacking into", async () => {
+      // A tar holding one file of zeros bigger than the budget: a few hundred KB of gzip.
+      const size = MAX_UNPACKED_BYTES + 1024 * 1024;
+      const header = Buffer.alloc(512);
+      header.write("tree/bomb", 0);
+      header.write("0000644\0", 100);
+      header.write("0000000\0", 108);
+      header.write("0000000\0", 116);
+      header.write(size.toString(8).padStart(11, "0") + "\0", 124);
+      header.write("00000000000\0", 136);
+      header.write("        ", 148);
+      header.write("0", 156);
+      header.write("ustar\0" + "00", 257);
+      let sum = 0;
+      for (const b of header) sum += b;
+      header.write(sum.toString(8).padStart(6, "0") + "\0 ", 148);
+      const { createGzip } = await import("node:zlib");
+      const gz = createGzip({ level: 1 });
+      const parts: Buffer[] = [];
+      gz.on("data", (d: Buffer) => parts.push(d));
+      const done = new Promise<void>((r) => gz.on("end", () => r()));
+      gz.write(header);
+      const zeros = Buffer.alloc(1024 * 1024);
+      for (let i = 0; i < size / zeros.length + 1; i++) gz.write(zeros);
+      gz.end();
+      await done;
+      const bytes = Buffer.concat(parts);
+      expect(bytes.length).toBeLessThan(10 * 1024 * 1024);
+      const dest = join(tmp, "dest");
+      mkdirSync(dest);
+      await expect(unpackBundle(bytes, dest)).rejects.toThrow("expands beyond the limit");
+      expect(readdirSync(dest)).toEqual([]);
+    }, 60_000);
+
+    it("empties the directory when the bundle is not a tar, and when it lacks a tree", async () => {
+      const dest = join(tmp, "dest2");
+      mkdirSync(dest);
+      await expect(unpackBundle(gzipSync(Buffer.from("not a tar at all")), dest)).rejects.toThrow(VerifyRunnerError);
+      expect(readdirSync(dest)).toEqual([]);
+    });
   });
 });

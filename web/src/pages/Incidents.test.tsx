@@ -8,7 +8,7 @@ import type { IncidentRow } from "../lib/incidents";
 import { parseCycle, type CycleRow } from "../lib/runsModel";
 
 const mocks = vi.hoisted(() => ({
-  listIncidents: vi.fn(),
+  listIncidentsPage: vi.fn(),
   applyAction: vi.fn(),
   env: { environment: "prod", ready: true, settingsUnavailable: false },
   cycles: [] as unknown[],
@@ -30,7 +30,7 @@ vi.mock("../components/EngineStatus", () => ({
 vi.mock("../lib/useSettings", () => ({ useEnvironment: () => mocks.env }));
 vi.mock("../lib/incidents", async (orig) => ({
   ...(await orig<typeof import("../lib/incidents")>()),
-  listIncidents: mocks.listIncidents,
+  listIncidentsPage: mocks.listIncidentsPage,
   applyAction: mocks.applyAction,
 }));
 vi.mock("../lib/firebase", () => ({ firestore: vi.fn() }));
@@ -77,6 +77,9 @@ const rows: IncidentRow[] = [
   { ...base, id: "2", functionName: "orders-updateOrder", service: "orders", status: "ignored" },
 ];
 
+/** What a full page hands back to read the next one (the page never looks inside it). */
+const CURSOR = { id: "cursor" } as never;
+
 function renderPage(roles: StarfishAuthCtx["roles"] = ["operator"], guest = false) {
   const ctx: StarfishAuthCtx = {
     user: { uid: "u1", isAnonymous: guest } as StarfishAuthCtx["user"],
@@ -102,7 +105,7 @@ describe("Incidents page", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.env = { environment: "prod", ready: true, settingsUnavailable: false };
-    mocks.listIncidents.mockResolvedValue({ rows, capped: false });
+    mocks.listIncidentsPage.mockResolvedValue({ rows, capped: false });
     mocks.applyAction.mockResolvedValue(undefined);
     mocks.cycles = [];
     mocks.cyclesCapped = false;
@@ -120,7 +123,7 @@ describe("Incidents page", () => {
     });
 
     it("uses the run of the incident's current recurrence, never an earlier one", async () => {
-      mocks.listIncidents.mockResolvedValue({ rows: [{ ...base, recurrenceCount: 1, status: "recurred" }], capped: false });
+      mocks.listIncidentsPage.mockResolvedValue({ rows: [{ ...base, recurrenceCount: 1, status: "recurred" }], capped: false });
       mocks.cycles = [cycle("1_r0"), cycle("1_r1", { state: "waiting-human", path: "notify", summary: { triage: { decision: "notify", reason: "The API is disabled." } } })];
       renderPage();
       const row = (await screen.findByText("mailDrainer")).closest("tr")!;
@@ -226,7 +229,7 @@ describe("Incidents page", () => {
     mocks.env = { environment: "staging-eu", ready: true, settingsUnavailable: false };
     renderPage();
     await screen.findByText("mailDrainer");
-    expect(mocks.listIncidents).toHaveBeenCalledWith(24, "staging-eu");
+    expect(mocks.listIncidentsPage).toHaveBeenCalledWith(24, "staging-eu", undefined);
   });
 
   it("links each incident to its evidence page", async () => {
@@ -253,7 +256,7 @@ describe("Incidents page", () => {
 
   it("says so when the settings couldn't be read, instead of showing a possibly wrong list as a quiet day (#43)", async () => {
     mocks.env = { environment: "build-label", ready: true, settingsUnavailable: true };
-    mocks.listIncidents.mockResolvedValue({ rows: [], capped: false });
+    mocks.listIncidentsPage.mockResolvedValue({ rows: [], capped: false });
     renderPage();
     const notice = await screen.findByRole("status");
     expect(notice).toHaveTextContent("Couldn't read the runtime settings");
@@ -262,7 +265,7 @@ describe("Incidents page", () => {
   });
 
   it("links a stored issue or PR only when it is an https URL (#144)", async () => {
-    mocks.listIncidents.mockResolvedValue({
+    mocks.listIncidentsPage.mockResolvedValue({
       rows: [
         { ...base, githubIssueUrl: "https://github.com/o/r/issues/7", githubIssueNumber: 7, githubPrUrl: "javascript:alert(1)", githubPrNumber: 8 },
         {
@@ -292,7 +295,7 @@ describe("Incidents page", () => {
     mocks.env = { environment: "prod", ready: false, settingsUnavailable: false };
     renderPage();
     expect(screen.queryByText("mailDrainer")).toBeNull();
-    expect(mocks.listIncidents).not.toHaveBeenCalled();
+    expect(mocks.listIncidentsPage).not.toHaveBeenCalled();
   });
 
   it("lists incidents with windowed counts, status, and a Logs link", async () => {
@@ -317,7 +320,7 @@ describe("Incidents page", () => {
   });
 
   it("badges a Monitoring-only incident, and shows a log incident's Monitoring count beside its own (#19)", async () => {
-    mocks.listIncidents.mockResolvedValue({
+    mocks.listIncidentsPage.mockResolvedValue({
       rows: [
         { ...base, monitoringCount: 7 },
         { ...base, id: "m", functionName: "orders-sync", errorType: "UnloggedFailure", monitoringOnly: true, monitoringCount: 5 },
@@ -336,7 +339,7 @@ describe("Incidents page", () => {
   });
 
   it("marks a regression and links the issue whose fix didn't hold", async () => {
-    mocks.listIncidents.mockResolvedValue({
+    mocks.listIncidentsPage.mockResolvedValue({
       rows: [
         ...rows,
         {
@@ -367,38 +370,60 @@ describe("Incidents page", () => {
   });
 
   it("shows the empty state for a quiet window", async () => {
-    mocks.listIncidents.mockResolvedValue({ rows: [], capped: false });
+    mocks.listIncidentsPage.mockResolvedValue({ rows: [], capped: false });
     renderPage();
     expect(await screen.findByText("No incidents")).toBeInTheDocument();
   });
 
   it("says so when the window was capped", async () => {
-    mocks.listIncidents.mockResolvedValue({ rows, capped: true });
+    mocks.listIncidentsPage.mockResolvedValue({ rows, capped: true, cursor: CURSOR });
     renderPage();
-    expect(await screen.findByText(/there may be more/)).toBeInTheDocument();
+    expect(await screen.findByText(/older ones in the window are not loaded yet/)).toBeInTheDocument();
+  });
+
+  it("reaches an unresolved incident past the first page with Load more, and counts it (#388)", async () => {
+    const deep: IncidentRow = { ...base, id: "deep", functionName: "billing-chargeCard", service: "billing", status: "new" };
+    const first = Array.from({ length: 3 }, (_, i) => ({ ...base, id: `p${i}`, functionName: `orders-fn${i}`, service: "orders", status: "ignored" as const }));
+    mocks.listIncidentsPage.mockImplementation(async (_h: number, _e: string, after?: unknown) =>
+      after === undefined ? { rows: first, capped: true, cursor: CURSOR } : { rows: [deep], capped: false, cursor: { id: "end" } }
+    );
+    renderPage();
+    expect(await screen.findByText("orders-fn0")).toBeInTheDocument();
+    // Nothing on the first page is new: the counts say "or more", and a filter finds nothing yet, saying why.
+    expect(screen.getByRole("button", { name: "New (0+)" })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "New (0+)" }));
+    expect(await screen.findByText("No match in the loaded incidents")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "Search older incidents" }));
+    expect(await screen.findByText("billing-chargeCard")).toBeInTheDocument();
+    expect(mocks.listIncidentsPage).toHaveBeenLastCalledWith(24, "prod", CURSOR);
+    // The last page is in: the count is exact and the banner is gone.
+    expect(screen.getByRole("button", { name: "New (1)" })).toBeInTheDocument();
+    expect(screen.queryByText(/not loaded yet/)).toBeNull();
+    expect(screen.queryByRole("button", { name: /Load more|Search older/ })).toBeNull();
   });
 
   it("shows an error state when the store can't be read", async () => {
-    mocks.listIncidents.mockRejectedValue(new Error("permission-denied"));
+    mocks.listIncidentsPage.mockRejectedValue(new Error("permission-denied"));
     renderPage();
     expect(await screen.findByRole("alert")).toHaveTextContent("Failed to load incidents");
   });
 
   it("shows none of the last figures once a refetch fails (#356)", async () => {
-    mocks.listIncidents.mockResolvedValue({ rows, capped: true });
+    mocks.listIncidentsPage.mockResolvedValue({ rows, capped: true, cursor: CURSOR });
     renderPage();
-    expect(await screen.findByText("Showing 2 incidents")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "New (1)" })).toBeInTheDocument();
-    expect(screen.getByText(/there may be more/)).toBeInTheDocument();
+    expect(await screen.findByText(/^Showing 2 incidents/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "New (1+)" })).toBeInTheDocument();
+    expect(screen.getByText(/older ones in the window are not loaded yet/)).toBeInTheDocument();
     expect(screen.getByRole("option", { name: "orders" })).toBeInTheDocument();
 
-    mocks.listIncidents.mockRejectedValue(new Error("unavailable"));
+    mocks.listIncidentsPage.mockRejectedValue(new Error("unavailable"));
     await userEvent.click(screen.getByRole("button", { name: "Refresh" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("Failed to load incidents");
     expect(screen.queryByText(/Showing \d+ incident/)).toBeNull();
     expect(screen.queryByRole("button", { name: /\(\d+\)/ })).toBeNull();
     expect(screen.getByRole("button", { name: "New" })).toBeInTheDocument();
-    expect(screen.queryByText(/there may be more/)).toBeNull();
+    expect(screen.queryByText(/older ones in the window are not loaded yet/)).toBeNull();
     expect(screen.queryByRole("option", { name: "orders" })).toBeNull();
   });
 });

@@ -26,6 +26,7 @@ import { getFirestore } from "firebase-admin/firestore";
 import { loadConfig } from "./config.js";
 import { RuntimeConfigLoader } from "./runtimeSettings.js";
 import { runIngest } from "./ingest/run.js";
+import { ingestCheckpointLine } from "./ingest/lagLog.js";
 import { syncRecentPublicView } from "./publicViewStore.js";
 
 // #275: where the ~2 minutes before any work go. Also the run's first line: the rest is printed when it ends.
@@ -45,6 +46,9 @@ console.log(
     (summary.lagSeconds !== undefined && summary.lagSeconds >= 60 ? `; checkpoint ${Math.round(summary.lagSeconds / 60)} min behind` : "") +
     (summary.error !== undefined ? ` - ${summary.error}` : "")
 );
+// The line the external lag alert reads (#387, scripts/setup-ingest-alerts.sh).
+const checkpointLine = ingestCheckpointLine(summary);
+if (checkpointLine !== undefined) console.log(checkpointLine);
 console.log(`config from ${summary.configSource}${summary.problems.length ? `; settings not used: ${summary.problems.join("; ")}` : ""}`);
 
 // The guests' trimmed copies (#18) of the newest public records, for changes the engine's own refreshes cannot see (an

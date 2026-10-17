@@ -32,6 +32,7 @@ on:
       - 'src/incidentActions.ts'
       - 'firebase.json'
       - 'scripts/deploy-web.sh'
+      - 'scripts/wait-for-engine-deploy.sh'
       - '.github/workflows/deploy-web.yml'
   workflow_dispatch:
     inputs:
@@ -56,7 +57,9 @@ jobs:
     timeout-minutes: 30
     environment: deploy
     # `id-token: write` lets this job ask GitHub for the OIDC token Google exchanges. Granted to this job only.
+    # `actions: read` is for the wait step below (it lists this commit's Deploy engine run), nothing else.
     permissions:
+      actions: read
       contents: read
       id-token: write
     steps:
@@ -112,11 +115,24 @@ jobs:
           gcloud projects describe "$PROJECT_ID" --format='value(projectId)'
           gcloud iam service-accounts describe "$GCP_DEPLOY_SERVICE_ACCOUNT" --project="$PROJECT_ID" --format='value(email)'
 
+      # A push that changes firestore.rules and the UI starts this workflow and Deploy engine together, and the engine
+      # deploy is what publishes the rules the check below compares (#373). So on a push, wait (bounded) for the engine's
+      # run on this same commit. It only orders the two and never fails the job: the rules check below stays the gate.
+      # Only the read-only token is given to this step, never to the deploy.
+      - name: Wait for the engine deploy of this push
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: scripts/wait-for-engine-deploy.sh
+
       # Values reach the script through the environment, never by interpolation into the shell text.
       # An unset variable is an empty string, which the script treats as "use my default".
       # Before it builds, the script compares the live Firestore rules of the Starfish database with firestore.rules and
       # stops when they differ or cannot be read (#262): run Deploy engine first, which publishes the rules and indexes,
       # then this. ALLOW_RULES_DRIFT is deliberately not passed, so a run from here cannot skip that check.
+      # The step before waits for the engine deploy of the same push, so the two need not be run in order by hand (#373).
       # (Its dry run prints the check and does not make it.)
       - name: Deploy
         env:

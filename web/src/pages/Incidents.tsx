@@ -19,7 +19,7 @@ import { Fragment, useState } from "react";
 import { SyntheticBadge } from "../components/SyntheticBadge";
 import { MonitoringOnlyBadge } from "../components/MonitoringOnlyBadge";
 import { Link, useSearchParams } from "react-router";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useInfiniteQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   AlertTriangle,
   RefreshCw,
@@ -58,12 +58,12 @@ import type { IncidentRunView } from "../lib/incidentRun";
 import { useIncidentRuns } from "../lib/useIncidentRuns";
 import {
   INCIDENT_STATUSES,
-  SCAN_LIMIT,
   applyAction,
-  listIncidents,
+  listIncidentsPage,
   nextStatus,
   type IncidentAction,
   type IncidentRow,
+  type IncidentPage,
   type IncidentStatus,
   type PrState,
 } from "../lib/incidents";
@@ -184,6 +184,19 @@ export function filterRows(rows: IncidentRow[], f: { status: string; service: st
   );
 }
 
+function LoadMoreButton({ onClick, busy, label = "Load more" }: { onClick: () => void; busy: boolean; label?: string }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={busy}
+      className="flex-shrink-0 rounded-lg border border-warning-300 bg-white px-3 py-1.5 text-sm font-medium text-warning-800 hover:bg-warning-100 disabled:opacity-50 dark:border-warning-800 dark:bg-transparent dark:text-warning-300"
+    >
+      {busy ? "Loading…" : label}
+    </button>
+  );
+}
+
 export default function Incidents() {
   const { user, roles, guest } = useAuth();
   // Every Starfish role may triage, and a public demo visitor where its open actions are on (through the admin API).
@@ -203,15 +216,20 @@ export default function Incidents() {
   // Incidents are filtered by the environment label, which a settings document can
   // override; wait for that to settle so the list never flashes the wrong label's.
   const { environment, ready, settingsUnavailable } = useEnvironment();
-  const query = useQuery({
+  // Pages of the window, newest first, read by cursor (#388): "Load more" is how an incident past the first page is reached.
+  const query = useInfiniteQuery({
     queryKey: ["incidents", environment, windowHours],
-    queryFn: () => listIncidents(windowHours, environment),
+    queryFn: ({ pageParam }) => listIncidentsPage(windowHours, environment, pageParam),
+    initialPageParam: undefined as IncidentPage["cursor"],
+    getNextPageParam: (last) => (last.capped ? last.cursor : undefined),
     enabled: ready,
   });
-  const { isError, refetch, isFetching } = query;
+  const { isError, refetch, isFetching, hasNextPage, isFetchingNextPage, fetchNextPage } = query;
   // A read that failed shows no figure, never the last one it had (#195, #356): TanStack Query keeps `data` after a
-  // failed refetch, so the counts, the footer, the capped banner and the runs would otherwise go on showing it.
+  // failed refetch, so the counts, the footer, the more-to-load banner and the runs would otherwise go on showing it.
   const data = isError ? undefined : query.data;
+  // Whether older incidents in the window are still unread: every figure below then covers what was read, no more.
+  const partial = data !== undefined && hasNextPage;
   const isLoading = query.isLoading || !ready;
   const mutation = useMutation({
     mutationFn: ({ row, action }: { row: IncidentRow; action: IncidentAction }) =>
@@ -219,7 +237,7 @@ export default function Incidents() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["incidents"] }),
   });
 
-  const all = data?.rows ?? [];
+  const all = data?.pages.flatMap((p) => p.rows) ?? [];
   const rows = filterRows(all, { status, service, fn: fnSearch });
   const runOf = useIncidentRuns(environment, ready, rows);
   const services = [...new Set(all.map((r) => r.service))].sort();
@@ -302,13 +320,14 @@ export default function Incidents() {
 
         <DemoAppLink />
 
-        {data?.capped && (
+        {partial && (
           <div className="flex items-start gap-3 rounded-lg border border-warning-200 bg-warning-50 p-4 text-sm text-warning-800 dark:border-warning-900/40 dark:bg-warning-900/10 dark:text-warning-300">
             <AlertTriangle className="mt-0.5 h-4 w-4 flex-shrink-0" />
-            <span>
-              Showing the newest <strong>{SCAN_LIMIT}</strong> incidents in the last {windowHours}h — there may be
-              more. Counts reflect only this set. Narrow the window for a complete view.
+            <span className="flex-1">
+              Loaded the newest <strong>{all.length}</strong> incidents in the last {windowHours}h; older ones in the window are not
+              loaded yet. The filters and the counts cover the loaded incidents only. A &quot;+&quot; marks a count that may be higher.
             </span>
+            <LoadMoreButton onClick={() => void fetchNextPage()} busy={isFetchingNextPage} />
           </div>
         )}
 
@@ -323,7 +342,7 @@ export default function Incidents() {
                   : "bg-gray-100 text-gray-600 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-400 dark:hover:bg-gray-700"
               }`}
             >
-              {s ? `${STATUS_LABELS[s]}${data ? ` (${statusCounts[s]})` : ""}` : "All"}
+              {s ? `${STATUS_LABELS[s]}${data ? ` (${statusCounts[s]}${partial ? "+" : ""})` : ""}` : "All"}
             </button>
           ))}
           <div className="ml-auto flex items-center gap-2">
@@ -370,11 +389,16 @@ export default function Incidents() {
           ) : rows.length === 0 ? (
             <EmptyState
               icon={<CheckCircle className="h-6 w-6" />}
-              title="No incidents"
+              title={partial ? "No match in the loaded incidents" : "No incidents"}
               description={
-                status
-                  ? `No ${STATUS_LABELS[status].toLowerCase()} incidents in the last ${windowHours}h.`
-                  : `No production errors in the last ${windowHours}h.`
+                partial ? (
+                  <>
+                    Nothing matches in the {all.length} incidents loaded so far; older ones in the last {windowHours}h are not loaded yet.{" "}
+                    <LoadMoreButton onClick={() => void fetchNextPage()} busy={isFetchingNextPage} label="Search older incidents" />
+                  </>
+                ) : status
+                    ? `No ${STATUS_LABELS[status].toLowerCase()} incidents in the last ${windowHours}h.`
+                    : `No production errors in the last ${windowHours}h.`
               }
             />
           ) : (
@@ -631,6 +655,7 @@ export default function Incidents() {
           {data && rows.length > 0 && (
             <div className="border-t border-gray-200 px-4 py-3 text-sm text-gray-500 dark:border-gray-700 dark:text-gray-400">
               Showing {rows.length} incident{rows.length === 1 ? "" : "s"}
+              {partial && ` of the ${all.length} loaded; older incidents in the window are not loaded yet`}
             </div>
           )}
         </div>

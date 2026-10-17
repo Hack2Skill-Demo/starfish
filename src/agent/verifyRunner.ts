@@ -18,7 +18,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { unpackBundle } from "./verifyBundle.js";
-import { MAX_BUNDLE_BYTES, VerifyRunnerError, parseRunnerRequest } from "./verifyProtocol.js";
+import { MAX_BUNDLE_BYTES, TRANSFER_TIMEOUT_MS, VerifyRunnerError, parseRunnerRequest } from "./verifyProtocol.js";
 import { verifyPatch, type VerifyResult } from "./verifyGate.js";
 
 export interface RunnerDeps {
@@ -26,6 +26,50 @@ export interface RunnerDeps {
   tmpDir?: string;
   /** The user the command runs as; absent runs it as this process's own user (a test, a laptop). */
   runAs?: { uid: number; gid: number };
+  /** One transfer's deadline in ms (the download as a whole, the upload); default TRANSFER_TIMEOUT_MS. */
+  transferTimeoutMs?: number;
+}
+
+/**
+ * Read a response body, counting bytes as they arrive, and stop at once above `max` whatever Content-Length said
+ * (or did not say) (#389). Gives up when `signal` aborts, a stalled transfer included: the read is raced against it
+ * rather than trusting the fetch implementation to cancel.
+ */
+async function readBounded(res: Response, max: number, signal: AbortSignal): Promise<Buffer> {
+  if (!res.body) return Buffer.alloc(0);
+  const reader = res.body.getReader();
+  const aborted = new Promise<never>((_, reject) => {
+    const onAbort = () => reject(new VerifyRunnerError("the bundle could not be fetched (timed out)"));
+    if (signal.aborted) onAbort();
+    else signal.addEventListener("abort", onAbort, { once: true });
+  });
+  aborted.catch(() => undefined);
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    for (;;) {
+      const { done, value } = await Promise.race([reader.read(), aborted]);
+      if (done) break;
+      total += value.length;
+      if (total > max) throw new VerifyRunnerError("the bundle is larger than the limit");
+      chunks.push(value);
+    }
+  } catch (err) {
+    await reader.cancel().catch(() => undefined);
+    throw err instanceof VerifyRunnerError ? err : new VerifyRunnerError("the bundle could not be fetched");
+  }
+  return Buffer.concat(chunks, total);
+}
+
+/** Run `fn` with a signal that aborts after `ms`; the timer never outlives the call. */
+async function withDeadline<T>(ms: number, fn: (signal: AbortSignal) => Promise<T>): Promise<T> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), ms);
+  try {
+    return await fn(controller.signal);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 export async function runVerifier(rawRequest: string, deps: RunnerDeps = {}): Promise<VerifyResult> {
@@ -33,15 +77,22 @@ export async function runVerifier(rawRequest: string, deps: RunnerDeps = {}): Pr
   const doFetch = deps.fetch ?? fetch;
   const work = await mkdtemp(join(deps.tmpDir ?? tmpdir(), "starfish-runner-"));
   try {
-    const got = await doFetch(req.bundleUrl, { method: "GET", redirect: "error" }).catch(() => {
-      throw new VerifyRunnerError("the bundle could not be fetched");
+    const timeoutMs = deps.transferTimeoutMs ?? TRANSFER_TIMEOUT_MS;
+    const bytes = await withDeadline(timeoutMs, async (signal) => {
+      const got = await doFetch(req.bundleUrl, { method: "GET", redirect: "error", signal }).catch(() => {
+        throw new VerifyRunnerError(signal.aborted ? "the bundle could not be fetched (timed out)" : "the bundle could not be fetched");
+      });
+      if (!got.ok) throw new VerifyRunnerError(`the bundle could not be fetched (HTTP ${got.status})`);
+      // An early refusal only: the count below is what holds when the header is absent or wrong.
+      const declared = Number(got.headers.get("content-length") ?? 0);
+      if (declared > MAX_BUNDLE_BYTES) {
+        await got.body?.cancel().catch(() => undefined);
+        throw new VerifyRunnerError("the bundle is larger than the limit");
+      }
+      return readBounded(got, MAX_BUNDLE_BYTES, signal);
     });
-    if (!got.ok) throw new VerifyRunnerError(`the bundle could not be fetched (HTTP ${got.status})`);
-    const declared = Number(got.headers.get("content-length") ?? 0);
-    if (declared > MAX_BUNDLE_BYTES) throw new VerifyRunnerError("the bundle is larger than the limit");
-    const bytes = Buffer.from(await got.arrayBuffer());
 
-    const unpacked = await unpackBundle(bytes, work, deps.tmpDir);
+    const unpacked = await unpackBundle(bytes, work);
     const patch = await readFile(unpacked.patch, "utf8");
     // The patch in the bundle must be the one the agent will accept a result for.
     if (createHash("sha256").update(patch).digest("hex") !== req.patchSha256) throw new VerifyRunnerError("the patch in the bundle is not the one named in the request");
@@ -54,14 +105,17 @@ export async function runVerifier(rawRequest: string, deps: RunnerDeps = {}): Pr
       ...(deps.runAs && { runAs: deps.runAs }),
     });
 
-    const put = await doFetch(req.resultUrl, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(result),
-      redirect: "error",
-    }).catch(() => {
-      throw new VerifyRunnerError("the result could not be written");
-    });
+    const put = await withDeadline(timeoutMs, (signal) =>
+      doFetch(req.resultUrl, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(result),
+        redirect: "error",
+        signal,
+      }).catch(() => {
+        throw new VerifyRunnerError(signal.aborted ? "the result could not be written (timed out)" : "the result could not be written");
+      }),
+    );
     if (!put.ok) throw new VerifyRunnerError(`the result could not be written (HTTP ${put.status})`);
     return result;
   } finally {
