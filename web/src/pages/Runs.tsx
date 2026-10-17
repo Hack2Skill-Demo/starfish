@@ -78,6 +78,7 @@ import {
   issueLink,
   prLink,
   stepLogOrder,
+  earlierAsStep,
   triageFinding,
   triageDecision,
   triageRule,
@@ -93,7 +94,7 @@ import {
   roundStartMs,
   type ReplaySpeedChoice,
 } from "../lib/runsModel";
-import { LEVELS, LEVEL_SHORT, judgedOnGitHub, stepDetail, type ReviewAttack, type StepDetail } from "../lib/runStepDetail";
+import { LEVELS, LEVEL_SHORT, judgedOnGitHub, recordIsTheStep, stepDetail, type ReviewAttack, type StepDetail } from "../lib/runStepDetail";
 
 
 /** Whether the selected run is shown full width, the run list hidden; kept per browser, like the sidebar's collapse. */
@@ -1455,6 +1456,51 @@ function StepDetails({
 }
 
 /**
+ * One step of the step log: its icon, what it ended in and when, its own line and what it recorded. The same row draws the
+ * latest round's steps and every step an earlier round reached, so reopening a run never takes the first round's details
+ * away. The run record keeps only a stage's latest record, so `stepDetail` shows an earlier step's record details only when
+ * no later round ran that stage again (`recordIsTheStep`); the links, which belong to the run, always show.
+ */
+function StepRow({
+  step,
+  cycle,
+  events,
+  pr,
+  issue,
+  finding,
+  now,
+}: {
+  step: Step;
+  cycle: CycleRow;
+  events: readonly EventRow[];
+  pr?: ReturnType<typeof prLink>;
+  issue?: ReturnType<typeof issueLink>;
+  finding?: ReturnType<typeof triageFinding>;
+  now: number;
+}) {
+  const detail = stepDetail(step, cycle, events);
+  return (
+    <li className="grid grid-cols-[2.5rem_minmax(0,1fr)] gap-x-3 py-4 @lg:gap-x-4">
+      <StageIcon step={step} onGitHub={step.stage === "verify" && judgedOnGitHub(detail.verify)} />
+      <div className="min-w-0 space-y-2">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+          <span className="text-base font-semibold text-gray-900 dark:text-white">{step.title}</span>
+          <Badge tone={verdictTone(step)}>{step.status === "running" ? "In progress" : stepVerdict(step)}</Badge>
+          {step.at && (
+            <span className="ml-auto text-xs text-gray-600 dark:text-gray-400">
+              {formatDateTime(step.at)}
+              {step.durationMs !== undefined ? ` · ${formatDuration(step.durationMs)} since the step before` : ""}
+            </span>
+          )}
+        </div>
+        {step.summary && <p className={`whitespace-pre-wrap ${BODY}`}>{step.summary}</p>}
+        <StepDetails step={step} detail={detail} pr={pr} issue={issue} finding={finding} now={now} cycle={cycle} />
+      </div>
+    </li>
+  );
+}
+
+/**
  * What Starfish did, step by step: each step with its icon, what it ended in and when, its own line, what it recorded
  * (the decision and its alternatives, the fix's risk, the gate's checks, the review's attacks, the issue and pull
  * request). Newest first by default, so the step in progress sits right under the
@@ -1514,28 +1560,9 @@ function Timeline({
         </button>
       </div>
       <ol aria-label="Step log" className="divide-y divide-gray-100 dark:divide-gray-700">
-        {steps.map((step) => {
-          const detail = stepDetail(step, cycle, events);
-          return (
-            <li key={step.stage} className="grid grid-cols-[2.5rem_minmax(0,1fr)] gap-x-3 py-4 @lg:gap-x-4">
-              <StageIcon step={step} onGitHub={step.stage === "verify" && judgedOnGitHub(detail.verify)} />
-              <div className="min-w-0 space-y-2">
-                <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-                  <span className="text-base font-semibold text-gray-900 dark:text-white">{step.title}</span>
-                  <Badge tone={verdictTone(step)}>{step.status === "running" ? "In progress" : stepVerdict(step)}</Badge>
-                  {step.at && (
-                    <span className="ml-auto text-xs text-gray-600 dark:text-gray-400">
-                      {formatDateTime(step.at)}
-                      {step.durationMs !== undefined ? ` · ${formatDuration(step.durationMs)} since the step before` : ""}
-                    </span>
-                  )}
-                </div>
-                {step.summary && <p className={`whitespace-pre-wrap ${BODY}`}>{step.summary}</p>}
-                <StepDetails step={step} detail={detail} pr={pr} issue={issue} finding={finding} now={now} cycle={cycle} />
-              </div>
-            </li>
-          );
-        })}
+        {steps.map((step) => (
+          <StepRow key={step.stage} step={step} cycle={cycle} events={events} pr={pr} issue={issue} finding={finding} now={now} />
+        ))}
       </ol>
       {earlier.length > 0 && (
         <>
@@ -1549,18 +1576,18 @@ function Timeline({
                     <ChevronRight className="h-3.5 w-3.5 shrink-0 transition-transform group-open:rotate-90" aria-hidden />
                     Round {r.round} of {rounds} · ended on {r.title.toLowerCase()} · {formatDuration(r.durationMs)} long
                   </summary>
-                  <ol aria-label={`Round ${r.round}`} className="mt-1 ml-5 space-y-1.5 border-l-2 border-gray-100 pl-3 dark:border-gray-700">
+                  <ol aria-label={`Round ${r.round}`} className="mt-1 ml-3 divide-y divide-gray-100 border-l-2 border-gray-100 pl-3 dark:divide-gray-700 dark:border-gray-700">
                     {r.steps.map((step) => (
-                      <li key={step.stage}>
-                        <div className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5">
-                          <span className="text-sm font-medium text-gray-900 dark:text-white">{step.title}</span>
-                          <span className={`text-xs ${step.failed ? "font-medium text-error-700 dark:text-error-400" : "text-gray-600 dark:text-gray-400"}`}>
-                            {stepVerdict({ status: step.failed ? "failed" : "done", ...(step.outcome && { outcome: step.outcome }) })}
-                          </span>
-                          <span className="ml-auto text-xs text-gray-600 dark:text-gray-400">{formatDateTime(step.at)}</span>
-                        </div>
-                        {step.summary && <p className={`mt-0.5 whitespace-pre-wrap ${BODY}`}>{step.summary}</p>}
-                      </li>
+                      <StepRow
+                        key={step.stage}
+                        step={earlierAsStep(step)}
+                        cycle={cycle}
+                        events={events}
+                        pr={pr}
+                        issue={issue}
+                        finding={recordIsTheStep(step, events) ? finding : undefined}
+                        now={now}
+                      />
                     ))}
                   </ol>
                 </details>
