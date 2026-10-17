@@ -49,6 +49,11 @@ export interface StepDetail {
   review?: { held?: number; flagged?: number; broken?: number; attacks: ReviewAttack[] };
   /** An alert or a message to a person: how the delivery ended. */
   delivery?: { state?: string; attempts?: number; reason?: string };
+  /**
+   * The missing-index step's own words for why it stopped (a refusal, a failed build...). The reason is text, so a guest's
+   * trimmed copy (#18) leaves it out; a stored record has it.
+   */
+  index?: { reason: string };
   /** The pull request's diff on GitHub, when one was opened: the patch text itself is not stored. */
   diffUrl?: string;
 }
@@ -167,6 +172,8 @@ export function stepDetail(step: Step, cycle: CycleRow, events: readonly EventRo
       ...(text(rec.reason) && { reason: text(rec.reason) }),
     };
   }
+
+  if (step.stage === "index" && text(rec?.reason)) out.index = { reason: text(rec?.reason)! };
 
   return out;
 }
