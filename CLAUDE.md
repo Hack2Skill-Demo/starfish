@@ -27,13 +27,17 @@ about that product (names, project IDs, code) belongs in this repo.
 Every deployment-specific value lives in `src/config.ts` and nowhere else. `src/config.ts`
 is the only file in `src/` allowed to read `process.env` — enforced at edit time by
 `.claude/hooks/config-boundary-guard.sh` and on every file by lint (`eslint.config.js`; tests exempt). New setting → a `StarfishConfig` field, its env
-var and default in `loadConfig()`, and a line in `.env.example`. The README's genericity
-table tracks what still isn't configurable; keep it honest.
+var and default in `loadConfig()`, and a line in `.env.example`. The genericity
+table (`docs/genericity.md`) tracks what still isn't configurable; keep it honest.
 
 ## Honesty is the product's main asset
 
 Docs, README, comments and PR text must never claim what the code doesn't do yet.
 "Designed", "planned" and "built" mean different things — use them precisely.
+The README stays short and links to `docs/status.md`, the one dated matrix of what is implemented, tested, validated against
+the real service and observed in the deployment, with the evidence for each. A claim about what has run, been merged or been
+deployed goes there with a source and a date, never only in prose elsewhere. "Fixed" is four different things there: a proposed PR,
+a merged change, a deployed fix, a verified recovery; use those words, not "fixed".
 
 ## Commands
 
@@ -49,7 +53,7 @@ pnpm spike            # the Gemini fix-quality spike (needs .env + Vertex access
 pnpm ingest           # one ingest run: next window(s) of the watched project's logs → the store
 PROJECT_ID=<p> scripts/deploy-gcp.sh   # Cloud Run job + Scheduler + Secret Manager; DRY_RUN=1 prints the plan (docs/deploy.md)
 # The whole setup, in order (docs/setup.md): scripts/preflight-gcp.sh → deploy-gcp.sh → pnpm grant-operator →
-# scripts/smoke-gcp.sh → scripts/deploy-web.sh. pnpm status: is the deployed engine alive? Run once on the demo project (2026-10-05), the smoke test included; the agent job was deployed there on 2026-10-07 and, since the Deploy engine workflow's first run (2026-10-10), runs hourly with dry run off and auto-merge on for the demo target; real incidents have gone through it as far as a PR on the demo app (demo-app #41, #42, #49); nothing merged.
+# scripts/smoke-gcp.sh → scripts/deploy-web.sh. pnpm status: is the deployed engine alive? Run once on the demo project (2026-10-05), the smoke test included; the agent job was deployed there on 2026-10-07 and, since the Deploy engine workflow's first run (2026-10-10), runs hourly with dry run off and auto-merge on for the demo target; real incidents have gone through it as far as a PR on the demo app (demo-app #41, #42, #49): a person merged #49 (2026-10-13) and #41 (2026-10-15) and the target's pipeline deployed them, #42 was closed as redundant; Starfish has merged nothing itself and verified no recovery (docs/status.md, checked 2026-10-17).
 scripts/setup-github-deploy.sh   # one-time (re-run after it changes): lets GitHub Actions deploy with no key (WIF); deploy-on-merge is then a repo variable that needs required reviewers on `deploy` (#301) (docs/deploy.md); run on the demo project 2026-10-10, before it granted Hosting for the web UI (#265), required a run on main in the provider's condition (#299) and refused an Editor/Owner build account (#300, which preflight-gcp.sh also FAILs on); those two are written and tested with stubs, not run: re-run it there
 scripts/setup-ingest-alerts.sh   # alert policies for a missed ingest run and a checkpoint that falls behind (#387, docs/deploy.md); DRY_RUN=1 prints; written and stub-tested, never run on a real project
 scripts/ingest-cadence.sh status|recording|restore|now   # the ingest's tick for recording the demo, and a run now (#65); DRY_RUN=1 prints
@@ -107,7 +111,7 @@ asked. `/ship` encodes the loop:
 
 **Still pause for:** destructive or irreversible actions (prod data, deleting what you
 didn't create, force-pushing shared branches); genuinely ambiguous scope; anything that
-would let Starfish **merge or deploy on its own** (the trust ladder in the README is a
+would let Starfish **merge or deploy on its own** (the trust ladder, `docs/trust-ladder.md`, is a
 product decision, not a code change; the decided direction and its preconditions are in
 `docs/design/auto-merge-policy.md`: Gemini decides how far to go within the admin's merge cases,
 built for the demo target behind default-off switches, never run against real GitHub; widening it to

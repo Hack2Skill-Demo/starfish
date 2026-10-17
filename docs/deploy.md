@@ -11,10 +11,11 @@ starts on a cron, under its own service account, with the image built from the `
 > redeployed ingest, the agent and the admin API, and since then the agent runs with **dry run off, auto-merge on for the demo target
 > and the missing-index repair on**. Since then it has posted both Slack messages (from 2026-10-11) and filed issues on the demo
 > app, and from 2026-10-12 real incidents have gone through the verify step (the demo app's own CI), Gemini's review and on to a
-> pull request (demo-app #41, #42 and #49). Nothing has been merged or repaired yet: the merge, the fast revert and the index
+> pull request (demo-app #41, #42 and #49). Starfish has merged nothing itself, and a person merged two of those pull requests (demo-app #49 and #41); no fix has been verified
+> as having stopped its error (see [`status.md`](status.md)). The merge, the fast revert and the index
 > repair have never run against real GitHub or Google, and no phone call has been placed. The
-> Deploy web UI workflow has run twice on merges (2026-10-10) and failed both times before publishing anything: the deployer had
-> no Hosting role (#265). `setup-github-deploy.sh` now grants it; it has to be run again on the project before the workflow can
+> Deploy web UI workflow has failed on every run checked on 2026-10-17 (#75 to #82, since 2026-10-16) before publishing anything: the
+> deployer has no Hosting role (#265, #370; run #82's log shows HTTP 403 on the Hosting site read). `setup-github-deploy.sh` now grants it; it has to be run again on the project before the workflow can
 > work, and that has not happened yet. The script's whole plan is pinned by `scripts/deploy-gcp.test.mjs`
 > (a dry run), and CI builds the image.
 >
@@ -965,7 +966,7 @@ trigger #65 asks for: anyone with `roles/run.developer` on the job can run it.
 
 The ingest path was first deployed to a real project (the demo project) from a terminal on 2026-10-05, and the smoke test passed there too;
 the agent job has run there hourly since 2026-10-07, the Deploy engine workflow has deployed it since 2026-10-10, and the Deploy web UI
-workflow's two runs failed before publishing (#265). The likely first failures on a new project, and what they mean:
+workflow's runs have failed before publishing (#265, #370; the latest checked, 2026-10-17). The likely first failures on a new project, and what they mean:
 
 - **The build is denied** ("Build failed because the default service account is missing required IAM permissions", seen
   on a first run). `gcloud run jobs deploy --source` builds as the Compute Engine default account, which a newer
@@ -979,13 +980,13 @@ workflow's two runs failed before publishing (#265). The likely first failures o
 ## Not covered
 
 - **The web UI** deploys to Hosting with `scripts/deploy-web.sh`, from a terminal (run once, on the demo project,
-  2026-10-05) or from the Deploy web UI workflow above (its two runs failed before publishing, #265; it needs
+  2026-10-05) or from the Deploy web UI workflow above (its runs have failed before publishing, #265, #370; it needs
   `setup-github-deploy.sh` run again).
 - **An alert when ingestion stops is a script a person runs, and has never run.** `scripts/setup-ingest-alerts.sh` (#387) is written and
   stub-tested ([above](#alerting-on-a-stopped-ingest-387)); until someone runs it on the project, the UI shows a stopped ingest and nothing pages anyone.
 - **The admin API has run once, not fully.** It was deployed to the demo project on 2026-10-07 and "Run ingest now" worked from the UI
   ([above](#the-admin-api-run-ingest-now-and-retire-an-incident-63-65)); Retire and "Run agent now" have not been tried against it. The UI's three buttons appear only once the site is built with the service's URL. Without it, for recording a demo, see [the cadence script](#recording-the-demo-a-shorter-tick-and-a-run-now-65).
-- **The agent has not merged anything.** Deployed to the demo project on 2026-10-07, dry run off since 2026-10-10; triage and
+- **The agent has not merged anything itself** (a person merged two of its pull requests, demo-app #49 and #41, and the target deployed them; no recovery was verified, [`status.md`](status.md)). Deployed to the demo project on 2026-10-07, dry run off since 2026-10-10; triage and
   fix drafting have run on real incidents since 2026-10-08, and since 2026-10-12 the verify step, the review and a pull request
   too (demo-app #41, #42 and #49). The merge, the fast revert and the phone escalation have never run for real. The agent job deploys with `DEPLOY_AGENT=1`, verified by the target's
   CI or by a separate credential-less job ([above](#the-agent-and-where-its-tests-run-74)); `in-process` verification is

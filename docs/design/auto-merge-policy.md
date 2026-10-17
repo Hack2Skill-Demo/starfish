@@ -3,7 +3,7 @@
 > **Status: built for the demo target behind default-off switches (#9); other targets stay
 > PR-only. Never merged anything on real GitHub.** On the demo project the switches are on for the demo target
 > since 2026-10-10, and the safety floor has refused a real pull request there (demo-app #49), so a person was
-> told and nothing was merged. Auto-merge (code fixes and the missing-index evidence
+> told and Starfish merged nothing (a person later merged two of its pull requests, demo-app #49 and #41). Auto-merge (code fixes and the missing-index evidence
 > PR) and fast-revert are written and tested against real git, a fake GitHub API and the Firestore
 > emulator. A target can auto-merge only if the deployment lists it in
 > `STARFISH_AUTO_MERGE_TARGETS` (the demo), an admin turns `autoMerge` on in Settings **and** lists
