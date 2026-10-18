@@ -1591,17 +1591,23 @@ function Timeline({
       {words && (
         <section aria-label="In plain words" className="mb-4 space-y-2 rounded-xl bg-gray-50 px-4 py-3 dark:bg-gray-900/40">
           <h3 className={SECTION_TITLE}>In plain words</h3>
-          {words.rounds.map((r) => (
-            <div key={r.round} className="space-y-1">
-              {words.rounds.length > 1 && (
-                <p className="text-xs font-medium text-gray-600 dark:text-gray-400">
-                  Round {r.round}
-                  {r.began ? ` · ${r.began.replace(/[.\s]+$/, "")}` : ""}
-                </p>
-              )}
-              <p className={BODY}>{r.sentences.map((x) => x.text).join(" ")}</p>
-            </div>
-          ))}
+          {words.rounds.map((r, i) => {
+            // A reopened run has several rounds: the last is the one the card, the track and the step log below draw; the
+            // rest are over. Said in words and in weight, since the numbers alone do not say which is which.
+            const current = i === words.rounds.length - 1;
+            return (
+              <div key={r.round} className="space-y-1">
+                {words.rounds.length > 1 && (
+                  <p className="flex flex-wrap items-center gap-2 text-xs font-medium text-gray-600 dark:text-gray-400">
+                    <span className={current ? "text-gray-900 dark:text-white" : ""}>Round {r.round}</span>
+                    <Badge tone={current ? "brand" : "neutral"}>{current ? (cycle.state === "running" ? "Current · running" : "Current") : "Earlier"}</Badge>
+                    {r.began && <span>{r.began.replace(/[.\s]+$/, "")}</span>}
+                  </p>
+                )}
+                <p className={words.rounds.length > 1 && !current ? "text-sm leading-relaxed text-gray-600 dark:text-gray-400" : BODY}>{r.sentences.map((x) => x.text).join(" ")}</p>
+              </div>
+            );
+          })}
           {words.closing && <p className="text-sm font-medium text-gray-900 dark:text-white">{words.closing}</p>}
           <p className="text-xs text-gray-600 dark:text-gray-400">Composed from what the engine recorded; no model wrote it.</p>
         </section>
