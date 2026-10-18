@@ -14,7 +14,7 @@
  * fingerprint are samples, and they are untrusted text like the rest (#304).
  */
 import type { LogCounterCheck } from "../types.js";
-import { fingerprintOfLogEntry } from "./fingerprint.js";
+import { fingerprintsOfLogEntry } from "./fingerprint.js";
 import { splitMessageStack } from "./messageStack.js";
 import { buildLogFilter, extractErrorDetail, extractMessageTitle, parseLogEntry, type LogSource, type RawLogEntry } from "./parseLogEntry.js";
 import { isSensitiveKey, redactPii, sliceWellFormed } from "./redact.js";
@@ -185,7 +185,7 @@ export function toSample(entry: unknown): ErrorLogSample | null {
 
 /**
  * The few most recent error entries that are THIS incident: of `functionName`, whose fingerprint, recomputed the
- * way ingest computes it (`fingerprintOfLogEntry` over `parseLogEntry`), equals the incident's `fingerprint`.
+ * way ingest computes it (`fingerprintOfLogEntry` over `parseLogEntry`), equals the incident's `fingerprint` (or did, by an earlier version of the fingerprint).
  *
  * Why the fingerprint and not just the function (#304): anyone who can make the function log an error (a crafted
  * request) controlled the newest entries, so the samples, and through their fake stack frames which repository
@@ -232,9 +232,13 @@ export async function fetchRecentErrorSamples(
   }
 }
 
-/** Whether ingest would have filed `entry` under `fingerprint`: parsed (noise dropped) and hashed as aggregate.ts does. */
+/**
+ * Whether ingest would have filed `entry` under `fingerprint`: parsed (noise dropped) and hashed as aggregate.ts does,
+ * by the current fingerprint version or an earlier one (#432): an incident stored before a fingerprint change keeps
+ * its old fingerprint until ingest's next occurrence of it re-points it, and its samples must not go empty meanwhile.
+ */
 function isEntryOf(entry: unknown, source: LogSource, fingerprint: string): boolean {
   if (entry === null || typeof entry !== "object") return false;
   const parsed = parseLogEntry(entry as RawLogEntry, source.ignoredMessages, source.excludedServices ?? []);
-  return parsed !== null && fingerprintOfLogEntry(parsed.functionName, parsed.errorMessage) === fingerprint;
+  return parsed !== null && fingerprintsOfLogEntry(parsed.functionName, parsed.errorMessage, parsed.stackTrace).includes(fingerprint);
 }

@@ -182,6 +182,13 @@ describe("toPublicIncident", () => {
     expect(copy).not.toHaveProperty("fingerprint");
   });
 
+  it("names an overflow or a Cloud Run quota incident's kind too, by field or namespace, never a plain log one (#435)", () => {
+    expect(toPublicIncident(storedIncident({ signalSource: "overflow", fingerprint: "ovf-abc" }), pub)!.signalSource).toBe("overflow");
+    expect(toPublicIncident(storedIncident({ fingerprint: "pq-abc" }), pub)!.signalSource).toBe("platform-quota");
+    expect(toPublicIncident(storedIncident({ signalSource: "log", fingerprint: "0123456789abcdef" }), pub)).not.toHaveProperty("signalSource");
+    expect(toPublicIncident(storedIncident({ signalSource: "something-else" }), pub)).not.toHaveProperty("signalSource");
+  });
+
   it("drops a value that is not the shape its field should hold", () => {
     const copy = toPublicIncident(
       storedIncident({

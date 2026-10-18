@@ -99,6 +99,9 @@ describe("keyTarget: the incident the store converges on", () => {
     expect(keyTarget([rec("a", { status: "ignored" })])).toBeUndefined();
     expect(keyTarget([rec("b", { firstOccurredAtMs: 1 }), rec("a", { firstOccurredAtMs: 1 })])).toBe("a");
     expect(keyTarget([rec("b"), rec("a")])).toBe("a");
+    // The key's own incident, when live, keeps it (the store follows the key, #432); an ignored one does not.
+    expect(keyTarget([rec("a", { firstOccurredAtMs: 1 }), rec("b", { firstOccurredAtMs: 9 })], "b")).toBe("b");
+    expect(keyTarget([rec("a", { firstOccurredAtMs: 1 }), rec("b", { status: "ignored" })], "b")).toBe("a");
   });
 });
 

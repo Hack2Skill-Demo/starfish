@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import { messageTitle } from "./messageStack.js";
+import { INCIDENT_KINDS, incidentKindOf, type IncidentKindId } from "../incidentKinds.js";
+import { messageTitle, splitMessageStack } from "./messageStack.js";
 import { sanitize } from "./redact.js";
 
 /** How much of the normalized message the fingerprint hashes. */
@@ -66,10 +67,8 @@ const NUMBER_RE =
  * can't crash a batch.
  *
  * Changing what is hashed changes the fingerprint of every message that held a
- * volatile token (or irregular whitespace), so an incident stored under the old
- * fingerprint is not matched by its next occurrence: that would open one fresh incident.
- * After any such change, run `pnpm rekey` (src/rekey.ts, #362): it recomputes every live
- * incident's stored fingerprint with the current code and points its incident key at it.
+ * volatile token (or irregular whitespace). Such a change is a new {@link FINGERPRINT_VERSION}, with the old way kept
+ * in {@link FINGERPRINT_VERSIONS}: the store then finds an incident stored under the old fingerprint by itself (#432).
  */
 export function normalizeErrorMessage(errorMessage: string): string {
   return String(errorMessage ?? "")
@@ -153,7 +152,11 @@ const FUNCTION_FAILED_WRAPPER_RE = /^\s*([A-Za-z0-9_.-]+) failed:\s+/i;
  * the work. Only the fingerprint uses this: the stored message keeps the text as logged, for display.
  */
 export function errorCore(errorMessage: string, functionName: string): string {
-  let text = messageTitle(String(errorMessage ?? "")).substring(0, NORMALIZE_INPUT_CAP);
+  return withoutWrappers(messageTitle(String(errorMessage ?? "")).substring(0, NORMALIZE_INPUT_CAP), functionName);
+}
+
+/** `text` with the wrappers {@link errorCore} names taken off its start. */
+function withoutWrappers(text: string, functionName: string): string {
   const fn = canonicalFunctionName(functionName);
   for (let i = 0; i < MAX_ERROR_WRAPPERS; i += 1) {
     const prefix = wrapperPrefix(text, fn);
@@ -210,55 +213,170 @@ export function fingerprintOfLogEntry(functionName: string, rawErrorMessage: str
 }
 
 /**
- * Prefix of every Monitoring-only incident's fingerprint (#19). A log fingerprint is 16 hex
- * characters, so no log-derived incident can ever share a fingerprint, or an incident key, with a
- * Monitoring-only one: the two signals never merge in the store.
+ * Every fingerprint one parsed log entry has had: the current one first, then those earlier versions gave it
+ * ({@link earlierFingerprints}), each of the SANITIZED text as ingest stores it. The sample filter (counterCheck.ts)
+ * matches an incident stored under an earlier version through these, so a fingerprint change never leaves its samples
+ * empty until ingest re-points it.
  */
-export const MONITORING_FINGERPRINT_PREFIX = "mon-";
+export function fingerprintsOfLogEntry(functionName: string, rawErrorMessage: string, rawStackTrace?: string): string[] {
+  const source: FingerprintSource = {
+    functionName,
+    errorMessage: sanitize(rawErrorMessage) ?? "",
+    ...(rawStackTrace !== undefined && { stackTrace: sanitize(rawStackTrace) }),
+  };
+  return [fingerprintOf(source.functionName, source.errorMessage), ...earlierFingerprints(source)];
+}
 
-/**
- * Prefix of every high-cardinality overflow incident's fingerprint (#303). Like the Monitoring prefix, it keeps
- * the overflow namespace apart from the 16-hex log fingerprints, so an overflow incident never merges with a log
- * incident, or with a Monitoring-only one.
- */
-export const OVERFLOW_FINGERPRINT_PREFIX = "ovf-";
+/** Prefix of every Monitoring-only incident's fingerprint (#19): the `monitoring` kind's namespace (src/incidentKinds.ts). */
+export const MONITORING_FINGERPRINT_PREFIX = INCIDENT_KINDS.monitoring.prefix;
 
-/**
- * Prefix of every consolidated Cloud Run quota incident's fingerprint (ingest/platformQuota.ts). Its function name is
- * synthetic, so the namespace keeps it from ever sharing a fingerprint with a deployed function's log incident.
- */
-export const PLATFORM_QUOTA_FINGERPRINT_PREFIX = "pq-";
+/** Prefix of every high-cardinality overflow incident's fingerprint (#303): the `overflow` kind's namespace. */
+export const OVERFLOW_FINGERPRINT_PREFIX = INCIDENT_KINDS.overflow.prefix;
 
-/**
- * Where an incident came from. Absent on a stored record means Cloud Logging (every record before #19).
- * `overflow` (#303): a function's log errors past the per-window cap on new incidents, folded into one record.
- * `platform-quota`: Cloud Run's project quota rejections across every function, one record per quota metric.
- */
-export type SignalSource = "log" | "monitoring" | "overflow" | "platform-quota";
+/** Prefix of every consolidated Cloud Run quota incident's fingerprint (ingest/platformQuota.ts): the `platform-quota` kind's. */
+export const PLATFORM_QUOTA_FINGERPRINT_PREFIX = INCIDENT_KINDS["platform-quota"].prefix;
 
-/**
- * An overflow incident's fingerprint: its canonical function name and its message hashed WITHOUT normalization.
- * The message is fixed text naming the UTC day (aggregate.ts `overflowMessage`), and normalization would collapse
- * the date to `<ts>`, merging every day's overflow into one incident.
- */
-function overflowFingerprint(functionName: string, errorMessage: string): string {
-  const digest = createHash("sha256")
-    .update(`${canonicalFunctionName(functionName)}\n${String(errorMessage ?? "")}`)
-    .digest("hex")
-    .substring(0, 16);
-  return `${OVERFLOW_FINGERPRINT_PREFIX}${digest}`;
+/** Where an incident came from (src/incidentKinds.ts). Absent on a stored record means Cloud Logging (every record before #19). */
+export type SignalSource = IncidentKindId;
+
+/** sha256 of `text`, 16 hex characters. */
+function digest16(text: string): string {
+  return createHash("sha256").update(text).digest("hex").substring(0, 16);
+}
+
+/** The UTC day an overflow incident's fixed message names (aggregate.ts `overflowMessage`, every version of it). */
+const OVERFLOW_DAY_RE = /\bon (\d{4}-\d{2}-\d{2}) \(UTC\)/;
+
+/** The UTC day (`2026-10-18`) an overflow message names, or undefined when it names none. */
+export function overflowDayOf(errorMessage: string): string | undefined {
+  return OVERFLOW_DAY_RE.exec(String(errorMessage ?? ""))?.[1];
 }
 
 /**
- * The fingerprint a record holds, recomputed from its content: the one place that knows a
- * Monitoring-only record, a high-cardinality overflow one, or a consolidated quota one, hashes into its own
- * namespace. The store, retire and scrub all recompute through this, so none of them can confuse them.
+ * A `function-day` fingerprint (the overflow kind, version 4): the canonical function name and the UTC day its message
+ * names, so a change to the message's wording never moves it again. A message naming no day (nothing ingest writes)
+ * falls back to the message itself, hashed unnormalized: normalization would collapse a date to `<ts>`, merging days.
+ */
+function functionDayFingerprint(prefix: string, functionName: string, errorMessage: string): string {
+  const day = overflowDayOf(errorMessage);
+  const fn = canonicalFunctionName(functionName);
+  return `${prefix}${digest16(day !== undefined ? `${fn}\nday:${day}` : `${fn}\n${String(errorMessage ?? "")}`)}`;
+}
+
+/**
+ * The fingerprint a record holds, recomputed from its content with the CURRENT version: the one place that knows how
+ * each kind (src/incidentKinds.ts) hashes, and into which namespace. The store, retire, rekey and scrub all recompute
+ * through this, so none of them can confuse the kinds.
  */
 export function fingerprintOf(functionName: string, errorMessage: string, signalSource?: unknown): string {
-  if (signalSource === "overflow") return overflowFingerprint(functionName, errorMessage);
-  // The namespaced records hash their fixed message as it always was: no wrapper is ever stripped from it (#318),
-  // so no Monitoring-only or quota incident's fingerprint moves.
-  if (signalSource === "monitoring") return `${MONITORING_FINGERPRINT_PREFIX}${hashNormalized(functionName, errorMessage)}`;
-  if (signalSource === "platform-quota") return `${PLATFORM_QUOTA_FINGERPRINT_PREFIX}${hashNormalized(functionName, errorMessage)}`;
-  return computeErrorFingerprint(functionName, errorMessage);
+  const kind = incidentKindOf({ signalSource });
+  switch (kind.fold) {
+    case "function-day":
+      return functionDayFingerprint(kind.prefix, functionName, errorMessage);
+    // The namespaced records hash their fixed message as it always was: no wrapper is ever stripped from it (#318),
+    // so no Monitoring-only or quota incident's fingerprint moves.
+    case "message":
+      return `${kind.prefix}${hashNormalized(functionName, errorMessage)}`;
+    case "error-core":
+      return `${kind.prefix}${computeErrorFingerprint(functionName, errorMessage)}`;
+  }
+}
+
+/** What a fingerprint version reads of an occurrence: the fields an ingest input (store.ts `IncidentInput`) carries. */
+export interface FingerprintSource {
+  functionName: string;
+  /** The message as ingest stores it now (sanitized; a stack it carried cut off, #361). */
+  errorMessage: string;
+  /** The stack as ingest stores it now: the whole logged text when the message carried its own frames (#361). */
+  stackTrace?: string;
+  signalSource?: unknown;
+}
+
+/**
+ * The messages ingest before #361 stored for an occurrence ingest now stores as `source`: the message as it is, and,
+ * when the stack is the message's own (its title is the message: parseLogEntry.ts split it off), the whole text, which
+ * is what it kept then. An entry with a stack field of its own may yield a wrong second guess; it only costs a read,
+ * since the store adopts nothing that does not hash to the current fingerprint.
+ */
+function pre361Messages(source: FingerprintSource): string[] {
+  const message = String(source.errorMessage ?? "");
+  const stack = source.stackTrace;
+  if (typeof stack !== "string") return [message];
+  const split = splitMessageStack(stack);
+  return split.stack !== undefined && split.title === message ? [message, stack] : [message];
+}
+
+/** Wrappers taken off as #318 did, before #361: on the text cut to {@link NORMALIZE_INPUT_CAP}, with no stack cut. */
+function pre361Core(errorMessage: string, functionName: string): string {
+  return withoutWrappers(errorMessage.substring(0, NORMALIZE_INPUT_CAP), functionName);
+}
+
+/** The overflow message before version 4 (#434): it keyed the fingerprint verbatim, so its exact text is kept here. */
+function overflowMessageBeforeV4(day: string): string {
+  return `High-cardinality overflow on ${day} (UTC): distinct errors of this function past the per-window cap on new incidents, each matching no stored incident, are counted here instead of opening one incident each`;
+}
+
+/** Up to version 3, an overflow incident hashed its message unnormalized, and the message said "per-window". */
+function overflowBeforeV4(source: FingerprintSource): string[] {
+  const day = overflowDayOf(source.errorMessage);
+  if (day === undefined) return [];
+  const text = `${canonicalFunctionName(source.functionName)}\n${overflowMessageBeforeV4(day)}`;
+  return [`${INCIDENT_KINDS.overflow.prefix}${digest16(text)}`];
+}
+
+/** The `message` kinds never moved: every version hashed them as {@link fingerprintOf} does. */
+const unchangedMessageKind = (source: FingerprintSource): string[] => [
+  fingerprintOf(source.functionName, source.errorMessage, source.signalSource),
+];
+
+/**
+ * The fingerprint's history (#432): for each version, the fingerprints ingest AT that version gave an occurrence that
+ * ingest now stores as `source`. A fingerprint change adds a version here (and bumps {@link FINGERPRINT_VERSION}),
+ * keeping the old way as a function, so the store can find the incidents the old fingerprint keyed and re-point them
+ * (store.ts), instead of opening a fork of each on the deploy that changes it.
+ *   1. #26 (2026-10-03): the normalized message, as stored then: with any stack it carried.
+ *   2. #318 (2026-10-13): wrappers (`Unhandled error`, `Error: `, `<fn> failed: `) taken off first.
+ *   3. #361 (2026-10-14): a stack the message carries cut off; ingest stores the title alone.
+ *   4. #434: an overflow incident keyed by function and UTC day, not by its message's wording.
+ */
+const FINGERPRINT_VERSIONS: Readonly<Record<number, (source: FingerprintSource) => string[]>> = {
+  1: (s) => {
+    const kind = incidentKindOf({ signalSource: s.signalSource });
+    if (kind.id === "overflow") return overflowBeforeV4(s);
+    if (kind.fold !== "error-core") return unchangedMessageKind(s);
+    return pre361Messages(s).map((m) => hashNormalized(s.functionName, m));
+  },
+  2: (s) => {
+    const kind = incidentKindOf({ signalSource: s.signalSource });
+    if (kind.id === "overflow") return overflowBeforeV4(s);
+    if (kind.fold !== "error-core") return unchangedMessageKind(s);
+    return pre361Messages(s).map((m) => hashNormalized(s.functionName, pre361Core(m, s.functionName)));
+  },
+  3: (s) => {
+    const kind = incidentKindOf({ signalSource: s.signalSource });
+    if (kind.id === "overflow") return overflowBeforeV4(s);
+    return [fingerprintOf(s.functionName, s.errorMessage, s.signalSource)];
+  },
+  4: (s) => [fingerprintOf(s.functionName, s.errorMessage, s.signalSource)],
+};
+
+/** The version {@link fingerprintOf} computes. */
+export const FINGERPRINT_VERSION = 4;
+
+/**
+ * The fingerprints earlier versions gave the occurrence `source` that differ from the current one: newest version
+ * first, each once. Empty for a kind whose fingerprint never moved. The store reads their keys on a miss (#432).
+ */
+export function earlierFingerprints(source: FingerprintSource): string[] {
+  const current = fingerprintOf(source.functionName, source.errorMessage, source.signalSource);
+  const seen = new Set<string>([current]);
+  const out: string[] = [];
+  for (let v = FINGERPRINT_VERSION - 1; v >= 1; v -= 1) {
+    for (const fp of FINGERPRINT_VERSIONS[v]!(source)) {
+      if (seen.has(fp)) continue;
+      seen.add(fp);
+      out.push(fp);
+    }
+  }
+  return out;
 }

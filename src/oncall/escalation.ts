@@ -41,6 +41,7 @@ import { abortIfClosed } from "../ingest/store.js";
 import { refreshPublicCycle } from "../publicViewStore.js";
 import { inQuietHours, maskPhone, parsePerson, parsePolicy, POLICY_DOC, ROLE_LABELS, type OnCallPerson, type OnCallPolicy, type OnCallRole } from "../oncallSchema.js";
 import type { TwilioClient } from "./twilio.js";
+import { incidentKindOf } from "../incidentKinds.js";
 
 /**
  * Every transaction of the escalation and its webhooks. A read that finds its transaction closed under it (the emulator's
@@ -144,8 +145,8 @@ export function isCritical(incident: Record<string, unknown> | undefined, policy
   if (!incident) return false;
   if (incident.status === "recurred") return true;
   // An overflow incident's count (#303) is every folded error added up: anyone who can make a function log many distinct
-  // errors could reach the threshold at will. Its occurrences never make it critical, so it waits out the quiet hours.
-  if (incident.signalSource === "overflow") return false;
+  // errors could reach the threshold at will. Its kind says its occurrences never make it critical (src/incidentKinds.ts).
+  if (!incidentKindOf(incident).countMakesCritical) return false;
   return typeof incident.occurrenceCount === "number" && incident.occurrenceCount >= policy.criticalOccurrences;
 }
 

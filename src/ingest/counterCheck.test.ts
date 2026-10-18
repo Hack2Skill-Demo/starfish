@@ -8,7 +8,7 @@ import {
   type EntryReader,
 } from "./counterCheck.js";
 import { DEFAULT_IGNORED_MESSAGES, DEFAULT_LOG_RESOURCE_TYPES } from "../config.js";
-import { fingerprintOf } from "./fingerprint.js";
+import { earlierFingerprints, fingerprintOf } from "./fingerprint.js";
 import { sanitize } from "./redact.js";
 
 const source = {
@@ -190,6 +190,19 @@ describe("fetchRecentErrorSamples", () => {
     const fp = fingerprintOf("ordersCreate", sanitize("order 123 failed for bob@example.com") ?? "");
     const logging = serving([entry("order 456 failed for alice@example.org", "at a (/app/src/x.ts:1:1)")]);
     expect(await fetchRecentErrorSamples(logging, source, "ordersCreate", fp, { nowMs })).toHaveLength(1);
+  });
+
+  it("still finds the samples of an incident stored under an earlier fingerprint version (#432)", async () => {
+    // The firebase-functions logger's shape: the stack inside the message, no stack field. Before #361 the whole text
+    // was the message and hashed; an incident stored then keeps that fingerprint until ingest re-points it.
+    const whole = `Error: ordersCreate failed: ${MESSAGE}\n    at create (/app/src/orders.ts:10:5)`;
+    const title = `Error: ordersCreate failed: ${MESSAGE}`;
+    const stored = earlierFingerprints({ functionName: "ordersCreate", errorMessage: sanitize(title) ?? "", stackTrace: sanitize(whole) ?? "" })[0]!;
+    expect(stored).not.toBe(fingerprintOf("ordersCreate", sanitize(title) ?? ""));
+    const logging = serving([
+      { metadata: { timestamp: "2026-09-20T23:00:00.000Z", resource: { labels: { function_name: "ordersCreate" } } }, data: { message: whole } },
+    ]);
+    expect(await fetchRecentErrorSamples(logging, source, "ordersCreate", stored, { nowMs })).toHaveLength(1);
   });
 
   it("takes the same bug logged under another wrapper as a sample of the incident (#318)", async () => {

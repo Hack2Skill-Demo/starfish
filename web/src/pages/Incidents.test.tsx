@@ -323,7 +323,7 @@ describe("Incidents page", () => {
     mocks.listIncidentsPage.mockResolvedValue({
       rows: [
         { ...base, monitoringCount: 7 },
-        { ...base, id: "m", functionName: "orders-sync", errorType: "UnloggedFailure", monitoringOnly: true, monitoringCount: 5 },
+        { ...base, id: "m", functionName: "orders-sync", errorType: "UnloggedFailure", kind: "monitoring", monitoringCount: 5 },
       ],
       capped: false,
     });

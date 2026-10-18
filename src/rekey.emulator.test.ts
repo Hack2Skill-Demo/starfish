@@ -117,6 +117,18 @@ describe("rekeyIncidents on the emulator (#362)", () => {
     expect((await keys().doc(incidentKeyId(ENV, "old-a")).get()).get("incidentId")).toBe("late");
   });
 
+  it("keeps a key the store already pointed at a live fork, so it never moves occurrences off it (#432)", async () => {
+    await seed("late", "old-a", { firstOccurredAt: at("2026-10-03T00:00:00Z") }, ["w1"]);
+    await seed("early", "old-b", { errorMessage: RETHROW }, ["w2"]);
+    // Since the deploy, ingest found "late" through its old key and keyed the current fingerprint to it.
+    await keys().doc(incidentKeyId(ENV, NEW_FP)).set({ incidentId: "late", environment: ENV, fingerprint: NEW_FP, updatedAt: at("2026-10-04T00:00:00Z"), appliedWindows: ["w5"] });
+
+    await rekeyIncidents(db, store, { environment: ENV, apply: true });
+
+    const key = (await keys().doc(incidentKeyId(ENV, NEW_FP)).get()).data()!;
+    expect(key).toMatchObject({ incidentId: "late", appliedWindows: ["w1", "w2", "w5"] });
+  });
+
   it("the next occurrence accrues onto the stored incident, and a replayed window counts once", async () => {
     await seed("a", "old-a", {}, ["w1"]);
 

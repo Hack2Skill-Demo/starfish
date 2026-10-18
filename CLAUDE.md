@@ -155,13 +155,20 @@ src/
     fingerprint    sha256(canonical functionName : first 100 chars of the normalized error core: a stack after the title
                    cut off (#361, so a stored record still holding frames hashes like a new one), then leading wrappers
                    `Unhandled error`, `<Name>Error:` and the function's own `<fn> failed:` stripped, so one bug logged in two
-                   shapes is one incident, #318). A change to it moves stored fingerprints: `pnpm rekey` (`src/rekey.ts`,
-                   #362) gives every live incident of the environment the current one and points its key at the incident
-                   the store converges on (earliest open, else latest resolved; none merged or deleted; tombstones and
-                   retired incidents kept), one transaction per fingerprint. Unit- and emulator-tested; never run on a real project;
-                   volatile ids/paths/timestamps/counts are collapsed first. Monitoring-only (`mon-`),
-                   high-cardinality overflow (`ovf-`, its fixed per-day message hashed unnormalized) and consolidated Cloud Run
-                   quota (`pq-`) have their own namespaces
+                   shapes is one incident, #318). Versioned (#432, `FINGERPRINT_VERSION`, now 4): each earlier version is
+                   kept as a function giving the fingerprint it stored for an occurrence, and on a key miss the store reads
+                   those versions' keys in the same transaction, adopts an incident one names that hashes to the current
+                   fingerprint (the record takes it, the key of the current one points at it carrying the old key's windows),
+                   so a fingerprint change forks nothing on deploy. Which incident when several qualify is ONE rule,
+                   `convergence.ts` `convergeOn` (the key's live incident, else earliest open, else latest resolved, else a
+                   tombstone), shared by the store, `pnpm rekey` (`src/rekey.ts`, #362: every live incident of the environment
+                   given the current one, one transaction per fingerprint; it keeps a key the store already pointed at a live
+                   incident) and `pnpm scrub`. Unit- and emulator-tested; not yet run on the demo project, rekey never run on a
+                   real project; volatile ids/paths/timestamps/counts are collapsed first. Each incident kind
+                   (`src/incidentKinds.ts`, #435: log, Monitoring-only `mon-`, high-cardinality overflow `ovf-` keyed by
+                   function and UTC day, consolidated Cloud Run quota `pq-`) is one row of a table: its namespace, what it
+                   folds, its triage gate, whether class rules apply, its label; ingest, triage, the rules engine, the
+                   escalation, the guests' copy and the UI read it
     store          the single write path: dedup by fingerprint; a resolved one that fires
                    again is re-opened as `recurred` (a regression). One transaction per
                    upsert, through a per-(environment, fingerprint) key document
@@ -178,10 +185,12 @@ src/
                    the window id, so a replayed window counts once). Pages by hand, each page reduced to parsed
                    entries before the next; stops at 5,000 entries or `STARFISH_INGEST_READ_BUDGET_MB` (64) of entries
                    and narrows the window at the last one read (#296). At most `STARFISH_MAX_NEW_INCIDENTS_PER_FUNCTION`
-                   (25) new incidents per function per window (#303): the rest accrue onto an incident they already have,
-                   or fold into ONE high-cardinality overflow incident per function and UTC day (`signalSource: overflow`),
-                   counted in last_run's `totals.errorsFoldedIntoOverflow`. Tested against a fake Logging and the emulator;
-                   not yet run on a real flood.
+                   (25) new incidents per function per UTC day (#303; per day since #434, counted on the day's overflow
+                   incident's key in each creating upsert's transaction, store.ts `newIncidentCap`, so narrowing or 8 windows
+                   a run cannot multiply it): the rest accrue onto an incident they already have, or fold into ONE
+                   high-cardinality overflow incident per function and UTC day of each entry's own time (`signalSource:
+                   overflow`), counted in last_run's `totals.errorsFoldedIntoOverflow`. Tested against a fake Logging and the
+                   emulator; not yet run on a real flood.
                    Cloud Run's project quota rejection ("exceeded its quota limit for run.googleapis.com/<metric>", every
                    function at once) is folded into ONE incident per metric (`platformQuota.ts`, `signalSource: platform-quota`,
                    fingerprint `pq-…`, the functions listed in its detail); with Monitoring on, those functions' readings in the
@@ -197,7 +206,8 @@ src/
   agent/triage.ts  stage 1 of the agent loop (#8): act/notify/decline for one incident, and how far to go
                    (`triageLevel`: noise, log, fix, merge): on act the model may name one of the admin's merge cases
                    (`mergeCases`; `missing-index` never offered), kept only if listed. Deterministic gates before the
-                   model (an overflow incident, #303, or a consolidated Cloud Run quota one goes to a person with no model call), local validation after it.
+                   model (an overflow incident, #303, or a consolidated Cloud Run quota one goes to a person with no model call; the
+                   kind's gate, `src/incidentKinds.ts`, and an admin's class rules never apply to those two kinds, #435), local validation after it.
                    Shown the incident's log evidence and the files the loop assembled for the fixer, bounded smaller (8,000 chars a
                    file, 20,000 in all; `agent/sourceContext.ts` renders the block for all three stages), so "no code change helps"
                    is judged against the code (#371: CODE-03's own "Gift card refund failed" read as a provider outage). Unit- and

@@ -16,6 +16,7 @@
  * Pure, with no Firestore or Node dependency: the engine (triage, the merge step) and the operator UI (which shows the
  * cap and validates before it saves) run the same code.
  */
+import { incidentKindOf } from "./incidentKinds.js";
 
 /** How far Starfish goes, lowest first: decline as noise, log it (an issue, a person fixes it), a fix PR, a merged fix. */
 export const LEVELS = ["noise", "log", "fix", "merge"] as const;
@@ -112,8 +113,8 @@ export function validateClassRules(raw: unknown): { ok: true; rules: ClassRule[]
   return { ok: true, rules };
 }
 
-/** The fields of an incident a rule reads. */
-export type RuleSubject = Partial<Record<RuleMatchKey, string | undefined | null>>;
+/** The fields of an incident a rule reads, and what tells its kind (src/incidentKinds.ts). */
+export type RuleSubject = Partial<Record<RuleMatchKey, string | undefined | null>> & { signalSource?: unknown; fingerprint?: unknown };
 
 /** True when every field the rule names equals the incident's. A field the incident lacks never matches. */
 export function ruleMatches(rule: ClassRule, incident: RuleSubject): boolean {
@@ -154,10 +155,14 @@ export function correctedAtMillis(doc: Record<string, unknown> | undefined): num
 /**
  * The cap on an incident: the lowest of the matching class rules' `maxLevel` and the operator's correction, or null when
  * nothing holds it back. On a tie the correction is named (a person looked at this very incident), then the first rule.
+ * Class rules never apply to a kind that overrides them (src/incidentKinds.ts `overridesClassRules`: a consolidated
+ * Cloud Run quota or an overflow incident, whose fields are synthetic, so a rule written for an app's own errors would
+ * match them by accident, #435); the operator's correction of the incident still does.
  */
 export function levelCap(incident: RuleSubject, rules: readonly ClassRule[], correction?: Pick<IncidentCorrection, "level">): LevelCap | null {
   let cap: LevelCap | null = null;
   if (correction && isCapLevel(correction.level)) cap = { level: correction.level, by: "correction" };
+  if (incidentKindOf(incident).overridesClassRules) return cap;
   for (const rule of rules) {
     if (!ruleMatches(rule, incident)) continue;
     if (cap === null || levelRank(rule.maxLevel) < levelRank(cap.level)) cap = { level: rule.maxLevel, by: "rule", ruleId: rule.id };
