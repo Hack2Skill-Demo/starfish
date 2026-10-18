@@ -145,7 +145,9 @@ src/
   vertex.ts        Gemini on Vertex AI — structured JSON output, untrusted-data notice; each call ends at
                    `STARFISH_MODEL_TIMEOUT_SECONDS` (600) through its own fetch, past Node's 300 s limit, and a failed call is
                    recorded by error and cause names/codes only, a timeout as one (`modelCallFailure`, #334). Every call sets
-                   `STARFISH_MODEL_MAX_OUTPUT_TOKENS` (32768) and reads the finish/block reason; the stages read it through
+                   `STARFISH_MODEL_MAX_OUTPUT_TOKENS` (32768) and a thinking level, `STARFISH_MODEL_THINKING_LEVEL` (medium,
+                   below Gemini 3.1 Pro's own high; or a token budget below the limit, `STARFISH_MODEL_THINKING_BUDGET`, for a
+                   model that takes one; thinking counts toward the limit, #452), and reads the finish/block reason; the stages read it through
                    `askModel`, one typed outcome (ok, call-failed, timeout, unparseable, truncated, blocked, #418): the loop
                    releases only a failed or slow call or an unreadable answer for a retry, a cut or filtered one goes to a person
                    (loop.ts `releasesForRetry`). Unit-tested against a mocked client; not yet run against Vertex

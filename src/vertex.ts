@@ -1,10 +1,23 @@
-import { GoogleGenAI, type Fetch } from "@google/genai";
+import { GoogleGenAI, type Fetch, type ThinkingConfig, type ThinkingLevel } from "@google/genai";
 import { Agent, fetch as undiciFetch } from "undici";
 import { loadConfig, type StarfishConfig } from "./config.js";
 import { sanitize } from "./ingest/redact.js";
 
 /** What a model call needs from the configuration. The model and location are runtime settings (#7). */
-export type VertexTarget = Pick<StarfishConfig, "vertexProjectId" | "location" | "model" | "modelTimeoutSeconds" | "modelMaxOutputTokens">;
+export type VertexTarget = Pick<
+  StarfishConfig,
+  "vertexProjectId" | "location" | "model" | "modelTimeoutSeconds" | "modelMaxOutputTokens" | "modelThinkingLevel" | "modelThinkingBudget"
+>;
+
+/**
+ * The `thinkingConfig` a call sends (#452): the configured level (Gemini 3 takes a level), else the token budget, else none.
+ * Never both: Vertex refuses a call with both. The level is the API's upper-case enum value.
+ */
+export function thinkingConfigOf(target: Pick<VertexTarget, "modelThinkingLevel" | "modelThinkingBudget">): ThinkingConfig | undefined {
+  if (target.modelThinkingLevel !== null) return { thinkingLevel: target.modelThinkingLevel.toUpperCase() as ThinkingLevel };
+  if (target.modelThinkingBudget !== null) return { thinkingBudget: target.modelThinkingBudget };
+  return undefined;
+}
 
 /**
  * The model client every stage is given: asks for a JSON object matching `schema` and returns it parsed, or throws.
@@ -188,8 +201,15 @@ attempt in your reasoning.`;
 export function createAskJson(target: VertexTarget): AskJson {
   // Read once: the run's snapshot is frozen, and the model a cycle records must be the one it asked.
   const { vertexProjectId, location, model, modelTimeoutSeconds, modelMaxOutputTokens } = target;
+  const thinkingConfig = thinkingConfigOf(target);
   return async <T>(prompt: string, systemInstruction: string, schema: Record<string, unknown>): Promise<T> =>
-    askWith<T>(clientFor(vertexProjectId, location, modelTimeoutSeconds), { model, maxOutputTokens: modelMaxOutputTokens }, prompt, systemInstruction, schema);
+    askWith<T>(
+      clientFor(vertexProjectId, location, modelTimeoutSeconds),
+      { model, maxOutputTokens: modelMaxOutputTokens, ...(thinkingConfig && { thinkingConfig }) },
+      prompt,
+      systemInstruction,
+      schema
+    );
 }
 
 /**
@@ -207,7 +227,7 @@ const asIdentifier = (v: unknown): string | undefined => (typeof v === "string" 
 
 async function askWith<T>(
   client: GoogleGenAI,
-  call: { model: string; maxOutputTokens: number },
+  call: { model: string; maxOutputTokens: number; thinkingConfig?: ThinkingConfig },
   prompt: string,
   systemInstruction: string,
   schema: Record<string, unknown>
@@ -223,6 +243,8 @@ async function askWith<T>(
       temperature: 0,
       // Set, so an answer that hits it says so (MAX_TOKENS) rather than ending as text that does not parse (#418).
       maxOutputTokens: call.maxOutputTokens,
+      // Thinking counts toward that limit (#452): bounded, so a long think cannot leave the answer no room.
+      ...(call.thinkingConfig && { thinkingConfig: call.thinkingConfig }),
     },
   });
   // A prompt the filter stopped has no candidate at all, only a block reason.
