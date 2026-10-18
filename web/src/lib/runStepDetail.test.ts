@@ -107,6 +107,15 @@ describe("stepDetail", () => {
     });
   });
 
+  it("reads the model that wrote the fix and the review, and leaves it out of an older record", () => {
+    const c = cycle({ fix: { outcome: "proposed", model: "gemini-3.1-pro-preview", revisions: 0 }, review: { verdict: "approve", model: "gemini-3.1-pro-preview", attacks: 1 } });
+    expect(stepDetail(step("fix", T), c, [ev(1, "fix", T)]).fix!.model).toBe("gemini-3.1-pro-preview");
+    expect(stepDetail(step("review", T), c, [ev(1, "review", T)]).review!.model).toBe("gemini-3.1-pro-preview");
+    const old = cycle({ fix: { outcome: "proposed", revisions: 0 }, review: { verdict: "approve", attacks: 1 } });
+    expect(stepDetail(step("fix", T), old, [ev(1, "fix", T)]).fix!.model).toBeUndefined();
+    expect(stepDetail(step("review", T), old, [ev(1, "review", T)]).review!.model).toBeUndefined();
+  });
+
   it("reads a delivery's attempts and reason", () => {
     const c = cycle({ notify: { state: "failed", attempts: 3, reason: "HTTP 500" } });
     expect(stepDetail(step("notify", T, { status: "failed" }), c, [ev(1, "notify", T)]).delivery).toEqual({ state: "failed", attempts: 3, reason: "HTTP 500" });
