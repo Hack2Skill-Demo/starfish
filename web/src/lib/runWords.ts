@@ -31,18 +31,31 @@ export interface Sentence {
   templated: boolean;
 }
 
+/** A sentence and the stage it is about. */
+export interface StageSentence extends Sentence {
+  stage: string;
+}
+
 export interface WordsRound {
   round: number;
   /** Why the round began, in the engine's words; absent for the first round. */
   began?: string;
-  sentences: Sentence[];
+  sentences: StageSentence[];
 }
 
 export interface RunWords {
   rounds: WordsRound[];
   /** Where the run stands now, from its path; absent while it is running. */
   closing?: string;
+  /**
+   * Why the run ended where it did: the sentence of the latest round's last deciding step (triage, the fix, the gate, the
+   * review, the index, the pull request, the merge), not a delivery such as the issue or a message. For the run's headline.
+   */
+  why?: string;
 }
+
+/** The steps that decide where a run goes, as against the ones that tell people (the issue, the alerts, the calls). */
+const DECIDING = new Set(["triage", "fix", "verify", "review", "index", "pr", "merge"]);
 
 const LEVEL_WORDS: Record<string, string> = {
   noise: "recorded it as noise, with nothing filed",
@@ -185,6 +198,8 @@ export function sentenceFor(step: WordStep): Sentence {
   return { text: /[.!?]$/.test(text) ? text : `${text}.`, templated: false };
 }
 
+const withStage = (s: WordStep): StageSentence => ({ ...sentenceFor(s), stage: s.stage });
+
 const wordStep = (s: Pick<Step, "stage" | "outcome" | "summary" | "data">, record: Fields | undefined): WordStep => ({
   stage: s.stage,
   ...(s.outcome && { outcome: s.outcome }),
@@ -203,7 +218,7 @@ export function runInWords(cycle: CycleRow, water: Waterfall, events: readonly E
   for (const r of water.earlier) {
     const steps = [...r.steps].reverse().map((s) => wordStep({ stage: s.stage, ...(s.outcome && { outcome: s.outcome }), ...(s.summary && { summary: s.summary }), ...(s.data && { data: s.data }) }, recordOf(s.stage, s.at)));
     const began = r.round > 1 ? reopenings[r.round - 2]?.summary : undefined;
-    rounds.push({ round: r.round, ...(began && { began }), sentences: steps.map(sentenceFor) });
+    rounds.push({ round: r.round, ...(began && { began }), sentences: steps.map(withStage) });
   }
   const latest = [...stepLogOrder(water.steps)]
     .reverse()
@@ -211,9 +226,11 @@ export function runInWords(cycle: CycleRow, water: Waterfall, events: readonly E
     .map((s) => wordStep(s, recordOf(s.stage, s.at)));
   if (latest.length > 0 || rounds.length === 0) {
     const began = water.rounds > 1 ? water.reopened?.summary : undefined;
-    rounds.push({ round: water.rounds, ...(began && { began }), sentences: latest.map(sentenceFor) });
+    rounds.push({ round: water.rounds, ...(began && { began }), sentences: latest.map(withStage) });
   }
   const closing = cycle.state !== "running" && cycle.path ? `${PATH_LABELS[cycle.path]}.` : undefined;
   if (rounds.every((r) => r.sentences.length === 0)) return null;
-  return { rounds: rounds.filter((r) => r.sentences.length > 0), ...(closing && { closing }) };
+  const last = rounds[rounds.length - 1]?.sentences ?? [];
+  const why = cycle.state !== "running" ? [...last].reverse().find((x) => DECIDING.has(x.stage))?.text : undefined;
+  return { rounds: rounds.filter((r) => r.sentences.length > 0), ...(closing && { closing }), ...(why && { why }) };
 }

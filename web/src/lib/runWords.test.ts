@@ -151,8 +151,28 @@ describe("runInWords", () => {
     ]);
   });
 
+  it("gives the run's headline reason: the last deciding step of the latest round, never a delivery", () => {
+    const events = [
+      ev("triage", "decision", 1000, "", { decision: "notify", level: "log", rule: "model-notify" }),
+      ev("issue", "opened", 2000, "Issue #60 filed", { number: 60 }),
+      ev("notify", "sent", 3000),
+      ev("cycle", "reconsidered", HOUR, "Handed to a person earlier; retried: an operator asked for a retriage"),
+      ev("triage", "decision", HOUR + 1000, "x", { decision: "decline", level: "noise", rule: "counter-check-zero" }),
+    ];
+    const c = cycle({ state: "declined", path: "decline", summary: { triage: { decision: "decline", level: "noise", rule: "counter-check-zero", counterCount: 0, counterWindow: "24h" } } });
+    expect(words(c, events)!.why).toBe("The rule counter-check-zero recorded it as noise, with nothing filed, with no model call. The recount found 0 errors in 24h.");
+    // One round ending on a person being told: the reason is the decision before the delivery.
+    const told = [ev("triage", "decision", 1000, "", { decision: "notify", level: "log", rule: "model-notify" }), ev("notify", "sent", 2000)];
+    expect(words(cycle({ path: "human" }), told)!.why).toBe("Gemini's triage chose to log it: an issue and an alert, and a person fixes it.");
+    // The fix declined: that is why, not the message after it.
+    const fix = [ev("triage", "decision", 1000, "", { decision: "act", level: "fix", rule: "model-act" }), ev("fix", "declined", 2000), ev("notify", "sent", 3000)];
+    expect(words(cycle({ path: "human" }), fix)!.why).toBe("Gemini declined to draft a fix.");
+  });
+
   it("has no closing line while a worker holds the run, and nothing to say before any step", () => {
-    expect(words(cycle({ state: "running", path: undefined }), [ev("triage", "decision", 1000, "", { decision: "act", level: "fix" })])!.closing).toBeUndefined();
+    const running = words(cycle({ state: "running", path: undefined }), [ev("triage", "decision", 1000, "", { decision: "act", level: "fix" })])!;
+    expect(running.closing).toBeUndefined();
+    expect(running.why).toBeUndefined();
     expect(words(cycle(), [])).toBeNull();
   });
 });

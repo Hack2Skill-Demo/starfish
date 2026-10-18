@@ -620,6 +620,7 @@ function RunDetail({
     return buildWaterfall(cycle, events, clock);
   }, [cycle, events, clock, asLive, replayAt]);
 
+  const why = !asLive && water && events ? runInWords(cycle, water, events)?.why : undefined;
   const shownStatus = asLive ? { label: speed > 1 ? `Replaying · ${speed}×` : "Replaying", tone: "info" as const, live: true } : status;
   const summary = !water
     ? status.label
@@ -646,6 +647,7 @@ function RunDetail({
         incident={incident}
         status={shownStatus}
         summary={summary}
+        why={why}
         water={water}
         now={now}
         corner={
@@ -826,6 +828,7 @@ function RunHero({
   incident,
   status,
   summary,
+  why,
   water,
   now,
   corner,
@@ -835,6 +838,8 @@ function RunHero({
   incident?: IncidentRow;
   status: RunStatus;
   summary: string;
+  /** Why the run ended where it did (`runWords.ts`); absent while it runs or replays. */
+  why?: string;
   water: Waterfall | null;
   now: number;
   /** Sits in the card's top-right corner: the full-width toggle. */
@@ -864,6 +869,13 @@ function RunHero({
         <p className="text-lg text-gray-100" data-testid="run-summary">
           {summary}
         </p>
+        {/* Why it ended there, from the same records as "In plain words" below: the reason is read here first, the detail under it. */}
+        {why && (
+          <p className="text-base text-gray-200" data-testid="run-why">
+            <span className="font-semibold text-white">Why: </span>
+            {why}
+          </p>
+        )}
         {/* A reopened run (#285): say so here, since the steps and times below are only its latest round's. */}
         {water?.reopened && (
           <p className="text-sm text-gray-300" data-testid="run-rounds">
