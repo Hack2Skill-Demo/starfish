@@ -492,6 +492,14 @@ describe("Runs page", () => {
     expect(words.getByText(/no model wrote it/)).toBeInTheDocument();
   });
 
+  it("says why the run ended where it did on the hero card, before any detail below (#285)", () => {
+    renderRuns();
+    const summary = { triage: { decision: "decline", rule: "counter-check-zero", level: "noise", counterCount: 0, counterWindow: "24h" } };
+    act(() => mocks.cyclesCb!([cycle("inc-a_r0", { state: "declined", path: "decline", leaseExpiresAt: null, summary })], false));
+    act(() => mocks.eventsCb!([event(1, "cycle", "started", "Attempt 1", 50_000), event(2, "triage", "decision", "no entries", 40_000)]));
+    expect(screen.getByTestId("run-why")).toHaveTextContent("Why: The rule counter-check-zero recorded it as noise, with nothing filed, with no model call. The recount found 0 errors in 24h.");
+  });
+
   it("says nothing about rounds for a run that was never reopened", () => {
     renderRuns();
     act(() => mocks.cyclesCb!([cycle("inc-a_r0", { state: "declined", path: "decline", leaseExpiresAt: null })], false));
