@@ -3,10 +3,12 @@
  * file in the scoreboard format (scoreboard/FORMAT.md), checked by the same strict parser `pnpm scoreboard` uses.
  *
  * It calls the loop's own stage functions (triageIncident, proposeFix, verifyPatch, reviewPatch) in the loop's order,
- * with the loop's one shared revision (MAX_REVISIONS), its model-call budget and its rule for which fixer errors go to
- * a person (UNFIT_PATCH_RULES). What it does not run is what needs the store: the lease, run events, issues, Slack and
- * the pull request. A replay is always a dry run, so `openedPr` here means the cycle reached the pull-request step,
- * where a live run would open one. Nothing is opened, pushed or sent.
+ * and takes the loop's own decisions after each (loop.ts `triageOptionsFor`, `afterFix`, `afterVerify`, `afterReview`,
+ * #420): triage gets the admin's merge cases and class rules, the revision is the loop's one shared revision with the
+ * loop's feedback, and a failure is retried or handed to a person by the same rule. It keeps its own model-call budget
+ * count. What it does not run is what needs the store: the lease, run events, issues, Slack and the pull request. A
+ * replay is always a dry run, so `openedPr` here means the cycle reached the pull-request step, where a live run would
+ * open one. Nothing is opened, pushed or sent.
  *
  * Per case:
  *   code-fix / notify / decline   triage; on `act`, fix -> verify gate -> review (with one revision), and a patch that
@@ -30,8 +32,8 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { StarfishConfig } from "../config.js";
-import { MAX_REVISIONS, UNFIT_PATCH_RULES } from "../agent/loop.js";
-import { proposeFix, reviewFeedback, verifyFeedback, type FixRequest, type SourceFile } from "../agent/fixer.js";
+import { afterFix, afterReview, afterVerify, MAX_REVISIONS, triageOptionsFor } from "../agent/loop.js";
+import { proposeFix, type FixRequest, type SourceFile } from "../agent/fixer.js";
 import { reviewPatch } from "../agent/reviewer.js";
 import { triageIncident, type AskJson, type TriageSubject } from "../agent/triage.js";
 import { verifyPatch, type VerifyConfig } from "../agent/verifyGate.js";
@@ -41,7 +43,7 @@ import { parseRun, type CaseOutcome, type CaseResult, type ScoreboardRun, type T
 
 export type ReplayAgentConfig = Pick<
   StarfishConfig,
-  "model" | "location" | "verifyTimeoutSeconds" | "patchExcludedPaths" | "reviewRequired" | "modelCallBudget"
+  "model" | "location" | "verifyTimeoutSeconds" | "patchExcludedPaths" | "reviewRequired" | "modelCallBudget" | "mergeCases" | "classRules"
 >;
 
 export interface ReplayOptions {
@@ -114,9 +116,9 @@ async function replayIncidentCase(c: CorpusCase, opts: ReplayOptions): Promise<{
   const { cfg, ask } = opts;
   const subject: TriageSubject = { incident: readIncident(c), status: "new" };
   let modelCalls = 1;
-  // As the loop does (#371): triage sees the files the fixer will, when the case has a snapshot.
+  // As the loop does (#371): triage sees the files the fixer will, when the case has a snapshot, under the same rules.
   const files = c.repoDir ? readFiles(c) : [];
-  const triage = await triageIncident(subject, ask, { source: { files } });
+  const triage = await triageIncident(subject, ask, triageOptionsFor(cfg, files));
   if (triage.decision !== "act" && triage.decision !== "notify" && triage.decision !== "decline") {
     throw new CaseError(`triage ${triage.rule}`);
   }
@@ -132,38 +134,42 @@ async function replayIncidentCase(c: CorpusCase, opts: ReplayOptions): Promise<{
     if (modelCalls >= cfg.modelCallBudget) return notShipped("budget-exceeded");
     modelCalls += 1;
     const fix = await proposeFix({ subject, files, ...(feedback && { feedback }) }, ask);
-    if (fix.outcome === "error" && !UNFIT_PATCH_RULES.has(fix.rule)) throw new CaseError(`fix ${fix.rule}`);
-    if (fix.outcome === "error") proposedAny = true;
-    if (fix.outcome !== "proposed" || fix.patch === undefined) return notShipped(`fix ${fix.rule}`);
-    proposedAny = true;
+    // A patch the agent would not ship counts as proposed (fixPassed false); no patch at all (a decline, a cut answer) does not.
+    if (fix.outcome === "proposed" || fix.rule.startsWith("patch-")) proposedAny = true;
+    const fixed = afterFix(fix);
+    // What the loop would release for another attempt is a failure here: the replay has one attempt per case.
+    if (fixed.next === "retry") throw new CaseError(`fix ${fixed.rule}`);
+    if (fixed.next !== "verify") return notShipped(`fix ${fixed.rule}`);
 
-    const verified = await verifyPatch({ sourceDir: c.repoDir, patch: fix.patch, config: gateFor(cfg, c.verifyCommand) });
-    if (verified.status !== "passed") {
-      if (revisions < MAX_REVISIONS) {
-        feedback = verifyFeedback(fix.patch, verified);
-        continue;
-      }
-      return notShipped(`verify-${verified.rule}`);
+    const verified = await verifyPatch({ sourceDir: c.repoDir, patch: fixed.patch, config: gateFor(cfg, c.verifyCommand) });
+    const checked = afterVerify(verified, fixed.patch, revisions);
+    if (checked.next === "revise") {
+      feedback = checked.feedback;
+      continue;
     }
+    if (checked.next !== "review") return notShipped(checked.rule);
 
     if (cfg.reviewRequired) {
       if (modelCalls >= cfg.modelCallBudget) return notShipped("budget-exceeded");
       modelCalls += 1;
-      const reviewed = await reviewPatch({ subject, patch: fix.patch, verify: verified, files, claimed: { rootCause: fix.rootCause, risk: fix.risk ?? "" } }, ask);
-      if (reviewed.verdict === undefined) throw new CaseError(`review ${reviewed.rule}`);
-      if (reviewed.verdict === "block") {
-        if (revisions < MAX_REVISIONS) {
-          feedback = reviewFeedback(fix.patch, reviewed.attacks ?? []);
-          continue;
-        }
-        return notShipped("review-blocked");
+      const reviewed = await reviewPatch({ subject, patch: fixed.patch, verify: verified, files, claimed: { rootCause: fix.rootCause, risk: fix.risk ?? "" } }, ask);
+      const judged = afterReview(reviewed, fixed.patch, revisions);
+      if (judged.next === "revise") {
+        feedback = judged.feedback;
+        continue;
+      }
+      if (judged.next === "retry") throw new CaseError(`review ${judged.rule}`);
+      if (judged.next === "person") {
+        // A review that never happened is the harness's failure; a blocked one is the agent not shipping.
+        if (reviewed.verdict === undefined) throw new CaseError(`review ${judged.rule}`);
+        return notShipped(judged.rule);
       }
     }
 
     // The pull-request step. Only a code-fix case carries an evaluator; for any other the call to act was already wrong.
     if (!c.evaluator) return ended("reached the pull-request step (dry run)", { openedPr: true });
-    const judged = await evaluatePatch({ repoDir: c.repoDir, evaluator: c.evaluator }, fix.patch, cfg);
-    return ended(`reached the pull-request step (dry run); evaluator ${judged.result.rule}`, { openedPr: true, fixPassed: judged.passed });
+    const judgedByEvaluator = await evaluatePatch({ repoDir: c.repoDir, evaluator: c.evaluator }, fixed.patch, cfg);
+    return ended(`reached the pull-request step (dry run); evaluator ${judgedByEvaluator.result.rule}`, { openedPr: true, fixPassed: judgedByEvaluator.passed });
   }
 }
 

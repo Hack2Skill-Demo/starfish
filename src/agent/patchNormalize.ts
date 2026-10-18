@@ -8,7 +8,7 @@
  * `git apply` reads as `src/orders/handler.ts` (it strips one leading directory) and cannot find.
  *
  * This keeps what the model decided (which lines are context, which are removed, which are added) and rebuilds what
- * it only guessed: the `a/` and `b/` on a path it shown a file by, and where each hunk sits in the file and how many
+ * it only guessed: the `a/` and `b/` on a bare path, and where each hunk sits in the file and how many
  * lines it spans. Each hunk is found in the file by its old-side text, after the hunk before it; a hunk whose old side
  * is not there, or is there more than once (the model's line number never chooses between two places, #366), leaves
  * the file's hunks as written for the gate to judge as before. It never invents a change: every `+` line is the
@@ -39,6 +39,8 @@ interface Section {
   path: string | null;
   /** The `---` line named /dev/null: a new file. */
   isNew: boolean;
+  /** Blank lines after its last hunk that only separate it from the next file (or end the patch, #419). */
+  separators: number;
 }
 
 const HUNK = /^@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@/;
@@ -58,7 +60,7 @@ function parse(patch: string): Section[] | undefined {
   let hunk: Hunk | undefined;
 
   const startSection = (): Section => {
-    cur = { header: [], hunks: [], path: null, isNew: false };
+    cur = { header: [], hunks: [], path: null, isNew: false, separators: 0 };
     sections.push(cur);
     hunk = undefined;
     return cur;
@@ -89,7 +91,18 @@ function parse(patch: string): Section[] | undefined {
     if (hunk === undefined) return undefined;
     if (line.startsWith("\\")) return undefined; // "\ No newline at end of file": not handled, left to the gate
     if (line === "") {
-      hunk.ops.push({ kind: " ", text: "" }); // a blank context line whose leading space was dropped
+      // Blank lines followed by the next file's header, or by nothing, separate the sections (#419): read as context, they
+      // gave the hunk an old side the file does not have, and the whole file was left as written. Any other blank line is
+      // a blank context line whose leading space was dropped.
+      let next = i + 1;
+      while (next < lines.length && lines[next] === "") next++;
+      const after = lines[next];
+      if (after === undefined || after.startsWith("diff --git ") || (after.startsWith("--- ") && (lines[next + 1] ?? "").startsWith("+++ "))) {
+        section.separators += next - i;
+        i = next - 1;
+        continue;
+      }
+      hunk.ops.push({ kind: " ", text: "" });
       continue;
     }
     const kind = line[0] as string;
@@ -134,18 +147,18 @@ function locate(file: string[], old: string[], from: number): number {
 }
 
 /**
- * The section's `---` / `+++` lines in git's own form. A path the model wrote bare (`functions/x.ts`) that names a file
- * it was shown gets `a/` and `b/`: without them git drops the first directory and looks for a file that is not there.
- * A new file's bare `+++` path gets `b/`. A path that already has them, or that names nothing shown, is left alone.
+ * The section's `---` / `+++` lines in git's own form. A path the model wrote bare (`functions/x.ts`) gets `a/` and `b/`:
+ * without them git drops the first directory and looks for a file that is not there. That holds for a file it was not
+ * shown too (#419: a bare header on an existing test made the whole patch "does not apply"), since the prompt asks for
+ * paths relative to the repository root. A path that already has them, an absolute one, or /dev/null is left alone.
  */
-function gitHeader(section: Section, shown: ReadonlyMap<string, string>): string[] {
+function gitHeader(section: Section): string[] {
   return section.header.map((line) => {
     const minus = line.startsWith("--- ");
     if (!minus && !line.startsWith("+++ ")) return line;
     const raw = (line.slice(4).split("\t")[0] ?? "").trim();
-    if (raw === "" || raw === "/dev/null" || /^[ab]\//.test(raw)) return line;
-    if (shown.has(raw) || (!minus && section.isNew)) return (minus ? "--- a/" : "+++ b/") + raw;
-    return line;
+    if (raw === "" || raw === "/dev/null" || /^[ab]\//.test(raw) || raw.startsWith("/")) return line;
+    return (minus ? "--- a/" : "+++ b/") + raw;
   });
 }
 
@@ -201,7 +214,7 @@ export function normalizePatch(patch: string, files: readonly SourceFile[]): str
   let at = 0;
   for (let s = 0; s < sections.length; s++) {
     const sec = sections[s] as Section;
-    const size = sec.header.length + sec.hunks.reduce((n, h) => n + 1 + h.ops.length, 0);
+    const size = sec.header.length + sec.hunks.reduce((n, h) => n + 1 + h.ops.length, 0) + sec.separators;
     original.push(raw.slice(at, at + size));
     at += size;
   }
@@ -209,14 +222,14 @@ export function normalizePatch(patch: string, files: readonly SourceFile[]): str
 
   const out: string[] = [];
   sections.forEach((sec, i) => {
-    const fixed: Section = { ...sec, header: gitHeader(sec, byPath) };
+    const fixed: Section = { ...sec, header: gitHeader(sec) };
     let rebuilt: string[] | undefined;
     if (fixed.isNew) rebuilt = recountNew(fixed);
     else if (fixed.path !== null && byPath.has(fixed.path)) {
       const lines = fileLines(byPath.get(fixed.path) as string);
       if (lines !== undefined) rebuilt = rebuild(fixed, lines);
     }
-    // Left as written, apart from the file headers, when a hunk cannot be placed.
+    // Left as written, apart from the file headers, when a hunk cannot be placed (its separators then kept with it).
     out.push(...(rebuilt ?? [...fixed.header, ...(original[i] as string[]).slice(sec.header.length)]));
   });
   return out.join("\n") + "\n";

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
+import { SOURCE_BUDGETS } from "./sourceContext.js";
 import { MAX_ATTACKS, MAX_REVIEW_PATCH_CHARS, REVIEW_SCHEMA, REVIEW_SYSTEM, renderForReview, reviewPatch, sha256, verdictOf, type Attack, type ReviewRequest } from "./reviewer.js";
-import { MAX_FIX_PATCH_BYTES } from "./fixer.js";
+import { MAX_FIX_PATCH_BYTES, renderForFix } from "./fixer.js";
 import type { AskJson } from "./triage.js";
 import type { VerifyResult } from "./verifyGate.js";
 import { SEEDED_SECRETS } from "../ingest/testSecrets.js";
@@ -110,7 +111,9 @@ describe("reviewPatch: a review", () => {
     const big = PATCH + "+" + "x".repeat(MAX_REVIEW_PATCH_CHARS) + "\n";
     const { ask, calls } = stub({ attacks: [attack("held")] });
     const r = await reviewPatch(request({ patch: big, verify: verified(big) }), ask);
-    expect(calls[0]!.prompt).toContain(`PATCH (CUT: only the first ${MAX_REVIEW_PATCH_CHARS} of ${big.length} characters are shown`);
+    const lines = big.split("\n").length;
+    expect(calls[0]!.prompt).toContain(`PATCH (CUT: lines 1–${lines - 2} of ${lines} shown; the rest is not reviewed)`);
+    expect(calls[0]!.prompt).toContain(`[… lines ${lines - 1}–${lines} not shown …]`);
     expect(r.verdict).toBe("approve-with-flags");
     expect(r.attacks![0]).toMatchObject({ outcome: "flagged", attack: "Review the whole patch" });
     expect(r.attacks![0]!.detail).toContain("the rest was not reviewed");
@@ -219,6 +222,13 @@ describe("what the reviewer is shown", () => {
       })
     );
     for (const secret of [SEEDED_SECRETS.stripe, SEEDED_SECRETS.github, SEEDED_SECRETS.jwt]) expect(prompt).not.toContain(secret);
+  });
+
+  it("is shown at least as much source as the fixer was, so it never approves a change to code it did not see (#416)", () => {
+    expect(SOURCE_BUDGETS.review.maxFileChars).toBeGreaterThanOrEqual(SOURCE_BUDGETS.fix.maxFileChars);
+    expect(SOURCE_BUDGETS.review.maxTotalChars).toBeGreaterThanOrEqual(SOURCE_BUDGETS.fix.maxTotalChars);
+    const content = "const a = 1;\n".repeat(1_500);
+    expect(renderForReview(request({ files: [{ path: "a.ts", content }] }))).toContain(renderForFix({ subject: request().subject, files: [{ path: "a.ts", content }] }).split("SOURCE CONTEXT")[1]!.trim());
   });
 
   it("bounds the patch and the source", () => {

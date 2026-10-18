@@ -16,7 +16,9 @@ import { buildNeedsHumanMessage, buildNewIncidentMessage, type AlertRequest, typ
 import { issueText, pullRequestText, type IssueRequest } from "../integrations/githubPr.js";
 import { acquireLease } from "./cycle.js";
 import { findStrandedCycles, selectCandidates } from "./pass.js";
-import { FIX_SYSTEM, FOUND_BY_NAME_NOTE } from "./fixer.js";
+import { FIX_SYSTEM } from "./fixer.js";
+import { ModelAnswerError } from "../vertex.js";
+import { WEAKER_EVIDENCE_NOTE } from "./sourceContext.js";
 import { verifyPatch } from "./verifyGate.js";
 import { REVIEW_SYSTEM } from "./reviewer.js";
 import { TRIAGE_SYSTEM, type AskJson } from "./triage.js";
@@ -306,9 +308,10 @@ describe("runCycle: the run record on the cycle", () => {
     const model = scripted({ triage: [act], fix: [fixOf(GOOD_PATCH)], review: [held] });
     const base = deps(model);
     const loaded = await base.load("inc1");
-    await runCycle({ ...base, load: async () => ({ ...loaded!, source: { rule: "function-name", search: "found", imports: 0 } }) }, key);
+    const files = loaded!.files.map((f) => ({ ...f, foundBy: "name" as const }));
+    await runCycle({ ...base, load: async () => ({ ...loaded!, files, source: { rule: "function-name", search: "found", imports: 0 } }) }, key);
     expect((await cycleDoc()).summary.fix).toMatchObject({ source: "function-name", sourceFiles: 1, sourceSearch: "found", sourceImports: 0 });
-    expect(model.calls.find((c) => c.stage === "fix")!.prompt).toContain(FOUND_BY_NAME_NOTE);
+    expect(model.calls.find((c) => c.stage === "fix")!.prompt).toContain(WEAKER_EVIDENCE_NOTE);
   });
 
   it("records a stack-found source without a search, and nothing when the loader does not say", async () => {
@@ -319,7 +322,7 @@ describe("runCycle: the run record on the cycle", () => {
     const fix = (await cycleDoc()).summary.fix;
     expect(fix).toMatchObject({ source: "stack", sourceFiles: 1 });
     expect(fix.sourceSearch).toBeUndefined();
-    expect(model.calls.find((c) => c.stage === "fix")!.prompt).not.toContain(FOUND_BY_NAME_NOTE);
+    expect(model.calls.find((c) => c.stage === "fix")!.prompt).not.toContain(WEAKER_EVIDENCE_NOTE);
 
     cfg = randomUUID().slice(0, 8);
     await runCycle(deps(scripted({ triage: [act], fix: [fixOf(GOOD_PATCH)], review: [held] })), key);
@@ -417,6 +420,12 @@ describe("runCycle: what triage decides", () => {
     const r = await runCycle(deps(scripted({ triage: [new Error("boom")] })), key);
     expect(r).toEqual({ kind: "released", reason: "model-call-failed" });
   });
+
+  it("hands a triage answer cut at the output limit to a person, never back for a retry that would be cut again (#418)", async () => {
+    const r = await runCycle(deps(scripted({ triage: [new ModelAnswerError("truncated", "MAX_TOKENS")] })), key);
+    expect(r).toEqual({ kind: "finished", state: "waiting-human", outcome: "model-output-truncated" });
+    expect((await cycleDoc()).summary.triage).toMatchObject({ decision: "error", rule: "model-output-truncated" });
+  });
 });
 
 describe("runCycle: the fix, the gate and the review", () => {
@@ -429,6 +438,14 @@ describe("runCycle: the fix, the gate and the review", () => {
     const r = await runCycle(deps(scripted({ triage: [act], fix: [{ nonsense: true }] })), key);
     expect(r).toEqual({ kind: "released", reason: "model-output-invalid" });
     expect(await cycleDoc()).toMatchObject({ state: "running", owner: null });
+  });
+
+  it("hands a fix or a review the model's filter stopped to a person (#418)", async () => {
+    const fix = await runCycle(deps(scripted({ triage: [act], fix: [new ModelAnswerError("blocked", "SAFETY")] })), key);
+    expect(fix).toEqual({ kind: "finished", state: "waiting-human", outcome: "model-output-blocked" });
+    cfg = randomUUID().slice(0, 8);
+    const review = await runCycle(deps(scripted({ triage: [act], fix: [fixOf(GOOD_PATCH)], review: [new ModelAnswerError("truncated", "MAX_TOKENS")] })), key);
+    expect(review).toEqual({ kind: "finished", state: "waiting-human", outcome: "model-output-truncated" });
   });
 
   it("releases the cycle to try again when the reviewer fails", async () => {

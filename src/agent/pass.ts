@@ -171,7 +171,7 @@ export async function findStrandedCycles(db: Firestore, cfg: Pick<PassConfig, "e
 
 // ---- Which files the stack trace names ----------------------------------------------------------------------
 
-const FRAME_RE = /((?:[A-Za-z]:)?[^\s():'"]+\.(?:[cm]?[jt]sx?|py|go|java|rb|kt)):\d+(?::\d+)?/g;
+const FRAME_RE = /((?:[A-Za-z]:)?[^\s():'"]+\.(?:[cm]?[jt]sx?|py|go|java|rb|kt)):(\d+)(?::\d+)?/g;
 const MAX_STACK = 20_000;
 
 const norm = (p: string) => p.replace(/\\/g, "/").replace(/^file:\/+/, "/").replace(/\/{2,}/g, "/");
@@ -212,6 +212,18 @@ function tailMatch(candidate: string, files: readonly string[]): string | undefi
   return best >= 2 && hits.length === 1 ? hits[0] : undefined;
 }
 
+/** A repository file a stack frame names, and the line the frame gives when that line is the file's own. */
+export interface StackFile {
+  path: string;
+  /**
+   * The top frame's line, only when the frame names this very file (same extension): a compiled `lib/x.js` frame matched
+   * to its `src/x.ts` source gives a line of the compiled file, which says nothing about where to look in the source.
+   */
+  line?: number;
+}
+
+const extOf = (p: string) => /\.[^./]+$/.exec(p)?.[0] ?? "";
+
 /**
  * Repository files a stack trace points at, top frame first, deduplicated, at most `max`. A frame's path is
  * matched against the repository's own file list, never read from disk by name: a path in a log is untrusted
@@ -219,11 +231,10 @@ function tailMatch(candidate: string, files: readonly string[]): string | undefi
  * chosen. The match is the longest repository path the frame path ends with; failing that, a UNIQUE
  * match once a leading directory such as `src/` is dropped (compiled output rarely keeps it).
  */
-export function pathsFromStack(stack: string | undefined, repoFiles: readonly string[], excluded: readonly string[], max = 5): string[] {
+export function filesFromStack(stack: string | undefined, repoFiles: readonly string[], excluded: readonly string[], max = 5): StackFile[] {
   if (!stack || max < 1) return [];
   const files = repoFiles.filter((f) => !f.split("/").includes("node_modules") && !isExcludedPath(f, excluded));
-  const chosen: string[] = [];
-  const seen = new Set<string>();
+  const chosen: StackFile[] = [];
   for (const m of stack.slice(0, MAX_STACK).matchAll(FRAME_RE)) {
     const frame = norm(m[1]!);
     if (frame.split("/").includes("node_modules") || frame.startsWith("node:")) continue;
@@ -241,9 +252,9 @@ export function pathsFromStack(stack: string | undefined, repoFiles: readonly st
       }
       if (hit === undefined) hit = tailMatch(candidate, files);
       if (hit !== undefined) {
-        if (!seen.has(hit)) {
-          seen.add(hit);
-          chosen.push(hit);
+        if (!chosen.some((c) => c.path === hit)) {
+          const line = Number(m[2]);
+          chosen.push({ path: hit, ...(extOf(hit) === extOf(frame) && Number.isSafeInteger(line) && line > 0 && { line }) });
         }
         break;
       }
@@ -251,6 +262,11 @@ export function pathsFromStack(stack: string | undefined, repoFiles: readonly st
     if (chosen.length >= max) break;
   }
   return chosen;
+}
+
+/** `filesFromStack`'s paths alone. */
+export function pathsFromStack(stack: string | undefined, repoFiles: readonly string[], excluded: readonly string[], max = 5): string[] {
+  return filesFromStack(stack, repoFiles, excluded, max).map((f) => f.path);
 }
 
 /**

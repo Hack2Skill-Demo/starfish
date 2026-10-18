@@ -154,9 +154,27 @@ describe("findSourceByFunctionName", () => {
     expect(await find("createOrder", { "web/src/a.ts": ORDERS, "functions/src/b.ts": ORDERS }, { roots: ["functions/src"] })).toMatchObject({ file: { path: "functions/src/b.ts" } });
   });
 
-  it("passes over a file it may not read (too big, binary, a symlink) without stopping", async () => {
+  it("finds nothing when a file it may not read (too big, binary, a symlink) could be the one (#417)", async () => {
     const read = vi.fn(async (rel: string) => (rel === "src/a.ts" ? null : { path: rel, content: ORDERS }));
-    expect(await findSourceByFunctionName("createOrder", ["src/a.ts", "src/b.ts"], read, { roots: [], excluded: [] })).toMatchObject({ outcome: "found", file: { path: "src/b.ts" } });
+    expect(await findSourceByFunctionName("createOrder", ["src/a.ts", "src/b.ts"], read, { roots: [], excluded: [] })).toEqual({ outcome: "ambiguous" });
+    // The review's case: the group's own file is over the size cap, and a helper of the same name elsewhere must not win.
+    const helper = { path: "src/admin/reports.ts", content: "export function getOrder() {}" };
+    const readBig = vi.fn(async (rel: string) => (rel === "src/orders/index.ts" ? null : helper));
+    expect(await findSourceByFunctionName("orders-getOrder", ["src/admin/reports.ts", "src/orders/index.ts"], readBig, { roots: [], excluded: [] })).toEqual({
+      outcome: "ambiguous",
+    });
+  });
+
+  it("still finds the file when what it could not read cannot be the one: another group's file, or compiled output of a source it read", async () => {
+    const read = vi.fn(async (rel: string) => (rel.startsWith("src/orders") ? { path: rel, content: ORDERS } : null));
+    expect(await findSourceByFunctionName("orders-createOrder", ["src/admin/huge.ts", "src/orders.ts"], read, { roots: [], excluded: [] })).toMatchObject({
+      outcome: "found",
+      file: { path: "src/orders.ts" },
+    });
+    expect(await findSourceByFunctionName("createOrder", ["lib/orders.js", "src/orders.ts"], read, { roots: [], excluded: [] })).toMatchObject({
+      outcome: "found",
+      file: { path: "src/orders.ts" },
+    });
   });
 });
 

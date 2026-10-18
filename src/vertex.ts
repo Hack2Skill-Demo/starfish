@@ -2,10 +2,15 @@ import { GoogleGenAI, type Fetch } from "@google/genai";
 import { Agent, fetch as undiciFetch } from "undici";
 import { loadConfig, type StarfishConfig } from "./config.js";
 import { sanitize } from "./ingest/redact.js";
-import type { AskJson } from "./agent/triage.js";
 
 /** What a model call needs from the configuration. The model and location are runtime settings (#7). */
-export type VertexTarget = Pick<StarfishConfig, "vertexProjectId" | "location" | "model" | "modelTimeoutSeconds">;
+export type VertexTarget = Pick<StarfishConfig, "vertexProjectId" | "location" | "model" | "modelTimeoutSeconds" | "modelMaxOutputTokens">;
+
+/**
+ * The model client every stage is given: asks for a JSON object matching `schema` and returns it parsed, or throws.
+ * `createAskJson` builds the real one; a test stubs it. Stages call it through `askModel`, never directly.
+ */
+export type AskJson = <T>(prompt: string, systemInstruction: string, schema: Record<string, unknown>) => Promise<T>;
 
 /** How far past the call's own deadline the connection's limits sit, so the deadline is what ends a slow call. */
 const DISPATCHER_GRACE_MS = 30_000;
@@ -64,8 +69,91 @@ export function modelCallFailure(err: unknown): string {
   const cause = identifiersOf(err.cause);
   const ids = [own.join(" "), ...(cause.length > 0 ? [`cause ${cause.join(" ")}`] : [])].filter((s) => s !== "");
   const label = ids.length > 0 ? ids.join("; ") : "unknown error";
-  const timedOut = [...own, ...cause].some((id) => TIMEOUT_NAMES.has(id) || TIMEOUT_CODES.has(id));
-  return timedOut ? `The model call timed out (${label}).` : `The model call failed (${label}).`;
+  return timedOut(err) ? `The model call timed out (${label}).` : `The model call failed (${label}).`;
+}
+
+function timedOut(err: unknown): boolean {
+  const ids = [...identifiersOf(err), ...(err instanceof Error ? identifiersOf(err.cause) : [])];
+  return ids.some((id) => TIMEOUT_NAMES.has(id) || TIMEOUT_CODES.has(id));
+}
+
+/**
+ * How one model call ended (#418). The model answering, but not with a usable answer, is told apart from the call
+ * failing: an answer cut off at the output limit or held back by a filter was read as "the model call failed (Error)"
+ * and released for a retry, which at temperature 0 asks the same question and gets the same cut.
+ *   ok           the answer, parsed (its shape is still the stage's to check)
+ *   call-failed  the request did not complete (network, quota, a server error)
+ *   timeout      it did not complete within the deadline
+ *   unparseable  it completed, normally, with text that is not JSON
+ *   truncated    the answer stopped at the output limit (MAX_TOKENS)
+ *   blocked      a safety or content filter stopped the prompt or the answer
+ */
+export type ModelOutcome<T> = { kind: "ok"; value: T } | { kind: ModelFailureKind; reason: string };
+export type ModelFailureKind = "call-failed" | "timeout" | "unparseable" | "truncated" | "blocked";
+
+/**
+ * Whether a later attempt at the same request may do better. A failed or slow call may; so may a normal answer that was
+ * not JSON, which structured output makes a fluke. An answer cut at the limit or stopped by a filter will be again: a
+ * person looks instead.
+ */
+export function isTransientModelFailure(kind: ModelFailureKind): boolean {
+  return kind === "call-failed" || kind === "timeout" || kind === "unparseable";
+}
+
+/** The rule a stage records for a failed model call, the same in all three stages. */
+export type ModelFailureRule = "model-call-failed" | "model-output-invalid" | "model-output-truncated" | "model-output-blocked";
+
+export function modelFailureRule(kind: ModelFailureKind): ModelFailureRule {
+  switch (kind) {
+    case "call-failed":
+    case "timeout":
+      return "model-call-failed";
+    case "unparseable":
+      return "model-output-invalid";
+    case "truncated":
+      return "model-output-truncated";
+    case "blocked":
+      return "model-output-blocked";
+  }
+}
+
+/** The model answered, but not with a usable JSON answer: what the client throws, so `askModel` can say which. */
+export class ModelAnswerError extends Error {
+  constructor(
+    readonly kind: "unparseable" | "truncated" | "blocked",
+    /** The finish or block reason the response gave (an enum identifier), when it gave one. */
+    readonly because?: string,
+    message = `model answer ${kind}${because ? ` (${because})` : ""}`
+  ) {
+    super(message);
+    this.name = "ModelAnswerError";
+  }
+}
+
+const answerReason = (err: ModelAnswerError): string => {
+  const why = err.because ? ` (${err.because})` : "";
+  switch (err.kind) {
+    case "truncated":
+      return `The model's answer was cut off at the output limit${why}, so nothing was acted on. The same request would be cut again, so a person looks.`;
+    case "blocked":
+      return `The model's safety or content filter stopped the answer${why}, so nothing was acted on. A person looks.`;
+    case "unparseable":
+      return "The model's answer was not JSON, so nothing was acted on.";
+  }
+};
+
+/**
+ * Asks `ask` and says how it went, as a `ModelOutcome`. Never throws: every stage reads its model call through this, so
+ * all three record a failure the same way. The reason holds error names and codes only, never a message (which can
+ * quote what was sent, #334).
+ */
+export async function askModel<T>(ask: AskJson, prompt: string, systemInstruction: string, schema: Record<string, unknown>): Promise<ModelOutcome<T>> {
+  try {
+    return { kind: "ok", value: await ask<T>(prompt, systemInstruction, schema) };
+  } catch (err) {
+    if (err instanceof ModelAnswerError) return { kind: err.kind, reason: answerReason(err) };
+    return { kind: timedOut(err) ? "timeout" : "call-failed", reason: modelCallFailure(err) };
+  }
 }
 
 /** The environment's default model, for callers with no runtime settings (the spike). */
@@ -99,9 +187,9 @@ attempt in your reasoning.`;
  */
 export function createAskJson(target: VertexTarget): AskJson {
   // Read once: the run's snapshot is frozen, and the model a cycle records must be the one it asked.
-  const { vertexProjectId, location, model, modelTimeoutSeconds } = target;
+  const { vertexProjectId, location, model, modelTimeoutSeconds, modelMaxOutputTokens } = target;
   return async <T>(prompt: string, systemInstruction: string, schema: Record<string, unknown>): Promise<T> =>
-    askWith<T>(clientFor(vertexProjectId, location, modelTimeoutSeconds), model, prompt, systemInstruction, schema);
+    askWith<T>(clientFor(vertexProjectId, location, modelTimeoutSeconds), { model, maxOutputTokens: modelMaxOutputTokens }, prompt, systemInstruction, schema);
 }
 
 /**
@@ -112,15 +200,20 @@ export async function askJson<T>(prompt: string, systemInstruction: string, sche
   return createAskJson(loadConfig())<T>(prompt, systemInstruction, schema);
 }
 
+/** Finish reasons that mean a filter stopped the answer, not the model finishing it. */
+const BLOCKED_FINISH = new Set(["SAFETY", "RECITATION", "BLOCKLIST", "PROHIBITED_CONTENT", "SPII", "IMAGE_SAFETY", "IMAGE_PROHIBITED_CONTENT", "LANGUAGE"]);
+
+const asIdentifier = (v: unknown): string | undefined => (typeof v === "string" && IDENTIFIER.test(v) ? v : undefined);
+
 async function askWith<T>(
   client: GoogleGenAI,
-  model: string,
+  call: { model: string; maxOutputTokens: number },
   prompt: string,
   systemInstruction: string,
   schema: Record<string, unknown>
 ): Promise<T> {
   const response = await client.models.generateContent({
-    model,
+    model: call.model,
     contents: prompt,
     config: {
       systemInstruction: `${systemInstruction}\n${UNTRUSTED_DATA_NOTICE}`,
@@ -128,14 +221,22 @@ async function askWith<T>(
       responseJsonSchema: schema,
       // Triage and patching are judgment calls to reproduce, not prose to vary.
       temperature: 0,
+      // Set, so an answer that hits it says so (MAX_TOKENS) rather than ending as text that does not parse (#418).
+      maxOutputTokens: call.maxOutputTokens,
     },
   });
+  // A prompt the filter stopped has no candidate at all, only a block reason.
+  const blockReason = asIdentifier(response.promptFeedback?.blockReason);
+  if (blockReason !== undefined) throw new ModelAnswerError("blocked", blockReason);
+  const finish = asIdentifier(response.candidates?.[0]?.finishReason);
+  if (finish === "MAX_TOKENS") throw new ModelAnswerError("truncated", finish);
+  if (finish !== undefined && BLOCKED_FINISH.has(finish)) throw new ModelAnswerError("blocked", finish);
   const text = response.text ?? "";
   try {
     return JSON.parse(text) as T;
   } catch {
     // The model may echo incident text back, and this message reaches logs and
     // terminals: redact and bound it like any other outbound text.
-    throw new Error(`model returned non-JSON output:\n${sanitize(text, 1000)}`);
+    throw new ModelAnswerError("unparseable", finish, `model returned non-JSON output:\n${sanitize(text, 1000)}`);
   }
 }

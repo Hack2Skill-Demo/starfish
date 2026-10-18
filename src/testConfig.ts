@@ -12,6 +12,7 @@ export function testConfig(over: Partial<StarfishConfig> = {}): StarfishConfig {
     location: "us-central1",
     model: "m",
     modelTimeoutSeconds: 600,
+    modelMaxOutputTokens: 32_768,
     environment: "prod",
     settingsCollection: "starfish_settings",
     incidentCollection: "incidents",

@@ -211,4 +211,51 @@ describe("normalizePatch (#317)", () => {
     );
     expect(out).toContain("+        promoCode: input.promoCode ?? null, // x\n");
   });
+
+  // #419: models often separate one file's section from the next with a blank line, which read as a blank context line
+  // at the end of the first file's last hunk, so its old side was not found and the whole file was left as written.
+  it("treats a blank line between two files' sections as a separator, not as context of the hunk before it", () => {
+    const a = "const a = 1;\nconst b = 2;\nconst c = 3;\n";
+    const b = "export const x = 1;\nexport const y = 2;\n";
+    const patch = [
+      "--- a/a.ts",
+      "+++ b/a.ts",
+      "@@ -9,3 +9,3 @@",
+      " const a = 1;",
+      "-const b = 2;",
+      "+const b = 20;",
+      " const c = 3;",
+      "",
+      "--- a/b.ts",
+      "+++ b/b.ts",
+      "@@ -7,2 +7,2 @@",
+      " export const x = 1;",
+      "-export const y = 2;",
+      "+export const y = 20;",
+      "",
+      "",
+    ].join("\n");
+    const shown = [
+      { path: "a.ts", content: a },
+      { path: "b.ts", content: b },
+    ];
+    const out = normalizePatch(patch, shown);
+    expect(out).toContain("@@ -1,3 +1,3 @@");
+    expect(out).toContain("@@ -1,2 +1,2 @@");
+    expect(gitAccepts(out, { "a.ts": a, "b.ts": b })).toBe(true);
+  });
+
+  it("still reads a real blank context line at a hunk's end when the file has one there", () => {
+    const src = "one\ntwo\n\nthree\n";
+    const patch = ["--- a/x.ts", "+++ b/x.ts", "@@ -1,3 +1,3 @@", " one", "-two", "+TWO", "", " three", ""].join("\n");
+    const out = normalizePatch(patch, [{ path: "x.ts", content: src }]);
+    expect(gitAccepts(out, { "x.ts": src })).toBe(true);
+  });
+
+  it("gives a bare path a/ and b/ even for a file it was not shown, since git would drop its first directory (#419)", () => {
+    const patch = ["--- functions/test/orders.test.ts", "+++ functions/test/orders.test.ts", "@@ -1,1 +1,1 @@", "-a", "+b", ""].join("\n");
+    const out = normalizePatch(patch, files);
+    expect(out).toContain("--- a/functions/test/orders.test.ts\n+++ b/functions/test/orders.test.ts\n");
+    expect(gitAccepts(out, { "functions/test/orders.test.ts": "a\n" })).toBe(true);
+  });
 });

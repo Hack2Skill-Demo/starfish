@@ -27,6 +27,8 @@ const cfg: ReplayAgentConfig = {
   patchExcludedPaths: DEFAULT_PATCH_EXCLUDED_PATHS,
   reviewRequired: true,
   modelCallBudget: 6,
+  mergeCases: [],
+  classRules: [],
 };
 
 interface StubAnswers {
@@ -91,6 +93,19 @@ describe("runReplay over the synthetic corpus", { timeout: 60_000 }, () => {
     // Cost is not measured, so it is absent: never a zero.
     for (const c of result.cases) expect(c.outcome.costUsd).toBeUndefined();
     expect(metricsFor(result, "held-out").patchPassRate).toEqual({ passed: 1, of: 1 });
+  });
+
+  it("applies the admin's class rules as the loop does: an incident held to noise is declined without asking the model (#420)", async () => {
+    const model = stubModel();
+    const asked: string[] = [];
+    const ask: AskJson = async <T,>(prompt: string, system: string, schema: Record<string, unknown>): Promise<T> => {
+      if (prompt.includes("checkout-placeOrder")) asked.push(system === TRIAGE_SYSTEM ? "triage" : system === FIX_SYSTEM ? "fix" : "review");
+      return model.ask<T>(prompt, system, schema);
+    };
+    const result = await run(ask, FIXTURE, { cfg: { ...cfg, classRules: [{ id: "hold", match: { functionName: "checkout-placeOrder" }, maxLevel: "noise" }] } });
+    expect(result.cases.find((c) => c.caseId === "order-total")!.outcome).toMatchObject({ status: "completed", triage: "decline", openedPr: false });
+    // Only the planted bad patch's review is asked about that function: triage never was.
+    expect(asked).toEqual(["review"]);
   });
 
   it("never shows the fixer or the reviewer the private evaluator", async () => {

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { MAX_CONSECUTIVE_ERRORS, pathsFromStack, runAgentPass, type Candidate, type PassDeps } from "./pass.js";
+import { MAX_CONSECUTIVE_ERRORS, filesFromStack, pathsFromStack, runAgentPass, type Candidate, type PassDeps } from "./pass.js";
 import type { LoopResult } from "./loop.js";
 
 const REPO = [
@@ -23,6 +23,15 @@ describe("pathsFromStack", () => {
       "    at again (/workspace/src/orders/create.ts:50:1)",
     ].join("\n");
     expect(pathsFromStack(stack, REPO, [])).toEqual(["src/orders/create.ts", "src/orders/helpers.ts"]);
+  });
+
+  it("keeps the top frame's line for each file, only when the frame names that very file, not its compiled twin (#416)", () => {
+    const stack = [
+      "    at createOrder (/workspace/src/orders/create.ts:42:7)",
+      "    at again (/workspace/src/orders/create.ts:50:1)",
+      "    at helper (/workspace/lib/orders/helpers.js:10:3)",
+    ].join("\n");
+    expect(filesFromStack(stack, REPO, [])).toEqual([{ path: "src/orders/create.ts", line: 42 }, { path: "src/orders/helpers.ts" }]);
   });
 
   it("prefers the longest repository path a frame ends with", () => {

@@ -41,14 +41,14 @@
  * Run by the agent job (`pnpm agent`), and not on Google's Agent Development Kit yet: this is the stage's
  * contract, testable with a stubbed model, so the orchestration can be put around it.
  */
-import { askJson, modelCallFailure } from "../vertex.js";
+import { askJson, askModel, modelFailureRule, type AskJson, type ModelFailureRule } from "../vertex.js";
 import { clipWellFormed, sanitize } from "../ingest/redact.js";
 import type { ErrorLogSample } from "../ingest/counterCheck.js";
 import { OPEN_INCIDENT_STATUSES, type Incident, type IncidentStatus } from "../types.js";
 import { INDEX_MERGE_CASE, MAX_MERGE_CASE_DESCRIPTION, type MergeCase } from "../settingsSchema.js";
 import { capHolds, capSource, levelCap, type ClassRule, type IncidentCorrection, type LevelCap } from "../triageRules.js";
 import { incidentKindOf, type IncidentKindGate } from "../incidentKinds.js";
-import { renderSourceFiles, sourceNote, type SourceFound } from "./sourceContext.js";
+import { renderSourceContext, SOURCE_BUDGETS, type ShownFile } from "./sourceContext.js";
 
 export type TriageDecision = "act" | "notify" | "decline" | "defer" | "skip" | "error";
 
@@ -60,8 +60,7 @@ export type TriageRule =
   | "model-act"
   | "model-notify"
   | "model-decline"
-  | "model-call-failed"
-  | "model-output-invalid"
+  | ModelFailureRule
   | "monitoring-only-no-cause"
   | IncidentKindGate["rule"]
   | "rule-cap"
@@ -109,8 +108,9 @@ export interface TriageOptions {
   source?: TriageSource;
 }
 
-export interface TriageSource extends SourceFound {
-  files: readonly { path: string; content: string }[];
+export interface TriageSource {
+  /** Each with how it was found (#417), which its header says. */
+  files: readonly ShownFile[];
 }
 
 export interface TriageSubject {
@@ -122,15 +122,15 @@ export interface TriageSubject {
   correction?: IncidentCorrection;
 }
 
-/** The part of the model client triage needs; askJson satisfies it, a test stubs it. */
-export type AskJson = <T>(prompt: string, systemInstruction: string, schema: Record<string, unknown>) => Promise<T>;
+/** The model client (vertex.ts); askJson satisfies it, a test stubs it. */
+export type { AskJson } from "../vertex.js";
 
 export const MAX_REASON_LEN = 1000;
 const MAX_FIELD_LEN = 1500;
 const MAX_SAMPLE_FIELD_LEN = 600;
-/** Smaller than the fixer's (20,000 and 60,000): triage judges whether code is at fault, it does not write the change. */
-export const MAX_TRIAGE_FILE_CHARS = 8_000;
-export const MAX_TRIAGE_SOURCE_CHARS = 20_000;
+/** Smaller than the fixer's (sourceContext.ts): triage judges whether code is at fault, it does not write the change. */
+export const MAX_TRIAGE_FILE_CHARS = SOURCE_BUDGETS.triage.maxFileChars;
+export const MAX_TRIAGE_SOURCE_CHARS = SOURCE_BUDGETS.triage.maxTotalChars;
 
 const MODEL_DECISIONS = ["act", "notify", "decline"] as const;
 type ModelDecision = (typeof MODEL_DECISIONS)[number];
@@ -264,14 +264,7 @@ export function renderForTriage(subject: TriageSubject): string {
 export function renderTriagePrompt(subject: TriageSubject, source?: TriageSource): string {
   const incident = renderForTriage(subject);
   if (!source || source.files.length === 0) return incident;
-  const note = sourceNote(source, source.files.length);
-  return [
-    incident,
-    "",
-    "SOURCE CONTEXT",
-    ...(note ? [note, ""] : []),
-    ...renderSourceFiles(source.files, { maxFileChars: MAX_TRIAGE_FILE_CHARS, maxTotalChars: MAX_TRIAGE_SOURCE_CHARS }),
-  ].join("\n");
+  return [incident, "", ...renderSourceContext(source.files, SOURCE_BUDGETS.triage)].join("\n");
 }
 
 function counterCheckLine(i: Incident): string {
@@ -368,19 +361,16 @@ export async function triageIncident(subject: TriageSubject, ask: AskJson = askJ
 
   // A cap is at most "fix", so a capped incident is never offered a merge case: a person merges whatever is fixed.
   const cases = cap ? [] : offeredMergeCases(options.mergeCases);
-  let raw: unknown;
-  try {
-    raw = await ask<unknown>(
-      renderTriagePrompt(subject, options.source),
-      cases.length > 0 ? TRIAGE_SYSTEM + mergeCasesInstruction(cases) : TRIAGE_SYSTEM,
-      cases.length > 0 ? triageSchemaWithMergeCase(cases) : TRIAGE_SCHEMA
-    );
-  } catch (err) {
-    // An error's message can quote the incident text it was given, so only names and codes are kept (#334).
-    return result("error", "model-call-failed", modelCallFailure(err), undefined, undefined, cap);
-  }
+  const asked = await askModel<unknown>(
+    ask,
+    renderTriagePrompt(subject, options.source),
+    cases.length > 0 ? TRIAGE_SYSTEM + mergeCasesInstruction(cases) : TRIAGE_SYSTEM,
+    cases.length > 0 ? triageSchemaWithMergeCase(cases) : TRIAGE_SCHEMA
+  );
+  // Names and codes only, never an error's message (#334); a cut or filtered answer is said as one (#418).
+  if (asked.kind !== "ok") return result("error", modelFailureRule(asked.kind), asked.reason, undefined, undefined, cap);
 
-  const answer = parseModelAnswer(raw);
+  const answer = parseModelAnswer(asked.value);
   if (!answer) {
     return result("error", "model-output-invalid", "The model's answer was not in the expected shape, so nothing was acted on.", undefined, undefined, cap);
   }

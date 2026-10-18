@@ -5,17 +5,21 @@ import { RuntimeConfigLoader } from "./runtimeSettings.js";
 import { testConfig } from "./testConfig.js";
 
 let responseText = "";
+/** The whole response, when a test needs more than its text (a finish or block reason, #418). */
+let responseExtra: Record<string, unknown> = {};
 const clientOptions: unknown[] = [];
 const requests: { client: unknown; model: unknown }[] = [];
+const configs: Record<string, unknown>[] = [];
 vi.mock("@google/genai", () => ({
   GoogleGenAI: class {
-    models: { generateContent: (req: { model: unknown }) => Promise<{ text: string }> };
+    models: { generateContent: (req: { model: unknown; config: Record<string, unknown> }) => Promise<Record<string, unknown>> };
     constructor(options: unknown) {
       clientOptions.push(options);
       this.models = {
-        generateContent: async (req: { model: unknown }) => {
+        generateContent: async (req: { model: unknown; config: Record<string, unknown> }) => {
           requests.push({ client: options, model: req.model });
-          return { text: responseText };
+          configs.push(req.config);
+          return { text: responseText, ...responseExtra };
         },
       };
     }
@@ -24,10 +28,10 @@ vi.mock("@google/genai", () => ({
 // The store project and the Vertex project differ on purpose: the client must use the Vertex one.
 vi.mock("./config.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./config.js")>()),
-  loadConfig: () => ({ projectId: "store-project", vertexProjectId: "vertex-project", location: "l", model: "m", modelTimeoutSeconds: 600 }),
+  loadConfig: () => ({ projectId: "store-project", vertexProjectId: "vertex-project", location: "l", model: "m", modelTimeoutSeconds: 600, modelMaxOutputTokens: 4096 }),
 }));
 
-const { askJson, createAskJson, modelCallFailure, modelFetch, UNTRUSTED_DATA_NOTICE } = await import("./vertex.js");
+const { askJson, askModel, createAskJson, isTransientModelFailure, modelCallFailure, modelFailureRule, modelFetch, ModelAnswerError, UNTRUSTED_DATA_NOTICE } = await import("./vertex.js");
 
 /** A Firestore holding one settings document, enough for the loader's read. */
 function dbWithSettings(data: Record<string, unknown>): Firestore {
@@ -41,6 +45,8 @@ function dbWithSettings(data: Record<string, unknown>): Firestore {
 
 beforeEach(() => {
   requests.length = 0;
+  configs.length = 0;
+  responseExtra = {};
 });
 
 describe("the untrusted-data notice", () => {
@@ -66,6 +72,51 @@ describe("askJson", () => {
     responseText = "{}";
     await askJson("p", "s", {});
     expect(requests).toEqual([{ client: expect.objectContaining({ vertexai: true, project: "vertex-project", location: "l" }), model: "m" }]);
+  });
+});
+
+describe("how a model call ended (#418)", () => {
+  it("sets the output limit on every call", async () => {
+    responseText = "{}";
+    await askJson("p", "s", {});
+    expect(configs[0]).toMatchObject({ maxOutputTokens: 4096, temperature: 0 });
+  });
+
+  it("says an answer cut at the output limit is truncated, not a failed call", async () => {
+    responseText = '{"decision": "ac';
+    responseExtra = { candidates: [{ finishReason: "MAX_TOKENS" }] };
+    expect(await askModel(askJson, "p", "s", {})).toEqual({ kind: "truncated", reason: expect.stringContaining("cut off at the output limit (MAX_TOKENS)") });
+  });
+
+  it("says a filtered prompt or answer is blocked", async () => {
+    responseText = "";
+    responseExtra = { promptFeedback: { blockReason: "PROHIBITED_CONTENT" } };
+    expect(await askModel(askJson, "p", "s", {})).toMatchObject({ kind: "blocked", reason: expect.stringContaining("PROHIBITED_CONTENT") });
+    responseExtra = { candidates: [{ finishReason: "SAFETY" }] };
+    expect(await askModel(askJson, "p", "s", {})).toMatchObject({ kind: "blocked" });
+  });
+
+  it("says a normal answer that is not JSON is unparseable, and a parsed one is ok", async () => {
+    responseText = "not json";
+    responseExtra = { candidates: [{ finishReason: "STOP" }] };
+    expect(await askModel(askJson, "p", "s", {})).toMatchObject({ kind: "unparseable" });
+    responseText = '{"a": 1}';
+    expect(await askModel(askJson, "p", "s", {})).toEqual({ kind: "ok", value: { a: 1 } });
+  });
+
+  it("tells a timeout from a failed call, by names and codes only", async () => {
+    const slow = Object.assign(new Error("secret prompt text"), { name: "AbortError" });
+    expect(await askModel(async () => Promise.reject(slow), "p", "s", {})).toEqual({ kind: "timeout", reason: "The model call timed out (AbortError)." });
+    const failed = await askModel(async () => Promise.reject(new TypeError("secret prompt text")), "p", "s", {});
+    expect(failed).toEqual({ kind: "call-failed", reason: "The model call failed (TypeError)." });
+  });
+
+  it("retries only what a later attempt may do better at, and names each the same in every stage", () => {
+    expect(["call-failed", "timeout", "unparseable", "truncated", "blocked"].filter((k) => isTransientModelFailure(k as never))).toEqual(["call-failed", "timeout", "unparseable"]);
+    expect(modelFailureRule("timeout")).toBe("model-call-failed");
+    expect(modelFailureRule("truncated")).toBe("model-output-truncated");
+    expect(modelFailureRule("blocked")).toBe("model-output-blocked");
+    expect(new ModelAnswerError("truncated", "MAX_TOKENS").message).not.toContain("prompt");
   });
 });
 

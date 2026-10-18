@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { FIX_SCHEMA, FOUND_BY_NAME_NOTE, FOUND_BY_NAME_WITH_IMPORTS_NOTE, MAX_FILE_CHARS, MAX_FIX_PATCH_BYTES, MAX_TOTAL_SOURCE_CHARS, REVISION_SCOPE, proposeFix, renderForFix, reviewFeedback, verifyFeedback, type FixRequest } from "./fixer.js";
-import { STACK_AND_NAME_NOTE } from "./sourceContext.js";
+import { FIX_SCHEMA, FIX_SYSTEM, MAX_FILE_CHARS, MAX_FIX_PATCH_BYTES, MAX_TOTAL_SOURCE_CHARS, REVISION_SCOPE, proposeFix, renderForFix, reviewFeedback, verifyFeedback, type FixRequest } from "./fixer.js";
+import { CUT_NOTE, WEAKER_EVIDENCE_NOTE } from "./sourceContext.js";
 import type { AskJson } from "./triage.js";
 import { SEEDED_SECRETS } from "../ingest/testSecrets.js";
 import type { Incident } from "../types.js";
@@ -208,44 +208,52 @@ describe("what the fixer shows the model", () => {
     expect(prompt).toContain("const token = getToken();");
   });
 
-  it("bounds each file and all of them together", () => {
-    const files = Array.from({ length: 10 }, (_, i) => ({ path: `f${i}.ts`, content: "x".repeat(MAX_FILE_CHARS * 2) }));
+  it("bounds each file and all of them together, and says what it left out (#416)", () => {
+    const files = Array.from({ length: 10 }, (_, i) => ({ path: `f${i}.ts`, content: "x\n".repeat(MAX_FILE_CHARS) }));
     const prompt = renderForFix(request({ files }));
     expect(prompt.split("x").length - 1).toBeLessThanOrEqual(MAX_TOTAL_SOURCE_CHARS);
-    expect(prompt).not.toContain("--- f9.ts ---");
+    expect(prompt).toContain(CUT_NOTE);
+    expect(prompt).toMatch(/--- f0\.ts \(CUT: lines 1–\d+ of 20001 shown\) ---/);
+    expect(prompt).toContain("not shown …]");
+    // Past the total budget a file is named, never dropped in silence.
+    expect(prompt).not.toContain("--- f9.ts");
+    expect(prompt).toMatch(/more file\(s\) not shown, past the source budget: .*f9\.ts/);
   });
 
-  it("says when the source was found by the function's name, not a stack frame (#259)", () => {
-    expect(renderForFix(request({ sourceRule: "function-name" }))).toContain(FOUND_BY_NAME_NOTE);
-    expect(renderForFix(request({ sourceRule: "stack" }))).not.toContain(FOUND_BY_NAME_NOTE);
-    expect(renderForFix(request())).not.toContain(FOUND_BY_NAME_NOTE);
-    // With no file shown there is nothing for the note to describe.
-    expect(renderForFix(request({ sourceRule: "function-name", files: [] }))).not.toContain(FOUND_BY_NAME_NOTE);
+  it("windows a stack-named file around its frame's line, so a fault deep in a long file is shown (#416)", () => {
+    const lines = Array.from({ length: 3_000 }, (_, i) => `const line${i + 1} = ${i + 1};`);
+    lines[2_499] = "const fault = order.coupon.code; // the frame's line";
+    const prompt = renderForFix(request({ files: [{ path: "src/big.ts", content: lines.join("\n") + "\n", foundBy: "frame", frameLine: 2_500 }] }));
+    expect(prompt).toContain("the frame's line");
+    expect(prompt).toMatch(/--- src\/big\.ts \(named by a stack frame, line 2500; CUT: lines \d+–\d+ of 3001 shown\) ---/);
+    expect(prompt).toContain("[… lines 1–");
+    expect(prompt).not.toContain("const line1 = 1;");
   });
 
-  it("says the files after the one found by name are the ones it imports, when they are shown (#347)", () => {
-    const files = [
-      { path: "functions/src/orders.ts", content: 'import { trackOutcome } from "./lib/track.js";' },
-      { path: "functions/src/lib/track.ts", content: "export function trackOutcome() {}" },
+  it("says on each file how it was found, and warns once when any was not named by a stack frame (#259, #347, #417)", () => {
+    const files: FixRequest["files"] = [
+      { path: "functions/src/lib/track.ts", content: "export function trackOutcome() {}\n", foundBy: "frame", frameLine: 3 },
+      { path: "functions/src/orders/getOrder.ts", content: 'import { x } from "./util.js";\n', foundBy: "name" },
+      { path: "functions/src/orders/util.ts", content: "export const x = 1;\n", foundBy: "import", importedBy: "functions/src/orders/getOrder.ts" },
     ];
-    const prompt = renderForFix(request({ sourceRule: "function-name", sourceImports: 1, files }));
-    expect(prompt).toContain(FOUND_BY_NAME_WITH_IMPORTS_NOTE);
-    expect(prompt).not.toContain(FOUND_BY_NAME_NOTE);
-    expect(prompt).toContain("--- functions/src/lib/track.ts ---");
-    expect(renderForFix(request({ sourceRule: "function-name", sourceImports: 0, files: files.slice(0, 1) }))).toContain(FOUND_BY_NAME_NOTE);
+    const prompt = renderForFix(request({ files }));
+    expect(prompt).toContain("--- functions/src/lib/track.ts (named by a stack frame, line 3) ---");
+    expect(prompt).toContain("--- functions/src/orders/getOrder.ts (exports the failing function by name; no stack frame named it) ---");
+    expect(prompt).toContain("--- functions/src/orders/util.ts (imported by functions/src/orders/getOrder.ts) ---");
+    expect(prompt).toContain(WEAKER_EVIDENCE_NOTE);
+    // A single file found by name still says so: the old set-wide note said nothing for one file.
+    expect(renderForFix(request({ files: files.slice(1, 2) }))).toContain("(exports the failing function by name; no stack frame named it)");
+    expect(renderForFix(request({ files: files.slice(1, 2) }))).toContain(WEAKER_EVIDENCE_NOTE);
+    // Only frames: nothing to warn about.
+    expect(renderForFix(request({ files: files.slice(0, 1) }))).not.toContain(WEAKER_EVIDENCE_NOTE);
+    expect(renderForFix(request())).not.toContain(WEAKER_EVIDENCE_NOTE);
   });
 
-  it("says the files after the stack's were added for the function's own file, when the stack named only shared code", () => {
-    const files = [
-      { path: "functions/src/lib/track.ts", content: "export function trackOutcome() {}" },
-      { path: "functions/src/orders/getOrder.ts", content: "export const getOrder = 1;" },
-    ];
-    const prompt = renderForFix(request({ sourceRule: "stack-and-function-name", sourceImports: 0, files }));
-    expect(prompt).toContain(STACK_AND_NAME_NOTE);
-    expect(prompt).not.toContain(FOUND_BY_NAME_NOTE);
-    expect(prompt).toContain("--- functions/src/orders/getOrder.ts ---");
-    // One file shown: there is nothing "after" it for the note to describe.
-    expect(renderForFix(request({ sourceRule: "stack-and-function-name", files: files.slice(0, 1) }))).not.toContain(STACK_AND_NAME_NOTE);
+  it("asks for a test only as a new file, since it is never shown the existing tests (#419)", () => {
+    const words = FIX_SYSTEM.replace(/\s+/g, " ");
+    expect(words).not.toMatch(/update a test/i);
+    expect(words).toContain("never edit an existing test file you were not shown");
+    expect(words).toContain("add it as a NEW file");
   });
 
   it("shows nothing beyond the files it was given", () => {

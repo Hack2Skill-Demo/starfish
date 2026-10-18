@@ -70,6 +70,7 @@ it is corrected throughout.
 | Verify, `cloud-run-job` isolation | yes | yes: local stand-in for the bucket | no | no: never deployed |
 | Verify runner limits: streamed byte cap, deadlines, bounded extraction (#389) | yes | yes | no | no: part of `cloud-run-job`, which has never run |
 | Adversarial review (Gemini) | yes | yes: stubbed model | yes: reviewed the patch behind demo-app #41, 2026-10-12 [T]; the PR pages carry its verdict [G] | yes |
+| One way to show the model a bounded block (cuts marked, a stack-named file windowed at its frame, each file saying how it was found) and one typed model outcome (a cut or filtered answer goes to a person, #416 to #420) | yes | yes: stubbed model, mocked Vertex client, emulator | no: not yet run against Vertex | no: not yet deployed (as of 2026-10-18) |
 | GitHub issue, and the pull request | yes | yes: real git, fake GitHub | yes: since 2026-10-12 [G] | yes: pull requests demo-app #41, #42 and #49 [G]; their issues are linked from them [G] |
 | One issue per incident across a recurrence, as a comment (#397) | yes | yes: fake GitHub | no | no |
 | Slack: "needs a human" and "new incident" | yes | yes: fake webhook | yes: posted to real Slack since 2026-10-11 [T] | yes |
