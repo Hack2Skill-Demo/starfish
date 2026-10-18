@@ -540,6 +540,12 @@ export interface Step {
   earlier?: EarlierStep;
   /** Its last event's data, when it carried any (a guest's copy never does). */
   data?: Flat;
+  /**
+   * Set when the stage ran more than once in this round (a block sends the fixer back for one revision: draft, gate and
+   * review again): which run of the stage this is, and how many there were. The step itself is the stage's LATEST run; the
+   * earlier ones are `Waterfall.attempts`.
+   */
+  attempt?: { n: number; of: number };
 }
 
 /**
@@ -591,9 +597,14 @@ export interface EarlierRound {
   steps: EarlierStep[];
 }
 
+/** The stages a review's block sends round again (one revision: src/agent/loop.ts): each may have run more than once in a round. */
+export const REPEATABLE_STAGES: readonly string[] = ["fix", "verify", "review"];
+
 export interface Waterfall {
   /** The steps of the run's LATEST round: a reopened run's earlier rounds are in `earlier`, not here. */
   steps: Step[];
+  /** The earlier runs of a repeatable stage in the latest round (the draft a review blocked, its gate...), oldest first. */
+  attempts: Step[];
   notes: EventRow[];
   /** The axis: from the cycle's start (or its latest reopening) to its last update, or to now while a worker holds it. */
   startMs: number;
@@ -717,6 +728,33 @@ export function buildWaterfall(cycle: CycleRow, events: readonly EventRow[], now
   const lastDone = known.reduce((acc, stage, i) => (byStage.has(stage) ? i : acc), -1);
   const runningIdx = status.live && cycle.state === "running" && lastDone + 1 < known.length ? lastDone + 1 : -1;
 
+  // The end of the event just before `e` in this round (any stage), else the round's start: a repeated stage's own "since the
+  // step before", which the stage order cannot say (a revised draft comes after the review that blocked the first one).
+  const inRound = ordered.filter((e) => e.stage !== NOTE_STAGE && (!lastReopening || e.seq > lastReopening.seq));
+  const sinceBefore = (e: EventRow): number => {
+    const i = inRound.findIndex((x) => x.seq === e.seq);
+    const prev = i > 0 ? inRound[i - 1]!.at.getTime() : startMs;
+    return Math.max(0, e.at.getTime() - Math.min(prev, e.at.getTime()));
+  };
+  const attempts: Step[] = [];
+  for (const stage of REPEATABLE_STAGES) {
+    const evs = byStage.get(stage);
+    if (!evs || evs.length < 2) continue;
+    evs.slice(0, -1).forEach((e, k) =>
+      attempts.push({
+        stage,
+        title: titleOf(stage),
+        status: failedUnexpectedly(stage, e.type) ? "failed" : "done",
+        ...(e.type && { outcome: e.type }),
+        ...(e.summary && { summary: e.summary }),
+        at: e.at,
+        ...(Object.keys(e.data).length > 0 && { data: e.data }),
+        durationMs: sinceBefore(e),
+        attempt: { n: k + 1, of: evs.length },
+      })
+    );
+  }
+
   let previousEnd = startMs;
   const steps: Step[] = stages.map((stage, i) => {
     const evs = byStage.get(stage);
@@ -743,12 +781,14 @@ export function buildWaterfall(cycle: CycleRow, events: readonly EventRow[], now
       at: last.at,
       ...(Object.keys(last.data).length > 0 && { data: last.data }),
       ...(side && { side: true as const }),
-      durationMs: end - from,
+      durationMs: evs.length > 1 && REPEATABLE_STAGES.includes(stage) ? sinceBefore(last) : end - from,
+      ...(evs.length > 1 && REPEATABLE_STAGES.includes(stage) && { attempt: { n: evs.length, of: evs.length } }),
     };
   });
 
   return {
     steps,
+    attempts,
     notes,
     startMs,
     endMs,

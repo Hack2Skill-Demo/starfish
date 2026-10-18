@@ -346,6 +346,38 @@ describe("small helpers", () => {
       expect(earlierAsStep({ ...step, failed: true }).status).toBe("failed");
     });
 
+    // The demo's orders-getOrder: the review blocked the first draft, the fixer revised it once, the gate passed it, and the
+    // model-call budget ran out before it could be reviewed. One event per stage kept left the revised draft above the
+    // review that sent it back, 14 minutes "since the step before".
+    const revised = () => [
+      ev("triage", "decision", 1000),
+      ev("fix", "proposed", 500_000),
+      ev("verify", "passed", 545_000),
+      ev("review", "block", 825_000),
+      ev("fix", "proposed", 887_000),
+      ev("verify", "passed", 934_000),
+    ];
+
+    it("keeps the earlier runs of a repeated stage as attempts, so a revision reads in the order it happened", () => {
+      const w = buildWaterfall(cycle({ state: "waiting-human", leaseExpiresAt: null, updatedAt: new Date(T0 + 940_000) }), revised(), T0 + HOUR);
+      expect(w.attempts.map((a) => [a.stage, a.outcome, a.attempt])).toEqual([
+        ["fix", "proposed", { n: 1, of: 2 }],
+        ["verify", "passed", { n: 1, of: 2 }],
+      ]);
+      // The review ran once (it blocked the first draft); the revision has no review.
+      expect(w.steps.find((s) => s.stage === "review")!.attempt).toBeUndefined();
+      expect(w.steps.find((s) => s.stage === "fix")!.attempt).toEqual({ n: 2, of: 2 });
+      const log = stepLogOrder([...w.steps, ...w.attempts]).map((s) => `${s.stage}${s.attempt ? `#${s.attempt.n}` : ""}`);
+      expect(log).toEqual(["verify#2", "fix#2", "review", "verify#1", "fix#1", "triage"]);
+    });
+
+    it("times a repeated stage from the event just before it, not from the stage before it in the loop", () => {
+      const w = buildWaterfall(cycle({ state: "waiting-human", leaseExpiresAt: null, updatedAt: new Date(T0 + 940_000) }), revised(), T0 + HOUR);
+      expect(w.steps.find((s) => s.stage === "fix")!.durationMs).toBe(62_000);
+      expect(w.steps.find((s) => s.stage === "verify")!.durationMs).toBe(47_000);
+      expect(w.attempts.map((a) => a.durationMs)).toEqual([499_000, 45_000]);
+    });
+
     it("draws a step this round did not reach with where an earlier round got, never as if it never ran", () => {
       const w = buildWaterfall(cycle({ state: "waiting-human", leaseExpiresAt: null, updatedAt: new Date(T0 + HOUR + 3000) }), retried(), T0 + 2 * HOUR);
       const review = w.steps.find((s) => s.stage === "review")!;

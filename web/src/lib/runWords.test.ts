@@ -150,6 +150,31 @@ describe("runInWords", () => {
     expect(w.rounds[0]!.sentences[0]!.text).not.toContain("recount");
   });
 
+  it("says a revision in the order it happened, and why a run stopped when no step is to blame (the model-call budget)", () => {
+    const events = [
+      ev("triage", "decision", 1000, "", { decision: "act", level: "merge", rule: "model-act" }),
+      ev("fix", "proposed", 2000),
+      ev("verify", "passed", 3000),
+      ev("review", "block", 4000),
+      ev("fix", "proposed", 5000),
+      ev("verify", "passed", 6000),
+      ev("cycle", "budget", 7000, "Model-call budget used up"),
+      ev("notify", "sent", 8000),
+    ];
+    const w = words(cycle({ path: "human" }), events)!;
+    expect(w.rounds[0]!.sentences.map((s) => s.text)).toEqual([
+      "Gemini's triage chose log + fix + merge: a pull request Starfish may merge once the checks are green.",
+      "Gemini drafted a patch.",
+      "The verify gate passed the patch.",
+      "The adversarial review blocked the patch.",
+      "Gemini drafted a patch.",
+      "The verify gate passed the patch.",
+      "Model-call budget used up.",
+      "A person was told in Slack.",
+    ]);
+    expect(w.why).toBe("Model-call budget used up.");
+  });
+
   it("reads a guest's trimmed copy: no event data, only the record's enumerated fields", () => {
     const events = [ev("triage", "decision", 1000), ev("notify", "sent", 2000)];
     const c = cycle({ path: "human", trimmed: true, summary: { triage: { decision: "notify", rule: "model-notify", level: "log", counterCount: 2, counterWindow: "24h" } } });
