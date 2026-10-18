@@ -199,6 +199,27 @@ export function createLoader(deps: AssembleDeps): Loader {
         if (file) files.push(file);
       }
       let provenance: SourceProvenance = { rule: "stack" };
+      if (wanted.length > 0 && files.length < maxFiles) {
+        // The stack named repository files, but a callable's own file often is not among them: the frames can be only the
+        // shared wrapper that logged the failure (`lib/track`), and the fixer would decline for lack of the function's code.
+        // So the file that exports the failing function by name is added after them, with the files it imports, when it is
+        // not already shown and the file budget has room.
+        const byName = await findSourceByFunctionName(incident.functionName, checkout.files, (rel) => readSource(checkout.dir, rel, maxBytes), {
+          roots: deps.config.functionsSourceRoots,
+          excluded: deps.config.patchExcludedPaths,
+        });
+        provenance = { rule: "stack", search: byName.outcome };
+        if (byName.file && !files.some((f) => f.path === byName.file!.path)) {
+          const imports = (
+            await followRelativeImports(byName.file, checkout.files, (rel) => readSource(checkout.dir, rel, maxBytes), {
+              excluded: deps.config.patchExcludedPaths,
+              max: Math.min(MAX_FOLLOWED_IMPORTS, maxFiles - files.length - 1),
+            })
+          ).filter((i) => !files.some((f) => f.path === i.path));
+          files.push(byName.file, ...imports);
+          provenance = { rule: "stack-and-function-name", search: byName.outcome, imports: imports.length };
+        }
+      }
       if (wanted.length === 0) {
         // Only framework frames (a callable failing through logger.error / HttpsError), or no stack at all (#259): the
         // function's name still says which export failed. Never a structural cause (autoMerge.ts reads the stack alone).

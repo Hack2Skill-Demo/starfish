@@ -52,11 +52,12 @@ export type NameSearchOutcome =
 
 /**
  * Which rule found the source the fixer is shown, as the run record keeps it (`summary.fix.source`): frames of the
- * stack trace, the function-name search when no frame named a repository file, or neither. `search` is the
+ * stack trace, the function-name search when no frame named a repository file, both (the frames named only files that
+ * are not the function's own, so its exporting file was added after them), or neither. `search` is the
  * function-name search's outcome, present whenever it ran.
  */
 export interface SourceProvenance {
-  rule: "stack" | "function-name" | "none";
+  rule: "stack" | "stack-and-function-name" | "function-name" | "none";
   search?: NameSearchOutcome;
   /** With `function-name`: how many of the files shown are ones the found file imports (#347), shown after it. */
   imports?: number;
