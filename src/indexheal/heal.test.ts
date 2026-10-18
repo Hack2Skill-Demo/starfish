@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { IndexSpec } from "./createIndexUrl.js";
 import type { IndexAdmin, LiveIndex } from "./firestoreAdmin.js";
-import { healIndex, sameIndex, type HealDeps, type HealSettings } from "./heal.js";
+import { buildingIndexOf, existingIndexState, healIndex, sameIndex, type HealDeps, type HealSettings } from "./heal.js";
 import type { ProbeVerdict } from "./probe.js";
 
 // ---- A create-index URL built from the documented Index message (name=1, query_scope=2, fields=3) ----------
@@ -383,5 +383,54 @@ describe("sameIndex", () => {
     expect(sameIndex(SPEC, live("READY", { queryScope: "COLLECTION_GROUP" }))).toBe(false);
     expect(sameIndex(SPEC, live("READY", { fields: [{ fieldPath: "createdAt", order: "DESCENDING" }, { fieldPath: "status", order: "ASCENDING" }] }))).toBe(false);
     expect(sameIndex(SPEC, live("READY", { fields: [{ fieldPath: "status", order: "ASCENDING" }, { fieldPath: "createdAt", order: "OTHER" }] }))).toBe(false);
+  });
+});
+
+// ---- "That index is currently building" (#62): the error names an index that exists --------------------------
+
+function buildingUrl(id = "CICAgJmiJEK", project = "demo-app-1"): string {
+  const bytes = [...str(1, `projects/${project}/databases/(default)/collectionGroups/orders/indexes/${id}`), ...int(2, 1)];
+  for (const [path, order] of [["status", 1], ["createdAt", 2], ["__name__", 2]] as [string, number][]) bytes.push(...lenDelimited(3, [...str(1, path), ...int(2, order)]));
+  return `https://console.firebase.google.com/v1/r/project/${project}/firestore/indexes?create_composite=${Buffer.from(bytes).toString("base64url")}`;
+}
+const BUILDING = (u = buildingUrl()) => `Error: orders-listRecentOrders failed: 9 FAILED_PRECONDITION: The query requires an index. That index is currently building and cannot be used yet. See its status here: ${u}`;
+
+describe("buildingIndexOf", () => {
+  it("reads the index Firestore says is building, by its id", () => {
+    expect(buildingIndexOf(BUILDING())).toEqual({ spec: SPEC_WITH_NAME, indexId: "CICAgJmiJEK" });
+  });
+
+  it("is null for a plain missing-index error, other text, or a link that is not Firestore's", () => {
+    expect(buildingIndexOf(ERROR())).toBeNull();
+    expect(buildingIndexOf("That index is currently building")).toBeNull();
+    expect(buildingIndexOf(BUILDING("https://evil.example/x?create_composite=abc"))).toBeNull();
+  });
+});
+
+const SPEC_WITH_NAME: IndexSpec = { ...SPEC, fields: [...SPEC.fields, { fieldPath: "__name__", order: "DESCENDING" }] };
+
+describe("existingIndexState", () => {
+  const found = { spec: SPEC_WITH_NAME, indexId: "CICAgJmiJEK" };
+  const withId = (state: LiveIndex["state"]) => live(state, { name: "projects/demo-app-1/databases/(default)/collectionGroups/orders/indexes/CICAgJmiJEK" });
+  const admin = (indexes: LiveIndex[]): Pick<IndexAdmin, "list"> => ({ list: async () => indexes });
+
+  it("says creating or ready when the live inventory holds the named index, the same one", async () => {
+    expect(await existingIndexState(found, SETTINGS, admin([withId("CREATING")]))).toBe("creating");
+    expect(await existingIndexState(found, SETTINGS, admin([withId("READY")]))).toBe("ready");
+  });
+
+  it("is null when the inventory does not hold it: the words alone settle nothing", async () => {
+    expect(await existingIndexState(found, SETTINGS, admin([]))).toBeNull();
+    // Another index with the same fields but another id.
+    expect(await existingIndexState(found, SETTINGS, admin([live("CREATING")]))).toBeNull();
+    // The id is right but it is not the same index.
+    expect(await existingIndexState(found, SETTINGS, admin([withId("CREATING") && { ...withId("CREATING"), fields: [{ fieldPath: "other", order: "ASCENDING" }] }]))).toBeNull();
+  });
+
+  it("is null for an index that needs repair, and for a target that is not allowed (nothing is read there)", async () => {
+    expect(await existingIndexState(found, SETTINGS, admin([withId("NEEDS_REPAIR")]))).toBeNull();
+    const list = vi.fn(async () => [withId("CREATING")]);
+    expect(await existingIndexState(found, { ...SETTINGS, allowedTargets: [] }, { list })).toBeNull();
+    expect(list).not.toHaveBeenCalled();
   });
 });

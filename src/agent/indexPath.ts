@@ -28,7 +28,7 @@ import type { Firestore } from "firebase-admin/firestore";
 import type { IndexSpec, IndexTarget } from "../indexheal/createIndexUrl.js";
 import type { IndexAdmin } from "../indexheal/firestoreAdmin.js";
 import { isOperationName } from "../indexheal/firestoreAdmin.js";
-import { healIndex, specFromError, type HealSettings } from "../indexheal/heal.js";
+import { buildingIndexOf, existingIndexState, healIndex, specFromError, type HealSettings } from "../indexheal/heal.js";
 import { indexFilePatch } from "../indexheal/indexFilePatch.js";
 import type { ProbeVerdict } from "../indexheal/probe.js";
 import { indexRootCause } from "../integrations/githubPr.js";
@@ -155,6 +155,29 @@ export async function runIndexPath(ctx: IndexPathContext): Promise<LoopResult> {
   const record = (fields: Flat): Flat => ({ ...described, ...mark, ...fields });
   const opPrefix = spec ? `projects/${spec.project}/databases/${spec.database}/operations/` : "\u0000";
   const priorOperation = isOperationName(mark.operation) && mark.operation.startsWith(opPrefix) ? mark.operation : undefined;
+
+  // "That index is currently building": the index exists, so nothing is missing. It appears for the minutes a build takes
+  // (Starfish's own create included), as a second incident of the same function. Told to nobody and no issue filed, but only
+  // when the live inventory holds the index the error names: the words are incident text.
+  const building = buildingIndexOf(errorText);
+  const alreadyThere = building ? await existingIndexState(building, ctx.wiring.settings, ctx.wiring.admin) : null;
+  if (building && alreadyThere) {
+    const state = alreadyThere === "ready" ? "ready" : "building";
+    await ctx.note({
+      stage: "index",
+      type: "already-building",
+      summary: alreadyThere === "ready" ? "Firestore named an index that is already READY: nothing to create and nobody to tell" : "Firestore named an index that is already building: nothing to create and nobody to tell",
+      record: {
+        state: `already-${state}`,
+        project: building.spec.project,
+        database: building.spec.database,
+        collectionGroup: building.spec.collectionGroup,
+        queryScope: building.spec.queryScope,
+        fields: fieldsText(building.spec),
+      },
+    });
+    return ctx.finish("declined", `index-already-${state}`, "decline");
+  }
 
   await ctx.note({ stage: "index", type: "started", summary: "Checking the missing index and recovery gates, without a model", record: record({ state: "checking" }) });
   // Before any gate: a refusal tells a person, and their message links the issue. Only fixed words and the parsed spec.
