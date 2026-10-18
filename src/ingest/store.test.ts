@@ -27,7 +27,7 @@ const STORE = { incidentCollection: "incidents", incidentKeyCollection: "inciden
  */
 function fakeDb(
   docs: { id: string; data: Record<string, unknown> }[],
-  keys: Record<string, string | { incidentId: string; appliedWindows?: unknown }> = {}
+  keys: Record<string, string | Record<string, unknown>> = {}
 ) {
   const queries: Where[][] = [];
   const reads: string[] = [];
@@ -777,18 +777,28 @@ describe("upsertIncident redaction", () => {
   });
 });
 
-describe("upsertIncident with createIfAbsent: false (#303)", () => {
-  it("writes nothing and reports absent where it would have opened an incident", async () => {
+describe("upsertIncident with a daily cap on new incidents (#434)", () => {
+  const capKey = incidentKeyId("prod", "ovf-cap");
+
+  it("counts a new incident on the cap's key, in the same transaction", async () => {
     const { db, writes, keyWrites } = fakeDb([]);
-    expect(await upsertIncident(db, STORE, { ...input, windowId: "w1" }, Timestamp.now(), { createIfAbsent: false })).toBe("absent");
+    expect(await upsertIncident(db, STORE, input, Timestamp.now(), { newIncidentCap: { fingerprint: "ovf-cap", limit: 2 } })).toBe("new");
+    expect(writes).toMatchObject([{ op: "set" }]);
+    expect(keyWrites).toContainEqual(expect.objectContaining({ op: "set", id: capKey, data: { newIncidentsOpened: 1 } }));
+  });
+
+  it("writes nothing and reports absent once the cap is reached", async () => {
+    const { db, writes, keyWrites } = fakeDb([], { [capKey]: { newIncidentsOpened: 2 } });
+    expect(await upsertIncident(db, STORE, { ...input, windowId: "w1" }, Timestamp.now(), { newIncidentCap: { fingerprint: "ovf-cap", limit: 2 } })).toBe("absent");
     expect(writes).toEqual([]);
     expect(keyWrites).toEqual([]);
   });
 
-  it("accrues onto an open incident as usual", async () => {
-    const { db, writes } = fakeDb([{ id: "open", data: stored("2026-09-20T00:00:00.000Z") }]);
-    expect(await upsertIncident(db, STORE, input, Timestamp.now(), { createIfAbsent: false })).toBe("updated");
+  it("accrues onto an open incident as usual, without counting it", async () => {
+    const { db, writes, keyWrites } = fakeDb([{ id: "open", data: stored("2026-09-20T00:00:00.000Z") }], { [capKey]: { newIncidentsOpened: 2 } });
+    expect(await upsertIncident(db, STORE, input, Timestamp.now(), { newIncidentCap: { fingerprint: "ovf-cap", limit: 2 } })).toBe("updated");
     expect(writes).toMatchObject([{ op: "update", id: "open" }]);
+    expect(keyWrites.some((w) => w.id === capKey)).toBe(false);
   });
 });
 

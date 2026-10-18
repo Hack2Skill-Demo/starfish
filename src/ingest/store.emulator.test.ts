@@ -9,7 +9,8 @@ import { PUBLIC_VIEW_OFF } from "../testConfig.js";
 import { deleteApp, initializeApp } from "firebase-admin/app";
 import { getFirestore, Timestamp, FieldValue } from "firebase-admin/firestore";
 import type { Firestore, Transaction } from "firebase-admin/firestore";
-import { upsertIncident, type IncidentInput, type UpsertOutcome } from "./store.js";
+import { incidentKeyId, upsertIncident, type IncidentInput, type UpsertOutcome } from "./store.js";
+import { earlierFingerprints, fingerprintOf } from "./fingerprint.js";
 import { hourBucketKey } from "./buckets.js";
 import type { MonitoringObservation } from "./monitoring.js";
 
@@ -380,8 +381,9 @@ describe("upsertIncident: Monitoring readings (#19)", () => {
   });
 });
 
-describe("upsertIncident: accrue-only and the overflow namespace (#303)", () => {
-  const accrueOnly = (input: IncidentInput) => upsertIncident(db, store, input, Timestamp.now(), { createIfAbsent: false });
+describe("upsertIncident: the daily cap on new incidents and the overflow namespace (#303, #434)", () => {
+  // A cap of 0 opens nothing: the upsert only ever accrues.
+  const accrueOnly = (input: IncidentInput) => upsertIncident(db, store, input, Timestamp.now(), { newIncidentCap: { fingerprint: "ovf-none", limit: 0 } });
 
   it("writes nothing for an error with no incident, not even the window on a key", async () => {
     expect(await accrueOnly({ ...occurrence(base, 3), windowId: "w1" })).toBe("absent");
@@ -418,5 +420,122 @@ describe("upsertIncident: accrue-only and the overflow namespace (#303)", () => 
     expect(docs.overflow).toMatchObject({ occurrenceCount: 6, signalSource: "overflow" });
     expect(String(docs.overflow?.fingerprint)).toMatch(/^ovf-[0-9a-f]{16}$/);
     expect(docs.log).toMatchObject({ occurrenceCount: 1 });
+  });
+});
+
+describe("upsertIncident: a fingerprint change never forks a stored incident (#432)", () => {
+  // The onCall error of #361: stored before it as the whole text, keyed under that version's fingerprint; ingest now
+  // stores the title, and keeps the whole text as the stack.
+  const title = "Error: orders-createOrder failed: Order 1001 has no items";
+  const whole = `${title}\n    at validate (/workspace/lib/orders/createOrder.js:58:11)`;
+  const now = (atMs: number, count = 1): IncidentInput => ({
+    ...occurrence(atMs, count),
+    functionName: "orders-createOrder",
+    errorMessage: title,
+    stackTrace: whole,
+  });
+  const current = fingerprintOf("orders-createOrder", title);
+  // Version 2's fingerprint of it: what the deployed store keyed it under.
+  const v2 = earlierFingerprints(now(base))[0]!;
+
+  /** A record and its key as the ingest before #361 wrote them. */
+  async function seedPre361(id: string, fields: Record<string, unknown> = {}, appliedWindows = ["w1"]) {
+    await db.collection(store.incidentCollection).doc(id).set({
+      functionName: "orders-createOrder",
+      service: "orders",
+      environment: "prod",
+      errorType: "UnknownError",
+      errorMessage: whole,
+      occurrenceCount: 3,
+      occurrencesByHour: {},
+      firstOccurredAt: Timestamp.fromMillis(base - HOUR),
+      lastOccurredAt: Timestamp.fromMillis(base - HOUR),
+      status: "new",
+      fingerprint: v2,
+      triageState: "declined",
+      createdAt: Timestamp.fromMillis(base - HOUR),
+      updatedAt: Timestamp.fromMillis(base - HOUR),
+      ...fields,
+    });
+    await db
+      .collection(store.incidentKeyCollection)
+      .doc(incidentKeyId("prod", v2))
+      .set({ incidentId: id, environment: "prod", fingerprint: v2, updatedAt: Timestamp.fromMillis(base - HOUR), appliedWindows });
+  }
+
+  it("accrues onto the incident an earlier version keyed, and re-points the key with its windows", async () => {
+    expect(current).not.toBe(v2);
+    await seedPre361("old");
+
+    expect(await upsert({ ...now(base, 2), windowId: "w2" })).toBe("updated");
+
+    const docs = await incidents();
+    expect(docs.map((d) => d.id)).toEqual(["old"]);
+    // Its triage decision kept, the current fingerprint taken.
+    expect(docs[0]!.data()).toMatchObject({ occurrenceCount: 5, triageState: "declined", fingerprint: current });
+    const key = await db.collection(store.incidentKeyCollection).doc(incidentKeyId("prod", current)).get();
+    expect(key.data()).toMatchObject({ incidentId: "old", fingerprint: current, appliedWindows: ["w1", "w2"] });
+    // From now on the key decides.
+    expect(await upsert({ ...now(base + 1000), windowId: "w3" })).toBe("updated");
+    expect((await incidents())[0]!.get("occurrenceCount")).toBe(6);
+  });
+
+  it("treats a window the old key applied as a replay", async () => {
+    await seedPre361("old", {}, ["w1"]);
+    expect(await upsert({ ...now(base, 2), windowId: "w1" })).toBe("duplicate");
+    expect((await incidents())[0]!.get("occurrenceCount")).toBe(3);
+  });
+
+  it("re-opens a resolved one as a regression, not a new incident", async () => {
+    await seedPre361("old", { status: "resolved", resolvedAt: Timestamp.fromMillis(base - 1000), githubIssueNumber: 41 });
+    expect(await upsert(now(base))).toBe("recurred");
+    const [doc] = await incidents();
+    expect(doc!.data()).toMatchObject({ status: "recurred", lastResolution: { githubIssueNumber: 41 }, fingerprint: current });
+  });
+
+  it("keeps a retired incident's tombstone: an earlier occurrence accrues onto it, a later one opens a new incident", async () => {
+    await seedPre361("gone", { status: "resolved", retired: true, retiredAt: Timestamp.fromMillis(base) });
+    expect(await upsert(now(base - 1000))).toBe("updated");
+    expect((await incidents()).map((d) => [d.id, d.get("occurrenceCount")])).toEqual([["gone", 4]]);
+    expect(await upsert(now(base + 1000))).toBe("new");
+    expect(await incidents()).toHaveLength(2);
+  });
+
+  it("never adopts what an old key names when it is not this bug today", async () => {
+    await seedPre361("other", { errorMessage: "something else entirely" });
+    expect(await upsert(now(base))).toBe("new");
+    expect(await incidents()).toHaveLength(2);
+  });
+});
+
+describe("upsertIncident: the daily cap's count on the overflow incident's key (#434)", () => {
+  const overflow = (atMs: number): IncidentInput => ({
+    ...occurrence(atMs, 2),
+    errorMessage: "High-cardinality overflow on 2026-10-18 (UTC): distinct errors of this function past the daily cap on new incidents",
+    signalSource: "overflow",
+  });
+  const cap = { fingerprint: fingerprintOf("mailDrainer", overflow(base).errorMessage, "overflow"), limit: 2 };
+  const distinct = (n: number): IncidentInput => ({ ...occurrence(base), errorMessage: `No such user: ${"x".repeat(n)}` });
+
+  it("opens up to the cap, counts it on the key, and keeps the count when the overflow incident takes that key", async () => {
+    expect(await upsertIncident(db, store, distinct(1), Timestamp.now(), { newIncidentCap: cap })).toBe("new");
+    expect(await upsert(overflow(base))).toBe("new");
+    expect(await upsertIncident(db, store, distinct(2), Timestamp.now(), { newIncidentCap: cap })).toBe("new");
+    expect(await upsertIncident(db, store, distinct(3), Timestamp.now(), { newIncidentCap: cap })).toBe("absent");
+    // The overflow incident moving its own key never resets the count.
+    expect(await upsert({ ...overflow(base + 1000), windowId: "w9" })).toBe("updated");
+    expect(await upsertIncident(db, store, distinct(4), Timestamp.now(), { newIncidentCap: cap })).toBe("absent");
+    const key = await db.collection(store.incidentKeyCollection).doc(incidentKeyId("prod", cap.fingerprint)).get();
+    expect(key.data()).toMatchObject({ newIncidentsOpened: 2, appliedWindows: ["w9"] });
+    expect(typeof key.get("incidentId")).toBe("string");
+  });
+
+  it("counts each creation once under concurrent upserts", async () => {
+    const outcomes = await Promise.all(
+      Array.from({ length: 6 }, (_, i) => upsertIncident(db, store, distinct(i + 1), Timestamp.now(), { newIncidentCap: { ...cap, limit: 3 } }))
+    );
+    expect(tally(outcomes)).toEqual({ new: 3, absent: 3 });
+    const key = await db.collection(store.incidentKeyCollection).doc(incidentKeyId("prod", cap.fingerprint)).get();
+    expect(key.get("newIncidentsOpened")).toBe(3);
   });
 });

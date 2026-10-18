@@ -14,12 +14,13 @@
  *
  * The text matched is Google's, the same in every project, so nothing here is deployment-specific.
  */
+import { INCIDENT_KINDS } from "../incidentKinds.js";
 
 /** The synthetic `functionName` of a consolidated quota incident. Never a deployed function's id. */
 export const PLATFORM_QUOTA_FUNCTION = "cloud-run-platform-quota";
 
-/** The errorType of a consolidated quota incident (the classifier's quota class). */
-export const PLATFORM_QUOTA_ERROR_TYPE = "QuotaError";
+/** The errorType of a consolidated quota incident (the classifier's quota class; the kind's, src/incidentKinds.ts). */
+export const PLATFORM_QUOTA_ERROR_TYPE = INCIDENT_KINDS["platform-quota"].errorType!;
 
 /** Affected function ids listed in the incident's detail; the rest are counted. */
 const MAX_LISTED_FUNCTIONS = 10;

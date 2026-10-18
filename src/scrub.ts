@@ -11,8 +11,13 @@
  *   - The store fingerprints the REDACTED message. A legacy record's fingerprint was hashed
  *     from the raw text, so scrubbing the text alone would leave a fingerprint the next
  *     occurrence never produces, and that occurrence would open a duplicate incident. The
- *     fingerprint is recomputed, and the stale incident key (which names the old one) is
- *     removed, so the next occurrence finds the scrubbed record and keys it.
+ *     fingerprint is recomputed, and the key of the new one is pointed at the incident the store
+ *     converges on (ingest/convergence.ts `convergeOn`, the rule the store and `pnpm rekey` use),
+ *     carrying the windows the old key had applied, in the same transaction as the record's rewrite.
+ *     The old key is left as it is (the store re-checks content, so it no longer matches anything).
+ *     It used to be deleted (#433): that lost its applied windows (a replayed window then counted
+ *     twice, #197) and, for a retired incident, its tombstone (retire.ts), and the delete raced
+ *     ingest. A retired record keeps its tombstone under its new fingerprint.
  *   - It must be safe to run twice, and to stop halfway: every change is a function of the
  *     record alone, so a rerun finishes the job and changes nothing already done.
  *
@@ -20,11 +25,12 @@
  * incident collection. Redaction is pattern matching (README "Redaction limits"): a credential
  * in a format nobody listed, and free-form PII, are not found.
  */
-import { FieldPath } from "firebase-admin/firestore";
-import type { Firestore } from "firebase-admin/firestore";
+import { FieldPath, Timestamp } from "firebase-admin/firestore";
+import type { DocumentReference, DocumentSnapshot, Firestore } from "firebase-admin/firestore";
+import { appliedWindowsOf, candidateOf, convergeOn, mergeAppliedWindows, type ConvergenceCandidate } from "./ingest/convergence.js";
 import { fingerprintOf } from "./ingest/fingerprint.js";
 import { redactPii } from "./ingest/redact.js";
-import { incidentKeyId, redactShortField, type IncidentStoreConfig } from "./ingest/store.js";
+import { abortIfClosed, incidentKeyDoc, incidentKeyId, redactShortField, type IncidentStoreConfig } from "./ingest/store.js";
 
 /** The fields the store redacts on every write (store.ts redactInput). */
 export const SCRUBBED_FIELDS = [
@@ -43,8 +49,6 @@ export type ScrubbedField = (typeof SCRUBBED_FIELDS)[number];
 const SHORT_FIELDS: ReadonlySet<ScrubbedField> = new Set(["errorName", "service", "errorCode", "tenantId", "requestId"]);
 
 const PAGE_SIZE = 200;
-/** Firestore caps a batch at 500 writes; each record can need up to 2 (update + key delete). */
-const WRITES_PER_BATCH = 400;
 
 export interface DocumentScrub {
   /** The redacted value of each field that changed. */
@@ -84,39 +88,31 @@ export interface ScrubReport {
   byField: Record<ScrubbedField, number>;
   /** Records whose fingerprint was recomputed. */
   refingerprinted: number;
-  /** Stale incident keys removed (applied runs only). */
-  keysRemoved: number;
+  /** Keys of a recomputed fingerprint written or re-pointed (applied runs only). */
+  keysRepointed: number;
   applied: boolean;
 }
 
 /**
  * Scrub every incident in the collection. With `apply: false` (the default for the CLI) it
  * only counts. It reports counts and never the text it finds: a "found secret" report that
- * prints the secret would defeat the point.
+ * prints the secret would defeat the point. Applied, each record is re-read and rewritten in a
+ * transaction of its own, with its key (see the file comment), so it can run beside the ingest.
  */
 export async function scrubCollection(
   db: Firestore,
   store: IncidentStoreConfig,
-  opts: { apply: boolean }
+  opts: { apply: boolean; now?: Timestamp }
 ): Promise<ScrubReport> {
   const report: ScrubReport = {
     scanned: 0,
     changed: 0,
     byField: Object.fromEntries(SCRUBBED_FIELDS.map((f) => [f, 0])) as Record<ScrubbedField, number>,
     refingerprinted: 0,
-    keysRemoved: 0,
+    keysRepointed: 0,
     applied: opts.apply,
   };
   const incidents = db.collection(store.incidentCollection);
-  const keys = db.collection(store.incidentKeyCollection);
-
-  let batch = db.batch();
-  let pending = 0;
-  const flush = async () => {
-    if (pending > 0) await batch.commit();
-    batch = db.batch();
-    pending = 0;
-  };
 
   let last: string | undefined;
   for (;;) {
@@ -127,36 +123,77 @@ export async function scrubCollection(
 
     for (const doc of page.docs) {
       report.scanned += 1;
-      const data = doc.data();
-      const scrub = scrubDocument(data);
+      const scrub = opts.apply ? await scrubRecord(db, store, doc.ref, opts.now ?? Timestamp.now()) : scrubDocument(doc.data());
       if (!scrub) continue;
-
       report.changed += 1;
       for (const field of Object.keys(scrub.updates) as ScrubbedField[]) report.byField[field] += 1;
       if (scrub.fingerprint !== undefined) report.refingerprinted += 1;
-      if (!opts.apply) continue;
-
-      batch.update(doc.ref, {
-        ...scrub.updates,
-        ...(scrub.fingerprint !== undefined && { fingerprint: scrub.fingerprint }),
-      });
-      pending += 1;
-
-      // The key for the OLD fingerprint named this record; it is stale now. Remove it, but only
-      // if it still points here: it is someone else's key if the incident was re-keyed since.
-      if (scrub.fingerprint !== undefined && typeof data.environment === "string" && typeof data.fingerprint === "string") {
-        const staleRef = keys.doc(incidentKeyId(data.environment, data.fingerprint));
-        const stale = await staleRef.get();
-        if (stale.exists && stale.get("incidentId") === doc.id) {
-          batch.delete(staleRef);
-          pending += 1;
-          report.keysRemoved += 1;
-        }
-      }
-      if (pending >= WRITES_PER_BATCH) await flush();
+      if ("keyRepointed" in scrub && scrub.keyRepointed) report.keysRepointed += 1;
     }
     last = page.docs[page.docs.length - 1]!.id;
   }
-  await flush();
   return report;
+}
+
+/**
+ * One record scrubbed in one transaction: re-read (an ingest may have written since the page), redacted, and, when its
+ * fingerprint moves, the key of the new fingerprint pointed where the store converges, carrying the old key's windows
+ * when the old key named this record. Null when the record is clean by now.
+ */
+async function scrubRecord(
+  db: Firestore,
+  store: IncidentStoreConfig,
+  ref: DocumentReference,
+  now: Timestamp
+): Promise<(DocumentScrub & { keyRepointed: boolean }) | null> {
+  const incidents = db.collection(store.incidentCollection);
+  const keys = db.collection(store.incidentKeyCollection);
+  return db.runTransaction((tx) =>
+    abortIfClosed(async () => {
+      const snap = await tx.get(ref);
+      const data = snap.data();
+      const scrub = data ? scrubDocument(data) : null;
+      if (!data || !scrub) return null;
+      const update = { ...scrub.updates, ...(scrub.fingerprint !== undefined && { fingerprint: scrub.fingerprint }) };
+      const environment = data.environment;
+      if (scrub.fingerprint === undefined || typeof environment !== "string") {
+        tx.update(ref, update);
+        return { ...scrub, keyRepointed: false };
+      }
+
+      // Every read before any write.
+      const fp = scrub.fingerprint;
+      const keyRef = keys.doc(incidentKeyId(environment, fp));
+      const oldKeyRef = typeof data.fingerprint === "string" ? keys.doc(incidentKeyId(environment, data.fingerprint)) : undefined;
+      const [keySnap, oldKeySnap] = await Promise.all([tx.get(keyRef), oldKeyRef ? tx.get(oldKeyRef) : Promise.resolve(undefined)]);
+      const keyedId: unknown = keySnap.get("incidentId");
+      let keyed: DocumentSnapshot | undefined;
+      if (typeof keyedId === "string" && keyedId !== "" && keyedId !== ref.id) keyed = await tx.get(incidents.doc(keyedId));
+      const keyedHolds = keyed !== undefined && holds(keyed.data(), fp);
+      const oldKeyNamedThis = oldKeySnap?.exists === true && oldKeySnap.get("incidentId") === ref.id;
+
+      // This record, rewritten; a retired one only as the tombstone its old key made it (retire.ts). And the incident
+      // the new fingerprint's key already names, when it holds the fingerprint.
+      const self = candidateOf(ref.id, data);
+      const candidates: ConvergenceCandidate[] = [
+        ...(self.retired !== true || oldKeyNamedThis || keyedId === ref.id ? [self] : []),
+        ...(keyed && keyedHolds ? [candidateOf(keyed.id, keyed.data())] : []),
+      ];
+      const choice = convergeOn(candidates, keyedId === ref.id || keyedHolds ? (keyedId as string) : undefined);
+
+      tx.update(ref, update);
+      if (!choice) return { ...scrub, keyRepointed: false };
+      const windows = mergeAppliedWindows([appliedWindowsOf(keySnap), oldKeyNamedThis ? appliedWindowsOf(oldKeySnap) : []]);
+      const unchanged = keyedId === choice.id && JSON.stringify(appliedWindowsOf(keySnap)) === JSON.stringify(windows);
+      if (unchanged) return { ...scrub, keyRepointed: false };
+      tx.set(keyRef, incidentKeyDoc(keySnap, { incidentId: choice.id, environment, fingerprint: fp, updatedAt: now, appliedWindows: windows }));
+      return { ...scrub, keyRepointed: true };
+    })
+  );
+}
+
+/** True when a stored record's content hashes to `fingerprint` (the store's own check, store.ts `holdsFingerprint`). */
+function holds(data: Record<string, unknown> | undefined, fingerprint: string): boolean {
+  if (typeof data?.functionName !== "string" || typeof data.errorMessage !== "string") return false;
+  return fingerprintOf(data.functionName, data.errorMessage, data.signalSource) === fingerprint;
 }

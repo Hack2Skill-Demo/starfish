@@ -1,5 +1,14 @@
 import { describe, it, expect } from "vitest";
-import { computeErrorFingerprint, errorCore, fingerprintOf, fingerprintOfLogEntry } from "./fingerprint.js";
+import {
+  computeErrorFingerprint,
+  earlierFingerprints,
+  errorCore,
+  FINGERPRINT_VERSION,
+  fingerprintOf,
+  fingerprintOfLogEntry,
+  fingerprintsOfLogEntry,
+  overflowDayOf,
+} from "./fingerprint.js";
 
 // #318: one coupon-less checkout in the demo app logged ONE bug as two ERROR entries, which became two incidents,
 // two cycles and two GitHub issues. These are the two shapes, with a realistic stack suffix on each.
@@ -148,12 +157,70 @@ describe("fingerprint: every message without a wrapper hashes as before #318", (
         "platform-quota"
       )
     ).toBe("pq-34a1ed26ce34d56c");
-    expect(fingerprintOf("api", "High-cardinality overflow on 2026-10-10 (UTC)", "overflow")).toBe("ovf-ecbcfaa6c52787b8");
   });
 
   it("the wrapped shapes are the ones that move: to their core's fingerprint", () => {
     // Before #318 these were 2d6dd8bbf7a144ab and 90a68f5c4b3d7f78: two incidents for one bug.
     expect(computeErrorFingerprint(FN, FIREBASE_UNHANDLED)).toBe("8633585fc3d17325");
     expect(computeErrorFingerprint(FN, HANDLER_RETHROW)).toBe("8633585fc3d17325");
+  });
+});
+
+describe("the fingerprint's versions (#432)", () => {
+  // One onCall error as the firebase-functions logger writes it: its stack inside the message. Ingest stores the title
+  // and keeps the whole text as the stack (#361); before #361 it stored the whole text as the message.
+  const fn = "orders-createOrder";
+  const title = "Error: orders-createOrder failed: Order 1001 has no items";
+  const whole = `${title}\n    at validate (/workspace/lib/orders/createOrder.js:58:11)\n    at process (node:internal/process/task_queues:95:5)`;
+  // Pinned from the code itself, run at each version: acbdc48 (#26, version 1) and c4b8101 (#318, version 2).
+  const V1_WHOLE = "7b62b77b76337e58";
+  const V1_TITLE = "8703bbced6713aec";
+  const V2_WHOLE = "a624385816724193";
+
+  it("is at version 4", () => {
+    expect(FINGERPRINT_VERSION).toBe(4);
+  });
+
+  it("gives the fingerprints each earlier version stored for the same occurrence, newest first, the current one left out", () => {
+    const current = fingerprintOf(fn, title);
+    expect(current).toBe("0e7952de852c22ef");
+    // Version 3 is the current one for a log error; version 2 stored the whole text with its wrappers off, version 1
+    // the whole text, or the title where the message carried no frames.
+    expect(earlierFingerprints({ functionName: fn, errorMessage: title, stackTrace: whole })).toEqual([V2_WHOLE, V1_TITLE, V1_WHOLE]);
+  });
+
+  it("reconstructs the whole text only from a stack that is the message's own", () => {
+    // A stack field of the entry's own, whose title is not the message: only the message itself is a guess.
+    const own = "TypeError: x is undefined\n    at f (/workspace/lib/a.js:1:2)";
+    expect(earlierFingerprints({ functionName: fn, errorMessage: title, stackTrace: own })).toEqual([V1_TITLE]);
+    expect(earlierFingerprints({ functionName: fn, errorMessage: title })).toEqual([V1_TITLE]);
+  });
+
+  it("has nothing earlier for a message no version read differently", () => {
+    expect(earlierFingerprints({ functionName: fn, errorMessage: "Order has no items" })).toEqual([]);
+  });
+
+  it("has nothing earlier for a Monitoring-only or quota incident: their fingerprints never moved", () => {
+    expect(earlierFingerprints({ functionName: "api", errorMessage: "Cloud Monitoring counted failed executions", signalSource: "monitoring" })).toEqual([]);
+    expect(earlierFingerprints({ functionName: "cloud-run-platform-quota", errorMessage: "Project exceeded its Cloud Run quota (x)", signalSource: "platform-quota" })).toEqual([]);
+  });
+
+  it("keys an overflow incident by function and UTC day, and knows the per-window wording it was keyed by before (#434)", () => {
+    const now = "High-cardinality overflow on 2026-10-10 (UTC): distinct errors of this function past the daily cap on new incidents";
+    const before =
+      "High-cardinality overflow on 2026-10-10 (UTC): distinct errors of this function past the per-window cap on new incidents, each matching no stored incident, are counted here instead of opening one incident each";
+    // The wording no longer moves it: both texts name the same day.
+    expect(fingerprintOf("api", now, "overflow")).toBe(fingerprintOf("api", before, "overflow"));
+    expect(fingerprintOf("api", now, "overflow")).toBe("ovf-913aeaca300f0826");
+    expect(fingerprintOf("API", now, "overflow")).toBe(fingerprintOf("api", now, "overflow"));
+    expect(fingerprintOf("api", now.replace("10-10", "10-11"), "overflow")).not.toBe(fingerprintOf("api", now, "overflow"));
+    // Version 3's fingerprint of that day, pinned from c4b8101.
+    expect(earlierFingerprints({ functionName: "api", errorMessage: now, signalSource: "overflow" })).toEqual(["ovf-f5155c03941fa5f1"]);
+    expect(overflowDayOf(now)).toBe("2026-10-10");
+    expect(overflowDayOf("no day here")).toBeUndefined();
+  });
+
+  it("matches a log entry by every fingerprint it has had, the current one first", () => {
+    expect(fingerprintsOfLogEntry(fn, title, whole)).toEqual(["0e7952de852c22ef", V2_WHOLE, V1_TITLE, V1_WHOLE]);
   });
 });

@@ -38,6 +38,6 @@ console.log(
   `  fields: message ${r.byField.errorMessage}, detail ${r.byField.errorDetail}, stack ${r.byField.stackTrace}, name ${r.byField.errorName}, ` +
     `service ${r.byField.service}, code ${r.byField.errorCode}, tenant ${r.byField.tenantId}, request ${r.byField.requestId}`
 );
-console.log(`  fingerprints ${apply ? "recomputed" : "to recompute"}: ${r.refingerprinted}; stale keys removed: ${r.keysRemoved}`);
+console.log(`  fingerprints ${apply ? "recomputed" : "to recompute"}: ${r.refingerprinted}; keys re-pointed: ${r.keysRepointed}`);
 if (!apply && r.changed > 0) console.log(`Nothing was written. Re-run with: pnpm scrub -- --apply --project=${config.projectId}`);
 if (apply) console.log(r.changed === 0 ? "Nothing to scrub." : "Done. Running it again changes nothing.");

@@ -102,8 +102,11 @@ apparent over-engineering is scar tissue from real incidents, and the tests in
   error is the cause a fixer needs
 - a stack trace the logger wrote INSIDE the message (the firebase-functions logger does, #361) is split off at its first
   frame line: the title alone is fingerprinted, classified and shown to guests, and the frames are the incident's stack.
-  When the fingerprint code changes, `pnpm rekey` gives stored incidents the new fingerprint and key (#362; a dry run by
-  default, `pnpm rekey -- --apply --project=<id>` writes). Built and emulator-tested; never run on a real project
+  When the fingerprint code changes, it is a new `FINGERPRINT_VERSION` with the old way kept as a function: on a key
+  miss the store reads the keys earlier versions wrote for the same occurrence and adopts the incident one names when it
+  hashes to the current fingerprint, so the change forks nothing on deploy (#432; built and emulator-tested, not yet run
+  on the demo project). `pnpm rekey` still gives every stored incident the new fingerprint and key in one go (#362; a dry
+  run by default, `pnpm rekey -- --apply --project=<id>` writes). Built and emulator-tested; never run on a real project
 
 - one redaction policy (`src/ingest/redact.ts`) covers emails, credentials and phone numbers: token
   shapes (JWTs, bearer headers, Google/GitHub/AWS/Slack/Stripe keys), private keys,

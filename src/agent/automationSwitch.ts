@@ -61,5 +61,13 @@ export function makeCapReader(loader: Pick<RuntimeConfigLoader, "resolve">, db: 
 /** The fields of a stored incident a class rule matches on. */
 export function ruleSubjectOf(doc: Record<string, unknown> | undefined): RuleSubject {
   const text = (v: unknown) => (typeof v === "string" && v !== "" ? v : undefined);
-  return { errorType: text(doc?.errorType), errorCode: text(doc?.errorCode), service: text(doc?.service), functionName: text(doc?.functionName) };
+  return {
+    errorType: text(doc?.errorType),
+    errorCode: text(doc?.errorCode),
+    service: text(doc?.service),
+    functionName: text(doc?.functionName),
+    // The incident's kind (src/incidentKinds.ts): a kind that overrides class rules is never matched by one (#435).
+    signalSource: doc?.signalSource,
+    fingerprint: doc?.fingerprint,
+  };
 }

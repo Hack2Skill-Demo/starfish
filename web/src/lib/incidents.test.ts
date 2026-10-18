@@ -89,11 +89,16 @@ describe("toRow", () => {
       failureCount: 7,
     };
 
-    it("marks a Monitoring-only incident by its signal source or its mon- fingerprint, and nothing else", () => {
-      expect(toRow("m", { signalSource: "monitoring" }, 24, now).monitoringOnly).toBe(true);
-      expect(toRow("m", { fingerprint: "mon-abc123" }, 24, now).monitoringOnly).toBe(true);
-      expect(toRow("l", { fingerprint: "abc123", signalSource: "log" }, 24, now)).not.toHaveProperty("monitoringOnly");
-      expect(toRow("l", {}, 24, now)).not.toHaveProperty("monitoringOnly");
+    it("marks each incident kind by its signal source or its fingerprint's namespace, and a log incident as none", () => {
+      expect(toRow("m", { signalSource: "monitoring" }, 24, now).kind).toBe("monitoring");
+      expect(toRow("m", { fingerprint: "mon-abc123" }, 24, now).kind).toBe("monitoring");
+      expect(toRow("l", { fingerprint: "abc123", signalSource: "log" }, 24, now)).not.toHaveProperty("kind");
+      expect(toRow("l", {}, 24, now)).not.toHaveProperty("kind");
+      // Every kind the engine writes, not only Monitoring's (#435): an overflow or quota incident is no plain log one.
+      expect(toRow("o", { signalSource: "overflow" }, 24, now).kind).toBe("overflow");
+      expect(toRow("o", { fingerprint: "ovf-abc123" }, 24, now).kind).toBe("overflow");
+      expect(toRow("q", { signalSource: "platform-quota" }, 24, now).kind).toBe("platform-quota");
+      expect(toRow("q", { fingerprint: "pq-abc123" }, 24, now).kind).toBe("platform-quota");
     });
 
     it("reads the Monitoring count and the latest readings, as stored", () => {

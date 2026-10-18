@@ -12,7 +12,7 @@ import PageMeta from "../components/PageMeta";
 import SettingsUnavailableNotice from "../components/SettingsUnavailableNotice";
 import { Badge, type BadgeTone } from "../components/ui/Badge";
 import { SyntheticBadge } from "../components/SyntheticBadge";
-import { MonitoringOnlyBadge } from "../components/MonitoringOnlyBadge";
+import { IncidentKindBadge } from "../components/IncidentKindBadge";
 import { RetireControl } from "../components/AdminActions";
 import { CorrectionControl } from "../components/CorrectionControl";
 import { HourlyBars } from "../components/HourlyBars";
@@ -95,7 +95,7 @@ function Evidence({ row, cycle, runPending, runFailed }: { row: IncidentRow; cyc
         <div className="flex flex-wrap items-center gap-2">
           <h1 className="text-xl font-semibold text-gray-900 dark:text-white">{row.functionName}</h1>
           {(row.synthetic || cycle?.synthetic) && <SyntheticBadge />}
-          {row.monitoringOnly && <MonitoringOnlyBadge />}
+          <IncidentKindBadge kind={row.kind} />
         </div>
         <p className="mt-1 text-sm text-gray-700 dark:text-gray-300">{row.errorMessage}</p>
         {(row.trimmed || cycle?.trimmed) && (
