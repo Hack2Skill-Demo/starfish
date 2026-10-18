@@ -498,7 +498,9 @@ describe("runCycle: the fix, the gate and the review", () => {
     expect(r).toMatchObject({ kind: "finished", state: "done" });
     expect(model.count("review")).toBe(2);
     const revision = model.calls.filter((c) => c.stage === "fix")[1]!.prompt;
-    expect(revision).toContain("A reviewer broke this patch");
+    expect(revision).toContain("PREVIOUS ATTEMPT BLOCKED BY REVIEW");
+    // The patch it is asked to change, not only its hash (#415).
+    expect(revision).toContain("Your previous patch:");
     // Scoped to what the review showed (#375): the revision is not asked to take on the rest of the file.
     expect(revision).toContain(REVISION_SCOPE);
   });

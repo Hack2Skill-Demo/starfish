@@ -20,6 +20,7 @@
 import { Timestamp } from "firebase-admin/firestore";
 import type { Firestore } from "firebase-admin/firestore";
 import { appendEventsInTransaction, type RunEvent } from "../agent/cycle.js";
+import { isTriageStatus, nextStatus } from "../incidentActions.js";
 import { incidentUrl } from "../integrations/links.js";
 import { refreshPublicCycle, refreshPublicIncident } from "../publicViewStore.js";
 import { ROLE_LABELS, maskPhone, parsePerson, type OnCallRole } from "../oncallSchema.js";
@@ -154,9 +155,8 @@ export function createTwilioWebhooks(deps: TwilioWebhookDeps): (req: TwilioWebho
         const incident = c.incident.data();
         const personId = typeof c.call.personId === "string" ? c.call.personId : "unknown";
         tx.update(c.ref, { ...closeUpdate("acknowledged", now), ackBy: { personId, role: c.call.role ?? null, step }, ackAt: Timestamp.fromDate(now) });
-        // Acknowledged "as that person": a `new` or `logged` incident becomes `acknowledged`, the operator transition the
-        // UI makes. A `recurred` one is left as it is: the UI could not make that move either.
-        if (c.incident.exists && (incident?.status === "new" || incident?.status === "logged") && incident.retired !== true) {
+        // Acknowledged "as that person": the operator transition the UI makes (`nextStatus`, the one table, #410).
+        if (c.incident.exists && isTriageStatus(incident?.status) && nextStatus(incident.status, "acknowledge") !== null && incident.retired !== true) {
           tx.update(c.incident.ref, { status: "acknowledged", statusChangedBy: `oncall:${personId}`, updatedAt: Timestamp.fromDate(now) });
         }
         note([{ stage: "escalation", type: "acknowledged", summary: `The ${roleName(c.call.role)} pressed 1 and took it`, data: { step }, record: { state: "acknowledged", step } }]);

@@ -493,6 +493,14 @@ describe("the call sequence", () => {
     expect(incident).toMatchObject({ status: "acknowledged", statusChangedBy: "oncall:p1" });
   });
 
+  it("1: a recurred incident (a regression, which rings in the quiet hours) is acknowledged too (#410)", async () => {
+    await db.collection(cfg.incidentCollection).doc("inc1").update({ status: "recurred", statusChangedBy: "starfish" });
+    await hook("/twilio/voice", { AnsweredBy: "human" }, 0);
+    await hook("/twilio/gather", { Digits: "1" }, 0);
+    const incident = (await db.collection(cfg.incidentCollection).doc("inc1").get()).data();
+    expect(incident).toMatchObject({ status: "acknowledged", statusChangedBy: "oncall:p1" });
+  });
+
   it("2: texts the link to the incident and nothing else of it, once, then asks again; hanging up moves on", async () => {
     const r = await hook("/twilio/gather", { Digits: "2" }, 0);
     expect(r.body).toContain("The link is on its way.");

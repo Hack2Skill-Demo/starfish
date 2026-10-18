@@ -1007,3 +1007,34 @@ describe("assessMergeFloor: what the changed code does, not only the words it us
     expect(floor(many(41))).toMatchObject({ allowed: false, problems: ["change-too-large"] });
   });
 });
+
+describe("assessMergeFloor: a changed line is read as it reads in its file, not alone (#409)", () => {
+  const floor = (patch: string) => assessMergeFloor(patch, { excludedPaths: [], baseFiles: basesOf(patch) });
+  const refused = (body: string[]) => {
+    const r = floor(diff(SRC, body));
+    expect(r.allowed).toBe(false);
+    expect(r.problems).toContain("line-reads-differently-in-file");
+  };
+
+  it("refuses a call hidden as a closed template on a line inside a template opened above it", () => {
+    refused(["  const note = `order", "+` + leak(id) + `", "  placed`;"]);
+  });
+
+  it("refuses code hidden as a regex on a line inside a block comment opened above it", () => {
+    refused(["  /* order", "+  */ leak(id); /*", "  placed */"]);
+  });
+
+  it("refuses a line that starts with `/` where the line before makes it a division, not a regex", () => {
+    refused(["  const ratio = data.total", "+  / data.count; leak(id) / 1;", "  log(\"ratio\", ratio);"]);
+  });
+
+  it("refuses removing a line that closes a template, which turns the code after it into template text", () => {
+    refused(["  const note = `order", "-  placed`;", "  log(\"note\", note);", "  const x = `y`;"]);
+  });
+
+  it("still allows the guard, chaining and await fixes in a file it reads to the end", () => {
+    for (const p of [guard, chaining, missingAwait]) expect(floor(p)).toMatchObject({ allowed: true, problems: [] });
+    const withTemplateAbove = diff(SRC, ["  const label = `order ${id}`;", "  const order = await load(id);", "+  if (order == null) return null;", "   return order.total;"]);
+    expect(floor(withTemplateAbove)).toMatchObject({ allowed: true, problems: [] });
+  });
+});

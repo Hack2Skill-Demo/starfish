@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { FIX_SCHEMA, FOUND_BY_NAME_NOTE, FOUND_BY_NAME_WITH_IMPORTS_NOTE, MAX_FILE_CHARS, MAX_FIX_PATCH_BYTES, MAX_TOTAL_SOURCE_CHARS, proposeFix, renderForFix, type FixRequest } from "./fixer.js";
+import { FIX_SCHEMA, FOUND_BY_NAME_NOTE, FOUND_BY_NAME_WITH_IMPORTS_NOTE, MAX_FILE_CHARS, MAX_FIX_PATCH_BYTES, MAX_TOTAL_SOURCE_CHARS, REVISION_SCOPE, proposeFix, renderForFix, reviewFeedback, verifyFeedback, type FixRequest } from "./fixer.js";
 import { STACK_AND_NAME_NOTE } from "./sourceContext.js";
 import type { AskJson } from "./triage.js";
 import { SEEDED_SECRETS } from "../ingest/testSecrets.js";
@@ -252,14 +252,35 @@ describe("what the fixer shows the model", () => {
     expect(renderForFix(request({ files: [] }))).not.toContain("createOrder.ts");
   });
 
-  it("passes one round of verify feedback, redacted and bounded", () => {
-    const prompt = renderForFix(
-      request({ feedback: { previousPatchSha256: "a".repeat(64), verifyOutput: `FAIL ${SEEDED_SECRETS.github}\n` + "o".repeat(20_000) } })
-    );
+  const PREVIOUS = "--- a/src/a.ts\n+++ b/src/a.ts\n@@ -1 +1 @@\n-old()\n+fixed()\n";
+
+  it("passes one round of verify feedback with the previous patch, keeping the END of the output, redacted and bounded (#415)", () => {
+    const output = `FAIL ${SEEDED_SECRETS.github}\n` + "install noise\n".repeat(2_000) + `AssertionError: expected 3 to be 4 ${SEEDED_SECRETS.github}\n`;
+    const prompt = renderForFix(request({ feedback: verifyFeedback(PREVIOUS, { output, reason: "tests failed" }) }));
     expect(prompt).toContain("PREVIOUS ATTEMPT FAILED VERIFICATION");
-    expect(prompt).toContain("a".repeat(16));
+    expect(prompt).toContain("+fixed()");
+    // The failure is at the end of a test log: it survives the cut, the start does not.
+    expect(prompt).toContain("AssertionError: expected 3 to be 4");
+    expect(prompt).not.toContain("FAIL ");
     expect(prompt).not.toContain(SEEDED_SECRETS.github);
     expect(prompt.length).toBeLessThan(MAX_TOTAL_SOURCE_CHARS + 12_000);
+    // No output at all: the gate's reason stands in.
+    expect(renderForFix(request({ feedback: verifyFeedback(PREVIOUS, { output: "", reason: "The patch does not apply." }) }))).toContain("The patch does not apply.");
+  });
+
+  it("puts the review's scope first, so no number of broken attacks cuts it off, and lists only the broken ones (#415, #375)", () => {
+    const attacks = [
+      ...Array.from({ length: 12 }, (_, i) => ({ outcome: "broken", attack: `attack ${i}`, detail: "d".repeat(900) })),
+      { outcome: "held", attack: "held attack", detail: "fine" },
+    ];
+    const prompt = renderForFix(request({ feedback: reviewFeedback(PREVIOUS, attacks) }));
+    const at = prompt.indexOf("PREVIOUS ATTEMPT BLOCKED BY REVIEW");
+    expect(at).toBeGreaterThan(-1);
+    expect(prompt.indexOf(REVISION_SCOPE)).toBeGreaterThan(at);
+    expect(prompt.indexOf(REVISION_SCOPE)).toBeLessThan(prompt.indexOf("attack 0"));
+    expect(prompt).toContain("+fixed()");
+    expect(prompt).not.toContain("held attack");
+    expect(prompt).not.toContain("attack 11");
   });
 
   it("puts incident and source in the prompt, never the system instruction", async () => {

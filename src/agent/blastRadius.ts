@@ -997,7 +997,10 @@ export function assessMergeFloor(patch: string, cfg: BlastRadiusConfig): BlastRa
   for (const p of floorBaseProblems(src, cfg.baseFiles)) problems.add(p);
   // JSX text is not JavaScript (`<p>Don't</p>` is no string): the code rules cannot read it, so a JSX file never passes.
   if (JSX_EXT.test(sourceFile)) problems.add("jsx-not-judged");
-  else for (const p of floorCodeProblems(src, cfg.baseFiles)) problems.add(p);
+  else {
+    for (const p of floorContextProblems(src, cfg.baseFiles)) problems.add(p);
+    for (const p of floorCodeProblems(src, cfg.baseFiles)) problems.add(p);
+  }
   // A new test file runs in the target's CI on every later commit once merged: what it may not reach is the same.
   for (const t of tests) for (const l of t.hunks.flatMap((h) => h.lines)) if (l.kind === "+") for (const p of addedLineHazards(l.text, true)) problems.add(p);
   return done({ sourceFile, testFiles });
@@ -1137,6 +1140,66 @@ function lexCode(text: string): { code: string; literals: string[] } | null {
     return !inTemplate;
   };
   return run(false) ? { code: out.join(""), literals } : null;
+}
+
+/**
+ * Whether every changed line of the production file reads, in its file, the way the code rules read it alone (#409). They
+ * lex one line at a time, so a line inside a template literal or a block comment opened above it would read as code, or
+ * code as a literal, and a line starting with `/` that the line before makes a division would read as a regex: a call in
+ * it would go unseen. A line passes only when lexing its file up to it, and up to and through it, gives the same code as
+ * the two read apart. The first unchanged line after each run of changes is held to the same, on both sides: removing or
+ * adding a line can change how the next one reads. Unsure (a file this scanner cannot read up to the line) refuses.
+ */
+function floorContextProblems(src: FileDiff, baseFiles: ReadonlyMap<string, string> | undefined): string[] {
+  const raw = src.oldPath === null ? undefined : baseFiles?.get(src.oldPath);
+  // A missing or different base is `floorBaseProblems`' to refuse.
+  if (raw === undefined) return [];
+  const oldLines = raw.replace(/\r\n/g, "\n").split("\n");
+  if (oldLines.at(-1) === "") oldLines.pop();
+  const newLines: string[] = [];
+  const oldAt = new Set<number>();
+  const newAt = new Set<number>();
+  let cursor = 0;
+  for (const hunk of src.hunks) {
+    const start = hunk.oldStart - 1;
+    if (start < cursor || start > oldLines.length) return [];
+    while (cursor < start) newLines.push(oldLines[cursor++]!);
+    let inRun = false;
+    const endRun = () => {
+      if (inRun) {
+        oldAt.add(cursor);
+        newAt.add(newLines.length);
+      }
+      inRun = false;
+    };
+    for (const l of hunk.lines) {
+      if (l.kind === " ") {
+        endRun();
+        newLines.push(l.text);
+        cursor++;
+      } else if (l.kind === "-") {
+        oldAt.add(cursor++);
+        inRun = true;
+      } else {
+        newAt.add(newLines.length);
+        newLines.push(l.text);
+        inRun = true;
+      }
+    }
+    endRun();
+  }
+  while (cursor < oldLines.length) newLines.push(oldLines[cursor++]!);
+  const misread = (lines: readonly string[], at: number) => at < lines.length && !readsAlone(lines, at);
+  return [...oldAt].some((at) => misread(oldLines, at)) || [...newAt].some((at) => misread(newLines, at)) ? ["line-reads-differently-in-file"] : [];
+}
+
+/** Whether `lines[at]` lexes inside its file exactly as it lexes alone, starting from plain code. */
+function readsAlone(lines: readonly string[], at: number): boolean {
+  const prefix = at === 0 ? "" : `${lines.slice(0, at).join("\n")}\n`;
+  const before = lexCode(prefix);
+  const alone = lexCode(lines[at]!);
+  const through = lexCode(prefix + lines[at]!);
+  return before !== null && alone !== null && through !== null && through.code === before.code + alone.code;
 }
 
 /** Words followed by `(` that are not calls. `new`, `super` and `import` are not here: they are (or are refused) calls. */

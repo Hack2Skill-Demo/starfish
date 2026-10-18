@@ -1,11 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { INCIDENT_ACTIONS, isIncidentAction, nextStatus, type TriageStatus } from "./incidentActions.js";
+import { INCIDENT_ACTIONS, TRIAGE_STATUSES, isIncidentAction, nextStatus, type TriageStatus } from "./incidentActions.js";
 import { INCIDENT_STATUSES } from "./types.js";
 
 describe("incidentActions: the one transition table", () => {
   it("knows the same statuses as src/types.ts", () => {
     const all: TriageStatus[] = ["new", "acknowledged", "logged", "resolved", "recurred", "ignored"];
     expect([...INCIDENT_STATUSES].sort()).toEqual([...all].sort());
+    expect([...TRIAGE_STATUSES].sort()).toEqual([...all].sort());
   });
 
   it("matches firestore.rules' validTransition: never to logged or recurred, never out of resolved", () => {
@@ -16,7 +17,7 @@ describe("incidentActions: the one transition table", () => {
         expect(["acknowledged", "resolved", "ignored", "new"]).toContain(to);
         expect(from).not.toBe("resolved");
         if (to === "new") expect(from).toBe("ignored");
-        if (to === "acknowledged") expect(["new", "logged"]).toContain(from);
+        if (to === "acknowledged") expect(["new", "logged", "recurred"]).toContain(from);
       }
     }
   });

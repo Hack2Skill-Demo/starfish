@@ -165,7 +165,22 @@ export interface GithubPrDeps {
   runGit?: RunGit;
   /** Where scratch clones live. Defaults to the OS temp directory. */
   tmpDir?: string;
+  /** How long one API call may take, its body included (default `API_TIMEOUT_MS`). Tests shorten it. */
+  timeoutMs?: number;
 }
+
+/** A reply's body as JSON, or null when there is none or it is not JSON. */
+function parseJson(text: string | null): unknown {
+  if (text === null) return null;
+  try {
+    return JSON.parse(text) as unknown;
+  } catch {
+    return null;
+  }
+}
+
+/** One GitHub API call, its reply's body included (#427): a stalled reply must never outlive the cycle's lease. */
+export const API_TIMEOUT_MS = 30_000;
 
 const REPO_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}\/[A-Za-z0-9._-]{1,100}$/;
 const BRANCH_RE = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$/;
@@ -702,6 +717,9 @@ export function createGithubClient(cfg: GithubPrConfig, deps: GithubPrDeps): Git
   const scrub = (text: string) => redactPii(text.split(deps.token).join("[token]").split(basic).join("[token]"));
 
   async function call(method: "GET" | "POST" | "PUT" | "DELETE", path: string, body?: unknown): Promise<{ status: number; json: unknown; headers: Headers }> {
+    const timeoutMs = deps.timeoutMs ?? API_TIMEOUT_MS;
+    const signal = AbortSignal.timeout(timeoutMs);
+    const timedOut = () => new GithubError("server-error", `GitHub did not answer within ${Math.round(timeoutMs / 1000)} s`);
     let res: Response;
     try {
       res = await doFetch(`${api}${path}`, {
@@ -715,12 +733,19 @@ export function createGithubClient(cfg: GithubPrConfig, deps: GithubPrDeps): Git
         },
         ...(body !== undefined && { body: JSON.stringify(body) }),
         redirect: "error",
+        signal,
       });
     } catch (err) {
+      if (signal.aborted) throw timedOut();
       throw new GithubError("server-error", scrub(`GitHub could not be reached: ${err instanceof Error ? err.message : String(err)}`));
     }
-    const json: unknown = await res.json().catch(() => null);
-    return { status: res.status, json, headers: res.headers };
+    // The body is read under the same deadline: the signal stops a real fetch's stream, and the race stops any other.
+    const text = await Promise.race([
+      res.text().catch(() => null),
+      new Promise<"timed-out">((resolve) => (signal.aborted ? resolve("timed-out") : signal.addEventListener("abort", () => resolve("timed-out"), { once: true }))),
+    ]);
+    if (text === "timed-out") throw timedOut();
+    return { status: res.status, json: parseJson(text), headers: res.headers };
   }
 
   function failure(status: number, headers: Headers, json: unknown): GithubError {
@@ -964,7 +989,8 @@ export function createGithubClient(cfg: GithubPrConfig, deps: GithubPrDeps): Git
     for (const d of candidates) {
       const exact = d.sha === commit;
       if (!exact) {
-        if (compares >= MAX_DEPLOYMENT_COMPARES) break;
+        // Only compares are capped: a deployment of the merge commit itself, further down, needs none (#426).
+        if (compares >= MAX_DEPLOYMENT_COMPARES) continue;
         compares += 1;
         const cmp = await call("GET", `/repos/${cfg.githubRepo}/compare/${commit}...${d.sha}?per_page=1`);
         // A commit GitHub cannot compare (a force-pushed away deployment) holds nothing we can show it contains.

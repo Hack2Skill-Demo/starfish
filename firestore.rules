@@ -132,9 +132,9 @@ service cloud.firestore {
     // the engine re-opens a resolved incident, when its error actually fires
     // again (src/ingest/store.ts). An
     // operator can't reopen a resolved incident; `recurred` is open, so it can be
-    // resolved or ignored like any other open incident.
+    // acknowledged (#410), resolved or ignored like any other open incident.
     function validTransition(from, to) {
-      return (from in ['new', 'logged'] && to == 'acknowledged')
+      return (from in ['new', 'logged', 'recurred'] && to == 'acknowledged')
         || (from in ['new', 'acknowledged', 'logged', 'recurred'] && to in ['resolved', 'ignored'])
         || (from == 'ignored' && to == 'new');
     }

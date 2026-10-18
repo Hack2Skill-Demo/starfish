@@ -116,7 +116,9 @@ describe("incidents: triage writes", () => {
     await assertSucceeds(triage("op1", { status: "resolved", resolvedAt: serverTimestamp() }));
     await seedStatus("logged"); // the agent filed its issue; a person still takes it
     await assertSucceeds(triage("op1", { status: "acknowledged" }));
-    await seedStatus("recurred"); // a regression is open: resolve or ignore it
+    await seedStatus("recurred"); // a regression is open: take it (#410), resolve or ignore it
+    await assertSucceeds(triage("op1", { status: "acknowledged" }));
+    await seedStatus("recurred");
     await assertSucceeds(triage("op1", { status: "resolved", resolvedAt: serverTimestamp() }));
     await seedStatus("recurred");
     await assertSucceeds(triage("op1", { status: "ignored", resolvedAt: deleteField() }));

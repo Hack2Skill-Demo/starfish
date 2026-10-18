@@ -1181,6 +1181,19 @@ describe("pullRequestText: the missing-index evidence pull request (#11)", () =>
   });
 });
 
+describe("createGithubClient: every API call has a deadline (#427)", () => {
+  const stalled = (): typeof fetch => (_url, init) =>
+    new Promise((_resolve, reject) => init?.signal?.addEventListener("abort", () => reject(init.signal!.reason as Error), { once: true }));
+  const stalledBody = (): typeof fetch => async () => new Response(new ReadableStream({ start() {} }), { status: 200 });
+
+  it("gives up on a reply that never comes, and on a body that never ends, as a server error that names the deadline", async () => {
+    for (const f of [stalled(), stalledBody()]) {
+      const gh = createGithubClient(cfg(), { token: TOKEN, env: loadChildProcessBasics(), fetch: f, timeoutMs: 50 });
+      await expect(gh.listCheckRuns("a".repeat(40))).rejects.toMatchObject({ name: "GithubError", rule: "server-error", message: expect.stringContaining("did not answer") });
+    }
+  });
+});
+
 describe("createGithubClient: deploymentOfCommit (#390)", () => {
   const MERGE = "a".repeat(40);
   const LATER = "b".repeat(40);
@@ -1248,6 +1261,13 @@ describe("createGithubClient: deploymentOfCommit (#390)", () => {
     const many = Array.from({ length: 8 }, (_, i) => dep(100 + i, String(i + 1).repeat(40), `2026-10-15T0${i + 4}:00:00Z`));
     serve(many, {}, {});
     expect(await observe()).toEqual({ state: "none" });
+    expect(requests.filter((r) => r.path.includes("/compare/")).length).toBe(5);
+  });
+
+  it("still finds the merge commit's own deployment past the compare cap (#426)", async () => {
+    const others = Array.from({ length: 6 }, (_, i) => dep(100 + i, String(i + 1).repeat(40), `2026-10-15T0${i + 3}:40:00Z`));
+    serve([dep(5, MERGE, "2026-10-15T09:37:00Z"), ...others.reverse()], { 5: [status("success", "2026-10-15T09:42:00Z")] }, {});
+    expect(await observe()).toMatchObject({ state: "deployed", deploymentId: 5, exact: true });
     expect(requests.filter((r) => r.path.includes("/compare/")).length).toBe(5);
   });
 

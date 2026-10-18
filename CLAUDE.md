@@ -230,7 +230,9 @@ src/
                    added); no added try/catch, and no added if/return/throw/loop but an explicit null guard; no added
                    run that leaves a bracket open (wrapping a check); no added sink (network, process, dynamic code,
                    destructive, fs; tests too) or `://`; no added call the base file does not already make, by name,
-                   but a few pure ones; no computed call; no rebinding of a called name; no JSX file. Not judged: an
+                   but a few pure ones; no computed call; no rebinding of a called name; no JSX file; every changed line
+                   read as it reads in its file, not alone (inside a template or comment opened above, or a `/` the line
+                   before makes a division, refuses, #409). Not judged: an
                    added `?:`/`&&`/`||` in an expression, or which object a reused method is called on. A scanner,
                    not a parser: unsure refuses). And #9's original gate 1 (`assessBlastRadius`, no longer used to merge), pure:
                    a conservative diff classifier (null guard on an explicit null/undefined
