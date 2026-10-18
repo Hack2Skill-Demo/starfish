@@ -834,6 +834,8 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
           testAdded: fix.testAdded ?? null,
           risk: fix.risk ?? null,
           revisions,
+          // The configured model: the fixer always asks it, and its words are what this record holds (the UI says whose they are).
+          model: cfg.model,
           // Which rule found the source the fixer was shown (#259): a file found by the function's name is weaker evidence.
           ...(loaded.source && { source: loaded.source.rule, sourceFiles: loaded.files.length }),
           ...(loaded.source?.search && { sourceSearch: loaded.source.search }),
@@ -943,6 +945,8 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
             flagged: reviewed.attacks?.filter((a) => a.outcome === "flagged").length ?? 0,
             broken: reviewed.attacks?.filter((a) => a.outcome === "broken").length ?? 0,
             patchSha256: verified.patchSha256,
+            // The configured model, when the review asked it: the two evidence rules refuse before any call.
+            ...(!reviewed.rule.startsWith("evidence-") && { model: cfg.model }),
             ...numbered(
               "attack",
               (reviewed.attacks ?? []).map((a) => `${a.outcome}: ${a.attack} | ${a.detail}`),

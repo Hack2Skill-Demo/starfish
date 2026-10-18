@@ -1313,6 +1313,16 @@ function LevelScale({ level }: { level: Level }) {
   );
 }
 
+/** Whose words a Gemini step holds, when its record names the model (an older record does not, and then says nothing). */
+function ModelNote({ model, recordedBy }: { model?: string; recordedBy: string }) {
+  if (!model) return null;
+  return (
+    <p className="text-xs text-gray-600 dark:text-gray-400">
+      The model&apos;s reasoning (<span className="font-mono">{model}</span>), as {recordedBy} recorded it.
+    </p>
+  );
+}
+
 /** What a step recorded beyond its one line: only what is stored for it (runStepDetail.ts), so a copy that left it out shows nothing. */
 function StepDetails({
   step,
@@ -1425,6 +1435,7 @@ function StepDetails({
           ) : (
             <p className="text-xs text-gray-600 dark:text-gray-400">The patch text is not stored; with no pull request there is no diff to link to.</p>
           )}
+          <ModelNote model={detail.fix.model} recordedBy="the fix step" />
         </div>
       )}
 
@@ -1469,6 +1480,7 @@ function StepDetails({
               ))}
             </div>
           )}
+          <ModelNote model={detail.review.model} recordedBy="the review" />
         </div>
       )}
 
@@ -1591,17 +1603,23 @@ function Timeline({
       {words && (
         <section aria-label="In plain words" className="mb-4 space-y-2 rounded-xl bg-gray-50 px-4 py-3 dark:bg-gray-900/40">
           <h3 className={SECTION_TITLE}>In plain words</h3>
-          {words.rounds.map((r) => (
-            <div key={r.round} className="space-y-1">
-              {words.rounds.length > 1 && (
-                <p className="text-xs font-medium text-gray-600 dark:text-gray-400">
-                  Round {r.round}
-                  {r.began ? ` · ${r.began.replace(/[.\s]+$/, "")}` : ""}
-                </p>
-              )}
-              <p className={BODY}>{r.sentences.map((x) => x.text).join(" ")}</p>
-            </div>
-          ))}
+          {words.rounds.map((r, i) => {
+            // A reopened run has several rounds: the last is the one the card, the track and the step log below draw; the
+            // rest are over. Said in words and in weight, since the numbers alone do not say which is which.
+            const current = i === words.rounds.length - 1;
+            return (
+              <div key={r.round} className="space-y-1">
+                {words.rounds.length > 1 && (
+                  <p className="flex flex-wrap items-center gap-2 text-xs font-medium text-gray-600 dark:text-gray-400">
+                    <span className={current ? "text-gray-900 dark:text-white" : ""}>Round {r.round}</span>
+                    <Badge tone={current ? "brand" : "neutral"}>{current ? (cycle.state === "running" ? "Current · running" : "Current") : "Earlier"}</Badge>
+                    {r.began && <span>{r.began.replace(/[.\s]+$/, "")}</span>}
+                  </p>
+                )}
+                <p className={words.rounds.length > 1 && !current ? "text-sm leading-relaxed text-gray-600 dark:text-gray-400" : BODY}>{r.sentences.map((x) => x.text).join(" ")}</p>
+              </div>
+            );
+          })}
           {words.closing && <p className="text-sm font-medium text-gray-900 dark:text-white">{words.closing}</p>}
           <p className="text-xs text-gray-600 dark:text-gray-400">Composed from what the engine recorded; no model wrote it.</p>
         </section>
@@ -1646,7 +1664,7 @@ function Timeline({
                   <ol aria-label={`Round ${r.round}`} className="mt-1 ml-3 divide-y divide-gray-100 border-l-2 border-gray-100 pl-3 dark:divide-gray-700 dark:border-gray-700">
                     {r.steps.map((step) => (
                       <StepRow
-                        key={step.stage}
+                        key={`${step.stage}-${step.attempt?.n ?? 0}`}
                         step={earlierAsStep(step)}
                         cycle={cycle}
                         events={events}

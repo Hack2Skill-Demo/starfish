@@ -485,8 +485,14 @@ describe("Runs page", () => {
       ])
     );
     const words = within(screen.getByRole("region", { name: "In plain words" }));
-    expect(words.getByText(/^Round 1$/)).toBeInTheDocument();
-    expect(words.getByText(/^Round 2 · Handed to a person earlier; retried: an operator asked for a retriage$/)).toBeInTheDocument();
+    // Which round is over and which is the current one is said, not left to the numbers.
+    expect(words.getAllByText(/^Round \d$/).map((r) => r.closest("p")!.textContent)).toEqual([
+      "Round 1Earlier",
+      "Round 2CurrentHanded to a person earlier; retried: an operator asked for a retriage",
+    ]);
+    expect(words.getByText("Earlier")).toBeInTheDocument();
+    expect(words.getByText("Current")).toBeInTheDocument();
+    expect(words.getByText("Handed to a person earlier; retried: an operator asked for a retriage")).toBeInTheDocument();
     expect(words.getAllByText(/A person was told in Slack\./)).toHaveLength(2);
     expect(words.getByText("Handed to a person.")).toBeInTheDocument();
     expect(words.getByText(/no model wrote it/)).toBeInTheDocument();
@@ -521,6 +527,26 @@ describe("Runs page", () => {
     expect(heads[3]).toContain("Attempt 1 of 2");
     expect(heads[4]).toContain("first draft");
     expect(heads[2]).not.toContain("Attempt");
+  });
+
+  it("lists an earlier round's revision in the order it happened, as it does the latest round's", () => {
+    renderRuns();
+    act(() => mocks.cyclesCb!([cycle("inc-a_r0", { state: "waiting-human", path: "human", leaseExpiresAt: null })], false));
+    act(() =>
+      mocks.eventsCb!([
+        event(1, "triage", "decision", "a reason", 90_000),
+        event(2, "fix", "proposed", "first draft", 80_000),
+        event(3, "review", "block", "3 attacks tried", 70_000),
+        event(4, "fix", "proposed", "revised draft", 60_000),
+        event(5, "cycle", "reconsidered", "Handed to a person earlier; retried: an operator asked for a retriage", 50_000),
+        event(6, "triage", "decision", "again", 40_000),
+      ])
+    );
+    const round1 = within(screen.getByRole("list", { name: "Round 1" })).getAllByRole("listitem");
+    const heads = round1.map((li) => li.textContent!.replace(/\s+/g, " "));
+    ["Draft a fix", "Adversarial review", "Draft a fix", "Triage"].forEach((title, i) => expect(heads[i]).toContain(title));
+    expect(heads[0]).toContain("Attempt 2 of 2");
+    expect(heads[2]).toContain("Attempt 1 of 2");
   });
 
   it("says nothing about rounds for a run that was never reopened", () => {
@@ -1021,6 +1047,22 @@ describe("Runs page", () => {
     act(() => mocks.cyclesCb!([cycle("inc-a_r0", { state: "waiting-human", leaseExpiresAt: null, path: "human" }), cycle("inc-b_r0", { path: "human" })], false));
     const list = screen.getByRole("region", { name: "Runs" });
     expect(within(list).getAllByText("Handed to a person")).toHaveLength(1);
+  });
+
+  it("names the model beside every Gemini step's words, as triage does, and nothing for a record that lacks it", () => {
+    renderRuns();
+    const summary = {
+      triage: { decision: "act", rule: "model-act", reason: "r", level: "fix", model: "gemini-3.1-pro-preview" },
+      fix: { outcome: "proposed", risk: "low", testAdded: true, model: "gemini-3.1-pro-preview", revisions: 0 },
+      review: { verdict: "approve", held: 1, attack1: "held: x | y", model: "gemini-3.1-pro-preview" },
+    };
+    act(() => mocks.cyclesCb!([cycle("inc-a_r0", { state: "waiting-human", path: "human", leaseExpiresAt: null, summary })], false));
+    act(() =>
+      mocks.eventsCb!([event(1, "triage", "decision", "r", 50_000), event(2, "fix", "proposed", "root cause", 40_000), event(3, "review", "approve", "1 attacks tried", 30_000)])
+    );
+    const log = within(screen.getByRole("list", { name: "Step log" }));
+    for (const by of ["triage", "the fix step", "the review"]) expect(log.getByText(new RegExp(`as ${by} recorded it\\.`))).toBeInTheDocument();
+    expect(log.getAllByText("gemini-3.1-pro-preview")).toHaveLength(3);
   });
 
   it("shows each step's recorded details: triage's choice among the levels, the fix's risk, the gate's checks and the review's attacks", () => {

@@ -222,9 +222,9 @@ const storedCycle = (over: Record<string, unknown> = {}): Record<string, unknown
   updatedAt: t(NOW),
   summary: {
     triage: { decision: "act", rule: "model-act", reason: "r", suspectedCause: "c", model: "gemini-3.1-pro-preview", counterCount: null, counterFilter: "severity>=ERROR" },
-    fix: { outcome: "proposed", rule: "ok", rootCause: "missing await", testAdded: true, risk: "low", revisions: 1, alternative1: "retry" },
+    fix: { outcome: "proposed", rule: "ok", model: "gemini-3.1-pro-preview", rootCause: "missing await", testAdded: true, risk: "low", revisions: 1, alternative1: "retry" },
     verify: { status: "passed", rule: "passed", patchSha256: "b".repeat(64), baseRevision: "c".repeat(40), files: 2, exitCode: 0, durationMs: 4200, isolation: "github-actions" },
-    review: { verdict: "approve", rule: "ok", attacks: 2, held: 2, flagged: 0, broken: 0, patchSha256: "b".repeat(64), attack1: "held: null input | fine" },
+    review: { verdict: "approve", rule: "ok", model: "gemini-3.1-pro-preview", attacks: 2, held: 2, flagged: 0, broken: 0, patchSha256: "b".repeat(64), attack1: "held: null input | fine" },
     issue: { state: "opened", number: 30, url: "https://github.com/o/r/issues/30" },
     pr: { opened: true, number: 42, url: "https://github.com/o/r/pull/42", patchSha256: "b".repeat(64) },
     prState: { number: 42, state: "merged", mergedAt: "2026-10-08T11:00:00.000Z", closedAt: null, headSha: "d".repeat(40), checks: "passed", checksPassed: 1, checksRequired: 1, checkedAt: "2026-10-08T11:30:00.000Z" },
@@ -250,9 +250,9 @@ describe("toPublicCycle", () => {
     expect(Object.keys(summary).sort()).toEqual(["fix", "issue", "pr", "prState", "recovery", "review", "triage", "verify"]);
     expect(summary.issue).toEqual({ state: "opened", number: 30, url: "https://github.com/o/r/issues/30" });
     expect(summary.triage).toEqual({ decision: "act", rule: "model-act", model: "gemini-3.1-pro-preview", counterCount: null });
-    expect(summary.fix).toEqual({ outcome: "proposed", rule: "ok", testAdded: true, revisions: 1 });
+    expect(summary.fix).toEqual({ outcome: "proposed", rule: "ok", model: "gemini-3.1-pro-preview", testAdded: true, revisions: 1 });
     expect(summary.verify).toMatchObject({ rule: "passed", isolation: "github-actions" });
-    expect(summary.review).toEqual({ verdict: "approve", rule: "ok", attacks: 2, held: 2, flagged: 0, broken: 0, patchSha256: "b".repeat(64) });
+    expect(summary.review).toEqual({ verdict: "approve", rule: "ok", model: "gemini-3.1-pro-preview", attacks: 2, held: 2, flagged: 0, broken: 0, patchSha256: "b".repeat(64) });
     expect(summary.pr).toEqual({ opened: true, number: 42, url: "https://github.com/o/r/pull/42", patchSha256: "b".repeat(64) });
     expect(summary.prState).toMatchObject({ state: "merged", closedAt: null, checks: "passed" });
     // The recovery answer, why and when: never the error's rate, the deployment's id or what GitHub could not be read for (#390).

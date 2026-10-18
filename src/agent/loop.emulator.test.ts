@@ -296,9 +296,10 @@ describe("runCycle: the run record on the cycle", () => {
     expect(doc).toMatchObject({ state: "done", outcome: "pr-opened", path: "pr" });
     expect(Object.keys(doc.summary).sort()).toEqual(["fix", "pr", "review", "triage", "verify"]);
     expect(doc.summary.triage).toMatchObject({ decision: "act", rule: "model-act", reason: expect.any(String) });
-    expect(doc.summary.fix).toMatchObject({ outcome: "proposed", testAdded: true, revisions: 0 });
+    // The model that wrote the fix and the review is recorded beside them, as triage records its own (the UI says whose words they are).
+    expect(doc.summary.fix).toMatchObject({ outcome: "proposed", testAdded: true, revisions: 0, model: "m" });
     expect(doc.summary.verify).toMatchObject({ status: "passed", rule: "command-passed", baseRevision: "rev1", files: 1, exitCode: 0, isolation: expect.any(String) });
-    expect(doc.summary.review).toMatchObject({ verdict: "approve", attacks: 1, held: 1, broken: 0 });
+    expect(doc.summary.review).toMatchObject({ verdict: "approve", attacks: 1, held: 1, broken: 0, model: "m" });
     expect(doc.summary.pr).toMatchObject({ opened: true, number: 7, url: "https://example.test/pull/7" });
     expect(doc.summary.verify.patchSha256).toBe(doc.summary.pr.patchSha256);
   });
