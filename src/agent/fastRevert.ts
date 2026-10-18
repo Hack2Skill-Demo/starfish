@@ -202,7 +202,7 @@ export async function runFastRevertStep(deps: FastRevertDeps): Promise<FastRever
 
     const giveUp = async (reason: string, from: (r: Rec) => boolean): Promise<"escalated" | "unchanged"> => {
       const escalation = await escalate(deps, cycle, `fast-revert-${reason.split(":")[0]}`, sentence(reason));
-      return (await moveRecord(db, cfg, cycle.id, "revert", from, { ...revert, state: "escalated", reason, escalation, decidedAt: nowIso })) ? "escalated" : "unchanged";
+      return (await moveRecord(db, cfg, cycle.id, now, "revert", from, { ...revert, state: "escalated", reason, escalation, decidedAt: nowIso })) ? "escalated" : "unchanged";
     };
 
     // Only what a Starfish merge started is ever here; anything else is left alone.
@@ -235,15 +235,15 @@ export async function runFastRevertStep(deps: FastRevertDeps): Promise<FastRever
             "fast-revert-not-covered",
             `Starfish merged a fix for this incident, but ingest has not read the logs through the ${cfg.fastRevertMinutes}-minute fast-revert window, so Starfish cannot tell whether the incident came back. Nothing was reverted. A person needs to check.`
           );
-          return (await moveRecord(db, cfg, cycle.id, "revert", same("watching"), { ...revert, state: "escalated", reason: "ingest-not-covered", escalation, decidedAt: nowIso })) ? "escalated" : "unchanged";
+          return (await moveRecord(db, cfg, cycle.id, now, "revert", same("watching"), { ...revert, state: "escalated", reason: "ingest-not-covered", escalation, decidedAt: nowIso })) ? "escalated" : "unchanged";
         }
-        return (await moveRecord(db, cfg, cycle.id, "revert", same("watching"), { ...revert, state: "clear", decidedAt: nowIso })) ? "cleared" : "unchanged";
+        return (await moveRecord(db, cfg, cycle.id, now, "revert", same("watching"), { ...revert, state: "clear", decidedAt: nowIso })) ? "cleared" : "unchanged";
       }
       const blocked = await deps.blockedBy();
       if (blocked === "automation-disabled") return "paused";
       if (blocked !== null) return giveUp(`switch:${blocked}`, same("watching"));
       const claimedAt = nowIso;
-      if (!(await moveRecord(db, cfg, cycle.id, "revert", same("watching"), { ...revert, state: "opening", claimedBy: deps.owner, claimedAt, detectedAt: nowIso }))) return "unchanged";
+      if (!(await moveRecord(db, cfg, cycle.id, now, "revert", same("watching"), { ...revert, state: "opening", claimedBy: deps.owner, claimedAt, detectedAt: nowIso }))) return "unchanged";
       const mine = same("opening", (r) => r.claimedAt === claimedAt && r.claimedBy === deps.owner);
       const opening = { ...revert, claimedBy: deps.owner, claimedAt, detectedAt: nowIso };
       let pr: { number: number; url: string; headSha: string };
@@ -256,11 +256,11 @@ export async function runFastRevertStep(deps: FastRevertDeps): Promise<FastRever
         });
       } catch (err) {
         const escalation = await escalate(deps, cycle, `fast-revert-${ruleOf(err)}`, sentence(ruleOf(err)));
-        return (await moveRecord(db, cfg, cycle.id, "revert", mine, { ...opening, state: "escalated", reason: ruleOf(err), escalation, decidedAt: nowIso })) ? "escalated" : "unchanged";
+        return (await moveRecord(db, cfg, cycle.id, now, "revert", mine, { ...opening, state: "escalated", reason: ruleOf(err), escalation, decidedAt: nowIso })) ? "escalated" : "unchanged";
       }
       // A person is told now, whatever happens next: Starfish's fix did not hold.
       const escalation = await escalate(deps, cycle, "fast-revert-opened", `The incident came back after Starfish merged a fix for it. Starfish opened revert #${pr.number} and merges it once the required checks pass.`);
-      return (await moveRecord(db, cfg, cycle.id, "revert", mine, { ...opening, state: "pending", number: pr.number, headSha: pr.headSha, openedAt: nowIso, escalation })) ? "opened" : "unchanged";
+      return (await moveRecord(db, cfg, cycle.id, now, "revert", mine, { ...opening, state: "pending", number: pr.number, headSha: pr.headSha, openedAt: nowIso, escalation })) ? "opened" : "unchanged";
     }
 
     // pending: the revert pull request is open; merge it once its required checks pass.
@@ -277,7 +277,7 @@ export async function runFastRevertStep(deps: FastRevertDeps): Promise<FastRever
       throw err;
     }
     if (pr.state === "merged") {
-      return (await moveRecord(db, cfg, cycle.id, "revert", same("pending"), { ...revert, state: "reverted", by: "person", revertSha: pr.mergeCommitSha ?? null, decidedAt: nowIso })) ? "reverted" : "unchanged";
+      return (await moveRecord(db, cfg, cycle.id, now, "revert", same("pending"), { ...revert, state: "reverted", by: "person", revertSha: pr.mergeCommitSha ?? null, decidedAt: nowIso })) ? "reverted" : "unchanged";
     }
     if (pr.state === "closed") return giveUp("revert-closed", same("pending"));
     if (pr.headSha !== headSha) return giveUp("head-changed", same("pending"));
@@ -301,7 +301,7 @@ export async function runFastRevertStep(deps: FastRevertDeps): Promise<FastRever
     if (blocked === "automation-disabled") return "paused";
     if (blocked !== null) return giveUp(`switch:${blocked}`, same("pending"));
     const claimedAt = nowIso;
-    if (!(await moveRecord(db, cfg, cycle.id, "revert", same("pending"), { ...revert, state: "merging", claimedBy: deps.owner, claimedAt }))) return "unchanged";
+    if (!(await moveRecord(db, cfg, cycle.id, now, "revert", same("pending"), { ...revert, state: "merging", claimedBy: deps.owner, claimedAt }))) return "unchanged";
     const mine = same("merging", (r) => r.claimedAt === claimedAt && r.claimedBy === deps.owner);
     const merging = { ...revert, claimedBy: deps.owner, claimedAt };
     let merged: { sha: string };
@@ -313,8 +313,8 @@ export async function runFastRevertStep(deps: FastRevertDeps): Promise<FastRever
     } catch (err) {
       const reason = `merge-refused:${ruleOf(err)}`;
       const escalation = await escalate(deps, cycle, "fast-revert-merge-refused", sentence(reason));
-      return (await moveRecord(db, cfg, cycle.id, "revert", mine, { ...merging, state: "escalated", reason, escalation, decidedAt: nowIso })) ? "escalated" : "unchanged";
+      return (await moveRecord(db, cfg, cycle.id, now, "revert", mine, { ...merging, state: "escalated", reason, escalation, decidedAt: nowIso })) ? "escalated" : "unchanged";
     }
-    return (await moveRecord(db, cfg, cycle.id, "revert", mine, { ...merging, state: "reverted", by: "starfish", revertSha: merged.sha, decidedAt: nowIso })) ? "reverted" : "unchanged";
+    return (await moveRecord(db, cfg, cycle.id, now, "revert", mine, { ...merging, state: "reverted", by: "starfish", revertSha: merged.sha, decidedAt: nowIso })) ? "reverted" : "unchanged";
   }
 }

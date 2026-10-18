@@ -36,7 +36,7 @@ import { createHash } from "node:crypto";
 import { FieldValue, Timestamp } from "firebase-admin/firestore";
 import type { DocumentReference, DocumentSnapshot, Firestore, Transaction } from "firebase-admin/firestore";
 import type { StarfishConfig } from "../config.js";
-import { appendEventsInTransaction, type RunEvent } from "../agent/cycle.js";
+import { appendEventsInTransaction, currentRoundStartMs, roundOf, type RunEvent } from "../agent/cycle.js";
 import { abortIfClosed } from "../ingest/store.js";
 import { refreshPublicCycle } from "../publicViewStore.js";
 import { inQuietHours, maskPhone, parsePerson, parsePolicy, POLICY_DOC, ROLE_LABELS, type OnCallPerson, type OnCallPolicy, type OnCallRole } from "../oncallSchema.js";
@@ -134,6 +134,8 @@ export function escalationEligible(cycle: Record<string, unknown> | undefined, n
   if (notify?.state !== "sent" && notify?.state !== "failed" && notify?.state !== "dry-run") return null;
   const at = typeof notify.at === "string" ? Date.parse(notify.at) : NaN;
   if (!Number.isFinite(at) || at > now.getTime() || now.getTime() - at > MAX_NOTIFY_AGE_MS) return null;
+  // The message this round sent (#411): a retried run's earlier message has had its sequence.
+  if (at < (currentRoundStartMs(cycle) ?? -Infinity)) return null;
   return new Date(at);
 }
 
@@ -252,12 +254,15 @@ export async function armEscalations(deps: EscalationDeps, policy: OnCallPolicy)
       const [esc, cycle] = await Promise.all([tx.get(ref), tx.get(doc.ref)]);
       const d = cycle.data();
       const notifiedAt = escalationEligible(d, now);
-      if (esc.exists || notifiedAt === null || typeof d?.incidentId !== "string") return false;
+      // One sequence per round (#411): an earlier round's, closed, is replaced (its calls stay in the run's events).
+      const replaces = esc.exists && esc.get("open") === false && !ofCurrentRound(esc.data(), d);
+      if ((esc.exists && !replaces) || notifiedAt === null || typeof d?.incidentId !== "string") return false;
       const dueAt = new Date(notifiedAt.getTime() + policy.waitMinutes * 60_000);
-      tx.create(ref, {
+      tx.set(ref, {
         cycleId: doc.id,
         incidentId: d.incidentId,
         environment: cfg.environment,
+        round: roundOf(d),
         open: true,
         state: "waiting" satisfies EscalationState,
         step: 0,
@@ -287,6 +292,18 @@ export async function armEscalations(deps: EscalationDeps, policy: OnCallPolicy)
 }
 
 type Claimed = { kind: "call"; step: number; person: OnCallPerson } | { kind: "idle" } | { kind: "closed" };
+
+/**
+ * Whether a sequence was armed in the cycle's current round: created no earlier than its latest reopening (cycle.ts
+ * `currentRoundStartMs`). A sequence of a cycle never reopened always is. Read from times, so it also holds for a
+ * sequence stored before sequences carried their `round`.
+ */
+export function ofCurrentRound(esc: Record<string, unknown> | undefined, cycle: Record<string, unknown> | undefined): boolean {
+  const roundStart = currentRoundStartMs(cycle);
+  if (roundStart === undefined) return true;
+  const created = ms(esc?.createdAt);
+  return created !== undefined && created >= roundStart;
+}
 
 /** Close the sequence: no more calls. */
 function closeUpdate(state: EscalationState, now: Date): Record<string, unknown> {
@@ -367,6 +384,14 @@ export async function stepEscalation(
     ]);
     const c = cycle.data();
     const note = (events: RunEvent[]) => appendEventsInTransaction(tx, cycleRef, c, now, events, cfg);
+
+    // A sequence is its round's (#411): a person's Retry reopens the cycle, and the sequence armed for the hand-off before
+    // it calls nobody more. The new round tells the team again and, if it ends waiting for a person, arms its own.
+    if (c?.state === "running" || !ofCurrentRound(e, c)) {
+      tx.update(ref, closeUpdate("stopped", now));
+      note([{ stage: "escalation", type: "stopped", summary: "Stopped: the run was retried, and an earlier round's calls end", record: { state: "stopped" } }]);
+      return { kind: "closed" };
+    }
 
     const stop = stopReason(incident);
     if (stop) {

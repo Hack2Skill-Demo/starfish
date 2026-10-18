@@ -62,6 +62,7 @@ import {
   recordEvent,
   releaseLease,
   renewLease,
+  roundOf,
   type CycleConfig,
   LONG_VALUE_KEYS,
   type CycleKey,
@@ -261,11 +262,8 @@ const RECONSIDER_SUMMARY = {
 /** A Slack message's retry wording: present from a run's second round on (`NotifyRequest`/`AlertRequest`). */
 type RetryWords = { round?: number; retriedBecause?: string };
 
-/** Which round of its run a cycle is in: 1, plus one for each time it was reopened (cycle.ts `reconsiderCount`). */
-export function roundOf(cycle: Record<string, unknown> | undefined): number {
-  const n = Number(cycle?.reconsiderCount ?? 0);
-  return Number.isSafeInteger(n) && n > 0 ? n + 1 : 1;
-}
+/** Which round of its run a cycle is in: cycle.ts's one definition, re-exported for the loop's tests. */
+export { roundOf };
 
 /** The retry wording for a round: nothing for round 1; the round, and why it was reopened in Starfish's own words. */
 export function retryWords(round: number, trigger: unknown): RetryWords {

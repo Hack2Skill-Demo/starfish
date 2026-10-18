@@ -89,6 +89,8 @@ function proven(over: Record<string, Record<string, unknown>> = {}): Record<stri
 
 async function seed(id: string, summary: Record<string, unknown> = proven(), over: Record<string, unknown> = {}) {
   const incidentId = id.split("_")[0]!;
+  // A cycle seeded again starts with no events: each record move appends one (#421), numbered from `eventCount`.
+  await db.recursiveDelete(db.collection(cfg.cycleCollection).doc(id).collection("events"));
   await db.collection(cfg.cycleCollection).doc(id).set({
     incidentId,
     environment: "demo",
@@ -190,6 +192,14 @@ describe("runAutoMergeStep: merges only what every switch and gate allows", () =
     expect(s.merge).toMatchObject({ state: "merged", mergeSha: MERGED, headSha: HEAD, claimedBy: "worker-a" });
     expect(s.revert).toMatchObject({ state: "watching", mergeSha: MERGED, until: new Date(t0.getTime() + 60 * 60_000).toISOString() });
     expect(told).toEqual([]);
+    // Each move is a run event, so the Runs page shows the merge, not only the candidate (#421).
+    const events = (await db.collection(cfg.cycleCollection).doc("inc1_r0").collection("events").orderBy("seq").get()).docs.map((d) => d.data());
+    expect(events.map((e) => [e.stage, e.type])).toEqual([
+      ["merge", "merging"],
+      ["merge", "merged"],
+    ]);
+    expect(events[1]).toMatchObject({ seq: 2, summary: "Starfish merged the pull request #7" });
+    expect((await cycle("inc1_r0")).eventCount).toBe(2);
     // Settled: a second pass does nothing more.
     expect(await runAutoMergeStep(mergeDeps(gh.client))).toMatchObject({ considered: 0 });
     expect(gh.merges).toHaveLength(1);

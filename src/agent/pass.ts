@@ -10,7 +10,7 @@
 import type { DocumentSnapshot, Firestore, QueryDocumentSnapshot } from "firebase-admin/firestore";
 import type { StarfishConfig } from "../config.js";
 import { OPEN_INCIDENT_STATUSES } from "../types.js";
-import { cycleId, strandedReason, type CycleConfig, type CycleKey, type CycleState } from "./cycle.js";
+import { SETTLED_STATES, cycleId, isReopenable, strandedReason, type CycleConfig, type CycleKey, type CycleState } from "./cycle.js";
 import { reconsiderTrigger, utcDay, type ReconsiderPolicy, type ReconsiderTrigger } from "./reconsider.js";
 import { isExcludedPath } from "./verifyGate.js";
 import type { LoopResult } from "./loop.js";
@@ -25,8 +25,6 @@ export interface Candidate {
   reconsider?: ReconsiderTrigger;
 }
 
-/** A cycle in one of these states is finished or waiting on a person: running it again would only repeat it. */
-const SETTLED: readonly CycleState[] = ["done", "declined", "waiting-human", "failed"];
 
 const OPEN: readonly string[] = OPEN_INCIDENT_STATUSES;
 
@@ -125,12 +123,13 @@ async function collectCandidates(
     const data = cycles[i]?.data();
     const state = data?.state as CycleState | undefined;
     const recurred = incidents.get(c.incidentId)?.status === "recurred";
-    if ((state === "declined" || state === "waiting-human" || state === "failed") && data && reconsider) {
+    if (isReopenable(state) && data && reconsider) {
       const trigger = reconsiderTrigger(data, incidents.get(c.incidentId), reconsider, now);
       if (trigger !== null) found.push({ candidate: { ...c, reconsider: trigger }, rank: recurred ? 0 : 2 });
       return;
     }
-    if (state !== undefined && SETTLED.includes(state)) return;
+    // Finished or waiting on a person: running it again would only repeat it.
+    if (state !== undefined && SETTLED_STATES.includes(state)) return;
     const triaged = data !== undefined && isPlainRecord(data.summary) && data.summary.triage !== undefined;
     found.push({ candidate: c, rank: recurred ? 0 : triaged ? 2 : 1 });
   });

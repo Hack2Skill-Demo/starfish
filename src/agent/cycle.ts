@@ -40,12 +40,19 @@ import type { StarfishConfig } from "../config.js";
 import { clipWellFormed, isSensitiveKey } from "../ingest/redact.js";
 import type { PublicViewConfig } from "../publicView.js";
 import { refreshPublicCycle, writePublicEventInTx } from "../publicViewStore.js";
+import { ROUND_SCOPED_RECORDS, isReopenable, roundOf, type CycleState } from "./cycleStates.js";
 import { MAX_DECISION_HISTORY, reconsiderTrigger, recentReconsiderations, utcDay, type ReconsiderPolicy, type ReconsiderTrigger } from "./reconsider.js";
 
 /** With the public-view settings: a cycle of a public environment keeps its guest copy up to date (src/publicView.ts, #18). */
 export type CycleConfig = Pick<StarfishConfig, "cycleCollection" | "leaseSeconds" | "cycleDeadlineMinutes" | "maxCycleAttempts"> & PublicViewConfig;
 
-export type CycleState = "running" | "waiting-human" | "done" | "declined" | "failed";
+export { CYCLE_STATES, REOPENABLE_STATES, ROUND_SCOPED_RECORDS, SETTLED_STATES, currentRoundStartMs, isReopenable, roundOf } from "./cycleStates.js";
+export type { CycleState, ReopenableState } from "./cycleStates.js";
+
+/** The update that gives a cycle up: failed, the reason as its outcome, no holder, settled now. */
+function failedUpdate(reason: "deadline-passed" | "retries-exhausted", now: Date): Record<string, unknown> {
+  return { state: "failed", outcome: reason, path: "failed", owner: null, leaseExpiresAt: null, updatedAt: Timestamp.fromDate(now), settledAt: Timestamp.fromDate(now) };
+}
 
 export interface CycleKey {
   incidentId: string;
@@ -98,6 +105,9 @@ const ms = (value: unknown): number | undefined => {
   const v = value as { toMillis?: unknown } | null | undefined;
   return typeof v?.toMillis === "function" ? (v.toMillis() as number) : undefined;
 };
+
+/** Whether the cycle recorded opening a pull request. */
+const prOpened = (d: Record<string, unknown> | undefined): boolean => (d?.summary as { pr?: { opened?: unknown } } | undefined)?.pr?.opened === true;
 
 function cycleRef(db: Firestore, cfg: CycleConfig, id: string): DocumentReference {
   return db.collection(cfg.cycleCollection).doc(id);
@@ -175,7 +185,7 @@ export async function acquireLease(db: Firestore, cfg: CycleConfig, key: CycleKe
 
     const d = snap.data() as Record<string, unknown>;
     const state = d.state as CycleState;
-    if ((state === "declined" || state === "waiting-human" || state === "failed") && reconsider && incidentRef) {
+    if (isReopenable(state) && reconsider && incidentRef) {
       // Read in this transaction (and only for a declined, waiting-human or failed cycle, so an ordinary acquire never holds the incident that
       // ingest writes): a concurrent operator ignore, or a second worker, cannot both pass the check and reopen.
       const incidentSnap = await tx.get(incidentRef);
@@ -207,10 +217,8 @@ export async function acquireLease(db: Firestore, cfg: CycleConfig, key: CycleKe
           outcome: FieldValue.delete(),
           path: FieldValue.delete(),
           releasedBecause: FieldValue.delete(),
-          "summary.triage": FieldValue.delete(),
-          "summary.fix": FieldValue.delete(),
-          "summary.verify": FieldValue.delete(),
-          "summary.review": FieldValue.delete(),
+          ...Object.fromEntries(ROUND_SCOPED_RECORDS.map((stage) => [`summary.${stage}`, FieldValue.delete()])),
+          ...(!prOpened(d) && { "summary.pr": FieldValue.delete() }),
           // The Slack records stay: loop.ts sends each message once per round (the record's `round` against this
           // `reconsiderCount`), so this round tells the team again, worded as a retry. A declined one never reached a
           // person, so its (absent or dry-run) notify record goes with the rest.
@@ -227,7 +235,7 @@ export async function acquireLease(db: Firestore, cfg: CycleConfig, key: CycleKe
     const deadlineMs = ms(d.deadlineAt) ?? 0;
     if (now.getTime() >= deadlineMs) {
       wrote(d.environment);
-      tx.update(ref, { state: "failed", outcome: "deadline-passed", path: "failed", owner: null, leaseExpiresAt: null, updatedAt: Timestamp.fromDate(now), settledAt: Timestamp.fromDate(now) });
+      tx.update(ref, failedUpdate("deadline-passed", now));
       return { acquired: false, reason: "deadline-passed" };
     }
 
@@ -241,7 +249,7 @@ export async function acquireLease(db: Firestore, cfg: CycleConfig, key: CycleKe
     const free = d.resumeUncounted === true;
     if (!renewing && !free && attempts >= cfg.maxCycleAttempts) {
       wrote(d.environment);
-      tx.update(ref, { state: "failed", outcome: "retries-exhausted", path: "failed", owner: null, leaseExpiresAt: null, updatedAt: Timestamp.fromDate(now), settledAt: Timestamp.fromDate(now) });
+      tx.update(ref, failedUpdate("retries-exhausted", now));
       return { acquired: false, reason: "retries-exhausted" };
     }
 
@@ -281,7 +289,7 @@ export async function giveUpStranded(db: Firestore, cfg: CycleConfig, key: Cycle
     const reason = strandedReason(snap.data(), now, cfg.maxCycleAttempts);
     if (reason === null) return null;
     wrote(snap.get("environment"));
-    tx.update(ref, { state: "failed", outcome: reason, path: "failed", owner: null, leaseExpiresAt: null, updatedAt: Timestamp.fromDate(now), settledAt: Timestamp.fromDate(now) });
+    tx.update(ref, failedUpdate(reason, now));
     return reason;
   });
 }
@@ -307,7 +315,7 @@ export async function renewLease(db: Firestore, cfg: CycleConfig, id: string, ow
     wrote(d.environment);
     const deadlineMs = ms(d.deadlineAt) ?? 0;
     if (now.getTime() >= deadlineMs) {
-      tx.update(ref, { state: "failed", outcome: "deadline-passed", path: "failed", owner: null, leaseExpiresAt: null, updatedAt: Timestamp.fromDate(now), settledAt: Timestamp.fromDate(now) });
+      tx.update(ref, failedUpdate("deadline-passed", now));
       return { ok: false, reason: "lease-lost" } as const;
     }
     const expires = leaseEnd(cfg, now, deadlineMs);
@@ -407,7 +415,7 @@ export async function recordEvent(
     const seq = Number(d.eventCount ?? 0) + 1;
     const { record, ...eventFields } = clean;
     const eventId = String(seq).padStart(6, "0");
-    const eventDoc = { seq, environment: d.environment, at: Timestamp.fromDate(now), ...eventFields };
+    const eventDoc = { seq, environment: d.environment, at: Timestamp.fromDate(now), round: roundOf(d), ...eventFields };
     tx.create(ref.collection("events").doc(eventId), eventDoc);
     // Its guest copy in the same transaction: an event of a public environment never exists without one (#18).
     writePublicEventInTx(tx, db, cfg, id, eventId, eventDoc);
@@ -445,7 +453,7 @@ export function appendEventsInTransaction(
     const { record, ...eventFields } = sanitizeEvent(event);
     seq += 1;
     const eventId = String(seq).padStart(6, "0");
-    const eventDoc = { seq, environment: d.environment, at: Timestamp.fromDate(now), ...eventFields };
+    const eventDoc = { seq, environment: d.environment, at: Timestamp.fromDate(now), round: roundOf(d), ...eventFields };
     tx.create(ref.collection("events").doc(eventId), eventDoc);
     // Its guest copy in the same transaction (#18). The cycle's own copy is the caller's to refresh after the commit.
     writePublicEventInTx(tx, ref.firestore, pub, ref.id, eventId, eventDoc);
@@ -546,6 +554,48 @@ export async function finishCycle(
 }
 
 /**
+ * What a write to a SETTLED cycle's run record decided (`updateSettledCycle`): the result to return, and, when it writes,
+ * the records to put at `summary.<stage>` (already flat: each caller shapes its own), an event to append when what it
+ * records CHANGED, and any other writes of the same transaction (`also`, after every read).
+ */
+export interface SettledUpdate<R> {
+  result: R;
+  records?: Record<string, Record<string, unknown>>;
+  event?: RunEvent;
+  also?: (tx: Transaction) => void;
+}
+
+/**
+ * The one way to write a record on a cycle no worker holds (#421): a pull request's later state (reconcile.ts), a merged
+ * fix's recovery (recovery.ts), auto-merge's and fast revert's records (autoMerge.ts, fastRevert.ts). No lease: each
+ * caller's `decide` reads the cycle as stored, in this transaction, and refuses unless the move is its to make. An event
+ * goes through `appendEventsInTransaction`, so it is fenced against every other writer by the event count, lands in the
+ * guest copy, and moves `updatedAt`; the cycle's guest copy is refreshed after the commit. A write without an event
+ * changes only the records.
+ */
+export async function updateSettledCycle<R>(
+  db: Firestore,
+  cfg: CycleConfig,
+  id: string,
+  now: Date,
+  decide: (tx: Transaction, d: Record<string, unknown> | undefined) => Promise<SettledUpdate<R>>
+): Promise<R> {
+  const ref = cycleRef(db, cfg, id);
+  return cycleTransaction(db, cfg, id, async (tx, wrote) => {
+    const snap = await tx.get(ref);
+    const d = snap.data();
+    const u = await decide(tx, d);
+    if (!u.records || d === undefined) return u.result;
+    wrote(d.environment);
+    u.also?.(tx);
+    // Without a `record` on the event: the records are written here, whole, as the caller shaped them.
+    if (u.event) appendEventsInTransaction(tx, ref, d, now, [{ ...u.event, record: undefined }], cfg);
+    tx.update(ref, Object.fromEntries(Object.entries(u.records).map(([stage, record]) => [`summary.${stage}`, record])));
+    return u.result;
+  });
+}
+
+/**
  * What the pull request a finished cycle opened looks like on GitHub now (#17, src/agent/reconcile.ts). Flat, so it is
  * stored as the run record's `summary.prState` beside the stages. `checkedAt` is when GitHub was read, and orders
  * observations: the newest one read wins, whatever order the writes land in.
@@ -601,20 +651,15 @@ export async function recordPrState(db: Firestore, cfg: CycleConfig, id: string,
     return { ok: false, reason: "invalid" };
   }
   const record = sanitizeFlat({ ...observed });
-  const ref = cycleRef(db, cfg, id);
-  return cycleTransaction(db, cfg, id, async (tx, wrote): Promise<PrStateWrite> => {
-    const snap = await tx.get(ref);
-    if (!snap.exists) return { ok: false, reason: "no-such-cycle" };
-    const d = snap.data() as Record<string, unknown>;
+  return updateSettledCycle(db, cfg, id, new Date(observed.checkedAt), async (_tx, d): Promise<SettledUpdate<PrStateWrite>> => {
+    if (d === undefined) return { result: { ok: false, reason: "no-such-cycle" } };
     const summary = (d.summary ?? {}) as { pr?: { opened?: unknown; number?: unknown }; prState?: { state?: unknown; checkedAt?: unknown } };
-    if (d.state !== "done" || summary.pr?.opened !== true || summary.pr.number !== observed.number) return { ok: false, reason: "not-a-pr-cycle" };
+    if (d.state !== "done" || summary.pr?.opened !== true || summary.pr.number !== observed.number) return { result: { ok: false, reason: "not-a-pr-cycle" } };
     const prior = summary.prState;
     const priorAt = isoMs(prior?.checkedAt);
-    if (priorAt !== null && isoMs(observed.checkedAt)! <= priorAt) return { ok: true, applied: false, reason: "stale" };
-    if (prior?.state === "merged" && observed.state !== "merged") return { ok: true, applied: false, reason: "merged-is-final" };
-    wrote(d.environment);
-    tx.update(ref, { "summary.prState": record });
-    return { ok: true, applied: true };
+    if (priorAt !== null && isoMs(observed.checkedAt)! <= priorAt) return { result: { ok: true, applied: false, reason: "stale" } };
+    if (prior?.state === "merged" && observed.state !== "merged") return { result: { ok: true, applied: false, reason: "merged-is-final" } };
+    return { result: { ok: true, applied: true }, records: { prState: record } };
   });
 }
 
@@ -679,19 +724,14 @@ export async function recordRecovery(db: Firestore, cfg: CycleConfig, id: string
     return { ok: false, reason: "invalid" };
   }
   const record = sanitizeFlat({ ...observed });
-  const ref = cycleRef(db, cfg, id);
-  return cycleTransaction(db, cfg, id, async (tx, wrote): Promise<RecoveryWrite> => {
-    const snap = await tx.get(ref);
-    if (!snap.exists) return { ok: false, reason: "no-such-cycle" };
-    const d = snap.data() as Record<string, unknown>;
+  return updateSettledCycle(db, cfg, id, new Date(observed.checkedAt), async (_tx, d): Promise<SettledUpdate<RecoveryWrite>> => {
+    if (d === undefined) return { result: { ok: false, reason: "no-such-cycle" } };
     const summary = (d.summary ?? {}) as { prState?: { state?: unknown; mergeCommitSha?: unknown }; recovery?: { state?: unknown; checkedAt?: unknown } };
-    if (d.state !== "done" || summary.prState?.state !== "merged" || summary.prState.mergeCommitSha !== observed.mergeCommitSha) return { ok: false, reason: "not-merged" };
+    if (d.state !== "done" || summary.prState?.state !== "merged" || summary.prState.mergeCommitSha !== observed.mergeCommitSha) return { result: { ok: false, reason: "not-merged" } };
     const prior = summary.recovery;
-    if (typeof prior?.state === "string" && RECOVERY_FINAL.includes(prior.state)) return { ok: true, applied: false, reason: "final" };
+    if (typeof prior?.state === "string" && RECOVERY_FINAL.includes(prior.state)) return { result: { ok: true, applied: false, reason: "final" } };
     const priorAt = isoMs(prior?.checkedAt);
-    if (priorAt !== null && isoMs(observed.checkedAt)! <= priorAt) return { ok: true, applied: false, reason: "stale" };
-    wrote(d.environment);
-    tx.update(ref, { "summary.recovery": record });
-    return { ok: true, applied: true };
+    if (priorAt !== null && isoMs(observed.checkedAt)! <= priorAt) return { result: { ok: true, applied: false, reason: "stale" } };
+    return { result: { ok: true, applied: true }, records: { recovery: record } };
   });
 }

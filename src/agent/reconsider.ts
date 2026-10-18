@@ -39,6 +39,7 @@ import type { StarfishConfig } from "../config.js";
 import type { Incident } from "../types.js";
 import { OPEN_INCIDENT_STATUSES } from "../types.js";
 import { correctedAtMillis } from "../triageRules.js";
+import { isReopenable } from "./cycleStates.js";
 
 export type ReconsiderPolicy = Pick<StarfishConfig, "reconsiderCooldownMinutes" | "reconsiderMaxPerDay" | "reconsiderBurstOccurrences">;
 
@@ -107,7 +108,7 @@ export function stoppedByClose(cycle: Record<string, unknown>): boolean {
  * closed, once the incident is open again (`reopened`, after the cooldown, #227).
  */
 export function reconsiderTrigger(cycle: Record<string, unknown>, incident: Record<string, unknown> | undefined, policy: ReconsiderPolicy, now: Date): ReconsiderTrigger | null {
-  if ((cycle.state !== "declined" && cycle.state !== "waiting-human" && cycle.state !== "failed") || incident === undefined) return null;
+  if (!isReopenable(cycle.state) || incident === undefined) return null;
   if (incident.retired === true || !(OPEN_INCIDENT_STATUSES as readonly string[]).includes(String(incident.status))) return null;
   // The cycle is this recurrence's: a regression since has its own cycle.
   const recurrence = typeof incident.recurrenceCount === "number" ? incident.recurrenceCount : 0;
