@@ -94,6 +94,7 @@ import {
   roundStartMs,
   type ReplaySpeedChoice,
 } from "../lib/runsModel";
+import { runInWords } from "../lib/runWords";
 import { LEVELS, LEVEL_SHORT, judgedOnGitHub, recordIsTheStep, stepDetail, type ReviewAttack, type StepDetail } from "../lib/runStepDetail";
 
 
@@ -1537,8 +1538,27 @@ function Timeline({
   const { earlier, rounds } = water;
   if (steps.length === 0 && earlier.length === 0) return null;
   const span = water.endMs - water.startMs;
+  const words = runInWords(cycle, water, events);
   return (
     <div className="@container space-y-2 border-t border-gray-200 pt-5 dark:border-gray-700">
+      {words && (
+        <section aria-label="In plain words" className="mb-4 space-y-2 rounded-xl bg-gray-50 px-4 py-3 dark:bg-gray-900/40">
+          <h3 className={SECTION_TITLE}>In plain words</h3>
+          {words.rounds.map((r) => (
+            <div key={r.round} className="space-y-1">
+              {words.rounds.length > 1 && (
+                <p className="text-xs font-medium text-gray-600 dark:text-gray-400">
+                  Round {r.round}
+                  {r.began ? ` · ${r.began.replace(/[.\s]+$/, "")}` : ""}
+                </p>
+              )}
+              <p className={BODY}>{r.sentences.map((x) => x.text).join(" ")}</p>
+            </div>
+          ))}
+          {words.closing && <p className="text-sm font-medium text-gray-900 dark:text-white">{words.closing}</p>}
+          <p className="text-xs text-gray-600 dark:text-gray-400">Composed from what the engine recorded; no model wrote it.</p>
+        </section>
+      )}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h3 className={SECTION_TITLE}>What Starfish did</h3>
