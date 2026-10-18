@@ -478,6 +478,7 @@ newest first (oldest first on request), with triage's
 suspected cause and the filed issue's link in their own entries, #279, and each step's recorded details (triage's level
 among the four, the fix's risk and rejected alternatives, the gate's checks, the review's attacks; `lib/runStepDetail.ts`,
 only when the record is that step's own; no time axis beside them: the column was too narrow to read); each
+Gemini step (triage, the fix, the review) names the model beside its words, from the model its own record names (`summary.<stage>.model`, copied to the guests' trimmed copy; an older record names none and the line is left out); each
 step wears the mark of who did it: Starfish's for triage, Gemini's for the fix, GitHub's for the issue, the pull request and the merge (and for verify only when
 the record says GitHub's checks judged it, `judgedOnGitHub`), Slack's for its messages; a run reopened after a decline is drawn from its
 latest reopening, says which round it is, and lists every step each earlier round reached, #285 (each earlier round folded, opened on its own line, its steps drawn with the same row as the latest round's: the run record keeps only a stage's latest record, so a step's recorded details show only when no later round ran that stage again); a step this round did not

@@ -235,9 +235,9 @@ export const PUBLIC_SUMMARY: Readonly<Record<string, Readonly<Record<string, Sha
   // `level` (noise, log, fix, merge) and `mergeCase` (an admin's case id) are engine tokens, not model text.
   triage: { decision: token, rule: token, model: token, level: tokenOrNull, mergeCase: tokenOrNull, cap: tokenOrNull, capBy: tokenOrNull, capRule: tokenOrNull, counterCount: countOrNull, counterCapped: bool, counterWindow: token, counterCheckedAt: iso },
   // `source`, `sourceSearch`: which rule found the source the fixer was shown (#259), engine tokens; `sourceImports` a count (#347).
-  fix: { outcome: token, rule: token, testAdded: boolOrNull, revisions: count, source: token, sourceFiles: count, sourceSearch: token, sourceImports: count },
+  fix: { outcome: token, rule: token, model: token, testAdded: boolOrNull, revisions: count, source: token, sourceFiles: count, sourceSearch: token, sourceImports: count },
   verify: { status: token, rule: token, patchSha256: hex, baseRevision: hex, files: count, exitCode: intOrNull, durationMs: nonNegative, isolation: token },
-  review: { verdict: tokenOrNull, rule: token, attacks: count, held: count, flagged: count, broken: count, patchSha256: hex },
+  review: { verdict: tokenOrNull, rule: token, model: token, attacks: count, held: count, flagged: count, broken: count, patchSha256: hex },
   // The issue Starfish filed: the same number and link the incident's copy already carries (`githubIssueUrl`).
   issue: { state: token, number: count, url: publicUrl },
   pr: { opened: bool, reason: token, number: count, url: publicUrl, patchSha256: hex },

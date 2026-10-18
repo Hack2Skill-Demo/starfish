@@ -1313,6 +1313,16 @@ function LevelScale({ level }: { level: Level }) {
   );
 }
 
+/** Whose words a Gemini step holds, when its record names the model (an older record does not, and then says nothing). */
+function ModelNote({ model, recordedBy }: { model?: string; recordedBy: string }) {
+  if (!model) return null;
+  return (
+    <p className="text-xs text-gray-600 dark:text-gray-400">
+      The model&apos;s reasoning (<span className="font-mono">{model}</span>), as {recordedBy} recorded it.
+    </p>
+  );
+}
+
 /** What a step recorded beyond its one line: only what is stored for it (runStepDetail.ts), so a copy that left it out shows nothing. */
 function StepDetails({
   step,
@@ -1425,6 +1435,7 @@ function StepDetails({
           ) : (
             <p className="text-xs text-gray-600 dark:text-gray-400">The patch text is not stored; with no pull request there is no diff to link to.</p>
           )}
+          <ModelNote model={detail.fix.model} recordedBy="the fix step" />
         </div>
       )}
 
@@ -1469,6 +1480,7 @@ function StepDetails({
               ))}
             </div>
           )}
+          <ModelNote model={detail.review.model} recordedBy="the review" />
         </div>
       )}
 

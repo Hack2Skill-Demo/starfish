@@ -36,7 +36,7 @@ export interface StepDetail {
     /** The independent log recount triage judged on. `count` null = the recount failed: never read as zero. */
     recount?: { count: number | null; window?: string; capped: boolean };
   };
-  fix?: { risk?: string; testAdded?: boolean; alternatives: string[]; source?: string; revisions?: number };
+  fix?: { risk?: string; testAdded?: boolean; alternatives: string[]; source?: string; revisions?: number; /** The model that wrote it, when the record says (an older one does not). */ model?: string };
   verify?: {
     files?: number;
     exitCode?: number | null;
@@ -46,7 +46,7 @@ export interface StepDetail {
     /** Where the verdict came from (`in-process`, `cloud-run-job`, `github-actions`); absent in a record written before it was kept. */
     isolation?: string;
   };
-  review?: { held?: number; flagged?: number; broken?: number; attacks: ReviewAttack[] };
+  review?: { held?: number; flagged?: number; broken?: number; attacks: ReviewAttack[]; model?: string };
   /** An alert or a message to a person: how the delivery ended. */
   delivery?: { state?: string; attempts?: number; reason?: string };
   /**
@@ -134,6 +134,7 @@ export function stepDetail(step: Step, cycle: CycleRow, events: readonly EventRo
       alternatives: numbered(rec, "alternative"),
       ...(text(rec.source) && { source: text(rec.source) }),
       ...(num(rec.revisions) !== undefined && { revisions: num(rec.revisions) }),
+      ...(text(rec.model) && { model: text(rec.model) }),
     };
     const pr = safeUrl(cycle.summary.pr?.url);
     if (pr) out.diffUrl = `${pr.replace(/\/+$/, "")}/files`;
@@ -162,6 +163,7 @@ export function stepDetail(step: Step, cycle: CycleRow, events: readonly EventRo
       attacks: numbered(rec, "attack")
         .map(parseAttack)
         .filter((a): a is ReviewAttack => a !== null),
+      ...(text(rec.model) && { model: text(rec.model) }),
     };
   }
 

@@ -1049,6 +1049,22 @@ describe("Runs page", () => {
     expect(within(list).getAllByText("Handed to a person")).toHaveLength(1);
   });
 
+  it("names the model beside every Gemini step's words, as triage does, and nothing for a record that lacks it", () => {
+    renderRuns();
+    const summary = {
+      triage: { decision: "act", rule: "model-act", reason: "r", level: "fix", model: "gemini-3.1-pro-preview" },
+      fix: { outcome: "proposed", risk: "low", testAdded: true, model: "gemini-3.1-pro-preview", revisions: 0 },
+      review: { verdict: "approve", held: 1, attack1: "held: x | y", model: "gemini-3.1-pro-preview" },
+    };
+    act(() => mocks.cyclesCb!([cycle("inc-a_r0", { state: "waiting-human", path: "human", leaseExpiresAt: null, summary })], false));
+    act(() =>
+      mocks.eventsCb!([event(1, "triage", "decision", "r", 50_000), event(2, "fix", "proposed", "root cause", 40_000), event(3, "review", "approve", "1 attacks tried", 30_000)])
+    );
+    const log = within(screen.getByRole("list", { name: "Step log" }));
+    for (const by of ["triage", "the fix step", "the review"]) expect(log.getByText(new RegExp(`as ${by} recorded it\\.`))).toBeInTheDocument();
+    expect(log.getAllByText("gemini-3.1-pro-preview")).toHaveLength(3);
+  });
+
   it("shows each step's recorded details: triage's choice among the levels, the fix's risk, the gate's checks and the review's attacks", () => {
     renderRuns();
     const summary = {
