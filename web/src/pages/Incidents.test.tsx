@@ -359,10 +359,11 @@ describe("Incidents page", () => {
     expect(within(row).getByText("Recurred")).toBeInTheDocument();
     expect(within(row).getByText("Regression ×2")).toBeInTheDocument();
     expect(within(row).getByRole("link", { name: "was #42" })).toHaveAttribute("href", "https://example.test/issues/42");
-    // A regression is open work: resolve or ignore, never acknowledge or reopen.
+    // A regression is open work: take it (#410), resolve or ignore it; never reopen it.
+    expect(within(row).getByRole("button", { name: /Acknowledge/ })).toBeInTheDocument();
     expect(within(row).getByRole("button", { name: "Resolve billing-charge" })).toBeInTheDocument();
     expect(within(row).getByRole("button", { name: "Ignore billing-charge" })).toBeInTheDocument();
-    expect(within(row).queryByRole("button", { name: /Acknowledge|Reopen/ })).toBeNull();
+    expect(within(row).queryByRole("button", { name: /Reopen/ })).toBeNull();
 
     // A first occurrence carries no regression marker.
     const fresh = screen.getByText("mailDrainer").closest("tr")!;

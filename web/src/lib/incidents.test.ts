@@ -184,7 +184,7 @@ describe("nextStatus — the transitions operators may make", () => {
     ["new", "reopen", null],
     ["recurred", "resolve", "resolved"],
     ["recurred", "ignore", "ignored"],
-    ["recurred", "acknowledge", null],
+    ["recurred", "acknowledge", "acknowledged"], // a person takes a regression too: it stops the calls (#410)
     ["recurred", "reopen", null],
   ] as const)("%s + %s -> %s", (from, action, to) => {
     expect(nextStatus(from, action)).toBe(to);
