@@ -95,7 +95,7 @@ import {
   type ReplaySpeedChoice,
 } from "../lib/runsModel";
 import { runInWords } from "../lib/runWords";
-import { LEVELS, LEVEL_SHORT, judgedOnGitHub, recordIsTheStep, stepDetail, type ReviewAttack, type StepDetail } from "../lib/runStepDetail";
+import { LEVELS, LEVEL_SHORT, judgedOnGitHub, recordIsTheStep, stepDetail, type Level, type ReviewAttack, type StepDetail } from "../lib/runStepDetail";
 
 
 /** Whether the selected run is shown full width, the run list hidden; kept per browser, like the sidebar's collapse. */
@@ -1272,6 +1272,47 @@ const ATTACK_TONE: Record<ReviewAttack["outcome"], string> = {
   broken: "text-error-700 dark:text-error-400",
 };
 
+/**
+ * How far Starfish goes, drawn as a scale to read and not as buttons: four points on a line, the line filled up to the
+ * level triage chose and a ring on it. Nothing here is clickable; the one-line meaning sits under it.
+ */
+function LevelScale({ level }: { level: Level }) {
+  const at = LEVELS.indexOf(level);
+  const last = LEVELS.length - 1;
+  return (
+    <div role="group" aria-label="How far Starfish goes" className="relative grid grid-cols-4 pt-0.5">
+      <span aria-hidden className="absolute left-[12.5%] right-[12.5%] top-[9px] h-0.5 rounded bg-gray-200 dark:bg-gray-700" />
+      <span aria-hidden className="absolute left-[12.5%] top-[9px] h-0.5 rounded bg-brand-700 dark:bg-brand-400" style={{ width: `${(at / last) * 75}%` }} />
+      {LEVELS.map((l, i) => {
+        const chosen = i === at;
+        return (
+          <div key={l} className="relative flex flex-col items-center gap-1.5 text-center">
+            <span
+              aria-hidden
+              className={`flex h-[18px] w-[18px] items-center justify-center rounded-full ${
+                chosen
+                  ? "bg-brand-700 ring-4 ring-brand-100 dark:bg-brand-400 dark:ring-brand-900"
+                  : i < at
+                    ? "bg-brand-700 dark:bg-brand-400"
+                    : "border-2 border-gray-300 bg-white dark:border-gray-600 dark:bg-gray-800"
+              }`}
+            >
+              {i < at && <span className="h-1.5 w-1.5 rounded-full bg-white dark:bg-gray-950" />}
+            </span>
+            <span
+              {...(chosen && { "aria-current": "true" as const })}
+              className={`text-xs leading-tight ${chosen ? "font-semibold text-gray-900 dark:text-white" : "text-gray-500 dark:text-gray-400"}`}
+            >
+              {LEVEL_SHORT[l]}
+              {!chosen && <span className="sr-only"> (not chosen)</span>}
+            </span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 /** What a step recorded beyond its one line: only what is stored for it (runStepDetail.ts), so a copy that left it out shows nothing. */
 function StepDetails({
   step,
@@ -1306,20 +1347,7 @@ function StepDetails({
       )}
       {detail.triage?.level && (
         <div className="space-y-1.5">
-          <div role="group" aria-label="How far Starfish goes" className="flex flex-wrap gap-2">
-            {LEVELS.map((l) =>
-              l === detail.triage!.level ? (
-                <span key={l} aria-current="true" className="rounded-lg bg-brand-700 px-3 py-1.5 text-sm font-semibold text-white dark:bg-brand-400 dark:text-gray-950">
-                  {LEVEL_SHORT[l]}
-                </span>
-              ) : (
-                <span key={l} className="rounded-lg border border-dashed border-gray-300 px-3 py-1.5 text-sm text-gray-500 line-through dark:border-gray-600 dark:text-gray-400">
-                  {LEVEL_SHORT[l]}
-                  <span className="sr-only"> (not chosen)</span>
-                </span>
-              )
-            )}
-          </div>
+          <LevelScale level={detail.triage.level} />
           <p className="text-xs text-gray-600 dark:text-gray-400">
             {detail.triage.levelLabel}
             {detail.triage.mergeCase && (
