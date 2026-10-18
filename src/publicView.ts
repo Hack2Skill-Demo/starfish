@@ -351,6 +351,8 @@ export function toPublicEvent(cycleId: string, d: Record<string, unknown> | unde
   if (seq === undefined || !at || !stage) return null;
   const out: Out = { publicView: PUBLIC_VIEW_MARKER, cycleId, environment: d.environment, seq, at, stage };
   put(out, "type", token(d.type));
+  // Its round (#436): a plain count the engine wrote, so a guest numbers a run's rounds as the team does.
+  put(out, "round", count(d.round));
   if (PUBLIC_SUMMARY_STAGES.includes(stage)) put(out, "summary", publicLine(d.summary, MAX_EVENT_SUMMARY));
   if (d.synthetic === true) out.synthetic = true;
   return out;

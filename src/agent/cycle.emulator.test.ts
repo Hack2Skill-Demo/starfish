@@ -8,7 +8,7 @@ import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { deleteApp, initializeApp } from "firebase-admin/app";
 import { getFirestore, Timestamp } from "firebase-admin/firestore";
 import type { Firestore } from "firebase-admin/firestore";
-import { acquireLease, appendEventsInTransaction, countSpend, cycleId, finishCycle, recordEvent, recordPrState, releaseLease, renewLease, sanitizeEvent, type CycleConfig, type CycleKey, type PrStateRecord } from "./cycle.js";
+import { acquireLease, appendEventsInTransaction, countSpend, cycleId, finishCycle, recordEvent, recordPrState, releaseLease, renewLease, sanitizeEvent, ROUND_SCOPED_RECORDS, type CycleConfig, type CycleKey, type PrStateRecord } from "./cycle.js";
 import { SEEDED_SECRETS } from "../ingest/testSecrets.js";
 import { causeClass } from "./reconsider.js";
 import { PUBLIC_VIEW_OFF } from "../testConfig.js";
@@ -582,6 +582,25 @@ describe("retrying a cycle that ended waiting-human, on a person's request (#317
     expect(c.summary.verify).toBeUndefined();
     expect(c.outcome).toBeUndefined();
     expect(c.history).toHaveLength(1);
+  });
+
+  it("clears every round-scoped record, keeps a pull request only once one was opened, and stamps each event with its round (#413, #436)", async () => {
+    await refusedFix();
+    // A round that ran the tests alone, drafted a pull request it did not open (a dry run), and armed the phone escalation.
+    await db.collection(cfg.cycleCollection).doc("inc1_r0").update({
+      "summary.before": { status: "failed" },
+      "summary.pr": { opened: false, reason: "dry-run" },
+      "summary.escalation": { state: "waiting", step: 0 },
+    });
+    await setIncident({ retriageRequestedAt: mins(2) });
+    const r = await acquireLease(db, cfg, key, "b", mins(3), { reconsider: policy() });
+    if (!r.acquired) throw new Error("setup");
+    const c = await cycle();
+    for (const stage of ROUND_SCOPED_RECORDS) expect(c.summary[stage], stage).toBeUndefined();
+    expect(c.summary.pr).toBeUndefined();
+    expect(c.summary.issue).toMatchObject({ number: 7 });
+    await recordEvent(db, cfg, r.cycleId, "b", mins(3), { stage: "cycle", type: "reconsidered", summary: "retried" });
+    expect((await events()).map((e) => e.round)).toEqual([1, 1, 1, 1, 1, 2]);
   });
 
   it("is idempotent: the same request does not reopen it a second time, and the same state is reached again", async () => {

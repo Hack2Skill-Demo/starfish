@@ -55,6 +55,11 @@ export interface EventRow {
   summary: string;
   at: Date;
   data: Flat;
+  /**
+   * The round of the run it was written in (#436): the engine stamps every event with it (src/agent/cycle.ts `roundOf`), so
+   * a run whose early events are past the page read still numbers its rounds as Slack did. Absent on an older event.
+   */
+  round?: number;
 }
 
 const str = (v: unknown): string | undefined => (typeof v === "string" && v !== "" ? v : undefined);
@@ -109,7 +114,8 @@ export function parseEvent(id: string, d: Record<string, unknown>): EventRow | n
   const at = date(d.at);
   const stage = str(d.stage);
   if (!at || !stage || typeof d.seq !== "number" || !Number.isInteger(d.seq)) return null;
-  return { id, seq: d.seq, stage, type: str(d.type) ?? "", summary: str(d.summary) ?? "", at, data: flat(d.data) };
+  const round = typeof d.round === "number" && Number.isSafeInteger(d.round) && d.round > 0 ? d.round : undefined;
+  return { id, seq: d.seq, stage, type: str(d.type) ?? "", summary: str(d.summary) ?? "", at, data: flat(d.data), ...(round !== undefined && { round }) };
 }
 
 // ---- Run state ---------------------------------------------------------------------------------
@@ -611,6 +617,8 @@ const OPTIONAL_STAGE_TITLES: Record<string, string> = {
   // Auto-merge (#9): the patch's tests alone on the base revision, and the merge candidate.
   before: "Test before the fix",
   merge: "Auto-merge",
+  // Fast revert (#9): the watch after a merge, and the revert it opens when the incident comes back.
+  revert: "Fast revert",
   // Phone escalation (#37): the calls to the on-call people when the Slack message went unacknowledged.
   escalation: "Phone the on-call",
 };
@@ -653,6 +661,9 @@ export function buildWaterfall(cycle: CycleRow, events: readonly EventRow[], now
     byStage.set(e.stage, [...(byStage.get(e.stage) ?? []), e]);
   }
   const createdMs = cycle.createdAt.getTime();
+  // A round's number is the engine's when its events carry it (#436): a run with more events than the page read has lost its
+  // earliest reopenings, and counting the ones left would number the rounds from 1 again.
+  const roundBefore = (reopening: EventRow, r: number) => (reopening.round !== undefined && reopening.round > 1 ? reopening.round - 1 : r + 1);
   const earlier: EarlierRound[] = reopenings.flatMap((reopening, r): EarlierRound[] => {
     const before = reopenings[r - 1];
     const inRound = ordered.filter((e) => e.stage !== NOTE_STAGE && e.seq < reopening.seq && (!before || e.seq > before.seq));
@@ -665,7 +676,7 @@ export function buildWaterfall(cycle: CycleRow, events: readonly EventRow[], now
       .sort((a, b) => b.seq - a.seq)
       .map(
         (e): EarlierStep => ({
-          round: r + 1,
+          round: roundBefore(reopening, r),
           stage: e.stage,
           title: titleOf(e.stage),
           ...(e.type && { outcome: e.type }),
@@ -677,7 +688,7 @@ export function buildWaterfall(cycle: CycleRow, events: readonly EventRow[], now
       );
     return [
       {
-        round: r + 1,
+        round: roundBefore(reopening, r),
         stage: last.stage,
         title: titleOf(last.stage),
         ...(last.type && { outcome: last.type }),
@@ -741,7 +752,7 @@ export function buildWaterfall(cycle: CycleRow, events: readonly EventRow[], now
     notes,
     startMs,
     endMs,
-    rounds: reopenings.length + 1,
+    rounds: Math.max(reopenings.length + 1, ...ordered.map((e) => e.round ?? 1)),
     ...(lastReopening && { reopened: { at: lastReopening.at, summary: lastReopening.summary } }),
     earlier,
   };

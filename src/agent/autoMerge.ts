@@ -38,7 +38,7 @@
  * candidate to merged or skipped. A merge starts the fast-revert watch (fastRevert.ts). A merge is a release, though Starfish runs no deploy: the
  * target's own CI/CD does, and Starfish cannot see when it finishes.
  */
-import { Timestamp, type DocumentReference, type Firestore } from "firebase-admin/firestore";
+import { Timestamp, type DocumentReference, type Firestore, type Transaction } from "firebase-admin/firestore";
 import type { StarfishConfig } from "../config.js";
 import { redactPii } from "../ingest/redact.js";
 import { inert, type CheckRun, type GithubClient, type PullRequestResult } from "../integrations/githubPr.js";
@@ -47,7 +47,7 @@ import { OPEN_INCIDENT_STATUSES, type Incident, type IncidentStatus } from "../t
 import { INDEX_MERGE_CASE } from "../settingsSchema.js";
 import type { LevelCap } from "../triageRules.js";
 import type { BlastRadius } from "./blastRadius.js";
-import { sanitizeEvent, type CycleConfig } from "./cycle.js";
+import { sanitizeEvent, updateSettledCycle, type CycleConfig, type SettledUpdate } from "./cycle.js";
 import { pathsFromStack } from "./pass.js";
 import { requiredRuns, summarizeChecks } from "./reconcile.js";
 
@@ -351,37 +351,75 @@ export async function cyclesInState(db: Firestore, cfg: Pick<AutoMergeConfig, "c
 }
 
 /**
- * Replace `summary.<stage>` on a finished cycle that opened a pull request, in a transaction, only while the current
- * record still satisfies `expect`: two passes racing cannot both move one candidate. With `counter`, the same
- * transaction also counts today's merge (and refuses at the cap). Returns false when the record had moved on, or the cap
- * was reached.
+ * Replace `summary.<stage>` on a finished cycle that opened a pull request, only while the current record still
+ * satisfies `expect`: two passes racing cannot both move one candidate. With `counter`, the same transaction also counts
+ * today's merge (and refuses at the cap). Returns false when the record had moved on, or the cap was reached. Each move
+ * is also a run event (stage `merge` or `revert`, its new state as the type), through cycle.ts `updateSettledCycle`, so
+ * the Runs page shows a merge, a skip or a revert, not only the candidate it recorded first (#421).
  */
 export async function moveRecord(
   db: Firestore,
-  cfg: Pick<AutoMergeConfig, "cycleCollection">,
+  cfg: CycleConfig,
   id: string,
+  now: Date,
   stage: "merge" | "revert",
   expect: (current: Rec) => boolean,
   next: Record<string, unknown>,
   opts: { counter?: { ref: DocumentReference; cap: number }; also?: Record<string, Record<string, unknown>> } = {}
 ): Promise<boolean> {
-  const ref = db.collection(cfg.cycleCollection).doc(id);
-  return db.runTransaction(async (tx) => {
-    const snap = await tx.get(ref);
+  return updateSettledCycle(db, cfg, id, now, async (tx, d): Promise<SettledUpdate<boolean>> => {
     const counterSnap = opts.counter ? await tx.get(opts.counter.ref) : undefined;
-    const d = snap.data();
-    if (!d || d.state !== "done" || rec(rec(d.summary).pr).opened !== true) return false;
-    if (!expect(rec(rec(d.summary)[stage]))) return false;
+    if (!d || d.state !== "done" || rec(rec(d.summary).pr).opened !== true) return { result: false };
+    if (!expect(rec(rec(d.summary)[stage]))) return { result: false };
+    let used = 0;
     if (opts.counter) {
-      const used = Number(counterSnap?.data()?.count ?? 0);
-      if (used >= opts.counter.cap) return false;
-      tx.set(opts.counter.ref, { count: used + 1 }, { merge: true });
+      used = Number(counterSnap?.data()?.count ?? 0);
+      if (used >= opts.counter.cap) return { result: false };
     }
-    const update: Record<string, unknown> = { [`summary.${stage}`]: flat(next) };
-    for (const [k, v] of Object.entries(opts.also ?? {})) update[`summary.${k}`] = flat(v);
-    tx.update(ref, update);
-    return true;
+    const counter = opts.counter;
+    const records: Record<string, Record<string, unknown>> = { [stage]: flat(next) };
+    for (const [k, v] of Object.entries(opts.also ?? {})) records[k] = flat(v);
+    return {
+      result: true,
+      records,
+      event: { stage, type: String(next.state), summary: moveSummary(stage, next), data: { ...(typeof next.reason === "string" && { reason: next.reason }) } },
+      ...(counter && { also: (t: Transaction) => t.set(counter.ref, { count: used + 1 }, { merge: true }) }),
+    };
   });
+}
+
+/** The one line a record's move puts in the run's event: fixed words per state, the PR number and the reason only. */
+export function moveSummary(stage: "merge" | "revert", next: Record<string, unknown>): string {
+  const n = typeof next.number === "number" ? ` #${next.number}` : "";
+  const why = typeof next.reason === "string" && next.reason !== "" ? `: ${next.reason}` : "";
+  if (stage === "merge") {
+    switch (next.state) {
+      case "merging":
+        return `Merging the pull request${n}: its required checks passed`;
+      case "merged":
+        return `Starfish merged the pull request${n}`;
+      case "skipped":
+        return `Not auto-merged${why}`;
+      default:
+        return `Auto-merge: ${String(next.state)}${why}`;
+    }
+  }
+  switch (next.state) {
+    case "clear":
+      return "The fast-revert watch saw no recurrence: the merge stands";
+    case "opening":
+      return "The incident came back after the merge: opening a revert";
+    case "pending":
+      return `Revert pull request${n} opened: waiting for its checks`;
+    case "merging":
+      return `Merging the revert${n}`;
+    case "reverted":
+      return next.by === "person" ? "A person merged the revert" : "Starfish merged the revert";
+    case "escalated":
+      return `Fast revert handed to a person${why}`;
+    default:
+      return `Fast revert: ${String(next.state)}${why}`;
+  }
 }
 
 /** Tell a person about a candidate that will not merge. Never throws; returns what to record. */
@@ -510,7 +548,7 @@ export async function runAutoMergeStep(deps: AutoMergeDeps): Promise<AutoMergeSu
 
     const skip = async (reason: string, from: (m: Rec) => boolean = isPending): Promise<"skipped" | "unchanged"> => {
       const escalation = QUIET.has(reason) ? "none" : await escalate(d, cycle, `auto-merge-${reason.split(":")[0]}`, skipSentence(reason));
-      const moved = await moveRecord(db, cfg, cycle.id, "merge", from, { ...merge, state: "skipped", reason, escalation, decidedAt: now.toISOString() });
+      const moved = await moveRecord(db, cfg, cycle.id, now, "merge", from, { ...merge, state: "skipped", reason, escalation, decidedAt: now.toISOString() });
       return moved ? "skipped" : "unchanged";
     };
 
@@ -592,7 +630,7 @@ export async function runAutoMergeStep(deps: AutoMergeDeps): Promise<AutoMergeSu
     const day = now.toISOString().slice(0, 10);
     const counter = db.collection(cfg.runCollection).doc(`automerge_${cfg.environment}_${day}`);
     const claimedAt = now.toISOString();
-    const claimed = await moveRecord(db, cfg, cycle.id, "merge", isPending, { ...merge, state: "merging", claimedBy: d.owner, claimedAt }, { counter: { ref: counter, cap: cfg.maxMergesPerDay } });
+    const claimed = await moveRecord(db, cfg, cycle.id, now, "merge", isPending, { ...merge, state: "merging", claimedBy: d.owner, claimedAt }, { counter: { ref: counter, cap: cfg.maxMergesPerDay } });
     if (!claimed) {
       // Refused with the record still pending on a finished cycle is the cap; anything else moved on without this pass.
       const doc = (await db.collection(cfg.cycleCollection).doc(cycle.id).get()).data();
@@ -627,7 +665,7 @@ export async function runAutoMergeStep(deps: AutoMergeDeps): Promise<AutoMergeSu
 
     async function skipClaimed(reason: string): Promise<"skipped" | "unchanged"> {
       const escalation = QUIET.has(reason) ? "none" : await escalate(d, cycle, `auto-merge-${reason.split(":")[0]}`, skipSentence(reason));
-      const moved = await moveRecord(db, cfg, cycle.id, "merge", mine, { ...claimedMerge, state: "skipped", reason, escalation, decidedAt: now.toISOString() });
+      const moved = await moveRecord(db, cfg, cycle.id, now, "merge", mine, { ...claimedMerge, state: "skipped", reason, escalation, decidedAt: now.toISOString() });
       return moved ? "skipped" : "unchanged";
     }
   }
@@ -641,7 +679,7 @@ export async function runAutoMergeStep(deps: AutoMergeDeps): Promise<AutoMergeSu
     const at = Date.parse(mergedAt);
     const until = new Date((Number.isFinite(at) ? at : d.now().getTime()) + d.config.fastRevertMinutes * 60_000).toISOString();
     const revert = merge.kind === "index" ? { state: "clear", reason: "index-not-reverted", mergeSha, mergedAt } : { state: "watching", mergeSha, mergedAt, until };
-    return moveRecord(d.db, d.config, cycle.id, "merge", from, { ...merge, state: "merged", mergeSha, mergedAt, decidedAt: d.now().toISOString() }, { also: { revert } });
+    return moveRecord(d.db, d.config, cycle.id, d.now(), "merge", from, { ...merge, state: "merged", mergeSha, mergedAt, decidedAt: d.now().toISOString() }, { also: { revert } });
   }
 }
 

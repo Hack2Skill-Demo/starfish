@@ -372,6 +372,16 @@ describe("small helpers", () => {
       expect(w.steps.find((s) => s.stage === "triage")!.durationMs).toBe(6000);
     });
 
+    it("numbers the rounds as the engine did when the events carry their round, even past the events the page read (#436)", () => {
+      // Rounds 1 to 3 are past the newest events the page read: only round 4's reopening and round 3's last step are here.
+      const r = (e: EventRow, round: number): EventRow => ({ ...e, round });
+      const w = buildWaterfall(declined(), [r(ev("notify", "sent", 5000), 3), r(ev("cycle", "reconsidered", HOUR, reopen), 4), r(ev("triage", "decision", HOUR + 3000), 4)], T0 + 9 * HOUR);
+      expect(w.rounds).toBe(4);
+      expect(w.earlier.map((e) => e.round)).toEqual([3]);
+      expect(parseEvent("000001", { seq: 1, stage: "triage", type: "decision", at: { toDate: () => new Date(T0) }, round: 4 })).toMatchObject({ round: 4 });
+      expect(parseEvent("000001", { seq: 1, stage: "triage", type: "decision", at: { toDate: () => new Date(T0) }, round: 0 })).not.toHaveProperty("round");
+    });
+
     it("skips an earlier round that recorded no step, and counts it as a round all the same", () => {
       const w = buildWaterfall(declined(), [ev("triage", "decision", 5000), ev("cycle", "reconsidered", HOUR, reopen), ev("cycle", "reconsidered", 2 * HOUR, reopen), ev("triage", "decision", 2 * HOUR + 3000)], T0 + 9 * HOUR);
       expect(w.rounds).toBe(3);

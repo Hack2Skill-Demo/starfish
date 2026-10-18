@@ -161,6 +161,34 @@ describe("when the sequence starts", () => {
     expect((await esc())?.state).toBe("calling");
   });
 
+  it("a person's Retry ends the earlier round's calls, and a round that hands over again arms its own (#411)", async () => {
+    await setPolicy();
+    await seedPeople(ROTA);
+    clock = at(5);
+    await tick();
+    clock = at(10);
+    expect(await tick()).toMatchObject({ placed: 1 });
+    // Retry: the cycle is reopened (cycle.ts) and runs round 2. The sequence armed for round 1 calls nobody more.
+    const cycleRef = db.collection(cfg.cycleCollection).doc(CYCLE);
+    await cycleRef.update({ state: "running", reconsiderCount: 1, reconsideredAt: [Timestamp.fromDate(at(11))], updatedAt: Timestamp.fromDate(at(11)) });
+    clock = at(20);
+    await tick();
+    expect(placed).toHaveLength(1);
+    expect(await esc()).toMatchObject({ open: false, state: "stopped" });
+    // Round 2 settles waiting for a person, with only round 1's message on record: nothing is armed from it.
+    await cycleRef.update({ state: "waiting-human", updatedAt: Timestamp.fromDate(at(21)) });
+    clock = at(22);
+    expect(await tick()).toMatchObject({ armed: 0 });
+    // Round 2's own message: a fresh sequence for round 2, which calls the primary again.
+    await cycleRef.update({ "summary.notify": { state: "sent", attempts: 1, at: at(22).toISOString(), round: 2 }, updatedAt: Timestamp.fromDate(at(22)) });
+    clock = at(23);
+    expect(await tick()).toMatchObject({ armed: 1 });
+    expect(await esc()).toMatchObject({ open: true, round: 2 });
+    clock = at(33);
+    expect(await tick()).toMatchObject({ placed: 1 });
+    expect(placed.map((p) => p.to)).toEqual([PHONES.p1, PHONES.p1]);
+  });
+
   it("does nothing while the deployment switch or the admin's switch is off", async () => {
     await seedPeople(ROTA);
     await setPolicy({ enabled: false });

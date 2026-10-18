@@ -55,7 +55,7 @@ export interface RunWords {
 }
 
 /** The steps that decide where a run goes, as against the ones that tell people (the issue, the alerts, the calls). */
-const DECIDING = new Set(["triage", "fix", "verify", "review", "index", "pr", "merge"]);
+const DECIDING = new Set(["triage", "fix", "verify", "review", "index", "pr", "merge", "revert"]);
 
 const LEVEL_WORDS: Record<string, string> = {
   noise: "recorded it as noise, with nothing filed",
@@ -170,9 +170,28 @@ function sentence(stage: string, outcome: string | undefined, f: Fields): Senten
         ? ok("It is waiting for the required checks before an auto-merge.")
         : outcome === "skipped"
           ? ok(reason ? `It was not auto-merged (${reason}).` : "It was not auto-merged.")
-          : outcome === "merged"
-            ? ok("Starfish merged it.")
-            : undefined;
+          : outcome === "merging"
+            ? ok("Its required checks passed, and Starfish began merging it.")
+            : outcome === "merged"
+              ? ok("Starfish merged it.")
+              : undefined;
+    }
+    // Fast revert (#9): the watch every merge starts. Each move of its record is an event (#421).
+    case "revert": {
+      const reason = str(f.reason);
+      return outcome === "clear"
+        ? ok("The watch after the merge saw no recurrence, so the merge stands.")
+        : outcome === "opening"
+          ? ok("The incident came back after the merge, so Starfish began a revert.")
+          : outcome === "pending"
+            ? ok("The revert's pull request was opened and is waiting for its checks.")
+            : outcome === "merging"
+              ? ok("The revert's checks passed, and Starfish began merging it.")
+              : outcome === "reverted"
+                ? ok("The merge was reverted.")
+                : outcome === "escalated"
+                  ? ok(reason ? `The revert was handed to a person (${reason}).` : "The revert was handed to a person.")
+                  : undefined;
     }
     case "index":
       return outcome === "started"
@@ -217,7 +236,8 @@ export function runInWords(cycle: CycleRow, water: Waterfall, events: readonly E
   const rounds: WordsRound[] = [];
   for (const r of water.earlier) {
     const steps = [...r.steps].reverse().map((s) => wordStep({ stage: s.stage, ...(s.outcome && { outcome: s.outcome }), ...(s.summary && { summary: s.summary }), ...(s.data && { data: s.data }) }, recordOf(s.stage, s.at)));
-    const began = r.round > 1 ? reopenings[r.round - 2]?.summary : undefined;
+    // The reopening that began this round: by the round the engine stamped on it (#436), else by its place.
+    const began = r.round > 1 ? (reopenings.find((n) => n.round === r.round) ?? reopenings[r.round - 2])?.summary : undefined;
     rounds.push({ round: r.round, ...(began && { began }), sentences: steps.map(withStage) });
   }
   const latest = [...stepLogOrder(water.steps)]
