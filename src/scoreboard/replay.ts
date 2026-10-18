@@ -31,7 +31,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { StarfishConfig } from "../config.js";
 import { MAX_REVISIONS, UNFIT_PATCH_RULES } from "../agent/loop.js";
-import { proposeFix, type FixRequest, type SourceFile } from "../agent/fixer.js";
+import { proposeFix, reviewFeedback, verifyFeedback, type FixRequest, type SourceFile } from "../agent/fixer.js";
 import { reviewPatch } from "../agent/reviewer.js";
 import { triageIncident, type AskJson, type TriageSubject } from "../agent/triage.js";
 import { verifyPatch, type VerifyConfig } from "../agent/verifyGate.js";
@@ -140,7 +140,7 @@ async function replayIncidentCase(c: CorpusCase, opts: ReplayOptions): Promise<{
     const verified = await verifyPatch({ sourceDir: c.repoDir, patch: fix.patch, config: gateFor(cfg, c.verifyCommand) });
     if (verified.status !== "passed") {
       if (revisions < MAX_REVISIONS) {
-        feedback = { previousPatchSha256: verified.patchSha256, verifyOutput: verified.output || verified.reason };
+        feedback = verifyFeedback(fix.patch, verified);
         continue;
       }
       return notShipped(`verify-${verified.rule}`);
@@ -153,8 +153,7 @@ async function replayIncidentCase(c: CorpusCase, opts: ReplayOptions): Promise<{
       if (reviewed.verdict === undefined) throw new CaseError(`review ${reviewed.rule}`);
       if (reviewed.verdict === "block") {
         if (revisions < MAX_REVISIONS) {
-          const broken = (reviewed.attacks ?? []).filter((a) => a.outcome === "broken").map((a) => `${a.attack}: ${a.detail}`);
-          feedback = { previousPatchSha256: verified.patchSha256, verifyOutput: `A reviewer broke this patch:\n${broken.join("\n")}` };
+          feedback = reviewFeedback(fix.patch, reviewed.attacks ?? []);
           continue;
         }
         return notShipped("review-blocked");

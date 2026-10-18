@@ -72,7 +72,8 @@ import {
 } from "./cycle.js";
 import type { IssueRequest, IssueResult } from "../integrations/githubPr.js";
 import type { AlertRequest, DeliveryResult, NotifyRequest } from "../integrations/slack.js";
-import { proposeFix, type FixRequest, type FixRule, type SourceFile } from "./fixer.js";
+import { proposeFix, reviewFeedback, verifyFeedback, type FixRequest, type FixRule, type SourceFile } from "./fixer.js";
+export { REVISION_SCOPE } from "./fixer.js";
 import { reviewPatch, type Attack, type ReviewVerdict } from "./reviewer.js";
 import { triageIncident, triageLevel, type AskJson, type TriageSubject } from "./triage.js";
 import { verifyPatch, type VerifyConfig, type VerifyRequest, type VerifyResult } from "./verifyGate.js";
@@ -248,10 +249,6 @@ class LeaseLost extends Error {}
 
 /** How many revisions one cycle may make, shared between a failed verify and a blocking review. */
 export const MAX_REVISIONS = 1;
-
-/** Said to the fixer after the review broke its patch (#375): fix what was shown, and nothing else in the file. */
-export const REVISION_SCOPE =
-  "Fix only what is listed above, with the smallest change to your patch. Do not widen it to fix other problems in the file: those are for a person.";
 
 const RECONSIDER_SUMMARY = {
   operator: "an operator asked for a retriage",
@@ -869,7 +866,7 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
       if (verified.status !== "passed") {
         if (revisions < MAX_REVISIONS) {
           await spendRevision();
-          feedback = { previousPatchSha256: verified.patchSha256, verifyOutput: verified.output || verified.reason };
+          feedback = verifyFeedback(fix.patch, verified);
           continue;
         }
         return await handOver(factsOf(loaded), "human", `verify-${verified.rule}`, verified.reason, `verify-${verified.rule}`, "human");
@@ -916,13 +913,9 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
         if (reviewed.verdict === "block") {
           if (revisions < MAX_REVISIONS) {
             await spendRevision();
-            const broken = (reviewed.attacks ?? []).filter((a) => a.outcome === "broken").map((a) => `${a.attack}: ${a.detail}`);
             // Only what the review showed this patch breaks (#375): a revision that also takes on other problems in the file
             // stops being the minimal fix and fails on its own (CODE-03's transaction rewrite).
-            feedback = {
-              previousPatchSha256: verified.patchSha256,
-              verifyOutput: `A reviewer broke this patch:\n${broken.join("\n")}\n${REVISION_SCOPE}`,
-            };
+            feedback = reviewFeedback(fix.patch, reviewed.attacks ?? []);
             continue;
           }
           return await handOver(

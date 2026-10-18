@@ -24,7 +24,7 @@
  * model in its tests.
  */
 import { askJson, modelCallFailure } from "../vertex.js";
-import { clipWellFormed, redactCredentials, sanitize } from "../ingest/redact.js";
+import { clipWellFormed, redactCredentials, redactTail, sanitize, truncate } from "../ingest/redact.js";
 import { renderForTriage } from "./triage.js";
 import { renderSourceFiles, sourceNote } from "./sourceContext.js";
 import { MAX_REVIEW_PATCH_CHARS } from "./reviewer.js";
@@ -48,9 +48,35 @@ export interface FixRequest {
   sourceRule?: "stack" | "stack-and-function-name" | "function-name" | "none";
   /** With `function-name`: how many of `files`, after the first, are files it imports (#347). */
   sourceImports?: number;
-  /** From one failed verify run, when this is the revision round. */
-  feedback?: { previousPatchSha256: string; verifyOutput: string };
+  /** Why the previous patch failed, when this is the revision round: built by `verifyFeedback` or `reviewFeedback`. */
+  feedback?: RevisionFeedback;
 }
+
+/**
+ * One round of feedback for the revision, built only here so the loop and the replay send the model the same thing
+ * (#415). It carries the previous patch itself: the revision is asked to change that patch, and at temperature 0 a model
+ * that sees only a hash has to rebuild it from nothing.
+ */
+export type RevisionFeedback =
+  | { kind: "verify"; previousPatch: string; output: string }
+  | { kind: "review"; previousPatch: string; broken: string[] };
+
+/** Said to the fixer after the review broke its patch (#375): fix what was shown, and nothing else in the file. */
+export const REVISION_SCOPE =
+  "Fix only what is listed below, with the smallest change to your patch. Do not widen it to fix other problems in the file: those are for a person.";
+
+/** The verify gate refused the patch: its output (whose end is where a test run says what failed) or its reason. */
+export function verifyFeedback(previousPatch: string, verified: { output?: string; reason: string }): RevisionFeedback {
+  return { kind: "verify", previousPatch, output: verified.output || verified.reason };
+}
+
+/** The review broke the patch: only the attacks that broke it (#375), each as `attack: detail`. */
+export function reviewFeedback(previousPatch: string, attacks: readonly { outcome: string; attack: string; detail: string }[]): RevisionFeedback {
+  return { kind: "review", previousPatch, broken: attacks.filter((a) => a.outcome === "broken").map((a) => `${a.attack}: ${a.detail}`) };
+}
+
+export const VERIFY_FEEDBACK_HEADER = "PREVIOUS ATTEMPT FAILED VERIFICATION";
+export const REVIEW_FEEDBACK_HEADER = "PREVIOUS ATTEMPT BLOCKED BY REVIEW";
 
 export type FixRule =
   | "fixer-proposed"
@@ -83,6 +109,7 @@ const MAX_ALTERNATIVES = 5;
 export const MAX_FILE_CHARS = 20_000;
 export const MAX_TOTAL_SOURCE_CHARS = 60_000;
 const MAX_FEEDBACK_CHARS = 4_000;
+const MAX_BROKEN_ATTACK_CHARS = 600;
 
 export const FIX_SYSTEM = `You are fixing one production bug in a small team's codebase. Produce the
 MINIMAL change that addresses the root cause: not a refactor, not surrounding cleanup, not a new
@@ -110,19 +137,27 @@ export const FIX_SCHEMA = {
   required: ["rootCause", "patch", "testAdded", "risk", "rejectedAlternatives"],
 };
 
+/**
+ * The revision's section (#415). The verify output is a test or CI log, whose failure is at its END: kept from the tail.
+ * The review's scope instruction comes first, so no number of attacks can cut it off. The previous patch is code, so it
+ * gets the source's shape-only redaction, bounded as a patch is.
+ */
+function renderFeedback(f: RevisionFeedback): string[] {
+  const patch = ["Your previous patch:", truncate(redactCredentials(f.previousPatch), MAX_FIX_PATCH_BYTES), ""];
+  if (f.kind === "verify") {
+    return [VERIFY_FEEDBACK_HEADER, ...patch, "The end of the verify command's output:", redactTail(f.output, MAX_FEEDBACK_CHARS)];
+  }
+  const broken = f.broken.map((b) => `- ${sanitize(b, MAX_BROKEN_ATTACK_CHARS) ?? ""}`).join("\n");
+  return [REVIEW_FEEDBACK_HEADER, REVISION_SCOPE, "", ...patch, "What the review showed this patch breaks:", truncate(broken, MAX_FEEDBACK_CHARS)];
+}
+
 /** What the model is shown. Source gets shape-only redaction: `token = getToken()` is code, not a leak. */
 export function renderForFix(req: FixRequest): string {
   const parts = [renderForTriage(req.subject), "", "SOURCE CONTEXT"];
   const note = sourceNote({ ...(req.sourceRule && { rule: req.sourceRule }), ...(req.sourceImports !== undefined && { imports: req.sourceImports }) }, req.files.length);
   if (note) parts.push(note, "");
   parts.push(...renderSourceFiles(req.files, { maxFileChars: MAX_FILE_CHARS, maxTotalChars: MAX_TOTAL_SOURCE_CHARS }));
-  if (req.feedback) {
-    parts.push(
-      "PREVIOUS ATTEMPT FAILED VERIFICATION",
-      `patch ${req.feedback.previousPatchSha256.slice(0, 16)} was rejected. Output of the verify command:`,
-      sanitize(req.feedback.verifyOutput, MAX_FEEDBACK_CHARS) ?? ""
-    );
-  }
+  if (req.feedback) parts.push(...renderFeedback(req.feedback));
   return parts.join("\n");
 }
 

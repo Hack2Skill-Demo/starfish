@@ -114,9 +114,9 @@ describe("HandoffCard", () => {
     expect(screen.getByText("Acknowledged")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Retry with agent/ })).toBeNull();
     unmount();
+    // A regression can be taken too (#410): acknowledging is what stops a phone escalation, and a recurred incident rings.
     renderWith(<HandoffCard path="human" incidentId="inc-a" incident={row("recurred")} canRetry={false} />, ["operator"]);
-    expect(screen.queryByRole("button", { name: "Acknowledge" })).toBeNull();
-    expect(screen.getByText(/Only a new or logged incident can be acknowledged; this one is recurred/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Acknowledge" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Mark resolved" })).toBeInTheDocument();
   });
 
