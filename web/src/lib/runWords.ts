@@ -1,0 +1,219 @@
+/**
+ * A run in plain words: a few fixed sentences per round, composed from what the engine recorded and nothing else. Pure.
+ *
+ * Not model-written, on purpose. Every sentence here maps to a stored field (a step's outcome, its event data, the run
+ * record), so it is true or absent, and a guest sees the same sentences from the fields their trimmed copy keeps
+ * (src/publicView.ts never carries model text). The model's own words stay where they are: triage's reasoning, labelled
+ * as the model's.
+ *
+ * One sentence-maker per stage, keyed by the outcome the stage recorded. An outcome with no sentence is never guessed:
+ * it falls back to the engine's own one-line summary for the step, else to "<step>: <outcome>", and `templated` says it
+ * did. The run record keeps only a stage's latest record, so a step's record fields are used only when no later round
+ * ran that stage again (`recordIsTheStep`); its event data is its own and always usable.
+ */
+import { PATH_LABELS, stepLogOrder, titleOf, type CycleRow, type EventRow, type Step, type Waterfall } from "./runsModel";
+import { recordIsTheStep } from "./runStepDetail";
+
+type Fields = Record<string, string | number | boolean | null>;
+
+/** One step as the sentence-makers read it: the outcome it ended in, the engine's line, and the fields recorded for it. */
+export interface WordStep {
+  stage: string;
+  outcome?: string;
+  summary?: string;
+  /** Its event's data merged under the run record's entry for the stage, the record only when it is this step's own. */
+  fields: Fields;
+}
+
+export interface Sentence {
+  text: string;
+  /** False when no sentence is written for this stage and outcome: the engine's own line, or the bare outcome. */
+  templated: boolean;
+}
+
+export interface WordsRound {
+  round: number;
+  /** Why the round began, in the engine's words; absent for the first round. */
+  began?: string;
+  sentences: Sentence[];
+}
+
+export interface RunWords {
+  rounds: WordsRound[];
+  /** Where the run stands now, from its path; absent while it is running. */
+  closing?: string;
+}
+
+const LEVEL_WORDS: Record<string, string> = {
+  noise: "recorded it as noise, with nothing filed",
+  log: "chose to log it: an issue and an alert, and a person fixes it",
+  fix: "chose log + fix: a verified pull request that a person merges",
+  merge: "chose log + fix + merge: a pull request Starfish may merge once the checks are green",
+};
+
+const DECISION_WORDS: Record<string, string> = {
+  act: "decided to act on it",
+  notify: "decided a person should handle it",
+  decline: "declined to act on it",
+};
+
+const str = (v: unknown): string | undefined => (typeof v === "string" && v.trim() !== "" ? v.trim() : undefined);
+const num = (v: unknown): number | undefined => (typeof v === "number" && Number.isFinite(v) ? v : undefined);
+const ok = (text: string): Sentence => ({ text, templated: true });
+
+function triage(f: Fields): Sentence | undefined {
+  const level = str(f.level);
+  const decision = str(f.decision);
+  const verb = (level && LEVEL_WORDS[level]) || (decision && DECISION_WORDS[decision]);
+  if (!verb) return undefined;
+  const rule = str(f.rule);
+  const byModel = rule?.startsWith("model-") === true;
+  const byRule = rule !== undefined && !byModel && !rule.endsWith("-cap");
+  const subject = byModel ? "Gemini's triage" : byRule ? `The rule ${rule}` : "Triage";
+  const cap = str(f.cap);
+  const capBy = f.capBy === "rule" ? "the admin's class rule" : f.capBy === "correction" ? "an operator's correction" : undefined;
+  const held = cap && capBy ? `, held to ${cap} by ${capBy}` : "";
+  const count = f.counterCount;
+  const recount =
+    count === null
+      ? " The recount was unavailable, which triage never reads as zero."
+      : num(count) !== undefined
+        ? ` The recount found ${num(count)} ${num(count) === 1 ? "error" : "errors"}${str(f.counterWindow) ? ` in ${str(f.counterWindow)}` : ""}.`
+        : "";
+  return ok(`${subject} ${verb}${held}${byRule ? ", with no model call" : ""}.${recount}`);
+}
+
+/** The sentence for one stage's outcome, or undefined when none is written (the caller falls back). */
+function sentence(stage: string, outcome: string | undefined, f: Fields): Sentence | undefined {
+  switch (stage) {
+    case "triage":
+      return outcome === "decision" ? triage(f) : undefined;
+    case "fix":
+      return outcome === "proposed"
+        ? ok(f.testAdded === true ? "Gemini drafted a patch, with a test." : "Gemini drafted a patch.")
+        : outcome === "declined"
+          ? ok("Gemini declined to draft a fix.")
+          : outcome === "error"
+            ? ok("The fix step failed with an error.")
+            : undefined;
+    case "verify":
+      return outcome === "passed"
+        ? ok("The verify gate passed the patch.")
+        : outcome === "failed"
+          ? ok("The verify gate ran the checks and they failed.")
+          : outcome === "rejected"
+            ? ok("The verify gate rejected the patch before running anything.")
+            : outcome === "timeout"
+              ? ok("The verify gate timed out.")
+              : undefined;
+    case "review":
+      return outcome === "approve"
+        ? ok("The adversarial review approved the patch.")
+        : outcome === "approve-with-flags"
+          ? ok("The adversarial review approved the patch with flags.")
+          : outcome === "block"
+            ? ok("The adversarial review blocked the patch.")
+            : outcome === "error"
+              ? ok("The adversarial review failed with an error.")
+              : undefined;
+    case "issue": {
+      const n = num(f.number);
+      return outcome === "opened"
+        ? ok(n !== undefined ? (f.reused === true ? `A recurrence was noted on the open issue #${n}.` : `Issue #${n} was filed.`) : "An issue was filed.")
+        : outcome === "dry-run"
+          ? ok("An issue would be filed; nothing was (dry run).")
+          : outcome === "failed"
+            ? ok("The issue could not be filed.")
+            : undefined;
+    }
+    case "alert":
+    case "notify": {
+      const what = stage === "alert" ? "The team was alerted in Slack" : "A person was told in Slack";
+      return outcome === "sent"
+        ? ok(`${what}.`)
+        : outcome === "failed"
+          ? ok(`${stage === "alert" ? "Alerting the team" : "Telling a person"} failed.`)
+          : outcome === "dry-run"
+            ? ok(`${what.replace(/ was /, " would be ")} here; nothing was sent (dry run).`)
+            : outcome === "pending"
+              ? ok(`${stage === "alert" ? "Alerting the team" : "Telling a person"} had not finished.`)
+              : undefined;
+    }
+    case "pr": {
+      const n = num(f.number);
+      return outcome === "opened"
+        ? ok(n !== undefined ? `Pull request #${n} was opened.` : "A pull request was opened.")
+        : outcome === "dry-run"
+          ? ok("A patch was verified but nothing was opened (dry run).")
+          : outcome === "not-opened" && f.reason === "already-in-index-file"
+            ? ok("No pull request was needed: the repository's index file already has this index.")
+            : outcome === "not-opened"
+              ? ok("No pull request was opened.")
+              : undefined;
+    }
+    case "merge": {
+      const reason = str(f.reason);
+      return outcome === "pending"
+        ? ok("It is waiting for the required checks before an auto-merge.")
+        : outcome === "skipped"
+          ? ok(reason ? `It was not auto-merged (${reason}).` : "It was not auto-merged.")
+          : outcome === "merged"
+            ? ok("Starfish merged it.")
+            : undefined;
+    }
+    case "index":
+      return outcome === "started"
+        ? ok("The missing-index path started checking its gates, with no model.")
+        : outcome === "creating" || outcome === "building"
+          ? ok("The index was created and is building.")
+          : outcome === "waiting"
+            ? ok("The index is still building; a later pass checks again.")
+            : outcome === "ready"
+              ? ok("The index is READY and the failing query passes again.")
+              : undefined;
+    default:
+      return undefined;
+  }
+}
+
+/** The step's sentence: written for it, else the engine's own line, else the bare outcome. Never invented. */
+export function sentenceFor(step: WordStep): Sentence {
+  const written = sentence(step.stage, step.outcome, step.fields);
+  if (written) return written;
+  const line = str(step.summary);
+  const text = line ?? `${titleOf(step.stage)}${step.outcome ? `: ${step.outcome}` : ""}`;
+  return { text: /[.!?]$/.test(text) ? text : `${text}.`, templated: false };
+}
+
+const wordStep = (s: Pick<Step, "stage" | "outcome" | "summary" | "data">, record: Fields | undefined): WordStep => ({
+  stage: s.stage,
+  ...(s.outcome && { outcome: s.outcome }),
+  ...(s.summary && { summary: s.summary }),
+  fields: { ...(s.data ?? {}), ...(record ?? {}) },
+});
+
+/**
+ * The run in plain words: each round's steps in the order they happened, then where the run stands. Null when there is
+ * nothing recorded to say.
+ */
+export function runInWords(cycle: CycleRow, water: Waterfall, events: readonly EventRow[]): RunWords | null {
+  const recordOf = (stage: string, at: Date | undefined): Fields | undefined => (at && recordIsTheStep({ stage, at }, events) ? cycle.summary[stage] : undefined);
+  const reopenings = water.notes.filter((n) => n.type === "reconsidered");
+  const rounds: WordsRound[] = [];
+  for (const r of water.earlier) {
+    const steps = [...r.steps].reverse().map((s) => wordStep({ stage: s.stage, ...(s.outcome && { outcome: s.outcome }), ...(s.summary && { summary: s.summary }), ...(s.data && { data: s.data }) }, recordOf(s.stage, s.at)));
+    const began = r.round > 1 ? reopenings[r.round - 2]?.summary : undefined;
+    rounds.push({ round: r.round, ...(began && { began }), sentences: steps.map(sentenceFor) });
+  }
+  const latest = [...stepLogOrder(water.steps)]
+    .reverse()
+    .filter((s) => s.status === "done" || s.status === "failed")
+    .map((s) => wordStep(s, recordOf(s.stage, s.at)));
+  if (latest.length > 0 || rounds.length === 0) {
+    const began = water.rounds > 1 ? water.reopened?.summary : undefined;
+    rounds.push({ round: water.rounds, ...(began && { began }), sentences: latest.map(sentenceFor) });
+  }
+  const closing = cycle.state !== "running" && cycle.path ? `${PATH_LABELS[cycle.path]}.` : undefined;
+  if (rounds.every((r) => r.sentences.length === 0)) return null;
+  return { rounds: rounds.filter((r) => r.sentences.length > 0), ...(closing && { closing }) };
+}

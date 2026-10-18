@@ -473,6 +473,25 @@ describe("Runs page", () => {
     expect(round1.getByText("Recount: 2 errors in 24h")).toBeInTheDocument();
   });
 
+  it("says the run in plain words, a round at a time, composed from the record with no model (#285)", () => {
+    renderRuns();
+    act(() => mocks.cyclesCb!([cycle("inc-a_r0", { state: "waiting-human", path: "human", leaseExpiresAt: null })], false));
+    act(() =>
+      mocks.eventsCb!([
+        event(1, "triage", "decision", "A role is missing.", 5000),
+        event(2, "notify", "sent", "A person was told", 4000),
+        event(3, "cycle", "reconsidered", "Handed to a person earlier; retried: an operator asked for a retriage", 3000),
+        event(4, "notify", "sent", "A person was told", 2000),
+      ])
+    );
+    const words = within(screen.getByRole("region", { name: "In plain words" }));
+    expect(words.getByText(/^Round 1$/)).toBeInTheDocument();
+    expect(words.getByText(/^Round 2 · Handed to a person earlier; retried: an operator asked for a retriage$/)).toBeInTheDocument();
+    expect(words.getAllByText(/A person was told in Slack\./)).toHaveLength(2);
+    expect(words.getByText("Handed to a person.")).toBeInTheDocument();
+    expect(words.getByText(/no model wrote it/)).toBeInTheDocument();
+  });
+
   it("says nothing about rounds for a run that was never reopened", () => {
     renderRuns();
     act(() => mocks.cyclesCb!([cycle("inc-a_r0", { state: "declined", path: "decline", leaseExpiresAt: null })], false));
