@@ -39,7 +39,7 @@ export type ParseRule =
   | "unsupported-spec"
   | "invalid-field";
 
-export type ParseResult = { ok: true; spec: IndexSpec; url: string } | { ok: false; rule: ParseRule; reason: string };
+export type ParseResult = { ok: true; spec: IndexSpec; url: string; indexId?: string } | { ok: false; rule: ParseRule; reason: string };
 
 const HOSTS = new Set(["console.firebase.google.com", "console.cloud.google.com"]);
 const MAX_URL = 4000;
@@ -49,6 +49,8 @@ export const DATABASE_RE = /^(?:\(default\)|[a-z][a-z0-9-]{0,61}[a-z0-9])$/;
 export const COLLECTION_RE = /^[A-Za-z_][A-Za-z0-9_-]{0,127}$/;
 export const FIELD_PATH_RE = /^(?:__name__|[A-Za-z_][A-Za-z0-9_]{0,127}(?:\.[A-Za-z_][A-Za-z0-9_]{0,127}){0,19})$/;
 const NAME_RE = /^projects\/([^/]+)\/databases\/([^/]+)\/collectionGroups\/([^/]+)\/indexes\/_$/;
+// The link in Firestore's "that index is currently building" error names the index that exists, by its id.
+const EXISTING_NAME_RE = /^projects\/([^/]+)\/databases\/([^/]+)\/collectionGroups\/([^/]+)\/indexes\/([A-Za-z0-9-][A-Za-z0-9_-]{0,127})$/;
 const URL_IN_TEXT_RE = /https:\/\/console\.(?:firebase|cloud)\.google\.com\/[^\s"'<>)\]]*create_composite=[A-Za-z0-9_\-%=]+/;
 
 const refuse = (rule: ParseRule, reason: string): ParseResult => ({ ok: false, rule, reason });
@@ -125,6 +127,18 @@ function readIndex(buf: Uint8Array): RawIndex {
 
 /** Decode a create-index URL into a spec, or say exactly why it may not be used. Never throws. */
 export function parseCreateIndexUrl(rawUrl: string): ParseResult {
+  return parseIndexUrl(rawUrl, false);
+}
+
+/**
+ * Decode the link of a "that index is currently building" error: the same shape, but its name carries the id of the index
+ * that already exists (`.../indexes/<id>`) instead of `_`. The result has `indexId`. Never throws.
+ */
+export function parseExistingIndexUrl(rawUrl: string): ParseResult {
+  return parseIndexUrl(rawUrl, true);
+}
+
+function parseIndexUrl(rawUrl: string, existing: boolean): ParseResult {
   if (typeof rawUrl !== "string" || rawUrl === "") return refuse("no-url", "There is no create-index URL.");
   if (rawUrl.length > MAX_URL) return refuse("bad-url", "The URL is too long to be a create-index URL.");
   let url: URL;
@@ -146,9 +160,9 @@ export function parseCreateIndexUrl(rawUrl: string): ParseResult {
     return refuse("unsupported-spec", `The index specification has a shape this parser does not accept (${err instanceof Error ? err.message : "unreadable"}).`);
   }
 
-  const nameMatch = raw.name === undefined ? null : NAME_RE.exec(raw.name);
-  if (!nameMatch) return refuse("bad-name", "The index name is not projects/P/databases/D/collectionGroups/C/indexes/_.");
-  const [, project, database, collectionGroup] = nameMatch as unknown as [string, string, string, string];
+  const nameMatch = raw.name === undefined ? null : (existing ? EXISTING_NAME_RE : NAME_RE).exec(raw.name);
+  if (!nameMatch) return refuse("bad-name", `The index name is not projects/P/databases/D/collectionGroups/C/indexes/${existing ? "<id>" : "_"}.`);
+  const [, project, database, collectionGroup, indexId] = nameMatch as unknown as [string, string, string, string, string | undefined];
   if (!PROJECT_RE.test(project) || !DATABASE_RE.test(database) || !COLLECTION_RE.test(collectionGroup)) {
     return refuse("bad-name", "The project, database or collection in the index name is not valid.");
   }
@@ -171,7 +185,7 @@ export function parseCreateIndexUrl(rawUrl: string): ParseResult {
   if (new Set(names).size !== names.length) return refuse("invalid-field", "A field appears twice.");
   if (names.includes("__name__") && names.indexOf("__name__") !== names.length - 1) return refuse("invalid-field", "__name__ may only be the last field.");
 
-  return { ok: true, spec: { project, database, collectionGroup, queryScope, fields }, url: rawUrl };
+  return { ok: true, spec: { project, database, collectionGroup, queryScope, fields }, url: rawUrl, ...(existing && indexId !== undefined && { indexId }) };
 }
 
 // ---- The target guard: default-deny ------------------------------------------------------------------------

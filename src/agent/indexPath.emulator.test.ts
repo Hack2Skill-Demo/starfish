@@ -222,6 +222,40 @@ describe("runCycle: a missing index takes the index path", () => {
     expect(JSON.parse(readAfter(opened[0]!.patch))).toBeDefined();
   });
 
+  // #62: while an index builds (Starfish's own create, or anyone's) Firestore answers with "that index is currently building".
+  const buildingMessage = (id = "abc") => {
+    const bytes = [...str(1, `projects/demo-app-1/databases/(default)/collectionGroups/orders/indexes/${id}`), ...int(2, 1)];
+    for (const [path, order] of [["status", 1], ["createdAt", 2], ["__name__", 2]] as const) bytes.push(...lenDelimited(3, [...str(1, path), ...int(2, order)]));
+    return `9 FAILED_PRECONDITION: The query requires an index. That index is currently building and cannot be used yet. See its status here: https://console.firebase.google.com/v1/r/project/demo-app-1/firestore/indexes?create_composite=${Buffer.from(bytes).toString("base64url")}`;
+  };
+
+  it("tells nobody and files nothing when the error names an index the inventory holds, building or ready (#62)", async () => {
+    for (const [state, outcome] of [["CREATING", "index-already-building"], ["READY", "index-already-ready"]] as const) {
+      run = randomUUID().slice(0, 8);
+      incident = { ...incidentFor(), message: buildingMessage() };
+      const a = fakeAdmin({ live: [{ ...READY, state }] });
+      const issues: IssueRequest[] = [];
+      const told: NotifyRequest[] = [];
+      const openIssue = async (req: IssueRequest) => (issues.push(req), { number: 8, url: "https://example.test/issues/8" });
+      expect(await runCycle(deps(wiring(a.admin, fakeProbe(a)), { openIssue }, [], told), key)).toEqual({ kind: "finished", state: "declined", outcome });
+      expect(issues).toHaveLength(0);
+      expect(told).toHaveLength(0);
+      expect(a.admin.create).not.toHaveBeenCalled();
+      expect(await kinds()).toEqual(["cycle:started", "index:already-building"]);
+      expect(await cycleDoc()).toMatchObject({ state: "declined", path: "decline" });
+    }
+  });
+
+  it("still hands it to a person when the inventory does not hold the index the words name (#62)", async () => {
+    incident = { ...incidentFor(), message: buildingMessage("nope") };
+    const a = fakeAdmin({ live: [READY] });
+    const told: NotifyRequest[] = [];
+    const r = await runCycle(deps(wiring(a.admin, fakeProbe(a)), {}, [], told), key);
+    expect(r).toMatchObject({ state: "waiting-human" });
+    expect(told).toHaveLength(1);
+    expect(a.admin.create).not.toHaveBeenCalled();
+  });
+
   it("files the incident's issue first, through the loop's opener, and links it from the evidence PR without closing it", async () => {
     const a = fakeAdmin();
     const opened: PullRequestRequest[] = [];

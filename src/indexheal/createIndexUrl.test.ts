@@ -5,6 +5,7 @@ import {
   inIndexFile,
   parseAllowedTargets,
   parseCreateIndexUrl,
+  parseExistingIndexUrl,
   toIndexFileEntry,
   type IndexSpec,
 } from "./createIndexUrl.js";
@@ -238,5 +239,21 @@ describe("against the repository's index file", () => {
     for (const bad of [null, undefined, "x", {}, { indexes: "no" }, file([{ fields: [] }]), file([{ collectionGroup: "orders", fields: [{ order: "ASCENDING" }] }]), file([{ collectionGroup: "orders", fields: [{ fieldPath: "a", order: "UP" }] }])]) {
       expect(inIndexFile(SPEC, bad)).toBe("unknown");
     }
+  });
+});
+
+describe("parseExistingIndexUrl", () => {
+  const existing = (id: string) => encode({ name: `projects/demo-app-1/databases/(default)/collectionGroups/orders/indexes/${id}` });
+  const link = (b: string) => `https://console.firebase.google.com/v1/r/project/demo-app-1/firestore/indexes?create_composite=${b}`;
+
+  it("reads the link of an index that already exists, with its id", () => {
+    const r = parseExistingIndexUrl(link(existing("CICAgJmiJEK")));
+    expect(r).toMatchObject({ ok: true, indexId: "CICAgJmiJEK", spec: { project: "demo-app-1", collectionGroup: "orders" } });
+  });
+
+  it("is the other parser's opposite on the name: a create link (`_`) is not an existing index, an id is not a create link", () => {
+    expect(parseExistingIndexUrl(link(encode()))).toMatchObject({ ok: false, rule: "bad-name" });
+    expect(parseCreateIndexUrl(link(existing("CICAgJmiJEK")))).toMatchObject({ ok: false, rule: "bad-name" });
+    expect(parseExistingIndexUrl(link(existing("bad id!")))).toMatchObject({ ok: false, rule: "bad-name" });
   });
 });

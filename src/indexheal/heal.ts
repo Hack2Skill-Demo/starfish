@@ -26,7 +26,7 @@
  * consulted so the later pull-request step knows whether it has an entry to add; `unknown` is never `absent`.
  */
 import type { IndexSpec, IndexTarget } from "./createIndexUrl.js";
-import { checkTarget, findCreateIndexUrl, inIndexFile, parseCreateIndexUrl } from "./createIndexUrl.js";
+import { checkTarget, findCreateIndexUrl, inIndexFile, parseCreateIndexUrl, parseExistingIndexUrl } from "./createIndexUrl.js";
 import type { IndexAdmin, LiveIndex } from "./firestoreAdmin.js";
 import type { ProbeVerdict } from "./probe.js";
 
@@ -110,6 +110,37 @@ export interface HealOptions {
    * operation. When the inventory does not show the index either, nothing is created again: that is for a person.
    */
   priorAttempt?: boolean;
+}
+
+/** Firestore's own words for a query that needs an index which is already being built. */
+const BUILDING_RE = /The query requires an index\. That index is currently building and cannot be used yet\./;
+
+/**
+ * Whether the error is Firestore's "that index is currently building" one, and for which index. Starfish's own create
+ * (or anyone's) makes it appear for the minutes the build takes: it is not a missing index, so there is nothing to create
+ * and no reason to tell a person. The text is incident text, which is attacker-influenceable, so the words alone settle
+ * nothing: `existingIndexState` must find that index in the live inventory before the error is treated as expected.
+ */
+export function buildingIndexOf(errorText: string): { spec: IndexSpec; indexId: string } | null {
+  if (!BUILDING_RE.test(errorText)) return null;
+  const url = findCreateIndexUrl(errorText);
+  const parsed = url === null ? null : parseExistingIndexUrl(url);
+  return parsed?.ok && parsed.indexId !== undefined ? { spec: parsed.spec, indexId: parsed.indexId } : null;
+}
+
+/**
+ * The live state of the index a "currently building" error names, when it is on an allowed target and the inventory holds
+ * it (creating, or already ready: the error is then stale); null when it does not hold it, so the error stays a person's.
+ * An index that needs repair is not "expected". Reads only; a failed read throws, so the cycle resumes.
+ */
+export async function existingIndexState(
+  found: { spec: IndexSpec; indexId: string },
+  settings: Pick<HealSettings, "allowedTargets" | "own">,
+  admin: Pick<IndexAdmin, "list">
+): Promise<"creating" | "ready" | null> {
+  if (!checkTarget(found.spec, settings.allowedTargets, settings.own).allowed) return null;
+  const live = (await admin.list(found.spec)).find((l) => l.name.split("/").pop() === found.indexId && sameIndex(found.spec, l));
+  return live === undefined || live.state === "NEEDS_REPAIR" ? null : live.state === "READY" ? "ready" : "creating";
 }
 
 /** The parsed spec of an error's create-index URL, or the refusal: what the caller needs before deciding to heal. */

@@ -384,6 +384,10 @@ src/
                    read-only, limit 1); `indexFilePatch.ts` the evidence PR's diff (self-checked, entries only added);
                    `observe.ts` decides healed / recurred after the quiet window (writes the run record only, never the incident)
   agent/indexPath.ts  the loop's index path: a MissingIndexError skips triage and the model when an index target is allowed;
+                   Firestore's "that index is currently building" error (its own create makes it appear, demo incident #62, 2026-10-16, a
+                   second issue and a handoff) names an index that exists: when the live inventory holds that index, the cycle ends declined
+                   (`index-already-building`/`index-already-ready`), no issue, nobody told (`heal.ts` `buildingIndexOf`, `existingIndexState`;
+                   emulator-tested, not yet run on the demo project); not held by the inventory, it stays a person's;
                    attempt recorded (fenced) before the create, operation after; the incident's issue via the loop's openIssue
                    (linked, never closed, by the evidence PR); evidence PR via the PR opener, recorded as an auto-merge
                    candidate when the admin lists the reserved `missing-index` merge case. Run by
