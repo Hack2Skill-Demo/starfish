@@ -19,7 +19,8 @@
  *   - BOUNDED. At most `modelCallBudget` model calls (a used-up budget goes to a person; a triage decided by a
  *     deterministic gate costs none); at most ONE revision, shared between a failed
  *     verify and a blocking review (a second failure goes to a person). Both are counted on the cycle, not the attempt
- *     (cycle.ts `countSpend`, #182), so a resumed attempt goes on from what earlier ones spent; the cycle's own deadline and
+ *     (cycle.ts `countSpend`, #182), so a resumed attempt goes on from what earlier ones spent, and keeps the round's
+ *     triage decision rather than asking for it again (`keptTriage`, #414); the cycle's own deadline and
  *     attempt cap (cycle.ts) bound the rest, and a person is told when either gives a cycle up. A failure
  *     worth retrying (a missing counter-check, a model call that failed) releases the lease so the next run
  *     tries again, counted against the cap; a patch unfit to verify goes to a person.
@@ -76,7 +77,7 @@ import type { AlertRequest, DeliveryResult, NotifyRequest } from "../integration
 import { proposeFix, reviewFeedback, verifyFeedback, type FixRequest, type FixResult, type RevisionFeedback, type SourceFile } from "./fixer.js";
 export { REVISION_SCOPE } from "./fixer.js";
 import { reviewPatch, type Attack, type ReviewResult, type ReviewVerdict } from "./reviewer.js";
-import { triageIncident, triageLevel, type AskJson, type TriageOptions, type TriageSubject } from "./triage.js";
+import { triageIncident, triageLevel, type AskJson, type TriageDecision, type TriageOptions, type TriageResult, type TriageRule, type TriageSubject } from "./triage.js";
 import { verifyPatch, type VerifyConfig, type VerifyRequest, type VerifyResult } from "./verifyGate.js";
 import { causeClass, type ReconsiderPolicy } from "./reconsider.js";
 import { isIndexIncident, runIndexPath, type IndexHealWiring } from "./indexPath.js";
@@ -86,7 +87,7 @@ import { join } from "node:path";
 import { assessMergeFloor, judgedTheVerifiedFiles, parsePatch, testOnlyPatch, type BlastRadius } from "./blastRadius.js";
 import { earlierMergeHolds, mergeRecordAtOpen } from "./autoMerge.js";
 import { INDEX_MERGE_CASE } from "../settingsSchema.js";
-import { capHolds, levelCap } from "../triageRules.js";
+import { capHolds, isCapLevel, levelCap, type LevelCap } from "../triageRules.js";
 import { sha256 } from "./reviewer.js";
 import type { SourceProvenance } from "./sourceByName.js";
 
@@ -294,6 +295,47 @@ export function releasesForRetry(rule: string): boolean {
 /** What triage is given: the admin's merge cases and class rules, and the files the fixer will be shown (#371). */
 export function triageOptionsFor(cfg: Pick<StarfishConfig, "mergeCases" | "classRules">, files: readonly SourceFile[]): TriageOptions {
   return { mergeCases: cfg.mergeCases, classRules: cfg.classRules, source: { files } };
+}
+
+/** The decisions an attempt resumed within the round keeps (#414): the ones that settle where the round goes. */
+const KEPT_DECISIONS: ReadonlySet<TriageDecision> = new Set(["act", "notify", "decline"]);
+
+/**
+ * This round's triage decision, read back from the run record (`summary.triage`), for an attempt resumed within the same
+ * round (#414), or null to ask the model again. Triage asked once per round: on the demo (2026-10-18) a fix call that
+ * failed released the cycle, the resumed attempt triaged again, and that second call for a decision already made left the
+ * round one call short of its second review and a pull request, two rounds running. Asking again could also contradict
+ * the issue and the alert the first decision sent.
+ *
+ * Kept only when the record is this round's (`round`, written with it; a record without one is asked again), is a
+ * decision that settles the round (act, notify, decline: a deferred or failed triage released the cycle so it is asked
+ * again), and the rules engine's cap NOW does not hold it back: an operator's correction or an admin's class rule made
+ * since is honoured by asking again (the rules engine only ever holds Starfish back). The reason is the record's, bounded
+ * as every record value is.
+ */
+export function keptTriage(record: unknown, round: number, cap: LevelCap | null): TriageResult | null {
+  if (typeof record !== "object" || record === null) return null;
+  const r = record as Record<string, unknown>;
+  if (r.round !== round) return null;
+  if (typeof r.decision !== "string" || !KEPT_DECISIONS.has(r.decision as TriageDecision)) return null;
+  if (typeof r.rule !== "string" || r.rule === "" || typeof r.reason !== "string") return null;
+  const text = (v: unknown): string | undefined => (typeof v === "string" && v !== "" ? v : undefined);
+  const decision = r.decision as TriageDecision;
+  const mergeCase = decision === "act" ? text(r.mergeCase) : undefined;
+  const recordedCap: LevelCap | undefined =
+    isCapLevel(r.cap) && (r.capBy === "rule" || r.capBy === "correction")
+      ? { level: r.cap, by: r.capBy, ...(text(r.capRule) !== undefined && { ruleId: text(r.capRule) }) }
+      : undefined;
+  const kept: TriageResult = {
+    decision,
+    rule: r.rule as TriageRule,
+    reason: r.reason,
+    ...(text(r.suspectedCause) !== undefined && { suspectedCause: text(r.suspectedCause) }),
+    ...(mergeCase !== undefined && { mergeCase }),
+    ...(recordedCap && { cap: recordedCap }),
+  };
+  const level = triageLevel(kept);
+  return level !== null && capHolds(cap, level) ? null : kept;
 }
 
 /** Where a stage's result sends the cycle, other than on: round again with feedback, released for a retry, or to a person. */
@@ -736,34 +778,52 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
       }
       return deps.ask<T>(prompt, system, schema);
     };
-    const triage = await triageIncident(loaded.subject, countedAsk, triageOptionsFor(cfg, loaded.files));
-    if (spendError !== undefined) throw spendError;
+    // The round the decision belongs to, written with it, so an attempt resumed within the round can keep it (#414).
+    const cycleNow = (await db.collection(cfg.cycleCollection).doc(id).get()).data();
+    const round = roundOf(cycleNow);
+    const kept = lease.resumed ? keptTriage((cycleNow?.summary as Record<string, unknown> | undefined)?.triage, round, cap) : null;
+    let triage: TriageResult;
+    if (kept) {
+      // Not asked again, and not recorded again: the run record keeps the decision as it was made. The status and the kill
+      // switch were asked above, and are asked again before the issue and at every stage.
+      triage = kept;
+      await note({
+        stage: "cycle",
+        type: "triage-kept",
+        summary: `Triage's decision from earlier in this round kept (${kept.decision}); no second model call`,
+        data: { decision: kept.decision, rule: kept.rule },
+      });
+    } else {
+      triage = await triageIncident(loaded.subject, countedAsk, triageOptionsFor(cfg, loaded.files));
+      if (spendError !== undefined) throw spendError;
+      const level = triageLevel(triage);
+      await note({
+        stage: "triage",
+        type: "decision",
+        summary: triage.reason,
+        data: { decision: triage.decision, rule: triage.rule, ...(level !== null && { level }), ...(triage.cap && { cap: triage.cap.level, capBy: triage.cap.by }) },
+        record: {
+          decision: triage.decision,
+          rule: triage.rule,
+          reason: triage.reason,
+          suspectedCause: triage.suspectedCause ?? null,
+          // How far Starfish goes (noise, log, fix, merge), and the admin's merge case Gemini named for "merge".
+          level,
+          mergeCase: triage.mergeCase ?? null,
+          // The rules engine's cap, when one applied (src/triageRules.ts): its level, its source and the admin rule's id.
+          cap: triage.cap?.level ?? null,
+          capBy: triage.cap?.by ?? null,
+          capRule: triage.cap?.ruleId ?? null,
+          round,
+          // The configured model, only when the decision was the model's: a gate (missing or zero recount, a cap of noise)
+          // asked none. A cap that turned the model's act into notify still asked it.
+          ...((triage.rule.startsWith("model-") || (triage.rule.endsWith("-cap") && triage.cap?.level !== "noise")) && { model: cfg.model }),
+          ...counterCheckRecord(loaded.subject.incident.logCounterCheck),
+        },
+      });
+    }
     // The merge case Gemini named (triage.ts): Starfish may merge only what it named.
     const chosenCase = triage.mergeCase;
-    const level = triageLevel(triage);
-    await note({
-      stage: "triage",
-      type: "decision",
-      summary: triage.reason,
-      data: { decision: triage.decision, rule: triage.rule, ...(level !== null && { level }), ...(triage.cap && { cap: triage.cap.level, capBy: triage.cap.by }) },
-      record: {
-        decision: triage.decision,
-        rule: triage.rule,
-        reason: triage.reason,
-        suspectedCause: triage.suspectedCause ?? null,
-        // How far Starfish goes (noise, log, fix, merge), and the admin's merge case Gemini named for "merge".
-        level,
-        mergeCase: triage.mergeCase ?? null,
-        // The rules engine's cap, when one applied (src/triageRules.ts): its level, its source and the admin rule's id.
-        cap: triage.cap?.level ?? null,
-        capBy: triage.cap?.by ?? null,
-        capRule: triage.cap?.ruleId ?? null,
-        // The configured model, only when the decision was the model's: a gate (missing or zero recount, a cap of noise)
-        // asked none. A cap that turned the model's act into notify still asked it.
-        ...((triage.rule.startsWith("model-") || (triage.rule.endsWith("-cap") && triage.cap?.level !== "noise")) && { model: cfg.model }),
-        ...counterCheckRecord(loaded.subject.incident.logCounterCheck),
-      },
-    });
     // An issue for every incident Starfish acts on or escalates; a declined, skipped or deferred one gets none.
     if (triage.decision === "act" || triage.decision === "notify") {
       // The triage call can take a while: an operator who closed the incident, or the kill switch, stops it before

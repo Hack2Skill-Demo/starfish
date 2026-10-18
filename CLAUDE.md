@@ -246,7 +246,11 @@ src/
                    before" run (`summary.before`, reported) and records the candidate (`summary.merge` pending, with the
                    case); it never merges itself. The floor holds only if its files are exactly the files the verify
                    gate saw change. What it does after each stage is pure and shared with the replay (`triageOptionsFor`, `afterFix`,
-                   `afterVerify`, `afterReview`, #420): a review refused for its evidence goes to a person, not a retry (#418)
+                   `afterVerify`, `afterReview`, #420): a review refused for its evidence goes to a person, not a retry (#418).
+                   An attempt resumed within the round keeps the round's triage decision from the run record (`keptTriage`,
+                   #414: the record carries its `round`; act, notify or decline only; asked again when a cap made since holds
+                   it back), so a released fix call no longer costs a second triage call; it still drafts and verifies again
+                   (the patch is not stored, #450). Emulator-tested; not yet run on the demo project
   agent/blastRadius.ts  the safety floor every merge needs (`assessMergeFloor`: gate 1's parsing, hard-exclude list and
                    whole-function check, tests only as new files, one production file, any number of hunks, at most
                    40 changed lines; no fix class. Since the hard-exclude list is words, #295 added code rules: no

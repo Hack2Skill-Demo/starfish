@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import { deleteApp, initializeApp } from "firebase-admin/app";
-import { getFirestore } from "firebase-admin/firestore";
+import { FieldValue, getFirestore } from "firebase-admin/firestore";
 import type { Firestore } from "firebase-admin/firestore";
 import { REVISION_SCOPE, giveUpStrandedCycles, runCycle, type LoopDeps, type LoopSubject, type PullRequestRequest } from "./loop.js";
 import { buildNeedsHumanMessage, buildNewIncidentMessage, type AlertRequest, type NotifyRequest } from "../integrations/slack.js";
@@ -986,13 +986,82 @@ describe("runCycle: the budget and the one revision are the cycle's, not the att
 
   it("does not give a resumed attempt a second revision", async () => {
     // Attempt 1: the first patch fails the gate, the one revision is used, and the revised call fails: released.
-    const model = scripted({ triage: [act, act], fix: [fixOf(BAD_PATCH), new Error("model down"), fixOf(BAD_PATCH)] });
+    const model = scripted({ triage: [act], fix: [fixOf(BAD_PATCH), new Error("model down"), fixOf(BAD_PATCH)] });
     expect(await runCycle(deps(model), key)).toEqual({ kind: "released", reason: "model-call-failed" });
     expect((await cycleDoc()).revisions).toBe(1);
     // Attempt 2: its patch fails the gate too; the revision is spent, so it goes to a person, not round again.
     expect(await runCycle(deps(model), key)).toEqual({ kind: "finished", state: "waiting-human", outcome: "verify-command-failed" });
     expect(model.count("fix")).toBe(3);
-    expect(await cycleDoc()).toMatchObject({ modelCalls: 5, revisions: 1 });
+    expect(model.count("triage")).toBe(1);
+    expect(await cycleDoc()).toMatchObject({ modelCalls: 4, revisions: 1 });
+  });
+});
+
+describe("runCycle: an attempt resumed within the round keeps its triage decision (#414)", () => {
+  const ISSUE = { number: 12, url: "https://github.com/acme/shop/issues/12" };
+
+  it("makes no second triage call, files no second issue and sends no second alert", async () => {
+    const filed: IssueRequest[] = [];
+    const alerted: AlertRequest[] = [];
+    const openIssue = async (req: IssueRequest) => (filed.push(req), ISSUE);
+    const alert = async (req: AlertRequest) => (alerted.push(req), { state: "sent" as const, attempts: 1 });
+    const opened: PullRequestRequest[] = [];
+    const model = scripted({ triage: [act], fix: [new Error("model down"), fixOf(GOOD_PATCH)], review: [held] });
+    expect(await runCycle(deps(model, { openIssue, alert }), key)).toEqual({ kind: "released", reason: "model-call-failed" });
+    expect((await cycleDoc()).summary.triage).toMatchObject({ decision: "act", rule: "model-act", round: 1 });
+
+    expect(await runCycle(deps(model, { openIssue, alert }, opened), key)).toEqual({ kind: "finished", state: "done", outcome: "pr-opened" });
+    expect(model.count("triage")).toBe(1);
+    expect(filed).toHaveLength(1);
+    expect(alerted).toHaveLength(1);
+    expect(opened[0]!.issueNumber).toBe(12);
+    const ks = await kinds();
+    expect(ks.filter((k) => k === "triage:decision")).toHaveLength(1);
+    expect(ks).toContain("cycle:triage-kept");
+    expect((await events()).find((e) => e.type === "triage-kept")).toMatchObject({ round: 1, data: { decision: "act", rule: "model-act" } });
+    // The run record still holds the decision as it was made.
+    expect((await cycleDoc()).summary.triage).toMatchObject({ decision: "act", rule: "model-act", reason: "A defect in the order code.", round: 1 });
+  });
+
+  it("reaches its second review within a budget of 6 after a failed fix call, a blocked review and a revision (the demo's cycle, 2026-10-18)", async () => {
+    cfgOver = { modelCallBudget: 6 };
+    const opened: PullRequestRequest[] = [];
+    // Attempt 1: triage (1), the fix call fails (2): released. Attempt 2: fix (3), verify, review blocks (4), revised fix (5),
+    // verify, review approves (6), pull request. Triaging again would have made the second review call 7.
+    const model = scripted({ triage: [act], fix: [new Error("model down"), fixOf(GOOD_PATCH), fixOf(GOOD_PATCH)], review: [broken, held] });
+    expect(await runCycle(deps(model), key)).toEqual({ kind: "released", reason: "model-call-failed" });
+    expect(await runCycle(deps(model, {}, opened), key)).toEqual({ kind: "finished", state: "done", outcome: "pr-opened" });
+    expect(model.count("review")).toBe(2);
+    expect(opened).toHaveLength(1);
+    expect(await cycleDoc()).toMatchObject({ modelCalls: 6, revisions: 1 });
+  });
+
+  it("asks again when an operator's correction made since holds the decision back", async () => {
+    const model = scripted({ triage: [act], fix: [new Error("model down")] });
+    expect(await runCycle(deps(model), key)).toEqual({ kind: "released", reason: "model-call-failed" });
+    const base = deps(model);
+    const load: LoopDeps["load"] = async (id) => {
+      const loaded = await base.load(id);
+      return loaded && { ...loaded, subject: { ...loaded.subject, correction: { level: "log", by: "u1" } } };
+    };
+    const r = await runCycle({ ...base, load }, key);
+    expect(r).toMatchObject({ kind: "finished", state: "waiting-human" });
+    expect(model.count("triage")).toBe(2);
+    expect((await cycleDoc()).summary.triage).toMatchObject({ decision: "notify", rule: "correction-cap", cap: "log", capBy: "correction" });
+  });
+
+  it("asks again for a triage that failed, and for a record written without its round", async () => {
+    const failed = scripted({ triage: [new Error("boom"), act], fix: [fixOf(GOOD_PATCH)], review: [held] });
+    expect(await runCycle(deps(failed), key)).toMatchObject({ kind: "released", reason: "model-call-failed" });
+    expect(await runCycle(deps(failed), key)).toMatchObject({ kind: "finished", outcome: "pr-opened" });
+    expect(failed.count("triage")).toBe(2);
+
+    cfg = randomUUID().slice(0, 8);
+    const older = scripted({ triage: [act], fix: [new Error("model down"), fixOf(GOOD_PATCH)], review: [held] });
+    expect(await runCycle(deps(older), key)).toMatchObject({ kind: "released" });
+    await db.collection(`cycles_${cfg}`).doc("inc1_r0").update({ "summary.triage.round": FieldValue.delete() });
+    expect(await runCycle(deps(older), key)).toMatchObject({ kind: "finished", outcome: "pr-opened" });
+    expect(older.count("triage")).toBe(2);
   });
 });
 

@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
-import { afterFix, afterReview, afterVerify, counterCheckRecord, MAX_REVISIONS, readBaseFiles, retryWords, roundOf, triageOptionsFor } from "./loop.js";
+import { afterFix, afterReview, afterVerify, counterCheckRecord, keptTriage, MAX_REVISIONS, readBaseFiles, retryWords, roundOf, triageOptionsFor } from "./loop.js";
 import type { VerifyResult } from "./verifyGate.js";
 
 describe("counterCheckRecord: the recount kept with triage's decision (#39)", () => {
@@ -122,3 +122,58 @@ describe("the loop's decisions after each stage, which the replay takes too (#41
   });
 });
 
+
+describe("keptTriage: the round's decision a resumed attempt keeps (#414)", () => {
+  const record = {
+    decision: "act",
+    rule: "model-act",
+    reason: "A defect in the order code.",
+    suspectedCause: "createOrder writes undefined",
+    level: "merge",
+    mergeCase: "null-guard",
+    cap: null,
+    capBy: null,
+    capRule: null,
+    round: 2,
+  };
+
+  it("keeps the decision, the rule, the reason, the suspected cause and the merge case of this round", () => {
+    expect(keptTriage(record, 2, null)).toEqual({
+      decision: "act",
+      rule: "model-act",
+      reason: "A defect in the order code.",
+      suspectedCause: "createOrder writes undefined",
+      mergeCase: "null-guard",
+    });
+  });
+
+  it("keeps the cap it was decided under", () => {
+    const capped = { ...record, decision: "notify", rule: "rule-cap", level: "log", mergeCase: null, cap: "log", capBy: "rule", capRule: "quota-log" };
+    expect(keptTriage(capped, 2, { level: "log", by: "rule", ruleId: "quota-log" })).toMatchObject({ decision: "notify", cap: { level: "log", by: "rule", ruleId: "quota-log" } });
+    expect(keptTriage(capped, 2, null)?.mergeCase).toBeUndefined();
+  });
+
+  it("asks again for another round's record, or one written without its round", () => {
+    expect(keptTriage(record, 3, null)).toBeNull();
+    expect(keptTriage({ ...record, round: undefined }, 2, null)).toBeNull();
+  });
+
+  it("asks again for a decision that released the cycle, or a record that is not one", () => {
+    for (const decision of ["defer", "error", "skip", "nonsense"]) expect(keptTriage({ ...record, decision }, 2, null), decision).toBeNull();
+    expect(keptTriage(undefined, 2, null)).toBeNull();
+    expect(keptTriage("act", 2, null)).toBeNull();
+    expect(keptTriage({ ...record, rule: "" }, 2, null)).toBeNull();
+    expect(keptTriage({ ...record, reason: 3 }, 2, null)).toBeNull();
+  });
+
+  it("asks again when a cap made since holds the decision back, and keeps it when the cap allows it", () => {
+    expect(keptTriage(record, 2, { level: "fix", by: "correction" })).toBeNull();
+    expect(keptTriage({ ...record, mergeCase: null, level: "fix" }, 2, { level: "fix", by: "correction" })).toMatchObject({ decision: "act" });
+    expect(keptTriage({ ...record, mergeCase: null }, 2, { level: "log", by: "rule", ruleId: "r" })).toBeNull();
+    expect(keptTriage({ ...record, decision: "decline", rule: "model-decline", mergeCase: null }, 2, { level: "noise", by: "correction" })).toMatchObject({ decision: "decline" });
+  });
+
+  it("keeps a merge case only with act", () => {
+    expect(keptTriage({ ...record, decision: "notify", rule: "model-notify" }, 2, null)?.mergeCase).toBeUndefined();
+  });
+});
