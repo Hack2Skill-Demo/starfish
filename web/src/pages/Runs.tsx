@@ -1646,7 +1646,7 @@ function Timeline({
                   <ol aria-label={`Round ${r.round}`} className="mt-1 ml-3 divide-y divide-gray-100 border-l-2 border-gray-100 pl-3 dark:divide-gray-700 dark:border-gray-700">
                     {r.steps.map((step) => (
                       <StepRow
-                        key={step.stage}
+                        key={`${step.stage}-${step.attempt?.n ?? 0}`}
                         step={earlierAsStep(step)}
                         cycle={cycle}
                         events={events}

@@ -371,6 +371,14 @@ describe("small helpers", () => {
       expect(log).toEqual(["verify#2", "fix#2", "review", "verify#1", "fix#1", "triage"]);
     });
 
+    it("keeps every run of a repeated stage in an earlier round too, newest first, so that round reads in order", () => {
+      const events = [...revised(), ev("cycle", "reconsidered", HOUR, "Handed to a person earlier; retried: an operator asked for a retriage"), ev("triage", "decision", HOUR + 1000)];
+      const w = buildWaterfall(cycle({ state: "waiting-human", leaseExpiresAt: null, updatedAt: new Date(T0 + HOUR + 1000) }), events, T0 + 2 * HOUR);
+      expect(w.earlier[0]!.steps.map((s) => `${s.stage}${s.attempt ? `#${s.attempt.n}/${s.attempt.of}` : ""}`)).toEqual(["verify#2/2", "fix#2/2", "review", "verify#1/2", "fix#1/2", "triage"]);
+      // A stage that ran once has no attempt.
+      expect(w.earlier[0]!.steps.find((s) => s.stage === "review")!.attempt).toBeUndefined();
+    });
+
     it("times a repeated stage from the event just before it, not from the stage before it in the loop", () => {
       const w = buildWaterfall(cycle({ state: "waiting-human", leaseExpiresAt: null, updatedAt: new Date(T0 + 940_000) }), revised(), T0 + HOUR);
       expect(w.steps.find((s) => s.stage === "fix")!.durationMs).toBe(62_000);

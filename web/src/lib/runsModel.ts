@@ -567,6 +567,8 @@ export interface EarlierStep {
   failed: boolean;
   /** Its last event's data, when it carried any (a guest's copy never does). */
   data?: Flat;
+  /** Set when the stage ran more than once in that round (`Step.attempt`): which run this is, and how many there were. */
+  attempt?: { n: number; of: number };
 }
 
 /** An earlier round's step drawn like any other step of the log, so a reopened run keeps the first round's details. */
@@ -579,6 +581,7 @@ export function earlierAsStep(e: EarlierStep): Step {
     ...(e.summary && { summary: e.summary }),
     at: e.at,
     ...(e.data && { data: e.data }),
+    ...(e.attempt && { attempt: e.attempt }),
   };
 }
 
@@ -682,11 +685,21 @@ export function buildWaterfall(cycle: CycleRow, events: readonly EventRow[], now
     if (!last) return [];
     const began = before ? before.at.getTime() : createdMs;
     const lastOf = new Map<string, EventRow>();
-    for (const e of inRound) lastOf.set(e.stage, e);
-    const steps = [...lastOf.values()]
-      .sort((a, b) => b.seq - a.seq)
-      .map(
-        (e): EarlierStep => ({
+    const runs = new Map<string, number>();
+    for (const e of inRound) {
+      lastOf.set(e.stage, e);
+      runs.set(e.stage, (runs.get(e.stage) ?? 0) + 1);
+    }
+    // One step per stage, its last event; a repeated stage (the fix, gate and review a block sends round again) keeps every
+    // run, so the round reads in the order it happened.
+    const seen = new Map<string, number>();
+    const steps = inRound
+      .filter((e) => (REPEATABLE_STAGES.includes(e.stage) && (runs.get(e.stage) ?? 0) > 1) || lastOf.get(e.stage) === e)
+      .map((e): EarlierStep => {
+        const repeated = REPEATABLE_STAGES.includes(e.stage) && (runs.get(e.stage) ?? 0) > 1;
+        const n = (seen.get(e.stage) ?? 0) + 1;
+        seen.set(e.stage, n);
+        return {
           round: roundBefore(reopening, r),
           stage: e.stage,
           title: titleOf(e.stage),
@@ -695,8 +708,11 @@ export function buildWaterfall(cycle: CycleRow, events: readonly EventRow[], now
           at: e.at,
           failed: failedUnexpectedly(e.stage, e.type),
           ...(Object.keys(e.data).length > 0 && { data: e.data }),
-        })
-      );
+          ...(repeated && { attempt: { n, of: runs.get(e.stage)! } }),
+        };
+      })
+      // Newest first: `inRound` is in sequence order.
+      .reverse();
     return [
       {
         round: roundBefore(reopening, r),
