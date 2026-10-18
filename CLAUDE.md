@@ -216,7 +216,11 @@ src/
                    model's line number never picks, #366), leaves the file's hunks as written for the gate to refuse; #317). Run by `pnpm agent` (deployed: declined 2026-10-08, #259; 2026-10-12 proposed a
                    patch for demo-app and the verify gate refused it as not applying, twice, #317)
   agent/cycle.ts   cycle per (incident, recurrence), transactional lease with fencing, append-only run events
-                   (redacted), the cycle's run record (summary.<stage>, path) and its model-call and revision counts (#182); infrastructure errors throw, logical refusals are returned. Run by `pnpm agent` (deployed to the demo project; dry run off since 2026-10-10)
+                   (redacted), the cycle's run record (summary.<stage>, path) and its model-call and revision counts (#182); infrastructure errors throw, logical refusals are returned. Run by `pnpm agent` (deployed to the demo project; dry run off since 2026-10-10).
+                   `cycleStates.ts` is the one table of states (settled, reopenable), the round (`roundOf`, stamped on every event,
+                   #436) and the run record's round-scoped entries, which a reopening clears (`ROUND_SCOPED_RECORDS`, #413); every
+                   write to a settled cycle (PR state, recovery, auto-merge and revert moves) goes through `updateSettledCycle`,
+                   and a merge or revert move appends a run event (#421). Unit- and emulator-tested; not yet run on the demo project
   agent/loop.ts    one cycle: lease -> triage -> fix -> verify -> review -> PR (interface); rechecks status +
                    kill switch, one shared revision, call budget, dry run by default. Run by `pnpm agent`. Where
                    triage named a merge case auto-merge may apply to, it also runs the safety floor and the "fails
@@ -412,7 +416,8 @@ src/
                    comment and revert have never run against real GitHub (#330). Run by `pnpm agent` (in dry run it files and opens nothing)
   oncall/escalation.ts  phone escalation (#37): an urgent cycle (triage notify/act, waiting for a person) whose Slack message
                    went unacknowledged for the policy's wait -> primary, primary again after 2 min, secondary, support lead.
-                   One sequence per cycle, each call claimed in a transaction (claimer, per-person daily cap) before it is
+                   One sequence per round of a cycle (a person's Retry stops the earlier round's calls; a round that hands over
+                   again with its own message arms its own, #411), each call claimed in a transaction (claimer, per-person daily cap) before it is
                    placed; ack = incident acknowledged/resolved/ignored in the UI, or keypress 1; quiet hours unless critical
                    (recurred, or >= criticalOccurrences); run events stage `escalation`, numbers masked, people by role.
                    Ticked by `pnpm agent` and `pnpm escalate`. Off by default (env switch + admin's switch); dry run places nothing
