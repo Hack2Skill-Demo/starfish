@@ -14,6 +14,15 @@ import { parseIndexProbes, type IndexProbeSpec } from "./indexheal/probe.js";
 import { validateMergeCases, type MergeCase } from "./settingsSchema.js";
 import { validateClassRules, type ClassRule } from "./triageRules.js";
 
+/** The thinking levels Gemini 3 models take (Vertex AI's `thinking_level`); which ones a model accepts varies by model. */
+export const MODEL_THINKING_LEVELS = ["minimal", "low", "medium", "high"] as const;
+export type ModelThinkingLevel = (typeof MODEL_THINKING_LEVELS)[number];
+/**
+ * The default level: one below Gemini 3.1 Pro's own default, `high` (it takes `low`, `medium` and `high`, not `minimal`).
+ * Enough thinking for a minimal patch, without the open-ended think that can use up the output limit.
+ */
+export const DEFAULT_MODEL_THINKING_LEVEL: ModelThinkingLevel = "medium";
+
 export interface StarfishConfig {
   /** GCP project Starfish runs in: its Firestore store and its Vertex AI calls. */
   projectId: string;
@@ -49,6 +58,20 @@ export interface StarfishConfig {
    * retried at temperature 0 into the same cut. Lower it for a model whose own limit is lower.
    */
   modelMaxOutputTokens: number;
+  /**
+   * How much the model thinks before it answers, sent on every call as `thinkingConfig.thinkingLevel` (#452). Thinking
+   * tokens count toward `modelMaxOutputTokens`, and Gemini 3.1 Pro thinks at `high` by default: a long think could use the
+   * whole limit and leave the answer none (a fix call ran 8.5 minutes on the demo, 2026-10-18, and failed). Gemini 3 models
+   * take a level, not a token budget. A level bounds thinking only relative to the model's own scale, never in tokens.
+   * null: none is sent (the model's own default), for a model that takes no level.
+   */
+  modelThinkingLevel: ModelThinkingLevel | null;
+  /**
+   * A token budget for thinking, sent as `thinkingConfig.thinkingBudget` instead of a level, for a model that takes one
+   * (Gemini 2.5; Google deprecates it for Gemini 3, where it can fail calls). null: none. Always below
+   * `modelMaxOutputTokens`, so the answer keeps room: a budget at or above it is refused at load.
+   */
+  modelThinkingBudget: number | null;
   /** Label attached to every incident, so environments can never mix. */
   environment: string;
   /**
@@ -621,6 +644,7 @@ export function loadConfig(): StarfishConfig {
   if (!projectId) {
     throw new Error("GOOGLE_CLOUD_PROJECT is not set — copy .env.example to .env");
   }
+  const modelMaxOutputTokens = positiveInteger(process.env.STARFISH_MODEL_MAX_OUTPUT_TOKENS, 32_768, "STARFISH_MODEL_MAX_OUTPUT_TOKENS");
   return {
     projectId,
     watchedProjectId: process.env.STARFISH_WATCHED_PROJECT_ID || projectId,
@@ -629,7 +653,8 @@ export function loadConfig(): StarfishConfig {
     location: textOr(process.env.STARFISH_VERTEX_LOCATION, textOr(process.env.GOOGLE_CLOUD_LOCATION, "us-central1")),
     model: textOr(process.env.STARFISH_MODEL, "gemini-3.1-pro-preview"),
     modelTimeoutSeconds: positiveNumber(process.env.STARFISH_MODEL_TIMEOUT_SECONDS, 600, "STARFISH_MODEL_TIMEOUT_SECONDS"),
-    modelMaxOutputTokens: positiveInteger(process.env.STARFISH_MODEL_MAX_OUTPUT_TOKENS, 32_768, "STARFISH_MODEL_MAX_OUTPUT_TOKENS"),
+    modelMaxOutputTokens,
+    ...parseModelThinking(process.env.STARFISH_MODEL_THINKING_LEVEL, process.env.STARFISH_MODEL_THINKING_BUDGET, modelMaxOutputTokens),
     environment: textOr(process.env.STARFISH_ENV, "dev"),
     settingsCollection: textOr(process.env.STARFISH_SETTINGS_COLLECTION, "starfish_settings"),
     incidentCollection: textOr(process.env.STARFISH_INCIDENT_COLLECTION, "incidents"),
@@ -1064,6 +1089,34 @@ function positiveInteger(raw: string | undefined, fallback: number, name: string
   const n = positiveNumber(raw, fallback, name);
   if (!Number.isInteger(n)) throw new Error(`${name} must be a whole number above zero, got "${raw}"`);
   return n;
+}
+
+/**
+ * The thinking setting (#452): a level (default `medium`), `default` to send none, or a token budget instead. A budget set
+ * with no level replaces the default level (the two together fail the call, so a level and a budget both set is refused).
+ * A budget must leave the answer room: at or above the output limit is refused.
+ */
+export function parseModelThinking(
+  rawLevel: string | undefined,
+  rawBudget: string | undefined,
+  maxOutputTokens: number
+): Pick<StarfishConfig, "modelThinkingLevel" | "modelThinkingBudget"> {
+  const level = (rawLevel ?? "").trim().toLowerCase();
+  const budgetText = (rawBudget ?? "").trim();
+  if (level !== "" && level !== "default" && !(MODEL_THINKING_LEVELS as readonly string[]).includes(level)) {
+    throw new Error(`STARFISH_MODEL_THINKING_LEVEL must be one of ${MODEL_THINKING_LEVELS.join(", ")} or default, got "${rawLevel}"`);
+  }
+  if (budgetText === "") {
+    const chosen = level === "" ? DEFAULT_MODEL_THINKING_LEVEL : level === "default" ? null : (level as ModelThinkingLevel);
+    return { modelThinkingLevel: chosen, modelThinkingBudget: null };
+  }
+  if (level !== "" && level !== "default") throw new Error("STARFISH_MODEL_THINKING_LEVEL and STARFISH_MODEL_THINKING_BUDGET are both set: a model takes one or the other");
+  const budget = Number(budgetText);
+  if (!Number.isInteger(budget) || budget < 0) throw new Error(`STARFISH_MODEL_THINKING_BUDGET must be a whole number of tokens, 0 or more, got "${rawBudget}"`);
+  if (budget >= maxOutputTokens) {
+    throw new Error(`STARFISH_MODEL_THINKING_BUDGET (${budget}) must be below STARFISH_MODEL_MAX_OUTPUT_TOKENS (${maxOutputTokens}): thinking counts toward it, and the answer needs room`);
+  }
+  return { modelThinkingLevel: null, modelThinkingBudget: budget };
 }
 
 /** `none` when unset; anything but the two known values is a mistake worth refusing at startup. */

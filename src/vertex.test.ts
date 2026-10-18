@@ -28,10 +28,10 @@ vi.mock("@google/genai", () => ({
 // The store project and the Vertex project differ on purpose: the client must use the Vertex one.
 vi.mock("./config.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./config.js")>()),
-  loadConfig: () => ({ projectId: "store-project", vertexProjectId: "vertex-project", location: "l", model: "m", modelTimeoutSeconds: 600, modelMaxOutputTokens: 4096 }),
+  loadConfig: () => ({ projectId: "store-project", vertexProjectId: "vertex-project", location: "l", model: "m", modelTimeoutSeconds: 600, modelMaxOutputTokens: 4096, modelThinkingLevel: "low", modelThinkingBudget: null }),
 }));
 
-const { askJson, askModel, createAskJson, isTransientModelFailure, modelCallFailure, modelFailureRule, modelFetch, ModelAnswerError, UNTRUSTED_DATA_NOTICE } = await import("./vertex.js");
+const { askJson, askModel, createAskJson, thinkingConfigOf, isTransientModelFailure, modelCallFailure, modelFailureRule, modelFetch, ModelAnswerError, UNTRUSTED_DATA_NOTICE } = await import("./vertex.js");
 
 /** A Firestore holding one settings document, enough for the loader's read. */
 function dbWithSettings(data: Record<string, unknown>): Firestore {
@@ -72,6 +72,32 @@ describe("askJson", () => {
     responseText = "{}";
     await askJson("p", "s", {});
     expect(requests).toEqual([{ client: expect.objectContaining({ vertexai: true, project: "vertex-project", location: "l" }), model: "m" }]);
+  });
+});
+
+describe("how much the model thinks (#452)", () => {
+  const target = { vertexProjectId: "vertex-project", location: "l", model: "m", modelTimeoutSeconds: 600, modelMaxOutputTokens: 4096 };
+
+  it("sends the configured level on every call, as the API's enum value, beside the output limit", async () => {
+    responseText = "{}";
+    await askJson("p", "s", {});
+    expect(configs[0]).toMatchObject({ maxOutputTokens: 4096, thinkingConfig: { thinkingLevel: "LOW" } });
+    await createAskJson({ ...target, modelThinkingLevel: "medium", modelThinkingBudget: null })("p", "s", {});
+    expect(configs[1]!.thinkingConfig).toEqual({ thinkingLevel: "MEDIUM" });
+  });
+
+  it("sends a budget instead, for a model that takes one, never both", async () => {
+    responseText = "{}";
+    await createAskJson({ ...target, modelThinkingLevel: null, modelThinkingBudget: 2048 })("p", "s", {});
+    expect(configs[0]!.thinkingConfig).toEqual({ thinkingBudget: 2048 });
+    expect(thinkingConfigOf({ modelThinkingLevel: "high", modelThinkingBudget: 2048 })).toEqual({ thinkingLevel: "HIGH" });
+  });
+
+  it("sends no thinking setting at all when none is configured: the model's own default", async () => {
+    responseText = "{}";
+    await createAskJson({ ...target, modelThinkingLevel: null, modelThinkingBudget: null })("p", "s", {});
+    expect(configs[0]).not.toHaveProperty("thinkingConfig");
+    expect(configs[0]).toMatchObject({ maxOutputTokens: 4096 });
   });
 });
 

@@ -95,6 +95,62 @@ describe("loadConfig: the projects", () => {
   });
 });
 
+describe("loadConfig: how much the model thinks (#452)", () => {
+  const THINKING = ["STARFISH_MODEL_THINKING_LEVEL", "STARFISH_MODEL_THINKING_BUDGET", "STARFISH_MODEL_MAX_OUTPUT_TOKENS"];
+  beforeEach(() => {
+    for (const k of [...KEYS, ...THINKING]) vi.stubEnv(k, "");
+    vi.stubEnv("GOOGLE_CLOUD_PROJECT", "home-project");
+  });
+  afterEach(() => vi.unstubAllEnvs());
+
+  it("thinks at medium by default, below Gemini 3.1 Pro's own high, with no budget", () => {
+    expect(loadConfig()).toMatchObject({ modelThinkingLevel: "medium", modelThinkingBudget: null, modelMaxOutputTokens: 32_768 });
+  });
+
+  it("takes any of the levels, in any case, and `default` sends none", () => {
+    for (const level of ["minimal", "low", "medium", "high"]) {
+      vi.stubEnv("STARFISH_MODEL_THINKING_LEVEL", level.toUpperCase());
+      expect(loadConfig().modelThinkingLevel).toBe(level);
+    }
+    vi.stubEnv("STARFISH_MODEL_THINKING_LEVEL", "default");
+    expect(loadConfig()).toMatchObject({ modelThinkingLevel: null, modelThinkingBudget: null });
+  });
+
+  it("refuses an unknown level", () => {
+    vi.stubEnv("STARFISH_MODEL_THINKING_LEVEL", "extreme");
+    expect(() => loadConfig()).toThrow(/STARFISH_MODEL_THINKING_LEVEL must be one of minimal, low, medium, high or default/);
+  });
+
+  it("a budget replaces the default level, for a model that takes one", () => {
+    vi.stubEnv("STARFISH_MODEL_THINKING_BUDGET", "8192");
+    expect(loadConfig()).toMatchObject({ modelThinkingLevel: null, modelThinkingBudget: 8192 });
+    vi.stubEnv("STARFISH_MODEL_THINKING_LEVEL", "default");
+    expect(loadConfig()).toMatchObject({ modelThinkingLevel: null, modelThinkingBudget: 8192 });
+    vi.stubEnv("STARFISH_MODEL_THINKING_BUDGET", "0");
+    expect(loadConfig().modelThinkingBudget).toBe(0);
+  });
+
+  it("refuses a budget at or above the output limit, which would leave the answer no room", () => {
+    vi.stubEnv("STARFISH_MODEL_MAX_OUTPUT_TOKENS", "16384");
+    vi.stubEnv("STARFISH_MODEL_THINKING_BUDGET", "16384");
+    expect(() => loadConfig()).toThrow(/must be below STARFISH_MODEL_MAX_OUTPUT_TOKENS \(16384\)/);
+    vi.stubEnv("STARFISH_MODEL_THINKING_BUDGET", "40000");
+    expect(() => loadConfig()).toThrow(/must be below/);
+    vi.stubEnv("STARFISH_MODEL_THINKING_BUDGET", "16383");
+    expect(loadConfig().modelThinkingBudget).toBe(16383);
+  });
+
+  it("refuses a budget that is not a whole number of tokens, and a level and a budget both set", () => {
+    for (const bad of ["-1", "1.5", "lots"]) {
+      vi.stubEnv("STARFISH_MODEL_THINKING_BUDGET", bad);
+      expect(() => loadConfig(), bad).toThrow(/STARFISH_MODEL_THINKING_BUDGET must be a whole number/);
+    }
+    vi.stubEnv("STARFISH_MODEL_THINKING_BUDGET", "1024");
+    vi.stubEnv("STARFISH_MODEL_THINKING_LEVEL", "low");
+    expect(() => loadConfig()).toThrow(/both set/);
+  });
+});
+
 describe("loadConfig: ingest windows", () => {
   const WINDOW_KEYS = ["STARFISH_INGEST_LAG_MINUTES", "STARFISH_INGEST_MAX_WINDOW_HOURS", "STARFISH_RUN_COLLECTION"];
   beforeEach(() => {
