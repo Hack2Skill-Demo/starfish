@@ -1542,6 +1542,7 @@ function StepRow({
           {step.attempt && (
             <span className="text-xs text-gray-600 dark:text-gray-400">
               Attempt {step.attempt.n} of {step.attempt.of}
+              {step.attempt.reason && <> · {step.attempt.reason}</>}
             </span>
           )}
           {step.at && (
