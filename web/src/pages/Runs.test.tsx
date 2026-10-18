@@ -523,6 +523,26 @@ describe("Runs page", () => {
     expect(heads[2]).not.toContain("Attempt");
   });
 
+  it("lists an earlier round's revision in the order it happened, as it does the latest round's", () => {
+    renderRuns();
+    act(() => mocks.cyclesCb!([cycle("inc-a_r0", { state: "waiting-human", path: "human", leaseExpiresAt: null })], false));
+    act(() =>
+      mocks.eventsCb!([
+        event(1, "triage", "decision", "a reason", 90_000),
+        event(2, "fix", "proposed", "first draft", 80_000),
+        event(3, "review", "block", "3 attacks tried", 70_000),
+        event(4, "fix", "proposed", "revised draft", 60_000),
+        event(5, "cycle", "reconsidered", "Handed to a person earlier; retried: an operator asked for a retriage", 50_000),
+        event(6, "triage", "decision", "again", 40_000),
+      ])
+    );
+    const round1 = within(screen.getByRole("list", { name: "Round 1" })).getAllByRole("listitem");
+    const heads = round1.map((li) => li.textContent!.replace(/\s+/g, " "));
+    ["Draft a fix", "Adversarial review", "Draft a fix", "Triage"].forEach((title, i) => expect(heads[i]).toContain(title));
+    expect(heads[0]).toContain("Attempt 2 of 2");
+    expect(heads[2]).toContain("Attempt 1 of 2");
+  });
+
   it("says nothing about rounds for a run that was never reopened", () => {
     renderRuns();
     act(() => mocks.cyclesCb!([cycle("inc-a_r0", { state: "declined", path: "decline", leaseExpiresAt: null })], false));
