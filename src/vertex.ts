@@ -68,13 +68,41 @@ const TIMEOUT_CODES = new Set(["UND_ERR_HEADERS_TIMEOUT", "UND_ERR_BODY_TIMEOUT"
 function identifiersOf(err: unknown): string[] {
   if (err === null || typeof err !== "object") return [];
   const { name, code } = err as { name?: unknown; code?: unknown };
-  return [name, code].filter((v): v is string => typeof v === "string" && IDENTIFIER.test(v));
+  const status = httpStatusOf(err);
+  const word = apiStatusOf(err);
+  return [
+    ...[name, code].filter((v): v is string => typeof v === "string" && IDENTIFIER.test(v)),
+    ...(status !== undefined ? [`HTTP ${status}`] : []),
+    ...(word !== undefined ? [word] : []),
+  ];
+}
+
+/**
+ * The HTTP status the API answered with: `@google/genai`'s `ApiError` carries it as `status`. The demo's failed fix calls
+ * were recorded as a bare "ApiError" (2026-10-18); Vertex's own metrics showed both were 504s.
+ */
+export function httpStatusOf(err: unknown): number | undefined {
+  if (err === null || typeof err !== "object") return undefined;
+  const status = (err as { status?: unknown }).status;
+  return typeof status === "number" && Number.isInteger(status) && status >= 100 && status <= 599 ? status : undefined;
+}
+
+/** Google's status word for a failed call (DEADLINE_EXCEEDED, RESOURCE_EXHAUSTED...), read from the error body the SDK puts in the message: the word only, never the message's text. */
+function apiStatusOf(err: unknown): string | undefined {
+  if (httpStatusOf(err) === undefined || !(err instanceof Error)) return undefined;
+  try {
+    const word = (JSON.parse(err.message) as { error?: { status?: unknown } } | null)?.error?.status;
+    return typeof word === "string" && /^[A-Z][A-Z_]{1,63}$/.test(word) ? word : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /**
  * What a stage records when its model call threw (#334): the error's name and its cause's name and code, never a
  * message (a message can quote what it was sent), and a timeout said as one. A bare "TypeError" from fetch told an
- * operator nothing about whether the model was slow or the network was down.
+ * operator nothing about whether the model was slow or the network was down. An answer from the API also gives its HTTP
+ * status and Google's status word ("ApiError HTTP 504 DEADLINE_EXCEEDED"), the word checked to be one, not text.
  */
 export function modelCallFailure(err: unknown): string {
   if (!(err instanceof Error)) return "The model call failed (unknown error).";
@@ -87,7 +115,39 @@ export function modelCallFailure(err: unknown): string {
 
 function timedOut(err: unknown): boolean {
   const ids = [...identifiersOf(err), ...(err instanceof Error ? identifiersOf(err.cause) : [])];
-  return ids.some((id) => TIMEOUT_NAMES.has(id) || TIMEOUT_CODES.has(id));
+  // A 504 is the server's own deadline running out (DEADLINE_EXCEEDED): a timeout, not a refusal.
+  return ids.some((id) => TIMEOUT_NAMES.has(id) || TIMEOUT_CODES.has(id)) || httpStatusOf(err) === 504 || httpStatusOf(err) === 408;
+}
+
+/**
+ * The statuses a failed call is tried once more for, inside the same model call (`retriedOnce`): the server busy, failing or
+ * out of time, which a second request a moment later often gets past. On the demo (2026-10-18) Vertex answered one fix call
+ * with a 504 after two minutes, and the whole cycle waited an hour for the next pass to ask again.
+ */
+const RETRYABLE_HTTP = new Set([429, 500, 502, 503, 504]);
+/** How long the one retry waits first. */
+export const MODEL_RETRY_PAUSE_MS = 5_000;
+
+/**
+ * Runs `attempt`, and once more when it failed with a retryable status in less than half the call's deadline, after a short
+ * pause. A failure that took longer (a 504 at the deadline itself) is not tried again: the call stays within one and a
+ * half deadlines, and the stage records it as it did. Any other error (a cut or filtered answer, a network failure, a
+ * timeout of ours) is thrown at once. The two requests are one model call: the stage spends one call of its budget on it.
+ */
+export async function retriedOnce<T>(
+  attempt: () => Promise<T>,
+  deadlineMs: number,
+  clock: { now: () => number; sleep: (ms: number) => Promise<void> } = { now: Date.now, sleep: (ms) => new Promise((r) => setTimeout(r, ms)) }
+): Promise<T> {
+  const started = clock.now();
+  try {
+    return await attempt();
+  } catch (err) {
+    const status = httpStatusOf(err);
+    if (status === undefined || !RETRYABLE_HTTP.has(status) || clock.now() - started >= deadlineMs / 2) throw err;
+    await clock.sleep(MODEL_RETRY_PAUSE_MS);
+    return attempt();
+  }
 }
 
 /**
@@ -203,12 +263,16 @@ export function createAskJson(target: VertexTarget): AskJson {
   const { vertexProjectId, location, model, modelTimeoutSeconds, modelMaxOutputTokens } = target;
   const thinkingConfig = thinkingConfigOf(target);
   return async <T>(prompt: string, systemInstruction: string, schema: Record<string, unknown>): Promise<T> =>
-    askWith<T>(
-      clientFor(vertexProjectId, location, modelTimeoutSeconds),
-      { model, maxOutputTokens: modelMaxOutputTokens, ...(thinkingConfig && { thinkingConfig }) },
-      prompt,
-      systemInstruction,
-      schema
+    retriedOnce(
+      () =>
+        askWith<T>(
+          clientFor(vertexProjectId, location, modelTimeoutSeconds),
+          { model, maxOutputTokens: modelMaxOutputTokens, ...(thinkingConfig && { thinkingConfig }) },
+          prompt,
+          systemInstruction,
+          schema
+        ),
+      modelTimeoutSeconds * 1000
     );
 }
 

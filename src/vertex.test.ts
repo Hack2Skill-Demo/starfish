@@ -10,6 +10,8 @@ let responseExtra: Record<string, unknown> = {};
 const clientOptions: unknown[] = [];
 const requests: { client: unknown; model: unknown }[] = [];
 const configs: Record<string, unknown>[] = [];
+/** Errors the mocked client throws, one per call, before it answers normally. */
+const throwNext: unknown[] = [];
 vi.mock("@google/genai", () => ({
   GoogleGenAI: class {
     models: { generateContent: (req: { model: unknown; config: Record<string, unknown> }) => Promise<Record<string, unknown>> };
@@ -19,6 +21,7 @@ vi.mock("@google/genai", () => ({
         generateContent: async (req: { model: unknown; config: Record<string, unknown> }) => {
           requests.push({ client: options, model: req.model });
           configs.push(req.config);
+          if (throwNext.length > 0) throw throwNext.shift();
           return { text: responseText, ...responseExtra };
         },
       };
@@ -31,7 +34,7 @@ vi.mock("./config.js", async (importOriginal) => ({
   loadConfig: () => ({ projectId: "store-project", vertexProjectId: "vertex-project", location: "l", model: "m", modelTimeoutSeconds: 600, modelMaxOutputTokens: 4096, modelThinkingLevel: "low", modelThinkingBudget: null }),
 }));
 
-const { askJson, askModel, createAskJson, thinkingConfigOf, isTransientModelFailure, modelCallFailure, modelFailureRule, modelFetch, ModelAnswerError, UNTRUSTED_DATA_NOTICE } = await import("./vertex.js");
+const { askJson, askModel, createAskJson, retriedOnce, MODEL_RETRY_PAUSE_MS, thinkingConfigOf, isTransientModelFailure, modelCallFailure, modelFailureRule, modelFetch, ModelAnswerError, UNTRUSTED_DATA_NOTICE } = await import("./vertex.js");
 
 /** A Firestore holding one settings document, enough for the loader's read. */
 function dbWithSettings(data: Record<string, unknown>): Firestore {
@@ -278,3 +281,98 @@ describe("modelCallFailure (#334)", () => {
     expect(modelCallFailure("boom")).toBe("The model call failed (unknown error).");
   });
 });
+
+/** The SDK's `ApiError`: its name, the HTTP status, and the error body as its message. */
+const apiError = (status: number, body: unknown = { error: { code: status, message: "upstream said so", status: "DEADLINE_EXCEEDED" } }) =>
+  Object.assign(new Error(typeof body === "string" ? body : JSON.stringify(body)), { name: "ApiError", status });
+
+describe("an error the API answered with (2026-10-18: a bare \"ApiError\" was a 504)", () => {
+  it("gives the HTTP status and Google's status word, and calls a 504 a timeout", () => {
+    expect(modelCallFailure(apiError(504))).toBe("The model call timed out (ApiError HTTP 504 DEADLINE_EXCEEDED).");
+    expect(modelCallFailure(apiError(429, { error: { code: 429, status: "RESOURCE_EXHAUSTED" } }))).toBe("The model call failed (ApiError HTTP 429 RESOURCE_EXHAUSTED).");
+  });
+
+  it("never quotes the body, and leaves out a status word that is not one", () => {
+    const leaky = apiError(400, { error: { code: 400, message: `echo ${SEEDED_SECRETS.github}`, status: `BAD ${SEEDED_SECRETS.github}` } });
+    expect(modelCallFailure(leaky)).toBe("The model call failed (ApiError HTTP 400).");
+    expect(modelCallFailure(apiError(503, `<html>${SEEDED_SECRETS.github}</html>`))).toBe("The model call failed (ApiError HTTP 503).");
+    expect(modelCallFailure(Object.assign(new Error("{}"), { name: "ApiError", status: 9999 }))).toBe("The model call failed (ApiError).");
+  });
+
+  it("reads the outcome as a timeout or a failed call, both released for a retry", async () => {
+    expect(await askModel(async () => Promise.reject(apiError(504)), "p", "s", {})).toMatchObject({ kind: "timeout" });
+    expect(await askModel(async () => Promise.reject(apiError(503)), "p", "s", {})).toMatchObject({ kind: "call-failed" });
+  });
+});
+
+describe("retriedOnce: one more request for a quick server failure", () => {
+  const DEADLINE = 600_000;
+  /** A clock that moves only when told: each attempt takes `took` ms, and the pause is recorded, not waited. */
+  const fakeClock = (took: number[]) => {
+    let t = 0;
+    const paused: number[] = [];
+    return { clock: { now: () => t, sleep: async (ms: number) => void paused.push(ms) }, advance: () => (t += took.shift() ?? 0), paused };
+  };
+
+  it("tries a 504 that came back in two minutes once more, after a pause, and returns the answer", async () => {
+    const { clock, advance, paused } = fakeClock([120_000, 60_000]);
+    let calls = 0;
+    const r = await retriedOnce(async () => {
+      advance();
+      if (++calls === 1) throw apiError(504);
+      return "answer";
+    }, DEADLINE, clock);
+    expect(r).toBe("answer");
+    expect(calls).toBe(2);
+    expect(paused).toEqual([MODEL_RETRY_PAUSE_MS]);
+  });
+
+  it("tries only once more: a second failure is the call's", async () => {
+    const { clock, advance } = fakeClock([1_000, 1_000]);
+    let calls = 0;
+    const err = await retriedOnce(async () => {
+      advance();
+      calls++;
+      throw apiError(503);
+    }, DEADLINE, clock).catch((e: unknown) => e);
+    expect(calls).toBe(2);
+    expect(httpStatus(err)).toBe(503);
+  });
+
+  it("does not retry a failure that took half the deadline or more, a refusal, or an error that is not the API's", async () => {
+    for (const [err, took] of [
+      [apiError(504), DEADLINE / 2],
+      [apiError(400), 1_000],
+      [apiError(403), 1_000],
+      [new ModelAnswerError("truncated", "MAX_TOKENS"), 1_000],
+      [Object.assign(new Error("aborted"), { name: "AbortError" }), 1_000],
+    ] as const) {
+      const { clock, advance, paused } = fakeClock([took]);
+      let calls = 0;
+      await retriedOnce(async () => {
+        advance();
+        calls++;
+        throw err;
+      }, DEADLINE, clock).catch(() => undefined);
+      expect(calls, String((err as Error).name)).toBe(1);
+      expect(paused).toEqual([]);
+    }
+  });
+
+  it("is what every real call goes through: a quick 504 from Vertex, then the answer", async () => {
+    responseText = '{"ok": true}';
+    throwNext.push(apiError(504));
+    vi.useFakeTimers({ toFake: ["setTimeout"] });
+    try {
+      const answer = createAskJson(testConfig({ vertexProjectId: "retry", location: "l", model: "m" }))("p", "s", {});
+      await vi.advanceTimersByTimeAsync(MODEL_RETRY_PAUSE_MS);
+      expect(await answer).toEqual({ ok: true });
+    } finally {
+      vi.useRealTimers();
+      throwNext.length = 0;
+    }
+    expect(configs).toHaveLength(2);
+  });
+});
+
+const httpStatus = (e: unknown) => (e as { status?: number }).status;

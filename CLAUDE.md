@@ -144,7 +144,10 @@ src/
   types.ts         Incident, StoredIncident, SpikeFixture
   vertex.ts        Gemini on Vertex AI — structured JSON output, untrusted-data notice; each call ends at
                    `STARFISH_MODEL_TIMEOUT_SECONDS` (600) through its own fetch, past Node's 300 s limit, and a failed call is
-                   recorded by error and cause names/codes only, a timeout as one (`modelCallFailure`, #334). Every call sets
+                   recorded by error and cause names/codes only, a timeout as one (`modelCallFailure`, #334); an API error adds its
+                   HTTP status and Google's status word, a 504 read as a timeout, and a 429/5xx that came back in under half the
+                   deadline is tried once more inside the same call (`retriedOnce`, #454: Vertex answered demo fix calls with 504s,
+                   one after 2 minutes, recorded only as "ApiError"). Every call sets
                    `STARFISH_MODEL_MAX_OUTPUT_TOKENS` (32768) and a thinking level, `STARFISH_MODEL_THINKING_LEVEL` (medium,
                    below Gemini 3.1 Pro's own high; or a token budget below the limit, `STARFISH_MODEL_THINKING_BUDGET`, for a
                    model that takes one; thinking counts toward the limit, #452), and reads the finish/block reason; the stages read it through
