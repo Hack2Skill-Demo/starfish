@@ -453,6 +453,26 @@ describe("Runs page", () => {
     expect(round1[0]).toHaveTextContent("The reviewer returned nothing usable.");
   });
 
+  it("keeps the first round's recorded details after a retry: the triage level, and the delivery of what was sent", () => {
+    renderRuns();
+    const summary = { triage: { decision: "notify", rule: "model-notify", reason: "A role is missing.", level: "log", counterCount: 2, counterWindow: "24h" } };
+    act(() => mocks.cyclesCb!([cycle("inc-a_r0", { state: "waiting-human", path: "human", leaseExpiresAt: null, summary })], false));
+    act(() =>
+      mocks.eventsCb!([
+        event(1, "triage", "decision", "A role is missing.", 5000),
+        event(2, "notify", "sent", "A person was told", 4000),
+        event(3, "cycle", "reconsidered", "Handed to a person earlier; retried: an operator asked for a retriage", 3000),
+        event(4, "notify", "sent", "A person was told", 2000),
+      ])
+    );
+    // Triage ran only in round 1, so the run record's triage details are round 1's own: they stay on its row.
+    const round1 = within(screen.getByRole("list", { name: "Round 1" }));
+    const levels = round1.getByRole("group", { name: "How far Starfish goes" });
+    expect(within(levels).getByText("Log")).toHaveAttribute("aria-current", "true");
+    expect(round1.getAllByRole("listitem")[0]).toHaveTextContent("Tell a person");
+    expect(round1.getByText("Recount: 2 errors in 24h")).toBeInTheDocument();
+  });
+
   it("says nothing about rounds for a run that was never reopened", () => {
     renderRuns();
     act(() => mocks.cyclesCb!([cycle("inc-a_r0", { state: "declined", path: "decline", leaseExpiresAt: null })], false));
