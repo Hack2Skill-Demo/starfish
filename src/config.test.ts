@@ -130,9 +130,9 @@ describe("loadConfig: ingest windows", () => {
 
   it("reads the cap on new incidents per function and window, 25 by default (#303)", () => {
     vi.stubEnv("STARFISH_MAX_NEW_INCIDENTS_PER_FUNCTION", "");
-    expect(loadConfig().maxNewIncidentsPerFunctionPerWindow).toBe(25);
+    expect(loadConfig().maxNewIncidentsPerFunctionPerDay).toBe(25);
     vi.stubEnv("STARFISH_MAX_NEW_INCIDENTS_PER_FUNCTION", "100");
-    expect(loadConfig().maxNewIncidentsPerFunctionPerWindow).toBe(100);
+    expect(loadConfig().maxNewIncidentsPerFunctionPerDay).toBe(100);
     for (const bad of ["0", "2.5", "lots"]) {
       vi.stubEnv("STARFISH_MAX_NEW_INCIDENTS_PER_FUNCTION", bad);
       expect(() => loadConfig()).toThrow("STARFISH_MAX_NEW_INCIDENTS_PER_FUNCTION");

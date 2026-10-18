@@ -523,8 +523,10 @@ describe("Runs page", () => {
     const heads = log.map((li) => li.textContent!.replace(/\s+/g, " "));
     const order = ["Verify gate", "Draft a fix", "Adversarial review", "Verify gate", "Draft a fix", "Triage"];
     order.forEach((title, i) => expect(heads[i]).toContain(title));
-    expect(heads[0]).toContain("Attempt 2 of 2");
+    expect(heads[0]).toContain("Attempt 2 of 2 · Checks the revised draft");
+    expect(heads[1]).toContain("Attempt 2 of 2 · Revision: the review blocked the previous draft");
     expect(heads[3]).toContain("Attempt 1 of 2");
+    expect(heads[3]).not.toContain("Revision");
     expect(heads[4]).toContain("first draft");
     expect(heads[2]).not.toContain("Attempt");
   });

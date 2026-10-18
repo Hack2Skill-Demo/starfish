@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { buildWaterfall, parseCycle, type CycleRow, type EventRow } from "./runsModel";
-import { runInWords, sentenceFor, type WordStep } from "./runWords";
+import { runInWords, sentenceFor, stopSentence, type WordStep } from "./runWords";
 
 const ts = (ms: number) => ({ toDate: () => new Date(ms) });
 const T0 = Date.UTC(2026, 9, 17, 12, 0, 0);
@@ -169,10 +169,18 @@ describe("runInWords", () => {
       "The adversarial review blocked the patch.",
       "Gemini drafted a patch.",
       "The verify gate passed the patch.",
-      "Model-call budget used up.",
+      "The run used up its model-call budget, the most Gemini calls one run may spend, so a person decides.",
       "A person was told in Slack.",
     ]);
-    expect(w.why).toBe("Model-call budget used up.");
+    expect(w.why).toBe("The run used up its model-call budget, the most Gemini calls one run may spend, so a person decides.");
+  });
+
+  it("says how much of the model-call budget was used when the note carries it, and never guesses when it does not", () => {
+    expect(stopSentence({ type: "budget", summary: "Model-call budget used up", data: { used: 6, budget: 6 } }).text).toBe(
+      "The run used up its model-call budget (6 of 6 Gemini calls), the most Gemini calls one run may spend, so a person decides."
+    );
+    expect(stopSentence({ type: "budget", summary: "Model-call budget used up", data: {} }).text).toBe("The run used up its model-call budget, the most Gemini calls one run may spend, so a person decides.");
+    expect(stopSentence({ type: "stopped", summary: "Stopped before acting: incident-ignored", data: {} })).toEqual({ text: "Stopped before acting: incident-ignored.", templated: false });
   });
 
   it("reads a guest's trimmed copy: no event data, only the record's enumerated fields", () => {

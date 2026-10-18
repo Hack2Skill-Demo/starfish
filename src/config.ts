@@ -445,15 +445,16 @@ export interface StarfishConfig {
   /** The longest span one ingest window may cover, so catching up after downtime is done in bounded reads. */
   ingestMaxWindowHours: number;
   /**
-   * The most NEW incidents one function may open in one ingest window (#303). An error that echoes user input
-   * ("No such user: alice", "...: bob") keeps its words through normalization, so each distinct word is a distinct
-   * fingerprint; without a cap a flood of them opens thousands of incidents, bills a write for each, and crowds the real
-   * ones out of the agent's candidate scan. Past the cap, a function's errors that match no stored incident are folded
-   * into ONE high-cardinality overflow incident per function and UTC day (aggregate.ts); errors that already have an
-   * incident still accrue onto it. Which errors get the cap's places is decided from the window's own entries (most
-   * occurrences first), so a replayed window decides the same way.
+   * The most NEW incidents one function may open in one UTC day (#303, per day since #434). An error that echoes user
+   * input ("No such user: alice", "...: bob") keeps its words through normalization, so each distinct word is a
+   * distinct fingerprint; without a cap a flood of them opens thousands of incidents, bills a write for each, and crowds
+   * the real ones out of the agent's candidate scan. Past the cap, a function's errors that match no stored incident are
+   * folded into ONE high-cardinality overflow incident per function and UTC day (aggregate.ts); errors that already
+   * have an incident still accrue onto it. The count is kept in the store, on the key of that day's overflow incident
+   * (store.ts `newIncidentCap`): it was per window, and a flood narrows every window and completes up to 8 of them a
+   * run, so one function could open 8 times the cap a run on exactly the load the cap was for.
    */
-  maxNewIncidentsPerFunctionPerWindow: number;
+  maxNewIncidentsPerFunctionPerDay: number;
   /**
    * How long one ingest run may work before it stops (#221). No new window is started once most of it is spent, and a
    * window's read is given up at what is left, so a stall is recorded as a failed `last_run` before whatever runs the
@@ -669,7 +670,7 @@ export function loadConfig(): StarfishConfig {
       6,
       "STARFISH_INGEST_MAX_WINDOW_HOURS"
     ),
-    maxNewIncidentsPerFunctionPerWindow: positiveInteger(
+    maxNewIncidentsPerFunctionPerDay: positiveInteger(
       process.env.STARFISH_MAX_NEW_INCIDENTS_PER_FUNCTION,
       25,
       "STARFISH_MAX_NEW_INCIDENTS_PER_FUNCTION"

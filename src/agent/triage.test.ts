@@ -501,6 +501,40 @@ describe("triageIncident: the rules engine's cap (an admin's class rule, an oper
     expect(calls).toHaveLength(0);
   });
 
+  it("never lets a class rule hold back a consolidated quota or overflow incident: their gate decides (#435)", async () => {
+    // A rule an admin wrote for the app's own 429s: it matches the quota incident's errorType too.
+    const quotaRule = [{ id: "app-429s", match: { errorType: "QuotaError" }, maxLevel: "noise" as const }];
+    const { ask, calls } = stub(act);
+    const quota = incident({ signalSource: "platform-quota", errorType: "QuotaError", functionName: "cloud-run-platform-quota" });
+    const r = await triageIncident({ incident: quota, status: "new" }, ask, { classRules: quotaRule });
+    expect(r).toMatchObject({ decision: "notify", rule: "platform-quota" });
+    expect(r.cap).toBeUndefined();
+    // Recognised by its namespace too, as a record that lacks the field is.
+    const byPrefix = incident({ fingerprint: "pq-0123456789abcdef", errorType: "QuotaError" });
+    expect(await triageIncident({ incident: byPrefix, status: "new" }, ask, { classRules: quotaRule })).toMatchObject({ rule: "platform-quota" });
+    const overflowRule = [{ id: "lookup-noise", match: { functionName: "lookup" }, maxLevel: "noise" as const }];
+    const flood = incident({ signalSource: "overflow", functionName: "lookup" });
+    expect(await triageIncident({ incident: flood, status: "new" }, ask, { classRules: overflowRule })).toMatchObject({
+      decision: "notify",
+      rule: "high-cardinality-overflow",
+    });
+    expect(calls).toHaveLength(0);
+    // The same rule still holds back an app's own QuotaError.
+    expect(await triageIncident({ incident: incident({ errorType: "QuotaError" }), status: "new" }, ask, { classRules: quotaRule })).toMatchObject({
+      decision: "decline",
+      rule: "rule-cap",
+    });
+  });
+
+  it("still lets an operator's correction to noise decline a quota incident: a person looked at it", async () => {
+    const { ask } = stub(act);
+    const r = await triageIncident(
+      { incident: incident({ signalSource: "platform-quota" }), status: "new", correction: { level: "noise", by: "u1" } },
+      ask
+    );
+    expect(r).toMatchObject({ decision: "decline", rule: "correction-cap" });
+  });
+
   it("still skips an incident that is not open: a cap never brings one back", async () => {
     const { ask } = stub(act);
     expect(await triageIncident({ ...subject, status: "resolved" }, ask, { classRules: rule("noise") })).toMatchObject({ decision: "skip" });

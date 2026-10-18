@@ -626,7 +626,7 @@ function RunDetail({
     ? status.label
     : asLive && replayAt !== null
       ? `Replaying the recorded run${speed > 1 ? ` at ${speed}× speed` : ""}. ${runSummary(asLive, water.steps, replayAt)}`
-      : runSummary(cycle, water.steps, clock);
+      : runSummary(cycle, water.steps, clock, water.notes);
   const failure = incident?.errorMessage ? failureView(incident.errorMessage, incident.errorDetail) : null;
   // A run that ended with a person: drawn as a branch off the last step of its track that has an event.
   const handoff = !asLive && !status.live && cycle.state !== "running" && (cycle.path === "human" || cycle.path === "notify") ? PATH_LABELS[cycle.path] : undefined;
@@ -1542,6 +1542,7 @@ function StepRow({
           {step.attempt && (
             <span className="text-xs text-gray-600 dark:text-gray-400">
               Attempt {step.attempt.n} of {step.attempt.of}
+              {step.attempt.reason && <> · {step.attempt.reason}</>}
             </span>
           )}
           {step.at && (

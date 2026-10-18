@@ -79,7 +79,7 @@ describe("scrubCollection on the emulator", () => {
 
     const report = await scrubCollection(db, store, { apply: false });
 
-    expect(report).toMatchObject({ scanned: 1, changed: 1, refingerprinted: 1, keysRemoved: 0, applied: false });
+    expect(report).toMatchObject({ scanned: 1, changed: 1, refingerprinted: 1, keysRepointed: 0, applied: false });
     expect(report.byField).toEqual({
       errorMessage: 1, errorDetail: 1, stackTrace: 1, errorName: 0, service: 0, errorCode: 0, tenantId: 0, requestId: 0,
     });
@@ -94,7 +94,7 @@ describe("scrubCollection on the emulator", () => {
 
     const report = await scrubCollection(db, store, { apply: true });
 
-    expect(report).toMatchObject({ scanned: 1, changed: 1, refingerprinted: 1, keysRemoved: 1, applied: true });
+    expect(report).toMatchObject({ scanned: 1, changed: 1, refingerprinted: 1, keysRepointed: 1, applied: true });
     const stored = await everything();
     for (const needle of liveSecrets) expect(stored).not.toContain(needle);
     const doc = (await db.collection(store.incidentCollection).doc("legacy-1").get()).data()!;
@@ -111,7 +111,7 @@ describe("scrubCollection on the emulator", () => {
 
     const again = await scrubCollection(db, store, { apply: true });
 
-    expect(again).toMatchObject({ scanned: 1, changed: 0, refingerprinted: 0, keysRemoved: 0 });
+    expect(again).toMatchObject({ scanned: 1, changed: 0, refingerprinted: 0, keysRepointed: 0 });
     expect(await everything()).toBe(after);
   });
 
@@ -130,10 +130,47 @@ describe("scrubCollection on the emulator", () => {
     const docs = (await db.collection(store.incidentCollection).get()).docs;
     expect(docs.map((d) => d.id)).toEqual(["legacy-1"]);
     expect(docs[0]!.get("occurrenceCount")).toBe(5);
-    const keys = (await db.collection(store.incidentKeyCollection).get()).docs;
-    expect(keys).toHaveLength(1);
-    expect(keys[0]!.get("incidentId")).toBe("legacy-1");
+    const fp = computeErrorFingerprint("mailDrainer", docs[0]!.get("errorMessage") as string);
+    const key = await db.collection(store.incidentKeyCollection).doc(incidentKeyId("prod", fp)).get();
+    expect(key.get("incidentId")).toBe("legacy-1");
     for (const needle of liveSecrets) expect(await everything()).not.toContain(needle);
+  });
+
+  it("carries the old key's applied windows to the new one, so a replayed window still counts once (#433)", async () => {
+    await seedLegacy("legacy-1");
+    const oldFp = computeErrorFingerprint("mailDrainer", MESSAGE);
+    await db.collection(store.incidentKeyCollection).doc(incidentKeyId("prod", oldFp)).update({ appliedWindows: ["w1"] });
+
+    const report = await scrubCollection(db, store, { apply: true });
+
+    expect(report).toMatchObject({ refingerprinted: 1, keysRepointed: 1 });
+    // The old key is left as it was, not deleted.
+    expect((await db.collection(store.incidentKeyCollection).doc(incidentKeyId("prod", oldFp)).get()).get("incidentId")).toBe("legacy-1");
+    const input: IncidentInput = {
+      functionName: "mailDrainer", service: null, environment: "prod", errorType: "UnknownError",
+      errorMessage: MESSAGE, occurrenceCount: 2, firstOccurredAt: new Date(), lastOccurredAt: new Date(), windowId: "w1",
+    };
+    expect(await upsertIncident(db, store, input, Timestamp.now())).toBe("duplicate");
+    expect((await db.collection(store.incidentCollection).doc("legacy-1").get()).get("occurrenceCount")).toBe(3);
+  });
+
+  it("keeps a retired incident's tombstone under its new fingerprint (#433)", async () => {
+    const retiredAt = Timestamp.fromMillis(Date.now() - 60_000);
+    await seedLegacy("retired-1", { status: "resolved", retired: true, retiredAt });
+
+    await scrubCollection(db, store, { apply: true });
+
+    const occurrence = (at: number): IncidentInput => ({
+      functionName: "mailDrainer", service: null, environment: "prod", errorType: "UnknownError",
+      errorMessage: MESSAGE, occurrenceCount: 1, firstOccurredAt: new Date(at), lastOccurredAt: new Date(at),
+    });
+    // Read with ingest's lag: an occurrence from before the retire is the retired failure, and accrues onto it, closed.
+    expect(await upsertIncident(db, store, occurrence(retiredAt.toMillis() - 1000), Timestamp.now())).toBe("updated");
+    const retired = (await db.collection(store.incidentCollection).doc("retired-1").get()).data()!;
+    expect(retired).toMatchObject({ occurrenceCount: 4, status: "resolved", retired: true });
+    // A later one opens a new incident, as retire.ts promises.
+    expect(await upsertIncident(db, store, occurrence(Date.now()), Timestamp.now())).toBe("new");
+    expect((await db.collection(store.incidentCollection).get()).docs).toHaveLength(2);
   });
 
   it("leaves clean records alone, and keeps a stale key that now belongs to another incident", async () => {
@@ -148,7 +185,7 @@ describe("scrubCollection on the emulator", () => {
 
     const report = await scrubCollection(db, store, { apply: true });
 
-    expect(report).toMatchObject({ scanned: 2, changed: 1, keysRemoved: 0 });
+    expect(report).toMatchObject({ scanned: 2, changed: 1 });
     expect(JSON.stringify((await db.collection(store.incidentCollection).doc("clean-1").get()).data())).toBe(cleanBefore);
     const key = await db.collection(store.incidentKeyCollection).doc(incidentKeyId("prod", oldFp)).get();
     expect(key.get("incidentId")).toBe("someone-else");

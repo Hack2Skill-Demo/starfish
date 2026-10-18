@@ -28,6 +28,7 @@ import type { StarfishConfig } from "./config.js";
 import { redactPii, sliceWellFormed, toWellFormed } from "./ingest/redact.js";
 import { OCCURRENCE_BUCKET_RETENTION_HOURS } from "./ingest/buckets.js";
 import { RUNTIME_BASES } from "./indexheal/runtimeBasis.js";
+import { incidentKindOf } from "./incidentKinds.js";
 
 export type PublicViewConfig = Pick<StarfishConfig, "publicEnvironments" | "publicIncidentCollection" | "publicCycleCollection" | "publicEventCollection">;
 
@@ -204,8 +205,10 @@ export function toPublicIncident(d: Record<string, unknown> | undefined, pub: Pi
     put(last, "githubIssueUrl", publicUrl(d.lastResolution.githubIssueUrl));
     if (Object.keys(last).length > 0) out.lastResolution = last;
   }
-  // A Monitoring-only incident (#19) says so without its fingerprint: the copy carries no hash of the message.
-  if (d.signalSource === "monitoring" || (typeof d.fingerprint === "string" && d.fingerprint.startsWith("mon-"))) out.signalSource = "monitoring";
+  // An incident that is not a plain log incident (src/incidentKinds.ts: Monitoring-only, overflow, Cloud Run quota) says
+  // which kind without its fingerprint: the copy carries no hash of the message (#435).
+  const kind = incidentKindOf(d);
+  if (kind.id !== "log") out.signalSource = kind.id;
   put(out, "monitoringCount", count(d.monitoringCount));
   put(out, "lastMonitoring", readings(d.lastMonitoring));
   if (d.synthetic === true) out.synthetic = true;

@@ -13,8 +13,10 @@
  * to with the CURRENT code (`fingerprintOf`, the function the store checks content with, which takes a stored message's
  * stack trace off as ingest now does), and where that differs from the stored one:
  *   - sets the record's `fingerprint` to it (nothing else on the record changes: not its message, status or times);
- *   - points the key of the new fingerprint at the incident the store itself would converge on: the earliest open one
- *     (by first occurrence) when any is open, else the most recently resolved one, as `findUnkeyedIncident` chooses.
+ *   - points the key of the new fingerprint at the incident the store itself converges on (ingest/convergence.ts
+ *     `convergeOn`, the one rule both use): the incident the key already names when it is live (the store may have
+ *     re-pointed it on its own since the fingerprint changed, #432: moving it would freeze the incident ingest accrues
+ *     onto), else the earliest open one (by first occurrence), else the most recently resolved one.
  *     Several records can come to share one fingerprint (the bug that #361 forked in two): none is merged or deleted,
  *     the key names one, and the others keep their history and stop accruing. With only ignored ones, no key is written:
  *     the store opens a fresh incident either way. The key keeps the ingest windows it, and the old keys of the
@@ -31,8 +33,10 @@
 import { FieldPath, Timestamp } from "firebase-admin/firestore";
 import type { DocumentSnapshot, Firestore } from "firebase-admin/firestore";
 import { fingerprintOf } from "./ingest/fingerprint.js";
-import { abortIfClosed, APPLIED_WINDOWS_RETAINED, incidentKeyId, type IncidentStoreConfig } from "./ingest/store.js";
-import { OPEN_INCIDENT_STATUSES } from "./types.js";
+import { appliedWindowsOf, convergeOn, mergeAppliedWindows } from "./ingest/convergence.js";
+import { abortIfClosed, incidentKeyDoc, incidentKeyId, type IncidentStoreConfig } from "./ingest/store.js";
+
+export { mergeAppliedWindows };
 
 const PAGE_SIZE = 300;
 /** Records re-keyed in one transaction: one update each, plus the key. A larger group is reported, never split. */
@@ -117,42 +121,14 @@ export function planRekey(records: readonly RekeyRecord[]): RekeyGroup[] {
     .sort((a, b) => (a.fingerprint < b.fingerprint ? -1 : a.fingerprint > b.fingerprint ? 1 : 0));
 }
 
-const isOpen = (status: unknown) => (OPEN_INCIDENT_STATUSES as readonly unknown[]).includes(status);
-
 /**
- * The incident the key of a group's fingerprint names, chosen as the store converges (store.ts `findUnkeyedIncident`):
- * the earliest open one by first occurrence, else the most recently resolved (by resolution, else last occurrence);
- * undefined when every one is ignored. Ties go to the smaller id, so the choice never depends on read order. Pure.
+ * The incident the key of a group's fingerprint names, chosen as the store converges (ingest/convergence.ts
+ * `convergeOn`): the one `keyedId` names when it is a live member, else the earliest open one by first occurrence,
+ * else the most recently resolved (by resolution, else last occurrence); undefined when every one is ignored. Ties go
+ * to the smaller id, so the choice never depends on read order. Pure.
  */
-export function keyTarget(members: readonly RekeyRecord[]): string | undefined {
-  const byId = (a: RekeyRecord, b: RekeyRecord) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
-  const open = members.filter((m) => isOpen(m.status));
-  if (open.length > 0) {
-    const first = (m: RekeyRecord) => m.firstOccurredAtMs ?? Infinity;
-    return [...open].sort((a, b) => first(a) - first(b) || byId(a, b))[0]!.id;
-  }
-  const resolved = members.filter((m) => m.status === "resolved");
-  if (resolved.length > 0) {
-    const when = (m: RekeyRecord) => m.resolvedAtMs ?? m.lastOccurredAtMs ?? -Infinity;
-    return [...resolved].sort((a, b) => when(b) - when(a) || byId(a, b))[0]!.id;
-  }
-  return undefined;
-}
-
-/**
- * The applied windows of several keys as one list, each once, oldest first, the newest kept. Pure. A window id is its
- * boundaries in ISO form (`ingest/window.ts`), so text order is time order; sorting keeps the newest whatever order the
- * old keys were read in (the store drops from the front, `APPLIED_WINDOWS_RETAINED`).
- */
-export function mergeAppliedWindows(lists: readonly (readonly string[])[]): string[] {
-  const seen = new Set<string>();
-  for (const list of lists) for (const w of list) seen.add(w);
-  return [...seen].sort().slice(-APPLIED_WINDOWS_RETAINED);
-}
-
-function appliedWindows(snap: DocumentSnapshot | undefined): string[] {
-  const raw: unknown = snap?.exists ? snap.get("appliedWindows") : undefined;
-  return Array.isArray(raw) ? raw.filter((w): w is string => typeof w === "string") : [];
+export function keyTarget(members: readonly RekeyRecord[], keyedId?: string): string | undefined {
+  return convergeOn(members, keyedId)?.id;
 }
 
 export interface RekeyReport {
@@ -292,24 +268,20 @@ async function rekeyGroup(
       if (changed.length === 0) return outcome("none");
       if (tombstone) return outcome("tombstone");
 
-      const target = keyTarget([...fresh.values()]);
+      // The key's own incident, when it is a live member, keeps it (convergence.ts rule 1): the store may already be
+      // accruing onto it.
+      const target = keyTarget([...fresh.values()], keyedHolds && typeof keyedId === "string" ? keyedId : undefined);
       if (target === undefined) return outcome("none");
       // The windows this fingerprint's key applied, and those of the old keys that named one of these records.
       const covered = new Set(fresh.keys());
       const windows = mergeAppliedWindows([
-        appliedWindows(keySnap),
-        ...oldKeySnaps.filter((s) => s.exists && covered.has(s.get("incidentId") as string)).map(appliedWindows),
+        appliedWindowsOf(keySnap),
+        ...oldKeySnaps.filter((s) => s.exists && covered.has(s.get("incidentId") as string)).map(appliedWindowsOf),
       ]);
       const unchanged =
-        keyedId === target && keySnap.get("fingerprint") === fp && JSON.stringify(appliedWindows(keySnap)) === JSON.stringify(windows);
+        keyedId === target && keySnap.get("fingerprint") === fp && JSON.stringify(appliedWindowsOf(keySnap)) === JSON.stringify(windows);
       if (unchanged) return outcome("unchanged");
-      tx.set(keyRef, {
-        incidentId: target,
-        environment,
-        fingerprint: fp,
-        updatedAt: now,
-        ...(windows.length > 0 && { appliedWindows: windows }),
-      });
+      tx.set(keyRef, incidentKeyDoc(keySnap, { incidentId: target, environment, fingerprint: fp, updatedAt: now, appliedWindows: windows }));
       return outcome("written");
     })
   );

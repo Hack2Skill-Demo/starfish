@@ -26,7 +26,7 @@ vi.mock("@google-cloud/logging", () => ({
 }));
 
 const { SEEDED_SECRETS } = await import("./testSecrets.js");
-const { aggregateErrors, correlateMonitoring, entryBytes, inputsPastNewIncidentCap, MAX_ENTRIES_PER_RUN, OVERFLOW_ERROR_TYPE, overflowMessage, READ_PAGE_SIZE } =
+const { aggregateErrors, correlateMonitoring, entryBytes, MAX_ENTRIES_PER_RUN, OVERFLOW_ERROR_TYPE, overflowMessage, READ_PAGE_SIZE } =
   await import("./aggregate.js");
 const { computeErrorFingerprint } = await import("./fingerprint.js");
 const { windowOf } = await import("./window.js");
@@ -373,15 +373,18 @@ describe("aggregateErrors", () => {
   });
 });
 
-describe("aggregateErrors: the cap on new incidents per function and window (#303)", () => {
+describe("aggregateErrors: the cap on new incidents per function and UTC day (#303, #434)", () => {
   /**
    * A fake store in which the incidents for `existing` (messages of the function "lookup") are open, found by the
-   * fingerprint lookup; it records the incidents created and the ones accrued onto.
+   * fingerprint lookup; it records the incidents created and the ones accrued onto, and keeps the key documents, so the
+   * daily cap's count (on a key) carries from one run to the next.
    */
   function storeWith(existing: string[]) {
     const open = new Map(existing.map((m) => [computeErrorFingerprint("lookup", m), m]));
     const created: Record<string, unknown>[] = [];
     const updated: string[] = [];
+    const keyDocs = new Map<string, Record<string, unknown>>();
+    let queue: Promise<unknown> = Promise.resolve();
     const queryFor = (fingerprint?: string) => {
       const q = {
         fingerprint,
@@ -391,26 +394,37 @@ describe("aggregateErrors: the cap on new incidents per function and window (#30
       return q;
     };
     const tx = {
-      get: async (target: { fingerprint?: string; id?: string }) => {
+      get: async (target: { fingerprint?: string; id?: string; collection?: string }) => {
+        if (target.collection === config.incidentKeyCollection) {
+          const key = keyDocs.get(target.id!);
+          return { docs: [], exists: key !== undefined, data: () => key, get: (field: string) => key?.[field] };
+        }
         const message = target.fingerprint !== undefined ? open.get(target.fingerprint) : undefined;
         const docs = message === undefined ? [] : [{ id: message, ref: { id: message }, data: () => ({ functionName: "lookup", errorMessage: message, status: "new" }) }];
         return { docs, exists: false, data: () => undefined, get: () => undefined };
       },
-      set: (ref: { collection: string }, data: Record<string, unknown>) => {
+      set: (ref: { collection: string; id: string }, data: Record<string, unknown>, options?: { merge?: boolean }) => {
         if (ref.collection === "incidents") created.push(data);
+        if (ref.collection === config.incidentKeyCollection) keyDocs.set(ref.id, options?.merge ? { ...keyDocs.get(ref.id), ...data } : data);
       },
       update: (ref: { id: string }) => void updated.push(ref.id),
     };
     const db = {
-      collection: (collection: string) => ({ ...queryFor(), doc: () => ({ collection, id: `doc${created.length}` }) }),
-      runTransaction: async (fn: (t: typeof tx) => Promise<unknown>) => fn(tx),
+      collection: (collection: string) => ({ ...queryFor(), doc: (id?: string) => ({ collection, id: id ?? `doc${created.length}` }) }),
+      // One transaction at a time, as Firestore serializes the ones that read and write the same cap key.
+      runTransaction: (fn: (t: typeof tx) => Promise<unknown>) => {
+        const run = queue.then(() => fn(tx));
+        queue = run.catch(() => undefined);
+        return run;
+      },
     } as unknown as Firestore;
-    return { db, created, updated };
+    return { db, created, updated, keyDocs };
   }
 
   // Distinct plain words survive normalization: each one is its own fingerprint, as an echoed user input is.
   const words = (n: number) => Array.from({ length: n }, (_, i) => `No such user: ${String.fromCharCode(97 + (i % 26))}${"z".repeat(Math.floor(i / 26))}`);
-  const capped = { ...config, maxNewIncidentsPerFunctionPerWindow: 3 };
+  const capped = { ...config, maxNewIncidentsPerFunctionPerDay: 3 };
+  const logIncidents = (created: Record<string, unknown>[]) => created.filter((c) => c.signalSource === undefined);
 
   it("opens at most the cap's incidents for one function and folds the rest into one overflow incident", async () => {
     const messages = words(10);
@@ -461,16 +475,62 @@ describe("aggregateErrors: the cap on new incidents per function and window (#30
     expect(result.errorsFoldedIntoOverflow).toBe(2);
   });
 
-  it("chooses the cap's places from the window alone: most occurrences first, then by fingerprint", () => {
-    const input = (message: string, occurrenceCount: number) =>
-      [computeErrorFingerprint("lookup", message), { input: { functionName: "lookup", errorMessage: message, occurrenceCount } as IncidentInput }] as const;
-    const grouped = new Map([input("a", 1), input("b", 9), input("c", 1), input("d", 5)]);
-    const past = inputsPastNewIncidentCap(grouped, 2);
-    expect([...past].map((i) => i.errorMessage).sort()).toEqual(["a", "c"]);
-    // The same entries in another order choose the same places.
-    const again = inputsPastNewIncidentCap(new Map([...grouped].reverse()), 2);
-    expect([...again].map((i) => i.errorMessage).sort()).toEqual(["a", "c"]);
-    expect(inputsPastNewIncidentCap(grouped, 4).size).toBe(0);
+  it("gives the cap's places to the errors that fired most", async () => {
+    const messages = words(5);
+    // The last two fire most: they get places before the others.
+    entries.splice(0, entries.length, ...messages.map(entry), entry(messages[3]!), entry(messages[3]!), entry(messages[4]!));
+    const { db, created } = storeWith([]);
+
+    await aggregateErrors(db, capped, window);
+
+    expect(logIncidents(created).map((c) => c.errorMessage)).toEqual(expect.arrayContaining([messages[3], messages[4]]));
+  });
+
+  it("counts the cap per day across windows, so narrowing or many windows in a run cannot multiply it", async () => {
+    // Under a flood every window narrows and a run completes up to 8 of them: per window, each could open the cap again.
+    const { db, created } = storeWith([]);
+    entries.splice(0, entries.length, ...words(5).map(entry));
+    await aggregateErrors(db, capped, windowOf(new Date("2026-09-20T23:59:00.000Z"), new Date("2026-09-21T00:30:00.000Z")));
+    expect(logIncidents(created)).toHaveLength(3);
+
+    entries.splice(0, entries.length, ...words(10).slice(5).map(entry));
+    const second = await aggregateErrors(db, capped, windowOf(new Date("2026-09-21T00:30:00.000Z"), new Date("2026-09-21T01:00:00.000Z")));
+
+    // The day's three places are taken: the second window's new errors are all folded.
+    expect(logIncidents(created)).toHaveLength(3);
+    expect(second).toMatchObject({ incidentsCreated: 1, errorsFoldedIntoOverflow: 5 });
+  });
+
+  it("dates each folded error by its own entries, never by the window's end, across midnight", async () => {
+    const at = (message: string, timestamp: string) => ({ ...entry(message), metadata: { ...entry(message).metadata, timestamp } });
+    const [first, crossing, late] = words(3);
+    entries.splice(
+      0,
+      entries.length,
+      // The most frequent takes the 20th's one place; the one crossing midnight was first seen on the 20th, so it is folded.
+      at(first!, "2026-09-20T23:10:00.000Z"),
+      at(first!, "2026-09-20T23:20:00.000Z"),
+      at(first!, "2026-09-20T23:30:00.000Z"),
+      at(crossing!, "2026-09-20T23:40:00.000Z"),
+      at(crossing!, "2026-09-21T00:10:00.000Z"),
+      // The 21st has a place of its own.
+      at(late!, "2026-09-21T00:30:00.000Z")
+    );
+    const { db, created } = storeWith([]);
+
+    const result = await aggregateErrors(db, { ...config, maxNewIncidentsPerFunctionPerDay: 1 }, window);
+
+    expect(logIncidents(created).map((c) => c.errorMessage).sort()).toEqual([first, late].sort());
+    const overflow = created.filter((c) => c.signalSource === "overflow").map((c) => [c.errorMessage, c.occurrenceCount]);
+    expect(overflow).toEqual(
+      expect.arrayContaining([
+        [overflowMessage("2026-09-20"), 1],
+        [overflowMessage("2026-09-21"), 1],
+      ])
+    );
+    expect(overflow).toHaveLength(2);
+    // One distinct error, counted once though its entries went to two days.
+    expect(result.errorsFoldedIntoOverflow).toBe(1);
   });
 
   it("folds nothing when an upsert failed, so the replay of the window folds them all", async () => {
@@ -653,9 +713,10 @@ describe("aggregateErrors: the Cloud Monitoring signal (#19)", () => {
 
     await aggregateErrors(db, monitored, window, { monitoring: r });
 
-    expect(created.map((c) => [c.functionName, c.signalSource ?? "log", c.monitoringCount])).toEqual([
-      ["lookup", "log", 1],
+    // Sorted: the upserts run concurrently, so the order they are created in is not the input's.
+    expect(created.map((c) => [c.functionName, c.signalSource ?? "log", c.monitoringCount]).sort()).toEqual([
       ["checkout", "monitoring", 4],
+      ["lookup", "log", 1],
     ]);
   });
 

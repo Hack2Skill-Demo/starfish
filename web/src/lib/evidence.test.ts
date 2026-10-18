@@ -213,7 +213,7 @@ describe("buildEvidence", () => {
   });
 
   it("says a Monitoring-only incident is one, and that its zero log recount is by construction (#19)", () => {
-    const mon = { ...row, monitoringOnly: true as const, monitoringCount: 3 };
+    const mon = { ...row, kind: "monitoring" as const, monitoringCount: 3 };
     const e = buildEvidence(mon, cycle({ triage: { decision: "notify", counterCount: 0, counterFilter: "f" } }));
     expect(stage(e, "detected").fields.find((f) => f.label === "Source")?.value).toBe("Cloud Monitoring only (no ERROR log entry)");
     expect(stage(e, "detected").note).toMatch(/^Monitoring only/);

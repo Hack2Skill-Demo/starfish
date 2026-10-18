@@ -17,7 +17,7 @@
  */
 import { Fragment, useState } from "react";
 import { SyntheticBadge } from "../components/SyntheticBadge";
-import { MonitoringOnlyBadge } from "../components/MonitoringOnlyBadge";
+import { IncidentKindBadge } from "../components/IncidentKindBadge";
 import { Link, useSearchParams } from "react-router";
 import { useInfiniteQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
@@ -467,7 +467,7 @@ export default function Incidents() {
                                 <p className="flex flex-wrap items-center gap-2 font-medium text-gray-900 dark:text-white">
                                   {row.functionName}
                                   {row.synthetic && <SyntheticBadge />}
-                                  {row.monitoringOnly && <MonitoringOnlyBadge />}
+                                  <IncidentKindBadge kind={row.kind} />
                                 </p>
                                 <p className="text-xs text-gray-500 dark:text-gray-400">
                                   {row.service}
@@ -540,7 +540,7 @@ export default function Incidents() {
                             {row.windowedCount.toLocaleString()}
                             {/* On a log incident, an annotation: the function's failures Monitoring counted in windows
                                 where this incident also logged, not extra occurrences of it (#19). */}
-                            {row.monitoringCount !== undefined && !row.monitoringOnly && (
+                            {row.monitoringCount !== undefined && row.kind !== "monitoring" && (
                               <p
                                 className="mt-1 text-xs text-gray-600 dark:text-gray-400"
                                 title="Failed invocations of this function that Cloud Monitoring counted, summed over the windows it read"

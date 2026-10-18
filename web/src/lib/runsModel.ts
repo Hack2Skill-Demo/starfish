@@ -545,7 +545,7 @@ export interface Step {
    * review again): which run of the stage this is, and how many there were. The step itself is the stage's LATEST run; the
    * earlier ones are `Waterfall.attempts`.
    */
-  attempt?: { n: number; of: number };
+  attempt?: { n: number; of: number; /** Why this run exists, from the run before it (`attemptReason`). */ reason?: string };
 }
 
 /**
@@ -568,7 +568,7 @@ export interface EarlierStep {
   /** Its last event's data, when it carried any (a guest's copy never does). */
   data?: Flat;
   /** Set when the stage ran more than once in that round (`Step.attempt`): which run this is, and how many there were. */
-  attempt?: { n: number; of: number };
+  attempt?: { n: number; of: number; /** Why this run exists, from the run before it (`attemptReason`). */ reason?: string };
 }
 
 /** An earlier round's step drawn like any other step of the log, so a reopened run keeps the first round's details. */
@@ -602,6 +602,28 @@ export interface EarlierRound {
 
 /** The stages a review's block sends round again (one revision: src/agent/loop.ts): each may have run more than once in a round. */
 export const REPEATABLE_STAGES: readonly string[] = ["fix", "verify", "review"];
+
+/**
+ * Why a repeated stage ran again, from the nearest earlier run of the loop's stages (a block, a refused gate, a failed model
+ * call), in the engine's own words; nothing for a first run or one the record does not explain. Never guessed: a stage whose
+ * cause is not one of these says nothing.
+ */
+export function attemptReason(stage: string, n: number, before: Pick<EventRow, "stage" | "type"> | undefined): string | undefined {
+  if (n <= 1) return undefined;
+  if (stage === "verify") return "Checks the revised draft";
+  if (stage === "review") return "Reviews the revised draft";
+  if (stage !== "fix" || !before) return undefined;
+  if (before.stage === "review" && before.type === "block") return "Revision: the review blocked the previous draft";
+  if (before.stage === "verify" && (before.type === "failed" || before.type === "rejected" || before.type === "timeout")) return "Revision: the gate did not pass the previous draft";
+  if (before.stage === "fix" && before.type === "error") return "Retry: the previous model call failed";
+  return undefined;
+}
+
+/** The nearest event before index `i` that is one of the repeatable stages, in a round's events in sequence order. */
+const loopEventBefore = (round: readonly EventRow[], i: number): EventRow | undefined => {
+  for (let k = i - 1; k >= 0; k--) if (REPEATABLE_STAGES.includes(round[k]!.stage)) return round[k];
+  return undefined;
+};
 
 export interface Waterfall {
   /** The steps of the run's LATEST round: a reopened run's earlier rounds are in `earlier`, not here. */
@@ -708,7 +730,10 @@ export function buildWaterfall(cycle: CycleRow, events: readonly EventRow[], now
           at: e.at,
           failed: failedUnexpectedly(e.stage, e.type),
           ...(Object.keys(e.data).length > 0 && { data: e.data }),
-          ...(repeated && { attempt: { n, of: runs.get(e.stage)! } }),
+          ...(repeated && (() => {
+            const reason = attemptReason(e.stage, n, loopEventBefore(inRound, inRound.indexOf(e)));
+            return { attempt: { n, of: runs.get(e.stage)!, ...(reason && { reason }) } };
+          })()),
         };
       })
       // Newest first: `inRound` is in sequence order.
@@ -756,7 +781,8 @@ export function buildWaterfall(cycle: CycleRow, events: readonly EventRow[], now
   for (const stage of REPEATABLE_STAGES) {
     const evs = byStage.get(stage);
     if (!evs || evs.length < 2) continue;
-    evs.slice(0, -1).forEach((e, k) =>
+    evs.slice(0, -1).forEach((e, k) => {
+      const reason = attemptReason(stage, k + 1, loopEventBefore(inRound, inRound.indexOf(e)));
       attempts.push({
         stage,
         title: titleOf(stage),
@@ -766,9 +792,9 @@ export function buildWaterfall(cycle: CycleRow, events: readonly EventRow[], now
         at: e.at,
         ...(Object.keys(e.data).length > 0 && { data: e.data }),
         durationMs: sinceBefore(e),
-        attempt: { n: k + 1, of: evs.length },
-      })
-    );
+        attempt: { n: k + 1, of: evs.length, ...(reason && { reason }) },
+      });
+    });
   }
 
   let previousEnd = startMs;
@@ -798,7 +824,10 @@ export function buildWaterfall(cycle: CycleRow, events: readonly EventRow[], now
       ...(Object.keys(last.data).length > 0 && { data: last.data }),
       ...(side && { side: true as const }),
       durationMs: evs.length > 1 && REPEATABLE_STAGES.includes(stage) ? sinceBefore(last) : end - from,
-      ...(evs.length > 1 && REPEATABLE_STAGES.includes(stage) && { attempt: { n: evs.length, of: evs.length } }),
+      ...(evs.length > 1 && REPEATABLE_STAGES.includes(stage) && (() => {
+        const reason = attemptReason(stage, evs.length, loopEventBefore(inRound, inRound.indexOf(last)));
+        return { attempt: { n: evs.length, of: evs.length, ...(reason && { reason }) } };
+      })()),
     };
   });
 
@@ -818,12 +847,15 @@ export function buildWaterfall(cycle: CycleRow, events: readonly EventRow[], now
  * One sentence on where the run stands, from what the engine recorded: the step a worker is on, or the path the run
  * ended on and the last step of the run's track that has an event. Never a step the engine did not record.
  */
-export function runSummary(cycle: CycleRow, steps: readonly Step[], nowMs: number): string {
+export function runSummary(cycle: CycleRow, steps: readonly Step[], nowMs: number, notes: readonly Pick<EventRow, "type" | "at">[] = []): string {
   const status = runStatus(cycle, nowMs);
   const running = steps.find((s) => s.status === "running");
   if (running) return `Working on ${running.title.toLowerCase()} now.`;
   if (cycle.state === "running") return "No worker holds this run right now; the next pass picks it up.";
   const lastDone = [...steps].reverse().find((s) => isReached(s) && !s.side);
+  // A run stopped by its model-call budget after its last step: that is what it ended on, not that step's outcome.
+  const budgetAt = notes.filter((n) => n.type === "budget").reduce((acc, n) => Math.max(acc, n.at.getTime()), 0);
+  if (cycle.path && budgetAt > 0 && budgetAt >= (lastDone?.at?.getTime() ?? 0)) return `${PATH_LABELS[cycle.path]} after the model-call budget ran out.`;
   // The step a path is named for needs no "after" (a pull request opened after the pull request step).
   const ownStep = (cycle.path === "pr" && lastDone?.stage === "pr") || (cycle.path === "index" && lastDone?.stage === "index");
   const after = lastDone && !ownStep ? ` after ${lastDone.title.toLowerCase()}${lastDone.outcome ? ` (${lastDone.outcome})` : ""}` : "";

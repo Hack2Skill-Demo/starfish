@@ -29,6 +29,7 @@ import {
 } from "firebase/firestore";
 import { readCorrection, type IncidentCorrection } from "../../../src/triageRules";
 import { nextStatus, type IncidentAction } from "../../../src/incidentActions";
+import { incidentKindOf, type IncidentKindId } from "../../../src/incidentKinds";
 import { firestore } from "./firebase";
 import { webConfig } from "./config";
 import { actsThroughAdminApi, dataSource } from "./dataSource";
@@ -85,10 +86,11 @@ export interface IncidentRow {
    */
   trimmed?: true;
   /**
-   * Opened from Cloud Monitoring alone (#19): failed invocations counted with no ERROR log entry behind them, so
-   * there is no log message, stack trace or log recount. `signalSource: "monitoring"`, or a `mon-` fingerprint.
+   * The incident's kind when it is not a plain log incident (src/incidentKinds.ts, #435): `monitoring` (opened from
+   * Cloud Monitoring alone, #19: no log message, stack trace or log recount), `overflow` (#303) or `platform-quota`.
+   * Read from `signalSource`, else the fingerprint's namespace, as the engine does; absent for a log incident.
    */
-  monitoringOnly?: true;
+  kind?: Exclude<IncidentKindId, "log">;
   /** Failed invocations Cloud Monitoring counted for this function, summed over the windows that read one (#19). */
   monitoringCount?: number;
   /** The readings from the latest window that folded one in (#19). */
@@ -169,6 +171,12 @@ function str(v: unknown): string | undefined {
 }
 
 /** Map a stored document to a row. Defensive: a malformed field must not blank the page. */
+/** The stored record's kind when it is not a plain log incident (src/incidentKinds.ts), as the engine reads it. */
+function kindOf(d: Record<string, unknown>): Exclude<IncidentKindId, "log"> | undefined {
+  const id = incidentKindOf(d).id;
+  return id === "log" ? undefined : id;
+}
+
 export function toRow(id: string, d: Record<string, unknown>, windowHours: number, nowMs = Date.now()): IncidentRow {
   const status = INCIDENT_STATUSES.includes(d.status as IncidentStatus) ? (d.status as IncidentStatus) : "new";
   const prState = d.githubPrState;
@@ -204,10 +212,7 @@ export function toRow(id: string, d: Record<string, unknown>, windowHours: numbe
     previousIssueUrl: str(last.githubIssueUrl),
     ...(d.synthetic === true && { synthetic: true as const }),
     ...(d.publicView === 1 && { trimmed: true as const }),
-    // The engine writes both on a Monitoring-only incident (fingerprintOf in src/ingest/fingerprint.ts).
-    ...((d.signalSource === "monitoring" || (typeof d.fingerprint === "string" && d.fingerprint.startsWith("mon-"))) && {
-      monitoringOnly: true as const,
-    }),
+    ...(kindOf(d) !== undefined && { kind: kindOf(d) }),
     ...(typeof d.monitoringCount === "number" && Number.isFinite(d.monitoringCount) && d.monitoringCount >= 0 && { monitoringCount: d.monitoringCount }),
     ...(cleanReadings(d.lastMonitoring) && { lastMonitoring: cleanReadings(d.lastMonitoring) }),
     ...(readCorrection(d) && { correction: readCorrection(d) }),

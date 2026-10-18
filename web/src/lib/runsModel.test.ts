@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   ago,
+  attemptReason,
   buildWaterfall,
   earlierAsStep,
   prStateView,
@@ -366,9 +367,19 @@ describe("small helpers", () => {
       ]);
       // The review ran once (it blocked the first draft); the revision has no review.
       expect(w.steps.find((s) => s.stage === "review")!.attempt).toBeUndefined();
-      expect(w.steps.find((s) => s.stage === "fix")!.attempt).toEqual({ n: 2, of: 2 });
+      expect(w.steps.find((s) => s.stage === "fix")!.attempt).toEqual({ n: 2, of: 2, reason: "Revision: the review blocked the previous draft" });
+      expect(w.steps.find((s) => s.stage === "verify")!.attempt).toEqual({ n: 2, of: 2, reason: "Checks the revised draft" });
       const log = stepLogOrder([...w.steps, ...w.attempts]).map((s) => `${s.stage}${s.attempt ? `#${s.attempt.n}` : ""}`);
       expect(log).toEqual(["verify#2", "fix#2", "review", "verify#1", "fix#1", "triage"]);
+    });
+
+    it("heads a run the model-call budget stopped with that, not with the step it stopped after", () => {
+      const events = [...revised(), ev("cycle", "budget", 940_000, "Model-call budget used up")];
+      const c = cycle({ state: "waiting-human", path: "human", leaseExpiresAt: null, updatedAt: new Date(T0 + 941_000) });
+      const w = buildWaterfall(c, events, T0 + HOUR);
+      expect(runSummary(c, w.steps, T0 + HOUR, w.notes)).toBe("Handed to a person after the model-call budget ran out.");
+      // Without the note it names the last step, as before.
+      expect(runSummary(c, w.steps, T0 + HOUR)).toContain("after adversarial review");
     });
 
     it("keeps every run of a repeated stage in an earlier round too, newest first, so that round reads in order", () => {
@@ -377,6 +388,24 @@ describe("small helpers", () => {
       expect(w.earlier[0]!.steps.map((s) => `${s.stage}${s.attempt ? `#${s.attempt.n}/${s.attempt.of}` : ""}`)).toEqual(["verify#2/2", "fix#2/2", "review", "verify#1/2", "fix#1/2", "triage"]);
       // A stage that ran once has no attempt.
       expect(w.earlier[0]!.steps.find((s) => s.stage === "review")!.attempt).toBeUndefined();
+    });
+
+    it("says why a repeated stage ran again, from the nearest earlier run of the loop's stages, and nothing it cannot support", () => {
+      expect(attemptReason("fix", 2, { stage: "review", type: "block" })).toBe("Revision: the review blocked the previous draft");
+      expect(attemptReason("fix", 2, { stage: "verify", type: "rejected" })).toBe("Revision: the gate did not pass the previous draft");
+      expect(attemptReason("fix", 2, { stage: "fix", type: "error" })).toBe("Retry: the previous model call failed");
+      expect(attemptReason("fix", 2, { stage: "fix", type: "declined" })).toBeUndefined();
+      expect(attemptReason("fix", 1, { stage: "review", type: "block" })).toBeUndefined();
+      expect(attemptReason("fix", 2, undefined)).toBeUndefined();
+      expect(attemptReason("review", 2, undefined)).toBe("Reviews the revised draft");
+    });
+
+    it("skips the triage and the messages between two runs: the demo's retry after a failed model call", () => {
+      // The fix failed (the model call), the run was resumed and triaged again, then the fix ran a second time.
+      const events = [ev("triage", "decision", 1000), ev("fix", "error", 2000), ev("triage", "decision", 3000), ev("fix", "proposed", 4000)];
+      const w = buildWaterfall(cycle({ state: "waiting-human", leaseExpiresAt: null, updatedAt: new Date(T0 + 5000) }), events, T0 + HOUR);
+      expect(w.steps.find((s) => s.stage === "fix")!.attempt).toEqual({ n: 2, of: 2, reason: "Retry: the previous model call failed" });
+      expect(w.attempts[0]!.attempt).toEqual({ n: 1, of: 2 });
     });
 
     it("times a repeated stage from the event just before it, not from the stage before it in the loop", () => {

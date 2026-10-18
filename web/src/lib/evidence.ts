@@ -11,6 +11,7 @@
  * Not stored, and said so on the page rather than faked: the patch text (only its SHA-256 is recorded); when a pull
  * request was opened, the fix stage links to its diff on GitHub instead (#39).
  */
+import { INCIDENT_KINDS } from "../../../src/incidentKinds";
 import type { IncidentRow } from "./incidents";
 import { indexRuntimeView, isIndexCycle, prStateView, recoveryView, safeUrl, type CycleRow } from "./runsModel";
 
@@ -115,7 +116,7 @@ function counterCheckStage(triage: Record<string, string | number | boolean | nu
  * the recount, so a zero there is not read as "this was noise" (#19).
  */
 function monitoringOnlyCounterCheck(stage: EvidenceStage, row: IncidentRow): EvidenceStage {
-  if (!row.monitoringOnly || stage.status !== "recorded") return stage;
+  if (row.kind !== "monitoring" || stage.status !== "recorded") return stage;
   const note = "Monitoring only: there is no ERROR log to recount, so the raw-log recount is zero by construction, not a sign of noise.";
   return { ...stage, note: stage.note ? `${note} ${stage.note}` : note };
 }
@@ -144,13 +145,21 @@ function recoveryFields(cycle: CycleRow | null, nowMs: number): EvidenceField[] 
   ];
 }
 
+/** Where an incident that is not a plain log incident came from (src/incidentKinds.ts), in its kind's words. */
+function sourceField(row: IncidentRow): EvidenceField[] {
+  if (row.kind === undefined) return [];
+  if (row.kind === "monitoring") return [{ label: "Source", value: "Cloud Monitoring only (no ERROR log entry)" }];
+  const label = INCIDENT_KINDS[row.kind].label;
+  return label ? [{ label: "Source", value: label.title }] : [];
+}
+
 const MONITORING_ONLY_NOTE =
   "Monitoring only: Cloud Monitoring counted failed invocations of this function with no ERROR log entry behind them. There is no log message or stack trace, so the occurrences are those failures.";
 
 /** What Cloud Monitoring recorded for the incident (#19): its total, and each reading of the latest window, as stored. */
 function monitoringFields(row: IncidentRow): EvidenceField[] {
   return [
-    ...(row.monitoringOnly ? [{ label: "Source", value: "Cloud Monitoring only (no ERROR log entry)" }] : []),
+    ...sourceField(row),
     ...(row.monitoringCount !== undefined ? [{ label: "Failed invocations (Cloud Monitoring)", value: String(row.monitoringCount) }] : []),
     ...(row.lastMonitoring ?? []).map((r, i) => ({
       label: `Monitoring reading ${i + 1}`,
@@ -187,7 +196,7 @@ export function buildEvidence(row: IncidentRow, cycle: CycleRow | null, nowMs = 
       ...(row.recurrenceCount > 0 ? [{ label: "Regressions", value: String(row.recurrenceCount) }] : []),
       ...monitoringFields(row),
     ].filter((f) => f.value !== ""),
-    ...(row.monitoringOnly && { note: MONITORING_ONLY_NOTE }),
+    ...(row.kind === "monitoring" && { note: MONITORING_ONLY_NOTE }),
   };
   const prStage = later(
     "pr",

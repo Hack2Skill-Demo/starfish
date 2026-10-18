@@ -20,10 +20,10 @@ import { narrowWindow, type IngestWindow } from "./window.js";
 import {
   describePlatformQuotaImpact,
   parsePlatformQuotaRejection,
-  PLATFORM_QUOTA_ERROR_TYPE,
   PLATFORM_QUOTA_FUNCTION,
   platformQuotaMessage,
 } from "./platformQuota.js";
+import { INCIDENT_KINDS } from "../incidentKinds.js";
 
 /**
  * Entries asked for per page (#296). Pages are read by hand and each is reduced to parsed entries before the next is
@@ -63,8 +63,8 @@ export interface AggregationResult {
   /** Incidents whose window had already been applied, so this run changed nothing for them. */
   incidentsReplayed: number;
   /**
-   * Distinct errors (fingerprints) folded into a high-cardinality overflow incident (#303): past the per-function cap
-   * on new incidents, matching no stored incident. Their occurrences are counted on the overflow incident.
+   * Distinct errors (fingerprints) folded into a high-cardinality overflow incident (#303): past the per-function daily
+   * cap on new incidents (#434), matching no stored incident. Their occurrences are counted on the overflow incident.
    */
   errorsFoldedIntoOverflow: number;
   /**
@@ -129,7 +129,7 @@ export interface WindowWrites {
 }
 
 /** The errorType of a Monitoring-only incident: there is no log to classify, only a count of failures. */
-export const MONITORING_ONLY_ERROR_TYPE = "UnloggedFailure";
+export const MONITORING_ONLY_ERROR_TYPE = INCIDENT_KINDS.monitoring.errorType!;
 
 /**
  * Folds one window's Monitoring readings into its log inputs (#19). A reading for a function that
@@ -234,6 +234,9 @@ export async function aggregateErrors(
 
   // Group by fingerprint before writing anything.
   const grouped = new Map<string, { input: IncidentInput }>();
+  // Per log input: its occurrences by the UTC day of each entry, so an error folded into an overflow incident is
+  // counted on the day it happened, even in a window that crosses midnight (#434).
+  const days = new Map<IncidentInput, Map<string, DaySlice>>();
   // Per consolidated quota incident (keyed like `grouped`): the functions Cloud Run rejected and how many requests.
   const quotaImpact = new Map<string, { functions: Set<string>; rejected: number }>();
 
@@ -257,6 +260,7 @@ export async function aggregateErrors(
 
     if (found) {
       found.input.occurrenceCount += 1;
+      countDay(days, found.input, parsed.timestamp);
       if (parsed.timestamp < found.input.firstOccurredAt) {
         found.input.firstOccurredAt = parsed.timestamp;
       }
@@ -270,8 +274,7 @@ export async function aggregateErrors(
       continue;
     }
 
-    grouped.set(fingerprint, {
-      input: {
+    const input: IncidentInput = {
         functionName: parsed.functionName,
         // A service the handler named beats guessing from the function id.
         service: parsed.serviceTag ?? detectService(parsed.functionName, config.servicePatterns),
@@ -296,8 +299,9 @@ export async function aggregateErrors(
         traceId: parsed.traceId,
         sourceProjectId: parsed.sourceProjectId,
         windowId: window.id,
-      },
-    });
+    };
+    grouped.set(fingerprint, { input });
+    countDay(days, input, parsed.timestamp);
   }
 
   for (const [fingerprint, impact] of quotaImpact) {
@@ -308,9 +312,11 @@ export async function aggregateErrors(
   // The Monitoring signal is read even when the logs were empty: a function that failed without an
   // ERROR log is exactly what it is for. Only for a window that is going to be written (a narrowed
   // read returned above), so its readings are folded in once, under this window's id.
-  const queue = [...grouped.values()].map((g) => g.input);
-  // Decided before Monitoring adds its inputs: the cap is on log errors (a Monitoring-only input is one per function).
-  const accrueOnly = inputsPastNewIncidentCap(grouped, config.maxNewIncidentsPerFunctionPerWindow);
+  // Most occurrences first, then by fingerprint: the daily cap's places go, as far as the concurrent upserts allow, to
+  // the errors that fired most. The cap is on log errors only (a Monitoring-only input is one per function).
+  const queue = [...grouped.entries()]
+    .sort(([fa, a], [fb, b]) => b.input.occurrenceCount - a.input.occurrenceCount || (fa < fb ? -1 : fa > fb ? 1 : 0))
+    .map(([, g]) => g.input);
   if (config.monitoringEnabled) {
     const reader = deps.monitoring ?? createRestMonitoringReader();
     const observations = await readMonitoringFailures(reader, config, window);
@@ -344,8 +350,8 @@ export async function aggregateErrors(
   // is awaited before the run reports: a failure throws only after the rest
   // have settled, and the incidents that committed are accrued onto next run.
   const failures: unknown[] = [];
-  // Errors past the cap that matched no stored incident, by canonical function: folded into its overflow incident.
-  const absent = new Map<string, IncidentInput[]>();
+  // Errors past the cap that matched no stored incident: folded into their function's overflow incident.
+  const absent: IncidentInput[] = [];
   const count = (outcome: UpsertOutcome) => {
     if (outcome === "new") result.incidentsCreated += 1;
     else if (outcome === "recurred") result.incidentsRecurred += 1;
@@ -355,16 +361,15 @@ export async function aggregateErrors(
   const worker = async () => {
     for (let input = queue.shift(); input; input = queue.shift()) {
       try {
-        if (!accrueOnly.has(input)) {
-          count(await upsertIncident(db, config, input, now));
-          continue;
-        }
-        // Past the cap: accrue onto an incident that exists, never open one.
-        const outcome = await upsertIncident(db, config, input, now, { createIfAbsent: false });
-        if (outcome === "absent") {
-          const key = canonicalFunctionName(input.functionName);
-          absent.set(key, [...(absent.get(key) ?? []), input]);
-        } else count(outcome);
+        // A log error may open an incident only within its function's daily cap (#434); the namespaced kinds are one
+        // per function, metric or day already.
+        const cap =
+          input.signalSource === undefined
+            ? { fingerprint: overflowFingerprint(input.functionName, utcDay(input.firstOccurredAt)), limit: config.maxNewIncidentsPerFunctionPerDay }
+            : undefined;
+        const outcome = await upsertIncident(db, config, input, now, cap ? { newIncidentCap: cap } : {});
+        if (outcome === "absent") absent.push(input);
+        else count(outcome);
       } catch (err) {
         failures.push(err);
       }
@@ -378,12 +383,15 @@ export async function aggregateErrors(
     throw new AggregateError(failures, `${failures.length} of ${total} incident upserts failed`);
   }
 
-  for (const folded of absent.values()) {
-    const outcome = await upsertIncident(db, config, buildOverflowInput(folded, config, window), now);
+  // Distinct errors, each once even when its entries crossed midnight into two days' overflow incidents.
+  const folded = new Set<IncidentInput>();
+  for (const { day, shares, errors } of foldByFunctionAndDay(absent, days)) {
+    const outcome = await upsertIncident(db, config, buildOverflowInput(shares, config, window, day), now);
     count(outcome);
     // A replayed window folded these already: the overflow incident holds them, and they are not counted twice.
-    if (outcome !== "duplicate") result.errorsFoldedIntoOverflow += folded.length;
+    if (outcome !== "duplicate") for (const e of errors) folded.add(e);
   }
+  result.errorsFoldedIntoOverflow = folded.size;
 
   return result;
 }
@@ -421,7 +429,7 @@ function foldPlatformQuota(
       // A project-wide event: no one service's.
       service: null,
       environment: config.environment,
-      errorType: PLATFORM_QUOTA_ERROR_TYPE,
+      errorType: INCIDENT_KINDS["platform-quota"].errorType!,
       errorMessage,
       occurrenceCount: 1,
       firstOccurredAt: parsed.timestamp,
@@ -455,54 +463,84 @@ function quotaCovered(
 }
 
 /** The errorType of a high-cardinality overflow incident (#303): many distinct errors of one function, folded. */
-export const OVERFLOW_ERROR_TYPE = "HighCardinalityOverflow";
+export const OVERFLOW_ERROR_TYPE = INCIDENT_KINDS.overflow.errorType!;
 
-/**
- * The inputs of a window past the per-function cap on new incidents (#303): for every function (canonical spelling)
- * with more than `cap` distinct errors in the window, all but its `cap` most frequent (ties by fingerprint, so the
- * choice depends only on the window's own entries and a replay makes the same one). Those are upserted accrue-only:
- * one that matches a stored incident still accrues onto it; one that does not is folded into the overflow incident.
- * The `cap` most frequent upsert as usual, so a function opens at most `cap` incidents per window from them.
- */
-export function inputsPastNewIncidentCap(grouped: ReadonlyMap<string, { input: IncidentInput }>, cap: number): Set<IncidentInput> {
-  const byFunction = new Map<string, { fingerprint: string; input: IncidentInput }[]>();
-  for (const [fingerprint, { input }] of grouped) {
-    const key = canonicalFunctionName(input.functionName);
-    const list = byFunction.get(key);
-    if (list) list.push({ fingerprint, input });
-    else byFunction.set(key, [{ fingerprint, input }]);
+/** One log input's occurrences on one UTC day. */
+interface DaySlice {
+  count: number;
+  first: Date;
+  last: Date;
+}
+
+/** The UTC day (`2026-10-18`) of `at`. */
+function utcDay(at: Date): string {
+  return at.toISOString().slice(0, 10);
+}
+
+/** Count one entry of `input` on the UTC day of its own time. */
+function countDay(days: Map<IncidentInput, Map<string, DaySlice>>, input: IncidentInput, at: Date): void {
+  const byDay = days.get(input) ?? new Map<string, DaySlice>();
+  const day = utcDay(at);
+  const slice = byDay.get(day);
+  if (!slice) byDay.set(day, { count: 1, first: at, last: at });
+  else {
+    slice.count += 1;
+    if (at < slice.first) slice.first = at;
+    if (at > slice.last) slice.last = at;
   }
-  const past = new Set<IncidentInput>();
-  for (const list of byFunction.values()) {
-    if (list.length <= cap) continue;
-    list.sort(
-      (a, b) =>
-        b.input.occurrenceCount - a.input.occurrenceCount ||
-        (a.fingerprint < b.fingerprint ? -1 : a.fingerprint > b.fingerprint ? 1 : 0)
-    );
-    for (const { input } of list.slice(cap)) past.add(input);
-  }
-  return past;
+  days.set(input, byDay);
 }
 
 /**
- * The fixed message of a function's overflow incident for one UTC day. It keys the fingerprint (`fingerprintOf`
- * hashes it unnormalized in the `ovf-` namespace), so it holds no data, only the day: one overflow incident per
- * function and day.
+ * The folded errors as each function's overflow inputs, one per UTC day the entries fell on (#434): an error whose
+ * entries cross midnight lends each day its own share, counted from the entries' times, never the window's end.
+ * One group per function (canonical spelling, as its overflow fingerprint) and day: each error's share of that day,
+ * and the errors themselves.
+ */
+function foldByFunctionAndDay(
+  absent: readonly IncidentInput[],
+  days: ReadonlyMap<IncidentInput, ReadonlyMap<string, DaySlice>>
+): { day: string; shares: IncidentInput[]; errors: IncidentInput[] }[] {
+  const groups = new Map<string, { day: string; shares: IncidentInput[]; errors: IncidentInput[] }>();
+  for (const input of absent) {
+    const byDay = days.get(input) ?? new Map([[utcDay(input.firstOccurredAt), { count: input.occurrenceCount, first: input.firstOccurredAt, last: input.lastOccurredAt }]]);
+    for (const [day, slice] of byDay) {
+      const key = `${canonicalFunctionName(input.functionName)}\n${day}`;
+      const group = groups.get(key) ?? { day, shares: [], errors: [] };
+      group.errors.push(input);
+      // The function's Monitoring readings go with one day's share only, so they are counted once.
+      const { monitoring, ...rest } = input;
+      const share = { ...rest, occurrenceCount: slice.count, firstOccurredAt: slice.first, lastOccurredAt: slice.last };
+      group.shares.push(monitoring !== undefined && day === utcDay(input.lastOccurredAt) ? { ...share, monitoring } : share);
+      groups.set(key, group);
+    }
+  }
+  return [...groups.values()];
+}
+
+/**
+ * The fixed message of a function's overflow incident for one UTC day. The day keys the fingerprint (`fingerprintOf`,
+ * the overflow kind's `function-day` fold), so the wording may change without moving it; the text holds no data.
  */
 export function overflowMessage(day: string): string {
-  return `High-cardinality overflow on ${day} (UTC): distinct errors of this function past the per-window cap on new incidents, each matching no stored incident, are counted here instead of opening one incident each`;
+  return `High-cardinality overflow on ${day} (UTC): distinct errors of this function past the daily cap on new incidents, each matching no stored incident, are counted here instead of opening one incident each`;
+}
+
+/** The fingerprint of a function's overflow incident for one UTC day: the key the daily cap on new incidents counts on (#434). */
+export function overflowFingerprint(functionName: string, day: string): string {
+  return fingerprintOf(functionName, overflowMessage(day), "overflow");
 }
 
 /**
- * One function's folded errors as the overflow input (#303), dated by the UTC day the window ends in. The most
- * frequent folded error lends its (already sanitized) message, as an example, and its stack trace, so a person or the
- * agent can find the code that echoes the varying text.
+ * One function's folded errors on one UTC day as the overflow input (#303), each folded error's share of that day. The
+ * most frequent folded error lends its (already sanitized) message, as an example, and its stack trace, so a person or
+ * the agent can find the code that echoes the varying text.
  */
 export function buildOverflowInput(
   folded: readonly IncidentInput[],
   config: Pick<StarfishConfig, "environment">,
-  window: IngestWindow
+  window: IngestWindow,
+  day: string
 ): IncidentInput {
   const sorted = [...folded].sort(
     (a, b) => b.occurrenceCount - a.occurrenceCount || (a.errorMessage < b.errorMessage ? -1 : a.errorMessage > b.errorMessage ? 1 : 0)
@@ -522,7 +560,7 @@ export function buildOverflowInput(
     service: top.service,
     environment: config.environment,
     errorType: OVERFLOW_ERROR_TYPE,
-    errorMessage: overflowMessage(window.end.toISOString().slice(0, 10)),
+    errorMessage: overflowMessage(day),
     occurrenceCount: occurrences,
     firstOccurredAt: first,
     lastOccurredAt: last,

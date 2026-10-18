@@ -208,6 +208,20 @@ function sentence(stage: string, outcome: string | undefined, f: Fields): Senten
   }
 }
 
+/**
+ * The sentence for a stop note. The model-call budget says what it is and, when the note carries the numbers (a guest's copy
+ * never does), how much of it was used; any other stop is the engine's own line.
+ */
+export function stopSentence(n: Pick<EventRow, "type" | "summary" | "data">): Sentence {
+  if (n.type === "budget") {
+    const used = num(n.data.used);
+    const budget = num(n.data.budget);
+    const spent = used !== undefined && budget !== undefined ? ` (${used} of ${budget} Gemini calls)` : "";
+    return ok(`The run used up its model-call budget${spent}, the most Gemini calls one run may spend, so a person decides.`);
+  }
+  return { text: `${n.summary.replace(/[.\s]+$/, "")}.`, templated: false };
+}
+
 /** The step's sentence: written for it, else the engine's own line, else the bare outcome. Never invented. */
 export function sentenceFor(step: WordStep): Sentence {
   const written = sentence(step.stage, step.outcome, step.fields);
@@ -248,7 +262,7 @@ export function runInWords(cycle: CycleRow, water: Waterfall, events: readonly E
     ...stepLogOrder([...water.steps, ...water.attempts])
       .filter((s) => s.status === "done" || s.status === "failed")
       .map((s) => ({ at: s.at?.getTime() ?? 0, s: withStage(wordStep(s, recordOf(s.stage, s.at))) })),
-    ...stopNotes.map((n) => ({ at: n.at.getTime(), s: { text: `${n.summary.replace(/[.\s]+$/, "")}.`, templated: false, stage: "cycle" } })),
+    ...stopNotes.map((n) => ({ at: n.at.getTime(), s: { ...stopSentence(n), stage: "cycle" } })),
   ].sort((a, b) => a.at - b.at);
   if (timed.length > 0 || rounds.length === 0) {
     const began = water.rounds > 1 ? water.reopened?.summary : undefined;

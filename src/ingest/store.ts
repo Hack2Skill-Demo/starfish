@@ -42,6 +42,14 @@
  * Incidents written before keys existed have none; the first upsert finds them
  * by query, as before, and writes the key that pins them from then on.
  *
+ * A fingerprint change (a new FINGERPRINT_VERSION, fingerprint.ts) leaves every stored incident keyed under its old
+ * fingerprint. On a key miss the store therefore also reads the keys of the fingerprints earlier versions gave the same
+ * occurrence (`earlierFingerprints`), in the same transaction: an incident one of them names that hashes to the current
+ * fingerprint is this bug, so the key of the current fingerprint is pointed at it, carrying the windows the old key had
+ * applied, and the record takes the current fingerprint (#432). So a deploy that changes the fingerprint forks nothing,
+ * with or without `pnpm rekey`. Which incident, when several qualify, is convergence.ts `convergeOn`: the one rule the
+ * store, rekey and scrub share.
+ *
  * Replays: a scheduled run reads a bounded window of logs, and a run that fails
  * part-way is retried over the SAME window. Upserts that already committed must
  * not count those occurrences twice, so an input may carry a `windowId`, and the
@@ -55,7 +63,15 @@ import { createHash } from "node:crypto";
 import { Timestamp, FieldValue } from "firebase-admin/firestore";
 import type { DocumentReference, DocumentSnapshot, Firestore, Transaction } from "firebase-admin/firestore";
 import type { StarfishConfig } from "../config.js";
-import { fingerprintOf } from "./fingerprint.js";
+import { earlierFingerprints, fingerprintOf } from "./fingerprint.js";
+import {
+  APPLIED_WINDOWS_RETAINED,
+  appliedWindowsOf,
+  candidateOf,
+  convergeOn,
+  mergeAppliedWindows,
+  tsMillis,
+} from "./convergence.js";
 import { TRACE_ID_RE } from "./parseLogEntry.js";
 import type { MonitoringObservation } from "./monitoring.js";
 import { redactPii, sliceWellFormed } from "./redact.js";
@@ -66,6 +82,7 @@ import {
   type StoredIncident,
   type StoredMonitoringObservation,
 } from "../types.js";
+import type { IncidentKindId } from "../incidentKinds.js";
 import type { PublicViewConfig } from "../publicView.js";
 import { refreshPublicIncident } from "../publicViewStore.js";
 
@@ -95,11 +112,10 @@ export interface IncidentInput {
    */
   windowId?: string;
   /**
-   * `monitoring` for a Monitoring-only incident (#19): fingerprinted in its own namespace
-   * (`fingerprintOf`), so it never accrues onto, or is accrued onto by, a log-derived incident. `overflow` (#303) and
-   * `platform-quota` (ingest/platformQuota.ts) have namespaces of their own too.
+   * The incident's kind when it is not a log incident (src/incidentKinds.ts): each is fingerprinted in a namespace of
+   * its own (`fingerprintOf`), so it never accrues onto, or is accrued onto by, an incident of another kind.
    */
-  signalSource?: "monitoring" | "overflow" | "platform-quota";
+  signalSource?: Exclude<IncidentKindId, "log">;
   /**
    * Cloud Monitoring readings for this function in the same window (#19). On a log incident they
    * annotate it; on a Monitoring-only one they are its evidence. Folded in once per window, like the
@@ -111,23 +127,27 @@ export interface IncidentInput {
 /**
  * What upsertIncident did: created a document, accrued onto one, re-opened a resolved one,
  * or recognised a window it had already applied and changed nothing ("duplicate"). "absent" only
- * with `createIfAbsent: false`: the occurrence would have opened a new incident, so nothing was written.
+ * with `newIncidentCap`: the occurrence would have opened a new incident past the cap, so nothing was written.
  */
 export type UpsertOutcome = "new" | "updated" | "recurred" | "duplicate" | "absent";
 
 export interface UpsertOptions {
   /**
-   * False: accrue onto an incident that exists (open, resolved, or the retired one an earlier occurrence belongs to),
-   * but never open one; where the upsert would, it writes nothing (not even the window on the key) and returns
-   * "absent". The aggregator uses it for a function's errors past the cap on new incidents per window (#303), and
-   * folds what comes back absent into one overflow incident. Default true.
+   * The per-function daily cap on new incidents (#434). Where the upsert would open an incident, it first counts it
+   * on the key document of `fingerprint` (aggregate.ts passes the function's overflow incident for the UTC day), in the
+   * same transaction, and once `limit` are counted there it refuses: nothing is written (not even the window on the
+   * key) and it returns "absent", which the aggregator folds into that overflow incident. An occurrence that accrues
+   * onto an existing incident (open, resolved, or the retired one an earlier occurrence belongs to) never counts.
+   * The count lives in the store, not in the run, so neither narrowing a window nor completing many in one run (#296)
+   * can multiply it, and a replayed window never counts an incident twice (its creation committed with its key).
    */
-  createIfAbsent?: boolean;
+  newIncidentCap?: { fingerprint: string; limit: number };
 }
 
-/** Applied windows remembered per key. A retry only ever replays the latest window or two. */
-export const APPLIED_WINDOWS_RETAINED = 32;
+export { APPLIED_WINDOWS_RETAINED };
 
+/** Max same-fingerprint open documents read when looking for an incident with no key. */
+const OPEN_LOOKUP_LIMIT = 10;
 /** Max same-fingerprint resolved documents read when looking for a regression target. */
 const RESOLVED_LOOKUP_LIMIT = 10;
 
@@ -148,6 +168,37 @@ interface IncidentKey {
   updatedAt: Timestamp;
   /** Ingest windows already applied to this fingerprint, oldest first, bounded. */
   appliedWindows?: string[];
+  /** On an overflow incident's key: how many incidents its function opened that UTC day (#434, `newIncidentCap`). */
+  newIncidentsOpened?: number;
+}
+
+/** The field of a key document that counts the per-function daily cap (#434). */
+const NEW_INCIDENTS_OPENED = "newIncidentsOpened";
+
+/** The count a key document holds for the daily cap; 0 when it holds none (or anything else). */
+function newIncidentsOpenedOf(key: DocumentSnapshot): number {
+  const raw: unknown = key.exists ? key.get(NEW_INCIDENTS_OPENED) : undefined;
+  return typeof raw === "number" && Number.isInteger(raw) && raw > 0 ? raw : 0;
+}
+
+/**
+ * A key document as every writer writes it (the store, rekey, scrub): replaced whole, so a window list it no longer
+ * holds is gone, but with the daily cap's count carried over from `previous`, the key as read in the same
+ * transaction, so a writer that only moves the pointer never resets the cap.
+ */
+export function incidentKeyDoc(
+  previous: DocumentSnapshot | undefined,
+  key: { incidentId: string; environment: string; fingerprint: string; updatedAt: Timestamp; appliedWindows: readonly string[] }
+): IncidentKey {
+  const opened = previous ? newIncidentsOpenedOf(previous) : 0;
+  return {
+    incidentId: key.incidentId,
+    environment: key.environment,
+    fingerprint: key.fingerprint,
+    updatedAt: key.updatedAt,
+    ...(key.appliedWindows.length > 0 && { appliedWindows: [...key.appliedWindows] }),
+    ...(opened > 0 && { newIncidentsOpened: opened }),
+  };
 }
 
 /**
@@ -156,12 +207,6 @@ interface IncidentKey {
  */
 export function incidentKeyId(environment: string, fingerprint: string): string {
   return createHash("sha256").update(`${environment}\n${fingerprint}`).digest("hex");
-}
-
-/** Epoch ms of a Timestamp-ish field, or undefined. Tolerates partial and legacy documents. */
-function tsMillis(value: unknown): number | undefined {
-  const v = value as { toMillis?: unknown } | null | undefined;
-  return typeof v?.toMillis === "function" ? (v.toMillis() as number) : undefined;
 }
 
 /** True when `date` is later than the stored timestamp, or nothing is stored. */
@@ -344,7 +389,6 @@ export async function upsertIncident(
   now: Timestamp,
   options: UpsertOptions = {}
 ): Promise<UpsertOutcome> {
-  const createIfAbsent = options.createIfAbsent !== false;
   const input = redactInput(rawInput);
   const fingerprint = fingerprintOf(input.functionName, input.errorMessage, input.signalSource);
   const keyRef = db.collection(store.incidentKeyCollection).doc(incidentKeyId(input.environment, fingerprint));
@@ -355,7 +399,7 @@ export async function upsertIncident(
     (tx) =>
       abortIfClosed(() => {
         written = undefined;
-        return upsertInTransaction(db, tx, store, input, fingerprint, keyRef, now, (id) => (written = id), createIfAbsent);
+        return upsertInTransaction(db, tx, store, input, fingerprint, keyRef, now, (id) => (written = id), options.newIncidentCap);
       }),
     { maxAttempts: UPSERT_MAX_ATTEMPTS }
   );
@@ -408,55 +452,55 @@ async function upsertInTransaction(
   keyRef: DocumentReference,
   now: Timestamp,
   wrote: (incidentId: string) => void,
-  createIfAbsent: boolean
+  cap: UpsertOptions["newIncidentCap"]
 ): Promise<UpsertOutcome> {
   // Every read comes before any write: Firestore transactions require it.
   const keySnap = await tx.get(keyRef);
-  const applied = readAppliedWindows(keySnap);
+  const applied = appliedWindowsOf(keySnap);
   // A window this fingerprint already took is a replay: write nothing, count nothing.
   if (input.windowId !== undefined && applied.includes(input.windowId)) return "duplicate";
+  // The key names a live document that still holds this fingerprint (or a retired one, its tombstone): it decides.
   const keyed = await readKeyedIncident(db, tx, store, keySnap, fingerprint);
-  // A key that names a retired incident is a tombstone (retire.ts): the fingerprint was freed, so there
-  // is no open incident to look for, and the lookup below must not adopt an older document either.
-  const tombstone = keyed !== null && isRetired(keyed) ? keyed : null;
-  // The key names a live document that still holds this fingerprint: it decides.
-  // Otherwise (no key yet, or a stale one) fall back to the lookup that
-  // predates keys, so incidents stored before them are adopted, not forked.
-  const target = tombstone
-    ? null
-    : (keyed ?? (await findUnkeyedIncident(db, tx, store, input.environment, fingerprint)));
+  // Otherwise (no key yet, or a stale one): the keys earlier fingerprint versions wrote for this occurrence (#432),
+  // then the lookup that predates keys, so incidents stored under an old fingerprint, or before keys, are adopted,
+  // not forked. A window an earlier version's key applied is a replay too.
+  const earlier = keyed ? NO_EARLIER_KEYS : await readEarlierKeys(db, tx, store, input, fingerprint);
+  if (input.windowId !== undefined && earlier.windows.includes(input.windowId)) return "duplicate";
+  const candidates = keyed ? [keyed] : await findUnkeyedIncidents(db, tx, store, input.environment, fingerprint, earlier.incidents);
+  const choice = convergeOn(
+    candidates.map((s) => candidateOf(s.id, s.data())),
+    keyed?.id
+  );
+  const chosen = choice ? candidates.find((s) => s.id === choice.id) : undefined;
 
-  // Written when the pointer moves, and whenever a window must be recorded; an
-  // unchanged key with nothing to record is left alone (no write for nothing).
+  // Written when the pointer moves, when a window must be recorded, and when an earlier version's key is carried
+  // over; an unchanged key with nothing to record is left alone (no write for nothing).
   const pointKeyAt = (incidentId: string) => {
     const moved = keySnap.get("incidentId") !== incidentId;
-    if (!moved && input.windowId === undefined) return;
-    const appliedWindows =
-      input.windowId === undefined ? applied : [...applied, input.windowId].slice(-APPLIED_WINDOWS_RETAINED);
-    const key: IncidentKey = {
-      incidentId,
-      environment: input.environment,
-      fingerprint,
-      updatedAt: now,
-      ...(appliedWindows.length > 0 && { appliedWindows }),
-    };
-    tx.set(keyRef, key);
+    if (!moved && input.windowId === undefined && earlier.windows.length === 0) return;
+    const base = earlier.windows.length > 0 ? mergeAppliedWindows([applied, earlier.windows]) : applied;
+    const appliedWindows = input.windowId === undefined ? base : [...base, input.windowId].slice(-APPLIED_WINDOWS_RETAINED);
+    tx.set(keyRef, incidentKeyDoc(keySnap, { incidentId, environment: input.environment, fingerprint, updatedAt: now, appliedWindows }));
   };
+  // A record adopted under an earlier fingerprint takes the current one, as `pnpm rekey` would give it (#432): the
+  // sample filter (counterCheck.ts) and the stored-field lookup below read it.
+  const refingerprinted = (data: StoredIncident) => (data.fingerprint !== fingerprint ? { fingerprint } : {});
 
-  if (tombstone) {
-    const retired = tombstone.data() as StoredIncident;
+  if (chosen && choice?.as === "tombstone") {
+    const retired = chosen.data() as StoredIncident;
     const retiredAtMs = tsMillis(retired.retiredAt);
     // Logs are read with a lag, so a batch can hold occurrences from BEFORE the retire. They are the
     // failure that was retired, not a new one: count them on the retired incident, which stays closed
     // (status, triage and recurrence untouched), as the resolved path below does for a resolution.
     if (retiredAtMs != null && input.lastOccurredAt.getTime() <= retiredAtMs) {
-      tx.update(tombstone.ref, buildAccrualUpdate(retired, input, now));
-      wrote(tombstone.id);
-      pointKeyAt(tombstone.id);
+      tx.update(chosen.ref, { ...buildAccrualUpdate(retired, input, now), ...refingerprinted(retired) });
+      wrote(chosen.id);
+      pointKeyAt(chosen.id);
       return "updated";
     }
   }
 
+  const target = choice?.as === "live" ? chosen : undefined;
   const data = target?.data() as StoredIncident | undefined;
   if (target && data && isOpen(data.status)) {
     tx.update(target.ref, {
@@ -464,6 +508,7 @@ async function upsertInTransaction(
       // Re-queue for triage only when it was never triaged. A decision already
       // taken ("declined", "acting") must not be silently undone by a recurrence.
       ...(data.triageState == null && { triageState: "pending" as const }),
+      ...refingerprinted(data),
     });
     wrote(target.id);
     pointKeyAt(target.id);
@@ -478,29 +523,31 @@ async function upsertInTransaction(
     // BEFORE the incident was resolved. Those are the old failure, not a
     // regression: count them on the resolved incident and leave it resolved.
     if (resolvedAtMs != null && input.lastOccurredAt.getTime() <= resolvedAtMs) {
-      tx.update(target.ref, buildAccrualUpdate(data, input, now));
+      tx.update(target.ref, { ...buildAccrualUpdate(data, input, now), ...refingerprinted(data) });
       return "updated";
     }
-    tx.update(target.ref, buildRecurrenceUpdate(data, input, now));
+    tx.update(target.ref, { ...buildRecurrenceUpdate(data, input, now), ...refingerprinted(data) });
     return "recurred";
   }
 
   // Nothing to accrue onto, the keyed incident was ignored, or it was retired
   // before this occurrence: neither is ever re-opened, so the occurrence opens
-  // a fresh one, and the key moves to it. Unless the caller only accrues (#303): then nothing is written, and the
-  // window is not recorded on the key either, so a replay of it decides the same way.
-  if (!createIfAbsent) return "absent";
+  // a fresh one, and the key moves to it. Unless the function's daily cap is reached (#434): then nothing is written,
+  // and the window is not recorded on the key either, so a replay of it decides the same way.
+  let capRef: DocumentReference | undefined;
+  let opened = 0;
+  if (cap) {
+    capRef = db.collection(store.incidentKeyCollection).doc(incidentKeyId(input.environment, cap.fingerprint));
+    opened = newIncidentsOpenedOf(await tx.get(capRef));
+    if (opened >= cap.limit) return "absent";
+  }
   const ref = db.collection(store.incidentCollection).doc();
   tx.set(ref, buildNewIncident(input, fingerprint, now));
   wrote(ref.id);
   pointKeyAt(ref.id);
+  // Merged, so the overflow incident's own key (the same document) keeps its pointer and windows.
+  if (capRef) tx.set(capRef, { [NEW_INCIDENTS_OPENED]: opened + 1 }, { merge: true });
   return "new";
-}
-
-/** The windows a key has applied. Tolerates a missing or malformed field: nothing applied. */
-function readAppliedWindows(keySnap: DocumentSnapshot): string[] {
-  const raw: unknown = keySnap.get("appliedWindows");
-  return Array.isArray(raw) ? raw.filter((w): w is string => typeof w === "string") : [];
 }
 
 function isOpen(status: unknown): boolean {
@@ -538,18 +585,71 @@ async function readKeyedIncident(
   return snap.exists && holdsFingerprint(snap, fingerprint) ? snap : null;
 }
 
+/** What the keys of earlier fingerprint versions name: the incidents that are this bug today, and their windows. */
+interface EarlierKeys {
+  incidents: DocumentSnapshot[];
+  windows: string[];
+}
+
+const NO_EARLIER_KEYS: EarlierKeys = { incidents: [], windows: [] };
+
 /**
- * The lookup for incidents that have no key: an open one, else a resolved one.
- * Returns null when there is neither.
+ * The keys earlier fingerprint versions gave this occurrence (#432, fingerprint.ts `earlierFingerprints`): each
+ * incident one of them names that hashes to the CURRENT fingerprint (a retired one included, as a tombstone), and the
+ * windows those keys applied. An old key whose incident hashes to anything else names another bug and is ignored, so an
+ * earlier version can never make the store adopt a record today's fingerprint would not. A handful of reads, only on a
+ * key miss, and none for a kind whose fingerprint never moved.
  */
-async function findUnkeyedIncident(
+async function readEarlierKeys(
+  db: Firestore,
+  tx: Transaction,
+  store: IncidentStoreConfig,
+  input: IncidentInput,
+  fingerprint: string
+): Promise<EarlierKeys> {
+  const fingerprints = earlierFingerprints(input);
+  if (fingerprints.length === 0) return NO_EARLIER_KEYS;
+  const keys = db.collection(store.incidentKeyCollection);
+  const keySnaps = await Promise.all(fingerprints.map((fp) => tx.get(keys.doc(incidentKeyId(input.environment, fp)))));
+  const named = await Promise.all(
+    keySnaps.map(async (keySnap) => {
+      const incidentId: unknown = keySnap.get("incidentId");
+      if (typeof incidentId !== "string" || incidentId === "") return undefined;
+      const snap = await tx.get(db.collection(store.incidentCollection).doc(incidentId));
+      return snap.exists && holdsFingerprint(snap, fingerprint) ? { keySnap, snap } : undefined;
+    })
+  );
+  const found = named.filter((n): n is { keySnap: DocumentSnapshot; snap: DocumentSnapshot } => n !== undefined);
+  if (found.length === 0) return NO_EARLIER_KEYS;
+  const incidents: DocumentSnapshot[] = [];
+  for (const { snap } of found) if (!incidents.some((s) => s.id === snap.id)) incidents.push(snap);
+  return { incidents, windows: mergeAppliedWindows(found.map(({ keySnap }) => appliedWindowsOf(keySnap))) };
+}
+
+/**
+ * The candidates on a key miss: `adopted` (what earlier versions' keys named), then the lookup for incidents that
+ * have no key: the open ones, and, when nothing so far is open, the resolved ones. `convergeOn` chooses among them.
+ *
+ * The lookup reads at most 10 of each. With more forks than that and no key, the store chooses among the ones it
+ * read; the key then records the choice, and `pnpm rekey` keeps a key that names a live incident (convergence.ts rule
+ * 1), so the two never move occurrences off the incident the other chose (#432).
+ */
+async function findUnkeyedIncidents(
   db: Firestore,
   tx: Transaction,
   store: IncidentStoreConfig,
   environment: string,
-  fingerprint: string
-): Promise<DocumentSnapshot | null> {
+  fingerprint: string,
+  adopted: readonly DocumentSnapshot[]
+): Promise<DocumentSnapshot[]> {
   const incidents = db.collection(store.incidentCollection);
+  const candidates = [...adopted];
+  const add = (doc: DocumentSnapshot) => {
+    // A retired incident found by query is not a tombstone (only a key that names it is): it is never a candidate.
+    if (!holdsFingerprint(doc, fingerprint) || isRetired(doc) || candidates.some((c) => c.id === doc.id)) return;
+    candidates.push(doc);
+  };
+  const liveOpen = () => candidates.some((c) => !isRetired(c) && isOpen((c.data() as Partial<StoredIncident>).status));
 
   // Query BY the indexed fingerprint field. An earlier version fetched up to 10
   // open incidents for the function and re-hashed them in memory — which is
@@ -562,26 +662,15 @@ async function findUnkeyedIncident(
       .where("fingerprint", "==", fingerprint)
       .where("environment", "==", environment)
       .where("status", "in", [...OPEN_INCIDENT_STATUSES])
-      .limit(10)
+      .limit(OPEN_LOOKUP_LIMIT)
   );
-
-  // If a past burst already forked several open copies, converge on the
-  // earliest so every later run accrues onto one canonical document.
-  let earliest: DocumentSnapshot | null = null;
-  let earliestMs = Infinity;
-  for (const doc of open.docs) {
-    if (!holdsFingerprint(doc, fingerprint) || isRetired(doc)) continue;
-    const firstMs = tsMillis((doc.data() as StoredIncident).firstOccurredAt) ?? Infinity;
-    if (earliest === null || firstMs < earliestMs) {
-      earliest = doc;
-      earliestMs = firstMs;
-    }
-  }
-  if (earliest) return earliest;
+  for (const doc of open.docs) if (isOpen((doc.data() as Partial<StoredIncident>).status)) add(doc);
+  if (liveOpen()) return candidates;
 
   // No open incident: is this a regression of a RESOLVED one? Equality on every
   // field, so Firestore serves it by merging single-field indexes and no
-  // composite index is needed.
+  // composite index is needed. Several resolved documents can share a fingerprint
+  // (before regressions were tracked, every recurrence opened a fresh one).
   const resolved = await tx.get(
     incidents
       .where("fingerprint", "==", fingerprint)
@@ -589,22 +678,8 @@ async function findUnkeyedIncident(
       .where("status", "==", "resolved")
       .limit(RESOLVED_LOOKUP_LIMIT)
   );
-
-  // Several resolved documents can share a fingerprint (before regressions were
-  // tracked, every recurrence opened a fresh one): re-open the most recently
-  // resolved, which holds the fix that just failed.
-  let latest: DocumentSnapshot | null = null;
-  let latestMs = -Infinity;
-  for (const doc of resolved.docs) {
-    const d = doc.data() as StoredIncident;
-    if (d.status !== "resolved" || !holdsFingerprint(doc, fingerprint) || isRetired(doc)) continue;
-    const ms = tsMillis(d.resolvedAt) ?? tsMillis(d.lastOccurredAt) ?? -Infinity;
-    if (latest === null || ms > latestMs) {
-      latest = doc;
-      latestMs = ms;
-    }
-  }
-  return latest;
+  for (const doc of resolved.docs) if ((doc.data() as Partial<StoredIncident>).status === "resolved") add(doc);
+  return candidates;
 }
 
 function buildNewIncident(input: IncidentInput, fingerprint: string, now: Timestamp): StoredIncident {

@@ -47,6 +47,7 @@ import type { ErrorLogSample } from "../ingest/counterCheck.js";
 import { OPEN_INCIDENT_STATUSES, type Incident, type IncidentStatus } from "../types.js";
 import { INDEX_MERGE_CASE, MAX_MERGE_CASE_DESCRIPTION, type MergeCase } from "../settingsSchema.js";
 import { capHolds, capSource, levelCap, type ClassRule, type IncidentCorrection, type LevelCap } from "../triageRules.js";
+import { incidentKindOf, type IncidentKindGate } from "../incidentKinds.js";
 import { renderSourceContext, SOURCE_BUDGETS, type ShownFile } from "./sourceContext.js";
 
 export type TriageDecision = "act" | "notify" | "decline" | "defer" | "skip" | "error";
@@ -61,8 +62,7 @@ export type TriageRule =
   | "model-decline"
   | ModelFailureRule
   | "monitoring-only-no-cause"
-  | "high-cardinality-overflow"
-  | "platform-quota"
+  | IncidentKindGate["rule"]
   | "rule-cap"
   | "correction-cap";
 
@@ -232,7 +232,7 @@ export function renderForTriage(subject: TriageSubject): string {
     `errorType: ${clip(i.errorType, 100)}`,
     ...(i.errorCode ? [`errorCode: ${clip(i.errorCode, 100)}`] : []),
     ...(i.httpStatus != null ? [`httpStatus: ${Number(i.httpStatus)}`] : []),
-    ...(i.signalSource === "monitoring"
+    ...(incidentKindOf(i).id === "monitoring"
       ? ["source: Cloud Monitoring only (failed invocations counted with no ERROR log entry; the log counter-check is zero by construction)"]
       : []),
     `occurrences (lifetime of this incident): ${Number(i.occurrenceCount ?? 0)}`,
@@ -320,38 +320,20 @@ export async function triageIncident(subject: TriageSubject, ask: AskJson = askJ
     return result("skip", "status-not-open", `Incident is ${subject.status}; triage only looks at open incidents.`);
   }
 
-  // The rules engine (src/triageRules.ts): an admin's class rule or an operator's correction holds the incident back.
-  // Held to noise, the model is not asked at all.
+  // The incident's kind (src/incidentKinds.ts) decides what follows before anything else may. The rules engine
+  // (src/triageRules.ts): an operator's correction holds any incident back, an admin's class rule only a kind that does
+  // not override class rules (#435: a rule on QuotaError written for an app's 429s declined the project-wide quota
+  // incident with no person told). Held to noise, the model is not asked at all.
+  const kind = incidentKindOf(subject.incident);
   const cap = levelCap(subject.incident, options.classRules ?? [], subject.correction) ?? undefined;
   if (cap?.level === "noise") {
     return result("decline", `${cap.by}-cap`, `Declined without asking the model: ${capSource(cap)} holds this incident to noise.`, undefined, undefined, cap);
   }
 
-  // An overflow incident (#303) is the many distinct errors one function logged past the per-window cap, folded into one.
-  // It has no single cause to fix, and its text is whatever the flood carried: a person looks, the model is not asked.
-  if (subject.incident.signalSource === "overflow") {
-    return result(
-      "notify",
-      "high-cardinality-overflow",
-      "This function logged more distinct errors than the per-window cap allows, and the rest were folded into this one incident. That is a flood or an error that echoes its input, not one cause a fix can aim at: a human should look.",
-      undefined,
-      undefined,
-      cap
-    );
-  }
-
-  // A consolidated Cloud Run quota incident (ingest/platformQuota.ts) is the project's quota, exhausted across every
-  // function: requests were rejected before any code ran, so no change to the code fixes it. A person looks.
-  if (subject.incident.signalSource === "platform-quota") {
-    return result(
-      "notify",
-      "platform-quota",
-      "The project exceeded a Cloud Run quota, and requests to its functions were rejected before any of them ran. That is one project-wide event, not a defect in a function: a human should look at the quota or at what spent it (often a deploy rolling many revisions at once).",
-      undefined,
-      undefined,
-      cap
-    );
-  }
+  // A kind with a gate goes to a person, the model unasked: an overflow incident (#303) is many distinct errors with no
+  // single cause, its text whatever the flood carried; a consolidated Cloud Run quota incident is the project's quota,
+  // exhausted before any code ran, so no change to the code fixes it.
+  if (kind.gate) return result("notify", kind.gate.rule, kind.gate.reason, undefined, undefined, cap);
 
   const check = subject.incident.logCounterCheck;
   if (!check || !Number.isFinite(check.count)) {
@@ -364,7 +346,8 @@ export async function triageIncident(subject: TriageSubject, ask: AskJson = askJ
       cap
     );
   }
-  const monitoringOnly = subject.incident.signalSource === "monitoring";
+  // A kind with no log entry behind it (Monitoring-only, #19) has a recount of zero by construction.
+  const monitoringOnly = !kind.logRecount;
   if (check.count === 0 && !monitoringOnly) {
     return result(
       "decline",
