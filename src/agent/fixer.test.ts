@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { FIX_SCHEMA, FOUND_BY_NAME_NOTE, FOUND_BY_NAME_WITH_IMPORTS_NOTE, MAX_FILE_CHARS, MAX_FIX_PATCH_BYTES, MAX_TOTAL_SOURCE_CHARS, proposeFix, renderForFix, type FixRequest } from "./fixer.js";
+import { STACK_AND_NAME_NOTE } from "./sourceContext.js";
 import type { AskJson } from "./triage.js";
 import { SEEDED_SECRETS } from "../ingest/testSecrets.js";
 import type { Incident } from "../types.js";
@@ -232,6 +233,19 @@ describe("what the fixer shows the model", () => {
     expect(prompt).not.toContain(FOUND_BY_NAME_NOTE);
     expect(prompt).toContain("--- functions/src/lib/track.ts ---");
     expect(renderForFix(request({ sourceRule: "function-name", sourceImports: 0, files: files.slice(0, 1) }))).toContain(FOUND_BY_NAME_NOTE);
+  });
+
+  it("says the files after the stack's were added for the function's own file, when the stack named only shared code", () => {
+    const files = [
+      { path: "functions/src/lib/track.ts", content: "export function trackOutcome() {}" },
+      { path: "functions/src/orders/getOrder.ts", content: "export const getOrder = 1;" },
+    ];
+    const prompt = renderForFix(request({ sourceRule: "stack-and-function-name", sourceImports: 0, files }));
+    expect(prompt).toContain(STACK_AND_NAME_NOTE);
+    expect(prompt).not.toContain(FOUND_BY_NAME_NOTE);
+    expect(prompt).toContain("--- functions/src/orders/getOrder.ts ---");
+    // One file shown: there is nothing "after" it for the note to describe.
+    expect(renderForFix(request({ sourceRule: "stack-and-function-name", files: files.slice(0, 1) }))).not.toContain(STACK_AND_NAME_NOTE);
   });
 
   it("shows nothing beyond the files it was given", () => {

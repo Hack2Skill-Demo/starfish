@@ -45,7 +45,7 @@ export interface FixRequest {
    * How the caller found `files` (#259). `function-name`: no stack frame named a repository file, and the file shown is
    * the one that exports the failing function; the model is told so, since the fault may lie in code that file calls.
    */
-  sourceRule?: "stack" | "function-name" | "none";
+  sourceRule?: "stack" | "stack-and-function-name" | "function-name" | "none";
   /** With `function-name`: how many of `files`, after the first, are files it imports (#347). */
   sourceImports?: number;
   /** From one failed verify run, when this is the revision round. */

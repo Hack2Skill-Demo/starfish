@@ -114,7 +114,8 @@ describe("createLoader", () => {
     expect(s!.subject.incident).toMatchObject({ id: "i1", functionName: "orders-create", logCounterCheck: { count: 2, window: "24h" } });
     // Too big, binary and symlinked files are left out; the plain one is read.
     expect(s!.files).toEqual([{ path: "src/orders.ts", content: "export const x = 1;\n" }]);
-    expect(s!.source).toEqual({ rule: "stack" });
+    // The name search ran too and found no export of `orders-create`: said, not hidden.
+    expect(s!.source).toEqual({ rule: "stack", search: "no-export" });
     await loader.disposeAll();
     expect(readdirSync(scratch())).toEqual([]);
   });
@@ -144,6 +145,34 @@ describe("createLoader", () => {
     const one = createLoader({ db: fakeDb({ i1: { ...incident, functionName: "orders-getOrder", stackTrace: FRAMEWORK_STACK } }), config, logging: logging(), checkout: checkoutFn(), maxFiles: 2, maxFileBytes: 1000 });
     expect((await one.load("i1"))!.files.map((f) => f.path)).toEqual(["src/getorder.ts", "src/lib/track.ts"]);
     await one.disposeAll();
+  });
+
+  // The demo's orders-getOrder: the only repository frame is the shared wrapper that logged the failure, so the fixer was
+  // shown `lib/track` alone and declined for lack of the function's own code.
+  const WRAPPER_ONLY_STACK = "Error: boom\n    at trackOutcome (/app/src/lib/track.ts:20:25)\n    at async /workspace/node_modules/firebase-functions/lib/common/providers/https.js:545:26";
+
+  it("adds the function's own file after the files the stack named, when the stack named only shared code", async () => {
+    const loader = createLoader({ db: fakeDb({ i1: { ...incident, functionName: "orders-getOrder", stackTrace: WRAPPER_ONLY_STACK } }), config, logging: logging(), checkout: checkoutFn(), maxFileBytes: 1000 });
+    const s = await loader.load("i1");
+    // The stack's file first, then the exporting file, then what it imports that is not already shown.
+    expect(s!.files.map((f) => f.path)).toEqual(["src/lib/track.ts", "src/getorder.ts", "src/orders.ts"]);
+    expect(s!.source).toEqual({ rule: "stack-and-function-name", search: "found", imports: 1 });
+    await loader.disposeAll();
+    // Within the loader's own file budget: no room, nothing added.
+    const full = createLoader({ db: fakeDb({ i1: { ...incident, functionName: "orders-getOrder", stackTrace: WRAPPER_ONLY_STACK } }), config, logging: logging(), checkout: checkoutFn(), maxFiles: 1, maxFileBytes: 1000 });
+    const f = await full.load("i1");
+    expect(f!.files.map((x) => x.path)).toEqual(["src/lib/track.ts"]);
+    expect(f!.source).toEqual({ rule: "stack" });
+    await full.disposeAll();
+  });
+
+  it("adds nothing when the stack already names the file that exports the function", async () => {
+    const stack = "Error: boom\n    at f (/app/src/getorder.ts:3:3)";
+    const loader = createLoader({ db: fakeDb({ i1: { ...incident, functionName: "orders-getOrder", stackTrace: stack } }), config, logging: logging(), checkout: checkoutFn(), maxFileBytes: 1000 });
+    const s = await loader.load("i1");
+    expect(s!.files.map((f) => f.path)).toEqual(["src/getorder.ts"]);
+    expect(s!.source).toEqual({ rule: "stack", search: "found" });
+    await loader.disposeAll();
   });
 
   it("says why the function-name search found nothing, and shows nothing then", async () => {
