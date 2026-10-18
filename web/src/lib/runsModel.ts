@@ -847,12 +847,15 @@ export function buildWaterfall(cycle: CycleRow, events: readonly EventRow[], now
  * One sentence on where the run stands, from what the engine recorded: the step a worker is on, or the path the run
  * ended on and the last step of the run's track that has an event. Never a step the engine did not record.
  */
-export function runSummary(cycle: CycleRow, steps: readonly Step[], nowMs: number): string {
+export function runSummary(cycle: CycleRow, steps: readonly Step[], nowMs: number, notes: readonly Pick<EventRow, "type" | "at">[] = []): string {
   const status = runStatus(cycle, nowMs);
   const running = steps.find((s) => s.status === "running");
   if (running) return `Working on ${running.title.toLowerCase()} now.`;
   if (cycle.state === "running") return "No worker holds this run right now; the next pass picks it up.";
   const lastDone = [...steps].reverse().find((s) => isReached(s) && !s.side);
+  // A run stopped by its model-call budget after its last step: that is what it ended on, not that step's outcome.
+  const budgetAt = notes.filter((n) => n.type === "budget").reduce((acc, n) => Math.max(acc, n.at.getTime()), 0);
+  if (cycle.path && budgetAt > 0 && budgetAt >= (lastDone?.at?.getTime() ?? 0)) return `${PATH_LABELS[cycle.path]} after the model-call budget ran out.`;
   // The step a path is named for needs no "after" (a pull request opened after the pull request step).
   const ownStep = (cycle.path === "pr" && lastDone?.stage === "pr") || (cycle.path === "index" && lastDone?.stage === "index");
   const after = lastDone && !ownStep ? ` after ${lastDone.title.toLowerCase()}${lastDone.outcome ? ` (${lastDone.outcome})` : ""}` : "";

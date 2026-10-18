@@ -373,6 +373,15 @@ describe("small helpers", () => {
       expect(log).toEqual(["verify#2", "fix#2", "review", "verify#1", "fix#1", "triage"]);
     });
 
+    it("heads a run the model-call budget stopped with that, not with the step it stopped after", () => {
+      const events = [...revised(), ev("cycle", "budget", 940_000, "Model-call budget used up")];
+      const c = cycle({ state: "waiting-human", path: "human", leaseExpiresAt: null, updatedAt: new Date(T0 + 941_000) });
+      const w = buildWaterfall(c, events, T0 + HOUR);
+      expect(runSummary(c, w.steps, T0 + HOUR, w.notes)).toBe("Handed to a person after the model-call budget ran out.");
+      // Without the note it names the last step, as before.
+      expect(runSummary(c, w.steps, T0 + HOUR)).toContain("after adversarial review");
+    });
+
     it("keeps every run of a repeated stage in an earlier round too, newest first, so that round reads in order", () => {
       const events = [...revised(), ev("cycle", "reconsidered", HOUR, "Handed to a person earlier; retried: an operator asked for a retriage"), ev("triage", "decision", HOUR + 1000)];
       const w = buildWaterfall(cycle({ state: "waiting-human", leaseExpiresAt: null, updatedAt: new Date(T0 + HOUR + 1000) }), events, T0 + 2 * HOUR);
