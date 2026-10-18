@@ -72,6 +72,25 @@ describe("RetryRunButton for a public demo visitor", () => {
 });
 
 describe("RetryRunButton", () => {
+  it("held back by the daily reopen limit: disabled, saying how many reopenings, the limit and when (#456)", async () => {
+    const ask = vi.fn();
+    const hold = { reopenings: 3, maxPerDay: 3, nextPossibleAt: new Date("2026-10-19T12:46:00Z"), requestHeld: true };
+    renderWith(<RetryRunButton incidentId="inc-a" ask={ask} hold={hold} />, ["admin"]);
+    const button = screen.getByRole("button", { name: "Retry with agent" });
+    expect(button).toBeDisabled();
+    const note = screen.getByRole("note");
+    expect(button).toHaveAttribute("aria-describedby", note.id);
+    expect(note).toHaveTextContent(/^This run was reopened 3 times in 24 hours, the most allowed \(3\)\. A retry can start again at .+\. The retry already asked for stands/);
+    await userEvent.click(button);
+    expect(ask).not.toHaveBeenCalled();
+  });
+
+  it("not held back (no hold given): offered as before, with no note", () => {
+    renderWith(<RetryRunButton incidentId="inc-a" ask={vi.fn()} hold={null} />, ["operator"]);
+    expect(screen.getByRole("button", { name: "Retry with agent" })).toBeEnabled();
+    expect(screen.queryByRole("note")).toBeNull();
+  });
+
   it("asks for the incident's retry once, as the signed-in operator", async () => {
     const ask = vi.fn().mockResolvedValue(undefined);
     renderWith(<RetryRunButton incidentId="inc-a" ask={ask} />, ["operator"]);

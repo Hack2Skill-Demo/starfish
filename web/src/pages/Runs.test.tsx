@@ -20,6 +20,7 @@ const mocks = vi.hoisted(() => ({
   cycleLimits: [] as number[],
   readCycle: vi.fn(),
   getIncident: vi.fn(),
+  reopenLimit: undefined as number | undefined,
 }));
 
 vi.mock("../lib/useSettings", () => ({ useEnvironment: () => mocks.env }));
@@ -27,7 +28,14 @@ vi.mock("../lib/incidents", () => ({ getIncident: mocks.getIncident }));
 vi.mock("../components/EngineStatus", () => ({ EngineStatus: ({ environment }: { environment: string }) => <div data-testid="engine">{environment}</div> }));
 // The button decides for itself who sees it (AdminActions.test.tsx); here only that the page offers it.
 vi.mock("../components/AdminActions", () => ({ RunAgentButton: () => <button type="button">Run agent now</button> }));
-vi.mock("../components/RetryRunButton", () => ({ RetryRunButton: ({ incidentId }: { incidentId: string }) => <button type="button">Retry with agent ({incidentId})</button> }));
+vi.mock("../components/RetryRunButton", () => ({
+  RetryRunButton: ({ incidentId, hold }: { incidentId: string; hold?: { reopenings: number; nextPossibleAt: Date } | null }) => (
+    <button type="button" data-held={hold ? `${hold.reopenings}@${hold.nextPossibleAt.toISOString()}` : undefined}>
+      Retry with agent ({incidentId})
+    </button>
+  ),
+}));
+vi.mock("../lib/useReopenLimit", () => ({ useReopenLimit: () => mocks.reopenLimit }));
 // The card's own behaviour is HandoffCard.test.tsx; here only when the page shows it, and that the retry moves into it.
 vi.mock("../components/HandoffCard", () => ({
   HandoffCard: ({ incidentId, path, canRetry }: { incidentId: string; path: string; canRetry: boolean }) => (
@@ -98,6 +106,7 @@ describe("Runs page", () => {
     mocks.cyclesCb = mocks.cyclesErr = mocks.eventsCb = mocks.eventsErr = undefined;
     mocks.env = { environment: "demo", ready: true, settingsUnavailable: false };
     mocks.getIncident.mockResolvedValue(null);
+    mocks.reopenLimit = undefined;
     localStorage.removeItem("starfish.runs.listHidden");
     localStorage.removeItem("starfish.runs.replaySpeed");
   });
@@ -877,6 +886,22 @@ describe("Runs page", () => {
     expect(await screen.findByRole("button", { name: "Retry with agent (inc-a)" })).toBeInTheDocument();
     act(() => mocks.cyclesCb!([cycle("inc-a_r0")], false));
     expect(screen.queryByRole("button", { name: /Retry with agent/ })).toBeNull();
+  });
+
+  it("holds Retry back by the limit the agent recorded, once the run was reopened that many times in 24 hours (#456)", async () => {
+    mocks.getIncident.mockResolvedValue({ id: "inc-a", functionName: "orders-getorder", errorType: "UnknownError", errorMessage: "x", status: "new" });
+    const reopened = [now - 5 * 3_600_000, now - 4 * 3_600_000, now - 3_600_000].map(ts);
+    renderRuns();
+    act(() => mocks.cyclesCb!([cycle("inc-a_r0", { state: "declined", leaseExpiresAt: null, path: "decline", reconsideredAt: reopened })], false));
+    act(() => mocks.eventsCb!([event(1, "triage", "decision", "Decline", 50_000)]));
+    // No limit recorded by a pass yet: the page does not guess one.
+    expect(await screen.findByRole("button", { name: "Retry with agent (inc-a)" })).not.toHaveAttribute("data-held");
+    mocks.reopenLimit = 3;
+    act(() => mocks.cyclesCb!([cycle("inc-a_r0", { state: "declined", leaseExpiresAt: null, path: "decline", reconsideredAt: [...reopened] })], false));
+    expect(await screen.findByRole("button", { name: "Retry with agent (inc-a)" })).toHaveAttribute("data-held", `3@${new Date(now - 5 * 3_600_000 + 86_400_000).toISOString()}`);
+    mocks.reopenLimit = 4;
+    act(() => mocks.cyclesCb!([cycle("inc-a_r0", { state: "declined", leaseExpiresAt: null, path: "decline", reconsideredAt: [...reopened] })], false));
+    expect(await screen.findByRole("button", { name: "Retry with agent (inc-a)" })).not.toHaveAttribute("data-held");
   });
 
   it("offers no retry once the incident is resolved, or a pull request is open", async () => {

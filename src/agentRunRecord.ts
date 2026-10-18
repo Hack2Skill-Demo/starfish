@@ -24,8 +24,9 @@ export const AGENT_LAST_RUN_DOC = "agent_last_run";
  *   recovery       reading deployments for merged fixes stopped on an error every one would hit (credentials, rate limit)
  *   merge-steps    the fast-revert or auto-merge step failed as a whole
  *   escalation     the phone escalation tick failed
+ *   retry-refusals saying on a run that the daily reopen limit holds an operator's retry back failed (#456)
  */
-export const AGENT_PASS_STEPS = ["cycles", "sweep", "index-heals", "pull-requests", "recovery", "merge-steps", "escalation"] as const;
+export const AGENT_PASS_STEPS = ["cycles", "sweep", "index-heals", "pull-requests", "recovery", "merge-steps", "escalation", "retry-refusals"] as const;
 export type AgentPassStep = (typeof AGENT_PASS_STEPS)[number];
 
 /** The `error` of a pass that refused to start because the agent's preflight refused its configuration. */
@@ -63,6 +64,11 @@ export interface AgentRunRecord {
   error?: string;
   /** How often a pass is started, from the job's schedule; absent when it could not tell. */
   intervalMinutes?: number;
+  /**
+   * The daily reopen limit the pass applied (`STARFISH_RECONSIDER_MAX_PER_DAY`, src/reopenLimit.ts, #456): the Runs page
+   * holds Retry back by the engine's own number, not a copy of it. Absent from a pass that recorded none.
+   */
+  reconsiderMaxPerDay?: number;
 }
 
 const count = (v: unknown): number => (typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : 0);
@@ -122,5 +128,6 @@ export function parseAgentRunRecord(data: Record<string, unknown> | undefined): 
     problems: Array.isArray(data.problems) ? data.problems.filter((p): p is string => typeof p === "string") : [],
     ...(typeof data.error === "string" && { error: data.error }),
     ...(typeof data.intervalMinutes === "number" && Number.isFinite(data.intervalMinutes) && data.intervalMinutes > 0 && { intervalMinutes: data.intervalMinutes }),
+    ...(typeof data.reconsiderMaxPerDay === "number" && Number.isFinite(data.reconsiderMaxPerDay) && data.reconsiderMaxPerDay > 0 && { reconsiderMaxPerDay: data.reconsiderMaxPerDay }),
   };
 }

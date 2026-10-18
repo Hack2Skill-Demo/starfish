@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { causeClass, reconsiderTrigger, recentReconsiderations, utcDay, type ReconsiderPolicy } from "./reconsider.js";
+import { causeClass, cycleReopenLimit, reconsiderTrigger, recentReconsiderations, refusedRetry, utcDay, type ReconsiderPolicy } from "./reconsider.js";
 
 const NOW = new Date("2026-10-06T12:00:00Z");
 const at = (minutesAgo: number) => ({ toMillis: () => NOW.getTime() - minutesAgo * 60_000 });
@@ -127,6 +127,36 @@ describe("reconsiderTrigger", () => {
       expect(trigger(waiting(), { ...asked, retired: true })).toBeNull();
       expect(trigger(waiting({ summary: { pr: { opened: true, number: 9 } } }), asked)).toBeNull();
     });
+
+    it("a request over the daily limit is held back, said once per request by `refusedRetry`, and runs once the limit allows (#456)", () => {
+      const asked = { ...baseIncident, retriageRequestedAt: at(1) };
+      // Reopened at 3 h, 2 h and 1 h ago; settled 30 minutes ago; asked 1 minute ago.
+      const used = waiting({ reconsideredAt: [at(180), at(120), at(60)] });
+      expect(refusedRetry(used, asked, policy, NOW)).toEqual({
+        requestedAtMs: NOW.getTime() - 60_000,
+        limit: { reached: true, recent: 3, maxPerDay: 3, nextPossibleAtMs: NOW.getTime() - 180 * 60_000 + 86_400_000 },
+      });
+      // Not held back: under the limit (it reopens), no request, a request already answered, or a closed incident.
+      expect(refusedRetry(waiting({ reconsideredAt: [at(120), at(60)] }), asked, policy, NOW)).toBeNull();
+      expect(refusedRetry(used, baseIncident, policy, NOW)).toBeNull();
+      expect(refusedRetry(used, { ...baseIncident, retriageRequestedAt: at(40) }, policy, NOW)).toBeNull();
+      expect(refusedRetry(used, { ...asked, status: "resolved" }, policy, NOW)).toBeNull();
+      // The request stands: the moment the oldest reopening is 24 hours old, the same request reopens the cycle.
+      const later = new Date(NOW.getTime() - 180 * 60_000 + 86_400_000);
+      expect(reconsiderTrigger(used, asked, policy, new Date(later.getTime() - 1))).toBeNull();
+      expect(reconsiderTrigger(used, asked, policy, later)).toBe("operator");
+      expect(refusedRetry(used, asked, policy, later)).toBeNull();
+    });
+  });
+
+  it("refusedRetry is about a person's request only: a burst or a cause held back by the limit is not a retry anyone asked for", () => {
+    const capped = declined({ reconsideredAt: [at(600), at(300), at(90)] });
+    expect(refusedRetry(capped, { ...baseIncident, occurrenceCount: 500 }, policy, NOW)).toBeNull();
+    expect(refusedRetry(capped, { ...baseIncident, retriageRequestedAt: at(1) }, policy, NOW)?.limit.recent).toBe(3);
+  });
+
+  it("cycleReopenLimit reads the cycle's reopenings through the shared rule", () => {
+    expect(cycleReopenLimit(declined({ reconsideredAt: [at(2000), at(10)] }), policy, NOW)).toEqual({ reached: false, recent: 1, maxPerDay: 3 });
   });
 
   it("a decline kept before decisions were recorded has no baseline: only an operator can reopen it", () => {

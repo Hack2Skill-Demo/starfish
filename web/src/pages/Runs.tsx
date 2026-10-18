@@ -52,6 +52,8 @@ import { EmptyState } from "../components/ui/EmptyState";
 import { formatDateTime, formatRelativeTime } from "../lib/formatters";
 import { useEnvironment } from "../lib/useSettings";
 import { useRetryingSubscription } from "../lib/useLiveRecord";
+import { useReopenLimit } from "../lib/useReopenLimit";
+import { retryHold } from "../lib/retryHold";
 import { TICK_MS, useNow } from "../lib/useNow";
 import { getIncident, type IncidentRow } from "../lib/incidents";
 import { CYCLE_LIMIT, CYCLE_LIMIT_MAX, EVENT_LIMIT, readCycle, subscribeCycles, subscribeEvents } from "../lib/runs";
@@ -590,6 +592,9 @@ function RunDetail({
     incident !== undefined &&
     ["new", "acknowledged", "logged", "recurred"].includes(incident.status) &&
     prLink(cycle) === undefined;
+  // The daily reopen limit the engine applies (#456): Retry says when it can start rather than asking for a run that waits.
+  const reopenLimitPerDay = useReopenLimit(environment);
+  const hold = canRetry ? retryHold(cycle, reopenLimitPerDay, now) : null;
   const toggleReplay = () => setReplay(replaying ? null : { wallMs: Date.now(), atMs: startMs });
   const changeSpeed = (next: ReplaySpeedChoice) => {
     // Re-anchored on the same clock replayAt was read with, so the replay neither jumps nor stalls. A replay that already
@@ -664,7 +669,7 @@ function RunDetail({
         }
         actions={
           <>
-            {canRetry && !showHandoff && <RetryRunButton incidentId={cycle.incidentId} size="md" />}
+            {canRetry && !showHandoff && <RetryRunButton incidentId={cycle.incidentId} size="md" hold={hold} onDark />}
             {canReplay && (
               <ReplayControl replaying={replaying} onToggle={toggleReplay} speed={speedChoice} onSpeed={changeSpeed} spanMs={spanMs} />
             )}
@@ -695,6 +700,7 @@ function RunDetail({
           incident={incident}
           issueUrl={issue?.url}
           canRetry={canRetry}
+          retryHold={hold}
           failed={cycle.state === "failed"}
           onChanged={() => void queryClient.invalidateQueries({ queryKey: ["run-incident", environment, cycle.incidentId] })}
         />

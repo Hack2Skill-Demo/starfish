@@ -18,7 +18,9 @@
  *
  * and only within bounds: the automatic triggers and `reopened` wait `reconsiderCooldownMinutes` after the decision (or
  * the stop; an operator's retriage request does not wait: a person asked), and a cycle is reconsidered at most
- * `reconsiderMaxPerDay` times in any 24 hours, whoever asks. An incident that is not open, or is retired, is never reconsidered: an operator's resolve or
+ * `reconsiderMaxPerDay` times in any 24 hours, whoever asks (src/reopenLimit.ts, the rule the Runs page reads too). An operator's
+ * request over that limit is held, not dropped: it stays on the incident and reopens the cycle once the limit allows, and
+ * meanwhile the engine records on the run that it is waiting and until when (`refusedRetry`, #456). An incident that is not open, or is retired, is never reconsidered: an operator's resolve or
  * ignore always wins. The daily cycle cap (pass.ts) bounds the spend on top of this.
  *
  * A cycle that ended `waiting-human` is reopened ONLY on an operator's request: the same `retriageRequestedAt`, later
@@ -40,12 +42,12 @@ import type { Incident } from "../types.js";
 import { OPEN_INCIDENT_STATUSES } from "../types.js";
 import { correctedAtMillis } from "../triageRules.js";
 import { isReopenable } from "./cycleStates.js";
+import { countedReopenings, reopenLimit, type ReopenLimit } from "../reopenLimit.js";
 
 export type ReconsiderPolicy = Pick<StarfishConfig, "reconsiderCooldownMinutes" | "reconsiderMaxPerDay" | "reconsiderBurstOccurrences">;
 
 export type ReconsiderTrigger = "operator" | "corrected" | "burst" | "cause" | "reopened";
 
-const DAY_MS = 24 * 60 * 60 * 1000;
 /** How many earlier decisions a cycle keeps (`history`); the run events keep everything. */
 export const MAX_DECISION_HISTORY = 10;
 
@@ -81,7 +83,12 @@ export function utcDay(now: Date): string {
 /** Reconsideration times (millis) of a cycle within the 24 hours before `now`. */
 export function recentReconsiderations(cycle: Record<string, unknown>, now: Date): number[] {
   const list = Array.isArray(cycle.reconsideredAt) ? cycle.reconsideredAt : [];
-  return list.map(ms).filter((t): t is number => t !== undefined && t > now.getTime() - DAY_MS && t <= now.getTime());
+  return countedReopenings(list.map(ms).filter((t): t is number => t !== undefined), now.getTime());
+}
+
+/** The daily reopen limit as it stands for `cycle` at `now` (src/reopenLimit.ts, the rule the Runs page reads too). */
+export function cycleReopenLimit(cycle: Record<string, unknown>, policy: Pick<ReconsiderPolicy, "reconsiderMaxPerDay">, now: Date): ReopenLimit {
+  return reopenLimit(recentReconsiderations(cycle, now), policy.reconsiderMaxPerDay, now.getTime());
 }
 
 /**
@@ -108,12 +115,35 @@ export function stoppedByClose(cycle: Record<string, unknown>): boolean {
  * closed, once the incident is open again (`reopened`, after the cooldown, #227).
  */
 export function reconsiderTrigger(cycle: Record<string, unknown>, incident: Record<string, unknown> | undefined, policy: ReconsiderPolicy, now: Date): ReconsiderTrigger | null {
+  if (cycleReopenLimit(cycle, policy, now).reached) return null;
+  return triggerBeforeLimit(cycle, incident, policy, now);
+}
+
+/**
+ * An operator's request the daily reopen limit holds back (#456): the request (later than the decision or the settle, as
+ * `reconsiderTrigger` reads it) would reopen the cycle now but for the limit. Null when there is none. The request is
+ * not dropped: it stays on the incident, and `reconsiderTrigger` honours it once the limit allows; this is what lets the
+ * engine say so on the run in the meantime (cycle.ts `recordRetryRefused`), once per request (`requestedAtMs`).
+ */
+export function refusedRetry(
+  cycle: Record<string, unknown>,
+  incident: Record<string, unknown> | undefined,
+  policy: ReconsiderPolicy,
+  now: Date
+): { requestedAtMs: number; limit: ReopenLimit } | null {
+  const limit = cycleReopenLimit(cycle, policy, now);
+  if (!limit.reached || triggerBeforeLimit(cycle, incident, policy, now) !== "operator") return null;
+  const requestedAtMs = ms(incident?.retriageRequestedAt);
+  return requestedAtMs === undefined ? null : { requestedAtMs, limit };
+}
+
+/** `reconsiderTrigger` without the daily limit: what would reopen the cycle now if the limit allowed it. */
+function triggerBeforeLimit(cycle: Record<string, unknown>, incident: Record<string, unknown> | undefined, policy: ReconsiderPolicy, now: Date): ReconsiderTrigger | null {
   if (!isReopenable(cycle.state) || incident === undefined) return null;
   if (incident.retired === true || !(OPEN_INCIDENT_STATUSES as readonly string[]).includes(String(incident.status))) return null;
   // The cycle is this recurrence's: a regression since has its own cycle.
   const recurrence = typeof incident.recurrenceCount === "number" ? incident.recurrenceCount : 0;
   if (typeof cycle.recurrence === "number" && cycle.recurrence !== recurrence) return null;
-  if (recentReconsiderations(cycle, now).length >= policy.reconsiderMaxPerDay) return null;
 
   // A person was told: only a person's request starts it over. Their request counts when it came after the cycle last
   // settled, which is also what makes it once-only: the reopened run settles again later, so the same request is not

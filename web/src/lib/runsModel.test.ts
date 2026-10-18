@@ -95,6 +95,15 @@ describe("parseCycle / parseEvent", () => {
     expect(parseCycle("x", cycleDoc())).not.toHaveProperty("synthetic");
   });
 
+  it("keeps when the run was reopened, for the daily reopen limit (#456); absent when not recorded", () => {
+    const at = (iso: string) => ({ toDate: () => new Date(iso) });
+    expect(parseCycle("x", cycleDoc({ reconsideredAt: [at("2026-10-18T12:46:00Z"), "junk", at("2026-10-18T16:31:00Z")] }))?.reopenedAt).toEqual([
+      Date.parse("2026-10-18T12:46:00Z"),
+      Date.parse("2026-10-18T16:31:00Z"),
+    ]);
+    expect(parseCycle("x", cycleDoc())).not.toHaveProperty("reopenedAt");
+  });
+
   it("drops an unknown path rather than showing it", () => {
     expect(parseCycle("x", cycleDoc({ path: "merge" }))?.path).toBeUndefined();
   });

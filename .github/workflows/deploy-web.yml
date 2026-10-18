@@ -31,6 +31,7 @@ on:
       - 'src/handoff.ts'
       - 'src/incidentActions.ts'
       - 'src/incidentKinds.ts'
+      - 'src/reopenLimit.ts'
       - 'firebase.json'
       - 'scripts/deploy-web.sh'
       - 'scripts/wait-for-engine-deploy.sh'

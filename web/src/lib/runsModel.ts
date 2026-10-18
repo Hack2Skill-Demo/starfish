@@ -38,6 +38,11 @@ export interface CycleRow {
   deadlineAt: Date | null;
   /** The run record: `summary.<stage>` as the stages stored it. */
   summary: Record<string, Flat>;
+  /**
+   * When the run was reopened within the last day as the engine keeps it (`reconsideredAt`, src/agent/cycle.ts): what the
+   * daily reopen limit counts (lib/retryHold.ts, #456). Absent when not recorded (a guest's trimmed copy keeps none).
+   */
+  reopenedAt?: number[];
   /** Written by `pnpm seed-demo` (src/seedDemo.ts), not by any real run: the UI must say so wherever it shows it. */
   synthetic?: true;
   /**
@@ -104,6 +109,7 @@ export function parseCycle(id: string, d: Record<string, unknown>): CycleRow | n
     leaseExpiresAt: date(d.leaseExpiresAt),
     deadlineAt: date(d.deadlineAt),
     summary,
+    ...(Array.isArray(d.reconsideredAt) && { reopenedAt: d.reconsideredAt.map(date).filter((t): t is Date => t !== null).map((t) => t.getTime()) }),
     ...(d.synthetic === true && { synthetic: true as const }),
     ...(d.publicView === 1 && { trimmed: true as const }),
   };

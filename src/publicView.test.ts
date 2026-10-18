@@ -13,6 +13,7 @@ import {
 } from "./publicView.js";
 import { SEEDED_SECRETS } from "./ingest/testSecrets.js";
 import { QUIET_BASIS } from "./indexheal/runtimeBasis.js";
+import { reopenLimit, retryRefusedSummary } from "./reopenLimit.js";
 
 const pub = { publicEnvironments: ["demo"] };
 const t = (ms: number) => Timestamp.fromMillis(ms);
@@ -322,6 +323,14 @@ describe("toPublicEvent", () => {
       expect(toPublicEvent("inc1_r0", stored({ stage }), pub)).not.toHaveProperty("summary");
     }
     for (const stage of PUBLIC_SUMMARY_STAGES) expect(toPublicEvent("inc1_r0", stored({ stage }), pub)).toHaveProperty("summary");
+  });
+
+  it("keeps the engine's whole line on a retry the daily reopen limit holds back, and never its data (#456)", () => {
+    const limit = reopenLimit([NOW - 3 * 3_600_000, NOW - 2 * 3_600_000, NOW - 3_600_000], 3, NOW);
+    const summary = retryRefusedSummary(limit);
+    const copy = toPublicEvent("inc1_r0", stored({ stage: "cycle", type: "retry-refused", summary, data: { reopenings: 3, requestedAt: "2026-10-18T17:30:55.000Z" } }), pub);
+    expect(copy).toMatchObject({ stage: "cycle", type: "retry-refused", summary });
+    expect(copy).not.toHaveProperty("data");
   });
 
   it("has no copy outside a public environment, or without its place", () => {

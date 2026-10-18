@@ -45,6 +45,7 @@ export function currentRoundStartMs(cycle: Record<string, unknown> | undefined):
  * shows an earlier round's record as its own. The rest are the recurrence's and stay: `issue`, `pr` once a pull request
  * was opened (keeping them is what stops a second), `index` (its create is recorded before it is made and is never
  * repeated), the records about a merged pull request, and `notify`/`alert`, which carry the round they were sent in
- * (loop.ts sends each once per round). A `pr` record of a round that opened nothing (a dry run) is the round's.
+ * (loop.ts sends each once per round). A `pr` record of a round that opened nothing (a dry run) is the round's, and so is
+ * `retryRefused` (#456): the retry it said was held back is the one the reopening starts.
  */
-export const ROUND_SCOPED_RECORDS = ["triage", "fix", "verify", "review", "before", "escalation"] as const;
+export const ROUND_SCOPED_RECORDS = ["triage", "fix", "verify", "review", "before", "escalation", "retryRefused"] as const;

@@ -43,6 +43,7 @@ import { runAutoMergeStep } from "./agent/autoMerge.js";
 import { runFastRevertStep } from "./agent/fastRevert.js";
 import { createGitCheckout, createLoader } from "./agent/assemble.js";
 import { giveUpStrandedCycles, runCycle } from "./agent/loop.js";
+import { recordRetryRefused } from "./agent/cycle.js";
 import { countCyclesStartedToday, findStrandedCycles, runAgentPass, selectCandidates } from "./agent/pass.js";
 import { reconcilePullRequests } from "./agent/reconcile.js";
 import { observeRecoveries } from "./agent/recoveryStep.js";
@@ -114,6 +115,7 @@ async function runPass(): Promise<number> {
   const cfg = resolved.config;
   report.environment = cfg.environment;
   report.dryRun = cfg.dryRun;
+  report.reconsiderMaxPerDay = cfg.reconsiderMaxPerDay;
   recordConfig = cfg;
   // Tell the Settings page which credentials this job holds (booleans only; best effort, the pass does not depend on it).
   if (!(await recordIntegrations(db, cfg, { github: token !== undefined, slackOnCall: slackOnCall !== undefined, slackAlerts: slackAlerts !== undefined, twilio: twilioCredentials !== undefined }))) {
@@ -233,8 +235,10 @@ async function runPass(): Promise<number> {
 
   try {
     let scanCapped: number | undefined;
+    const heldBack: { incidentId: string; recurrence: number }[] = [];
     const summary = await runAgentPass({
-      select: (limit) => selectCandidates(db, cfg, limit, { reconsider: cfg, onScanCapped: (n) => (scanCapped = n) }),
+      select: (limit) =>
+        selectCandidates(db, cfg, limit, { reconsider: cfg, onScanCapped: (n) => (scanCapped = n), onRetryRefused: (c) => heldBack.push(c) }),
       // Released cycles nobody will select again (their incident went quiet) are given up and announced, not stranded (#226).
       sweep: async () => giveUpStrandedCycles(deps, await findStrandedCycles(db, cfg, new Date())),
       run: (c) => runCycle(deps, { incidentId: c.incidentId, environment: cfg.environment, recurrence: c.recurrence }),
@@ -256,6 +260,18 @@ async function runPass(): Promise<number> {
     if (summary.aborted) console.error("agent: stopped early: cycles kept throwing.");
     notePassSummary(report, summary);
     report.scanCapped = scanCapped !== undefined;
+
+    // An operator's retry the daily reopen limit holds back (#456): said on its run, once per request, so the person who
+    // pressed Retry sees why nothing ran and when it can. The request itself stays and runs once the limit allows.
+    for (const c of heldBack) {
+      try {
+        const r = await recordRetryRefused(db, cfg, { ...c, environment: cfg.environment }, { incidentCollection: cfg.incidentCollection, policy: cfg }, new Date());
+        if (r.recorded) console.log(`  ${c.incidentId}: retry held back by the daily reopen limit (${cfg.reconsiderMaxPerDay}); it can start at ${r.nextPossibleAt ?? "an unknown time"}`);
+      } catch (err) {
+        console.error(`  ${c.incidentId}: could not record a held-back retry: ${redactPii(err instanceof Error ? err.message : String(err)).slice(0, 300)}`);
+        noteFailedStep(report, "retry-refusals");
+      }
+    }
 
     // Whether earlier index heals held (#11): READY + the query passing + a quiet window. Writes only the cycle's
     // `summary.index.runtime`; never the incident, never an index.

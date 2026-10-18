@@ -12,7 +12,13 @@ vi.mock("../lib/config", () => ({
   webConfig: () => ({ incidentCollection: "starfish_incidents", environment: "demo", adminApiUrl: "https://admin.example", publicDemoActions: open.on }),
 }));
 vi.mock("./ui/toast", () => ({ toast: mocks.toast }));
-vi.mock("./RetryRunButton", () => ({ RetryRunButton: ({ incidentId }: { incidentId: string }) => <button type="button">Retry with agent ({incidentId})</button> }));
+vi.mock("./RetryRunButton", () => ({
+  RetryRunButton: ({ incidentId, hold }: { incidentId: string; hold?: { reopenings: number } | null }) => (
+    <button type="button" data-held={hold ? String(hold.reopenings) : undefined}>
+      Retry with agent ({incidentId})
+    </button>
+  ),
+}));
 
 import { HandoffCard } from "./HandoffCard";
 
@@ -72,6 +78,12 @@ describe("HandoffCard", () => {
     expect(within(card).getByRole("button", { name: "Mark resolved" })).toBeInTheDocument();
     expect(within(card).getByRole("button", { name: "Ignore" })).toBeInTheDocument();
     expect(within(card).queryByText("Let Starfish try again")).toBeNull();
+  });
+
+  it("hands the daily reopen limit's hold to its Retry (#456)", () => {
+    const hold = { reopenings: 3, maxPerDay: 3, nextPossibleAt: new Date("2026-10-19T12:46:00Z"), requestHeld: false };
+    renderWith(<HandoffCard path="human" incidentId="inc-a" incident={row("new")} canRetry retryHold={hold} />, ["operator"]);
+    expect(screen.getByRole("button", { name: "Retry with agent (inc-a)" })).toHaveAttribute("data-held", "3");
   });
 
   it("lists every step a person has, beside the control that does it", () => {

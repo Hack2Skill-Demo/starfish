@@ -21,6 +21,8 @@ export interface AgentPassReport {
   /** The environment the pass runs for: the env default's until the runtime settings are resolved. */
   environment: string;
   dryRun?: boolean;
+  /** The daily reopen limit this pass applies (#456), once its configuration is resolved. */
+  reconsiderMaxPerDay?: number;
   problems: string[];
   /** The driver's summary, once the pass got that far. */
   pass?: Pick<PassSummary, "considered" | "ran" | "errors" | "aborted" | "gaveUp" | "skipped" | "daily" | "sweepError">;
@@ -101,6 +103,7 @@ export function agentLastRunFields(
     failedSteps: [...report.failedSteps],
     problems: report.problems.slice(0, 20),
     ...(report.dryRun !== undefined && { dryRun: report.dryRun }),
+    ...(report.reconsiderMaxPerDay !== undefined && { reconsiderMaxPerDay: report.reconsiderMaxPerDay }),
     ...(p?.skipped !== undefined && { skipped: p.skipped }),
     ...(p?.daily && { daily: { cap: p.daily.cap, startedBefore: p.daily.startedBefore } }),
     ...(report.error !== undefined && { error: report.error }),

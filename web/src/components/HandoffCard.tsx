@@ -16,6 +16,7 @@ import { useAuth } from "../auth/authCore";
 import { applyAction, nextStatus, type IncidentAction, type IncidentRow } from "../lib/incidents";
 import { RetryRunButton } from "./RetryRunButton";
 import { canOperate } from "../lib/dataSource";
+import type { RetryHold } from "../lib/retryHold";
 
 const DONE: Record<IncidentAction, string> = { acknowledge: "Acknowledged", resolve: "Resolved", ignore: "Ignored", reopen: "Reopened" };
 const ICON = { acknowledge: Check, resolve: CheckCircle, ignore: EyeOff };
@@ -26,6 +27,7 @@ export function HandoffCard({
   incident,
   issueUrl,
   canRetry,
+  retryHold = null,
   failed = false,
   onChanged,
   act = applyAction,
@@ -36,6 +38,8 @@ export function HandoffCard({
   incident: IncidentRow;
   issueUrl?: string;
   canRetry: boolean;
+  /** The daily reopen limit holds a retry back now (lib/retryHold.ts, #456). */
+  retryHold?: RetryHold | null;
   failed?: boolean;
   /** After a status change: re-read the incident. */
   onChanged?: () => void;
@@ -92,7 +96,7 @@ export function HandoffCard({
         {statusButton("resolve", "Mark resolved")}
       </>
     ),
-    retry: canRetry ? <RetryRunButton incidentId={incidentId} /> : null,
+    retry: canRetry ? <RetryRunButton incidentId={incidentId} hold={retryHold} /> : null,
     correct: (
       <Link
         to={`/incidents/${encodeURIComponent(incidentId)}`}
