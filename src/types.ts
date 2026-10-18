@@ -219,15 +219,6 @@ export interface IncidentResolution {
   githubPrUrl?: string;
 }
 
-/** What the triage step has to decide before anything else happens. */
-export interface TriageVerdict {
-  urgent: boolean;
-  /** Which signals drove the call — this is the auditable part. */
-  reasoning: string;
-  /** Present only when urgent: where the model believes the fault lives. */
-  suspectedCause?: string | null;
-}
-
 /** A fixture pairs an incident with the fix that actually shipped for it. */
 export interface SpikeFixture {
   name: string;

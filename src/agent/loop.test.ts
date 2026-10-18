@@ -2,7 +2,8 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
-import { counterCheckRecord, readBaseFiles, retryWords, roundOf } from "./loop.js";
+import { afterFix, afterReview, afterVerify, counterCheckRecord, MAX_REVISIONS, readBaseFiles, retryWords, roundOf, triageOptionsFor } from "./loop.js";
+import type { VerifyResult } from "./verifyGate.js";
 
 describe("counterCheckRecord: the recount kept with triage's decision (#39)", () => {
   it("keeps the count, window, cap, time and the exact filter", () => {
@@ -81,3 +82,43 @@ describe("roundOf / retryWords", () => {
     expect(retryWords(2, undefined)).toEqual({ round: 2 });
   });
 });
+
+describe("the loop's decisions after each stage, which the replay takes too (#418, #420)", () => {
+  const verified = (status: "passed" | "failed"): VerifyResult =>
+    ({ status, rule: status === "passed" ? "command-passed" : "command-failed", reason: "r", patchSha256: "h", changedFiles: [], output: "", durationMs: 1 }) as VerifyResult;
+
+  it("retries only what a later attempt may do better at; everything else goes to a person", () => {
+    expect(afterFix({ outcome: "error", rule: "model-call-failed", rootCause: "x" })).toEqual({ next: "retry", rule: "model-call-failed" });
+    expect(afterFix({ outcome: "error", rule: "model-output-invalid", rootCause: "x" })).toEqual({ next: "retry", rule: "model-output-invalid" });
+    for (const rule of ["model-output-truncated", "model-output-blocked", "patch-too-large", "patch-malformed"] as const) {
+      expect(afterFix({ outcome: "error", rule, rootCause: "why" })).toEqual({ next: "person", rule, reason: "why" });
+    }
+    expect(afterFix({ outcome: "declined", rule: "fixer-declined", rootCause: "no" })).toMatchObject({ next: "person" });
+    expect(afterFix({ outcome: "proposed", rule: "fixer-proposed", rootCause: "c", patch: "p" })).toEqual({ next: "verify", patch: "p" });
+  });
+
+  it("hands a review refused for its evidence to a person: a logic error no retry corrects", () => {
+    expect(afterReview({ rule: "evidence-mismatch", reason: "another patch" }, "p", 0)).toEqual({ next: "person", rule: "evidence-mismatch", reason: "another patch" });
+    expect(afterReview({ rule: "evidence-not-passed", reason: "x" }, "p", 0)).toMatchObject({ next: "person" });
+    expect(afterReview({ rule: "model-output-blocked", reason: "x" }, "p", 0)).toMatchObject({ next: "person" });
+    expect(afterReview({ rule: "model-call-failed", reason: "x" }, "p", 0)).toEqual({ next: "retry", rule: "model-call-failed" });
+    expect(afterReview({ rule: "review-empty", reason: "x" }, "p", 0)).toEqual({ next: "retry", rule: "review-empty" });
+  });
+
+  it("gives a failed verify or a blocking review the one revision, then a person", () => {
+    expect(afterVerify(verified("passed"), "p", 0)).toEqual({ next: "review" });
+    expect(afterVerify(verified("failed"), "p", 0)).toMatchObject({ next: "revise", feedback: { kind: "verify", previousPatch: "p" } });
+    expect(afterVerify(verified("failed"), "p", MAX_REVISIONS)).toEqual({ next: "person", rule: "verify-command-failed", reason: "r" });
+    const blocked = { rule: "reviewed" as const, verdict: "block" as const, attacks: [{ attack: "a", outcome: "broken" as const, detail: "d" }] };
+    expect(afterReview(blocked, "p", 0)).toMatchObject({ next: "revise", feedback: { kind: "review", broken: ["a: d"] } });
+    expect(afterReview(blocked, "p", MAX_REVISIONS)).toMatchObject({ next: "person", rule: "review-blocked" });
+    expect(afterReview({ rule: "reviewed", verdict: "approve-with-flags", attacks: [] }, "p", 0)).toEqual({ next: "pr", verdict: "approve-with-flags" });
+  });
+
+  it("gives triage the admin's merge cases and class rules, and the files the fixer will see", () => {
+    const files = [{ path: "a.ts", content: "x", foundBy: "frame" as const }];
+    const mergeCases = [{ id: "null-guard", description: "d" }];
+    expect(triageOptionsFor({ mergeCases, classRules: [] }, files)).toEqual({ mergeCases, classRules: [], source: { files } });
+  });
+});
+

@@ -141,11 +141,15 @@ and changes to what the pitch claims.
 ```
 src/
   config.ts        every deployment-specific value, and the only process.env reader
-  types.ts         Incident, StoredIncident, TriageVerdict, SpikeFixture
+  types.ts         Incident, StoredIncident, SpikeFixture
   vertex.ts        Gemini on Vertex AI — structured JSON output, untrusted-data notice; each call ends at
                    `STARFISH_MODEL_TIMEOUT_SECONDS` (600) through its own fetch, past Node's 300 s limit, and a failed call is
-                   recorded by error and cause names/codes only, a timeout as one (`modelCallFailure`, #334)
-  spike.ts         fix-quality spike over fixtures/incidents/*.json
+                   recorded by error and cause names/codes only, a timeout as one (`modelCallFailure`, #334). Every call sets
+                   `STARFISH_MODEL_MAX_OUTPUT_TOKENS` (32768) and reads the finish/block reason; the stages read it through
+                   `askModel`, one typed outcome (ok, call-failed, timeout, unparseable, truncated, blocked, #418): the loop
+                   releases only a failed or slow call or an unreadable answer for a retry, a cut or filtered one goes to a person
+                   (loop.ts `releasesForRetry`). Unit-tested against a mocked client; not yet run against Vertex
+  spike.ts         fix-quality spike over fixtures/incidents/*.json, through the agent's own `triageIncident` and `proposeFix` (#420)
   ingest/          Cloud Logging → classified, fingerprinted, deduped incidents
     parseLogEntry  parse + noise suppression + the shared log filter. A message that carries its own stack (the
                    firebase-functions logger writes one into it) is split at its first V8 frame line (`messageStack.ts`,
@@ -199,7 +203,10 @@ src/
                    (`mergeCases`; `missing-index` never offered), kept only if listed. Deterministic gates before the
                    model (an overflow incident, #303, or a consolidated Cloud Run quota one goes to a person with no model call), local validation after it.
                    Shown the incident's log evidence and the files the loop assembled for the fixer, bounded smaller (8,000 chars a
-                   file, 20,000 in all; `agent/sourceContext.ts` renders the block for all three stages), so "no code change helps"
+                   file, 20,000 in all; `agent/sourceContext.ts` renders the block for all three stages, the reviewer with the fixer's
+                   budget, each file through `agent/promptSections.ts` `section`: redacted, cut by whole lines, a stack-named file
+                   windowed around its frame's line, every cut marked in the header and where the lines were, #416; each header
+                   says how the file was found, #417), so "no code change helps"
                    is judged against the code (#371: CODE-03's own "Gift card refund failed" read as a provider outage). Unit- and
                    emulator-tested; not yet run on the demo project; run by `pnpm agent` (deployed to the demo project: has triaged real incidents since 2026-10-08, dry run off since 2026-10-10)
   triageRules.ts   the rules engine and the feedback engine (#267), pure, shared with the UI: an admin's class rules
@@ -213,7 +220,9 @@ src/
                    fails closed, redacts both ways. The model's hunks are put where their text is in the files it was shown
                    (`patchNormalize.ts`: it puts `a/` and `b/` on the bare file headers the model writes, which was the live
                    cause of "does not apply"; it never invents a change, and a hunk it cannot find, or finds more than once (the
-                   model's line number never picks, #366), leaves the file's hunks as written for the gate to refuse; #317). Run by `pnpm agent` (deployed: declined 2026-10-08, #259; 2026-10-12 proposed a
+                   model's line number never picks, #366), leaves the file's hunks as written for the gate to refuse; #317; a blank line
+                   between two files' sections is a separator, and any bare path gets `a/`/`b/`, shown or not, #419). Asked for a
+                   test only as a NEW file: it is never shown the existing tests (#419). Run by `pnpm agent` (deployed: declined 2026-10-08, #259; 2026-10-12 proposed a
                    patch for demo-app and the verify gate refused it as not applying, twice, #317)
   agent/cycle.ts   cycle per (incident, recurrence), transactional lease with fencing, append-only run events
                    (redacted), the cycle's run record (summary.<stage>, path) and its model-call and revision counts (#182); infrastructure errors throw, logical refusals are returned. Run by `pnpm agent` (deployed to the demo project; dry run off since 2026-10-10).
@@ -226,7 +235,8 @@ src/
                    triage named a merge case auto-merge may apply to, it also runs the safety floor and the "fails
                    before" run (`summary.before`, reported) and records the candidate (`summary.merge` pending, with the
                    case); it never merges itself. The floor holds only if its files are exactly the files the verify
-                   gate saw change
+                   gate saw change. What it does after each stage is pure and shared with the replay (`triageOptionsFor`, `afterFix`,
+                   `afterVerify`, `afterReview`, #420): a review refused for its evidence goes to a person, not a retry (#418)
   agent/blastRadius.ts  the safety floor every merge needs (`assessMergeFloor`: gate 1's parsing, hard-exclude list and
                    whole-function check, tests only as new files, one production file, any number of hunks, at most
                    40 changed lines; no fix class. Since the hard-exclude list is words, #295 added code rules: no
@@ -306,10 +316,14 @@ src/
                    not yet run on the demo project); the same file and its imports are also added AFTER the files a stack named when none of
                    those is the function's own (a callable's only repository frame was the shared wrapper `lib/track`, so the fixer was shown
                    it alone and declined, demo orders-getOrder 2026-10-18; rule `stack-and-function-name`, unit-tested, not yet run on the demo
-                   project), the rule kept as `summary.fix.source`; never a structural cause (`causeFrame` reads the stack alone)
+                   project), the rule kept as `summary.fix.source`, read off the files actually shown (`provenanceOfFiles`, #417); never a
+                   structural cause (`causeFrame` reads the stack alone). Each file carries how it was found (`foundBy`: frame, with the
+                   top frame's line when it names that very file; name; import, with the importer), which its prompt header says. A
+                   name-search candidate it could not read that could be the answer makes the search ambiguous (#417)
   scoreboard/      the results format (strict parser), the metrics (ratios keep numerator and denominator; an error or timeout counts
                    against the agent; each path apart) and the Markdown table: `pnpm scoreboard`. `replay.ts`/`corpus.ts` (`pnpm replay`) run
-                   the loop's own stages over a frozen corpus with hidden evaluators and write a results file; no real run recorded
+                   the loop's own stages and its after-stage decisions (merge cases, class rules, the one revision, #420) over a frozen
+                   corpus with hidden evaluators and write a results file; no real run recorded
   ingest/lagLog.ts the one JSON line a run prints with its checkpoint lag (#387): `scripts/setup-ingest-alerts.sh` turns it into a log-based
                    metric and an alert, beside the missed-run alert on Cloud Run's own execution metric. Unit- and stub-tested; never run on a real project
   startupLog.ts    one JSON line as each deployed CLI starts (ingest, agent, admin API, verify runner): its uptime when its

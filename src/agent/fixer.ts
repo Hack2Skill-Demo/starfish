@@ -23,31 +23,25 @@
  * Run by the agent job (`pnpm agent`), and not on the Agent Development Kit yet: a stage contract with a stubbed
  * model in its tests.
  */
-import { askJson, modelCallFailure } from "../vertex.js";
-import { clipWellFormed, redactCredentials, redactTail, sanitize, truncate } from "../ingest/redact.js";
+import { askJson, askModel, modelFailureRule, type ModelFailureRule } from "../vertex.js";
+import { clipWellFormed, redactCredentials, sanitize } from "../ingest/redact.js";
 import { renderForTriage } from "./triage.js";
-import { renderSourceFiles, sourceNote } from "./sourceContext.js";
+import { section } from "./promptSections.js";
+import { renderSourceContext, SOURCE_BUDGETS, type ShownFile } from "./sourceContext.js";
 import { MAX_REVIEW_PATCH_CHARS } from "./reviewer.js";
 import { normalizePatch } from "./patchNormalize.js";
 import type { AskJson, TriageSubject } from "./triage.js";
 
-export interface SourceFile {
-  /** Repo-relative path, as it appears in the patch. */
-  path: string;
-  content: string;
-}
+/** A file shown to the model, with how it was found (sourceContext.ts). */
+export type SourceFile = ShownFile;
 
 export interface FixRequest {
   subject: TriageSubject;
-  /** Only these files are shown to the model. The caller chose them; the fixer does not look for more. */
-  files: SourceFile[];
   /**
-   * How the caller found `files` (#259). `function-name`: no stack frame named a repository file, and the file shown is
-   * the one that exports the failing function; the model is told so, since the fault may lie in code that file calls.
+   * Only these files are shown to the model. The caller chose them; the fixer does not look for more. Each says how it
+   * was found (#259, #347, #417): a file found by the function's name is weaker evidence than one a stack frame names.
    */
-  sourceRule?: "stack" | "stack-and-function-name" | "function-name" | "none";
-  /** With `function-name`: how many of `files`, after the first, are files it imports (#347). */
-  sourceImports?: number;
+  files: SourceFile[];
   /** Why the previous patch failed, when this is the revision round: built by `verifyFeedback` or `reviewFeedback`. */
   feedback?: RevisionFeedback;
 }
@@ -81,8 +75,7 @@ export const REVIEW_FEEDBACK_HEADER = "PREVIOUS ATTEMPT BLOCKED BY REVIEW";
 export type FixRule =
   | "fixer-proposed"
   | "fixer-declined"
-  | "model-call-failed"
-  | "model-output-invalid"
+  | ModelFailureRule
   | "patch-malformed"
   | "patch-too-large"
   | "patch-contains-secret-shape";
@@ -106,8 +99,8 @@ export interface FixResult {
 export const MAX_FIX_PATCH_BYTES = MAX_REVIEW_PATCH_CHARS;
 const MAX_TEXT = 1500;
 const MAX_ALTERNATIVES = 5;
-export const MAX_FILE_CHARS = 20_000;
-export const MAX_TOTAL_SOURCE_CHARS = 60_000;
+export const MAX_FILE_CHARS = SOURCE_BUDGETS.fix.maxFileChars;
+export const MAX_TOTAL_SOURCE_CHARS = SOURCE_BUDGETS.fix.maxTotalChars;
 const MAX_FEEDBACK_CHARS = 4_000;
 const MAX_BROKEN_ATTACK_CHARS = 600;
 
@@ -116,14 +109,15 @@ MINIMAL change that addresses the root cause: not a refactor, not surrounding cl
 dependency.
 
 "patch" is a unified diff against the files you were shown, with paths relative to the repository
-root as listed. Add or update a test that fails before the fix and passes after it when the codebase
-has tests you can extend; say so in "testAdded".
+root as listed. A file marked CUT is shown only in part: take your context lines from the part shown.
+
+You are normally shown none of the project's tests: never edit an existing test file you were not
+shown. When a test that fails before the fix and passes after it is straightforward, add it as a NEW
+file beside the code you change, in the style of that code; say so in "testAdded".
 
 If the source you were given is not enough to fix the problem confidently, say so in "rootCause" and
 return an empty "patch". Guessing is worse than declining. Never touch CI configuration, credentials,
 or the files that define how the project is tested or verified.`;
-
-export { FOUND_BY_NAME_NOTE, FOUND_BY_NAME_WITH_IMPORTS_NOTE } from "./sourceContext.js";
 
 export const FIX_SCHEMA = {
   type: "object",
@@ -138,25 +132,30 @@ export const FIX_SCHEMA = {
 };
 
 /**
- * The revision's section (#415). The verify output is a test or CI log, whose failure is at its END: kept from the tail.
- * The review's scope instruction comes first, so no number of attacks can cut it off. The previous patch is code, so it
- * gets the source's shape-only redaction, bounded as a patch is.
+ * The revision's section (#415), each part a section (promptSections.ts), so a cut is marked like any other. The verify
+ * output is a test or CI log, whose failure is at its END: kept from the tail. The review's scope instruction comes
+ * first, so no number of attacks can cut it off. The previous patch is code, so it gets the source's shape-only
+ * redaction, bounded as a patch is.
  */
 function renderFeedback(f: RevisionFeedback): string[] {
-  const patch = ["Your previous patch:", truncate(redactCredentials(f.previousPatch), MAX_FIX_PATCH_BYTES), ""];
+  const patch = [...section({ title: "Your previous patch:", body: f.previousPatch, redact: "shape", max: MAX_FIX_PATCH_BYTES }).lines, ""];
   if (f.kind === "verify") {
-    return [VERIFY_FEEDBACK_HEADER, ...patch, "The end of the verify command's output:", redactTail(f.output, MAX_FEEDBACK_CHARS)];
+    return [VERIFY_FEEDBACK_HEADER, ...patch, ...section({ title: "The end of the verify command's output:", body: f.output, redact: "pii", max: MAX_FEEDBACK_CHARS, keep: "tail" }).lines];
   }
   const broken = f.broken.map((b) => `- ${sanitize(b, MAX_BROKEN_ATTACK_CHARS) ?? ""}`).join("\n");
-  return [REVIEW_FEEDBACK_HEADER, REVISION_SCOPE, "", ...patch, "What the review showed this patch breaks:", truncate(broken, MAX_FEEDBACK_CHARS)];
+  return [
+    REVIEW_FEEDBACK_HEADER,
+    REVISION_SCOPE,
+    "",
+    ...patch,
+    ...section({ title: "What the review showed this patch breaks:", body: broken, redact: "pii", max: MAX_FEEDBACK_CHARS }).lines,
+  ];
 }
 
-/** What the model is shown. Source gets shape-only redaction: `token = getToken()` is code, not a leak. */
+/** What the model is shown: the incident, the source (each file saying how it was found), and any revision feedback. */
 export function renderForFix(req: FixRequest): string {
-  const parts = [renderForTriage(req.subject), "", "SOURCE CONTEXT"];
-  const note = sourceNote({ ...(req.sourceRule && { rule: req.sourceRule }), ...(req.sourceImports !== undefined && { imports: req.sourceImports }) }, req.files.length);
-  if (note) parts.push(note, "");
-  parts.push(...renderSourceFiles(req.files, { maxFileChars: MAX_FILE_CHARS, maxTotalChars: MAX_TOTAL_SOURCE_CHARS }));
+  const source = renderSourceContext(req.files, SOURCE_BUDGETS.fix);
+  const parts = [renderForTriage(req.subject), "", ...(source.length > 0 ? source : ["SOURCE CONTEXT", "(No source file was found for this incident.)", ""])];
   if (req.feedback) parts.push(...renderFeedback(req.feedback));
   return parts.join("\n");
 }
@@ -174,14 +173,11 @@ function error(rule: FixRule, rootCause: string): FixResult {
 
 /** Never throws: a failure is a result, because an unrecorded failure would look like a decision not to fix. */
 export async function proposeFix(req: FixRequest, ask: AskJson = askJson): Promise<FixResult> {
-  let raw: unknown;
-  try {
-    raw = await ask<unknown>(renderForFix(req), FIX_SYSTEM, FIX_SCHEMA);
-  } catch (err) {
-    // An error's message can quote what it was sent, so only names and codes are kept (#334).
-    return error("model-call-failed", modelCallFailure(err));
-  }
+  const asked = await askModel<unknown>(ask, renderForFix(req), FIX_SYSTEM, FIX_SCHEMA);
+  // Names and codes only, never an error's message (#334); a cut or filtered answer is said as one (#418).
+  if (asked.kind !== "ok") return error(modelFailureRule(asked.kind), asked.reason);
 
+  const raw = asked.value;
   const a = raw !== null && typeof raw === "object" ? (raw as Record<string, unknown>) : undefined;
   const alternatives = a?.rejectedAlternatives;
   if (

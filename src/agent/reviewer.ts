@@ -23,10 +23,11 @@
  * model in its tests.
  */
 import { createHash } from "node:crypto";
-import { askJson, modelCallFailure } from "../vertex.js";
-import { clipWellFormed, redactCredentials, redactPii } from "../ingest/redact.js";
+import { askJson, askModel, modelFailureRule, type ModelFailureRule } from "../vertex.js";
+import { clipWellFormed, sanitize } from "../ingest/redact.js";
 import { renderForTriage } from "./triage.js";
-import { renderSourceFiles } from "./sourceContext.js";
+import { describeCut, section, type RenderedSection } from "./promptSections.js";
+import { renderSourceContext, SOURCE_BUDGETS } from "./sourceContext.js";
 import type { AskJson } from "./triage.js";
 import type { FixRequest, SourceFile } from "./fixer.js";
 import type { VerifyResult } from "./verifyGate.js";
@@ -46,8 +47,7 @@ export type ReviewRule =
   | "reviewed"
   | "evidence-not-passed"
   | "evidence-mismatch"
-  | "model-call-failed"
-  | "model-output-invalid"
+  | ModelFailureRule
   | "review-empty";
 
 export interface ReviewRequest {
@@ -79,8 +79,6 @@ const MAX_TEXT = 600;
  * can approve only with a flag saying the rest was not reviewed (#136). A verdict never covers code nobody looked at.
  */
 export const MAX_REVIEW_PATCH_CHARS = 30_000;
-const MAX_FILE_CHARS = 15_000;
-const MAX_TOTAL_SOURCE_CHARS = 45_000;
 const OUTCOMES: readonly AttackOutcome[] = ["held", "flagged", "broken"];
 
 export const REVIEW_SYSTEM = `You are a hostile code reviewer. A patch for one production bug has passed its
@@ -127,27 +125,32 @@ export function sha256(text: string): string {
   return createHash("sha256").update(text).digest("hex");
 }
 
-/** How much of the patch the reviewer is shown, and how long it is: `shown < total` means the patch was cut. */
-export function patchShown(patch: string): { shown: number; total: number } {
-  const total = redactCredentials(patch).length;
-  return { shown: Math.min(total, MAX_REVIEW_PATCH_CHARS), total };
+/** The patch as the reviewer is shown it: code, so shape-only redaction, and a cut said in its title (#136). */
+export function patchSection(patch: string): RenderedSection {
+  return section({
+    title: "PATCH",
+    body: patch,
+    redact: "shape",
+    max: MAX_REVIEW_PATCH_CHARS,
+    markCut: (cut) => `PATCH (CUT: ${describeCut(cut)}; the rest is not reviewed)`,
+  });
 }
 
-/** What the reviewer sees: the incident, the claims to doubt, the patch, and the source it was written against. */
+/**
+ * What the reviewer sees: the incident, the claims to doubt, the patch, and the source it was written against, with
+ * the fixer's own budget (#416): the reviewer must be able to see every line the fixer saw.
+ */
 export function renderForReview(req: ReviewRequest): string {
-  const { shown, total } = patchShown(req.patch);
   const parts = [
     renderForTriage(req.subject),
     "",
     "THE FIXER CLAIMS (doubt it)",
-    `root cause: ${redactPii(req.claimed.rootCause).slice(0, MAX_TEXT)}`,
-    `risk: ${redactPii(req.claimed.risk).slice(0, MAX_TEXT)}`,
+    `root cause: ${sanitize(req.claimed.rootCause, MAX_TEXT) ?? ""}`,
+    `risk: ${sanitize(req.claimed.risk, MAX_TEXT) ?? ""}`,
     "",
-    shown < total ? `PATCH (CUT: only the first ${shown} of ${total} characters are shown; the rest is not reviewed)` : "PATCH",
-    redactCredentials(req.patch).slice(0, MAX_REVIEW_PATCH_CHARS),
+    ...patchSection(req.patch).lines,
     "",
-    "SOURCE CONTEXT",
-    ...renderSourceFiles(req.files, { maxFileChars: MAX_FILE_CHARS, maxTotalChars: MAX_TOTAL_SOURCE_CHARS }),
+    ...renderSourceContext(req.files, SOURCE_BUDGETS.review),
   ];
   return parts.join("\n");
 }
@@ -186,25 +189,21 @@ export async function reviewPatch(req: ReviewRequest, ask: AskJson = askJson): P
     return none("evidence-mismatch", "The verify result is for a different patch than the one offered for review.");
   }
 
-  let raw: unknown;
-  try {
-    raw = await ask<unknown>(renderForReview(req), REVIEW_SYSTEM, REVIEW_SCHEMA);
-  } catch (err) {
-    // An error's message can quote what it was sent, so only names and codes are kept (#334).
-    return none("model-call-failed", modelCallFailure(err));
-  }
+  const asked = await askModel<unknown>(ask, renderForReview(req), REVIEW_SYSTEM, REVIEW_SCHEMA);
+  // Names and codes only, never an error's message (#334); a cut or filtered answer is said as one (#418).
+  if (asked.kind !== "ok") return none(modelFailureRule(asked.kind), asked.reason);
 
-  const parsed = parseAttacks(raw);
+  const parsed = parseAttacks(asked.value);
   if (!parsed) return none("model-output-invalid", "The model's answer was not in the expected shape, so nothing was reviewed.");
   if (parsed.length === 0) return none("review-empty", "The reviewer listed no attacks, which is not a review.");
 
   // A patch the reviewer saw only part of cannot be approved cleanly: a flag says what was not reviewed (#136).
-  const { shown, total } = patchShown(req.patch);
-  if (shown < total) {
+  const cut = patchSection(req.patch).cut;
+  if (cut !== null) {
     parsed.push({
       attack: "Review the whole patch",
       outcome: "flagged",
-      detail: `The patch was cut for review: only the first ${shown} of ${total} characters were shown, and the rest was not reviewed.`,
+      detail: `The patch was cut for review: only ${describeCut(cut)}, and the rest was not reviewed.`,
     });
   }
 

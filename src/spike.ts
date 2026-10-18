@@ -16,81 +16,25 @@
  * command, and make the evaluator pass, all through the verify gate
  * (src/scoreboard/evaluate.ts). An empty patch on a fix case is a failure. A fixture with
  * no checkout says its patch was not checked: a plausible diff is not a pass.
+ *
+ * It asks through the agent's own stages (#420): `triageIncident` with the fixture's files as its source, and on "act"
+ * `proposeFix`, with their prompts, bounds, redaction and patch normalization, so what it measures is what the agent
+ * does. It had prompts of its own, which still weighed "the environment" (removed from triage by #311) and bounded nothing.
+ * "Urgent" is triage's "act": a code fix. The admin's merge cases and class rules are not applied (no runtime settings).
  */
 import { existsSync } from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
 import { dirname, join, relative, resolve } from "node:path";
 import { loadConfig } from "./config.js";
 import { askJson, modelName } from "./vertex.js";
-import { redactPii, redactCredentials } from "./ingest/redact.js";
+import { redactPii } from "./ingest/redact.js";
+import { triageIncident } from "./agent/triage.js";
+import { proposeFix, type SourceFile } from "./agent/fixer.js";
 import { verifyPatch } from "./agent/verifyGate.js";
 import { checkReproduces, evaluatePatch, type CheckoutUnderTest } from "./scoreboard/evaluate.js";
-import type { SpikeFixture, TriageVerdict } from "./types.js";
+import type { SpikeFixture } from "./types.js";
 
 const FIXTURE_DIR = join(import.meta.dirname, "../fixtures/incidents");
-
-const TRIAGE_SYSTEM = `You are an on-call engineer for a small team with no dedicated ops staff.
-You are shown one production incident. Decide whether it is URGENT — a crash or broken
-user-facing flow, with real or climbing impact — or NOT urgent.
-
-Weigh the occurrence count, the independent log counter-check, the environment, and whether
-the error describes real user-facing breakage.
-
-Read the counter-check for what it is: every ERROR-severity log entry for the whole FUNCTION
-over its window (usually 24h), counted straight from Cloud Logging. The occurrence count is
-for this one incident, over its lifetime. So they will rarely be equal, and that alone means
-nothing. What matters is a counter-check of ZERO against an incident claiming occurrences: the
-logs show no error at all for the function, which strongly suggests the incident is
-monitoring noise rather than a live fault. A missing counter-check means it could not be
-run — not that it read zero.
-
-Declining to act is a valid and often correct answer.`;
-
-const TRIAGE_SCHEMA = {
-  type: "object",
-  properties: {
-    urgent: { type: "boolean" },
-    reasoning: { type: "string", description: "Which signals drove the call." },
-    suspectedCause: {
-      type: ["string", "null"],
-      description: "Where the fault lives. Null when not urgent.",
-    },
-  },
-  required: ["urgent", "reasoning", "suspectedCause"],
-};
-
-const FIX_SYSTEM = `You are fixing one production bug. Produce the MINIMAL change that
-addresses the root cause — not a refactor, not surrounding cleanup.
-
-"patch" is a unified diff against the files you were shown.
-If the source you were given is insufficient to fix it confidently, say so in "rootCause"
-and return an empty "patch". Guessing is worse than declining.`;
-
-interface ProposedFix {
-  rootCause: string;
-  patch: string;
-  risk: string;
-}
-
-const FIX_SCHEMA = {
-  type: "object",
-  properties: {
-    rootCause: { type: "string" },
-    patch: { type: "string", description: "Unified diff, or empty when declining." },
-    risk: { type: "string" },
-  },
-  required: ["rootCause", "patch", "risk"],
-};
-
-function renderIncident(f: SpikeFixture, context: { path: string; excerpt: string }[]): string {
-  // Source excerpts get shape-only redaction: `token = getToken()` is code, and
-  // rewriting it would corrupt the patch context the fixer works from.
-  const ctx = context
-    .map((c) => `--- ${c.path} ---\n${redactCredentials(c.excerpt)}`)
-    .join("\n\n");
-  // Production text like any other: nothing credential-shaped reaches the model.
-  return [`INCIDENT`, redactPii(JSON.stringify(f.incident, null, 2)), ``, `SOURCE CONTEXT`, ctx].join("\n");
-}
 
 interface LoadedFixture {
   fixture: SpikeFixture;
@@ -158,10 +102,10 @@ async function run({ fixture, checkout }: LoadedFixture): Promise<boolean> {
   console.log("=".repeat(72));
 
   // With a checkout the model sees whole files from the pre-fix source, so its diff can be applied to that source.
-  const context = checkout
-    ? await Promise.all(checkout.files.map(async (path) => ({ path, excerpt: await readFile(join(checkout.repoDir, path), "utf8") })))
-    : fixture.context;
-  const rendered = renderIncident(fixture, context);
+  const files: SourceFile[] = checkout
+    ? await Promise.all(checkout.files.map(async (path) => ({ path, content: await readFile(join(checkout.repoDir, path), "utf8") })))
+    : fixture.context.map((c) => ({ path: c.path, content: c.excerpt }));
+  const subject = { incident: fixture.incident, status: "new" as const };
 
   const scored = fixture.measures === "fix-quality" && checkout !== undefined;
   if (scored) {
@@ -175,24 +119,29 @@ async function run({ fixture, checkout }: LoadedFixture): Promise<boolean> {
     }
   }
 
-  const triage = await askJson<TriageVerdict>(rendered, TRIAGE_SYSTEM, TRIAGE_SCHEMA);
+  const triage = await triageIncident(subject, askJson, { source: { files } });
   console.log("\n── TRIAGE ──");
-  console.log(`urgent: ${triage.urgent}`);
-  show(triage.reasoning);
+  console.log(`decision: ${triage.decision} (${triage.rule})`);
+  show(triage.reason);
   if (triage.suspectedCause) show(`suspected cause: ${triage.suspectedCause}`);
+  if (triage.decision === "error" || triage.decision === "defer" || triage.decision === "skip") {
+    console.log("FIXTURE NOT JUDGED: triage reached no decision.");
+    return false;
+  }
 
-  const urgent = triage.urgent === true;
+  const urgent = triage.decision === "act";
 
   let patch = "";
   if (urgent) {
-    const fix = await askJson<ProposedFix>(rendered, FIX_SYSTEM, FIX_SCHEMA);
+    const fix = await proposeFix({ subject, files }, askJson);
     console.log("\n── PROPOSED FIX ──");
+    console.log(`outcome: ${fix.outcome} (${fix.rule})`);
     show(`root cause: ${fix.rootCause}`);
-    show(`risk: ${fix.risk}`);
-    show(fix.patch || "(no patch — the model declined)");
-    patch = typeof fix.patch === "string" ? fix.patch : "";
+    if (fix.risk) show(`risk: ${fix.risk}`);
+    show(fix.patch ?? "(no patch)");
+    patch = fix.patch ?? "";
   } else {
-    console.log("\n── PROPOSED FIX ──\n(skipped — triage declined to act)");
+    console.log("\n── PROPOSED FIX ──\n(skipped — triage did not choose a code fix)");
   }
 
   let patchOk = true;

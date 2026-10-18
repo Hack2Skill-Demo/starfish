@@ -112,8 +112,8 @@ describe("createLoader", () => {
     expect(s!.baseRevision).toBe(tip);
     expect(s!.subject.status).toBe("new");
     expect(s!.subject.incident).toMatchObject({ id: "i1", functionName: "orders-create", logCounterCheck: { count: 2, window: "24h" } });
-    // Too big, binary and symlinked files are left out; the plain one is read.
-    expect(s!.files).toEqual([{ path: "src/orders.ts", content: "export const x = 1;\n" }]);
+    // Too big, binary and symlinked files are left out; the plain one is read, saying it was a frame's, and at which line.
+    expect(s!.files).toEqual([{ path: "src/orders.ts", content: "export const x = 1;\n", foundBy: "frame", frameLine: 1 }]);
     // The name search ran too and found no export of `orders-create`: said, not hidden.
     expect(s!.source).toEqual({ rule: "stack", search: "no-export" });
     await loader.disposeAll();
@@ -130,7 +130,16 @@ describe("createLoader", () => {
   it("falls back to the file that exports the function when no stack frame names a repository file (#259)", async () => {
     const loader = createLoader({ db: fakeDb({ i1: { ...incident, functionName: "orders-x", stackTrace: FRAMEWORK_STACK } }), config, logging: logging(), checkout: checkoutFn(), maxFileBytes: 1000 });
     const s = await loader.load("i1");
-    expect(s!.files).toEqual([{ path: "src/orders.ts", content: "export const x = 1;\n" }]);
+    expect(s!.files).toEqual([{ path: "src/orders.ts", content: "export const x = 1;\n", foundBy: "name" }]);
+    expect(s!.source).toEqual({ rule: "function-name", search: "found", imports: 0 });
+    await loader.disposeAll();
+  });
+
+  it("records what was shown, not what was looked for: a stack whose only file cannot be read is not a stack-found source (#417)", async () => {
+    const stack = "Error: boom\n    at f (/app/src/big.ts:1:1)";
+    const loader = createLoader({ db: fakeDb({ i1: { ...incident, functionName: "orders-x", stackTrace: stack } }), config, logging: logging(), checkout: checkoutFn(), maxFileBytes: 1000 });
+    const s = await loader.load("i1");
+    expect(s!.files).toEqual([{ path: "src/orders.ts", content: "export const x = 1;\n", foundBy: "name" }]);
     expect(s!.source).toEqual({ rule: "function-name", search: "found", imports: 0 });
     await loader.disposeAll();
   });
@@ -140,6 +149,11 @@ describe("createLoader", () => {
     const s = await loader.load("i1");
     expect(s!.files.map((f) => f.path)).toEqual(["src/getorder.ts", "src/lib/track.ts", "src/orders.ts"]);
     expect(s!.source).toEqual({ rule: "function-name", search: "found", imports: 2 });
+    expect(s!.files.map((f) => [f.foundBy, f.importedBy])).toEqual([
+      ["name", undefined],
+      ["import", "src/getorder.ts"],
+      ["import", "src/getorder.ts"],
+    ]);
     await loader.disposeAll();
     // Within the loader's own file budget.
     const one = createLoader({ db: fakeDb({ i1: { ...incident, functionName: "orders-getOrder", stackTrace: FRAMEWORK_STACK } }), config, logging: logging(), checkout: checkoutFn(), maxFiles: 2, maxFileBytes: 1000 });
@@ -156,6 +170,8 @@ describe("createLoader", () => {
     const s = await loader.load("i1");
     // The stack's file first, then the exporting file, then what it imports that is not already shown.
     expect(s!.files.map((f) => f.path)).toEqual(["src/lib/track.ts", "src/getorder.ts", "src/orders.ts"]);
+    expect(s!.files.map((f) => f.foundBy)).toEqual(["frame", "name", "import"]);
+    expect(s!.files[0]!.frameLine).toBe(20);
     expect(s!.source).toEqual({ rule: "stack-and-function-name", search: "found", imports: 1 });
     await loader.disposeAll();
     // Within the loader's own file budget: no room, nothing added.

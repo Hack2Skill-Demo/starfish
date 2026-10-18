@@ -73,10 +73,10 @@ import {
 } from "./cycle.js";
 import type { IssueRequest, IssueResult } from "../integrations/githubPr.js";
 import type { AlertRequest, DeliveryResult, NotifyRequest } from "../integrations/slack.js";
-import { proposeFix, reviewFeedback, verifyFeedback, type FixRequest, type FixRule, type SourceFile } from "./fixer.js";
+import { proposeFix, reviewFeedback, verifyFeedback, type FixRequest, type FixResult, type RevisionFeedback, type SourceFile } from "./fixer.js";
 export { REVISION_SCOPE } from "./fixer.js";
-import { reviewPatch, type Attack, type ReviewVerdict } from "./reviewer.js";
-import { triageIncident, triageLevel, type AskJson, type TriageSubject } from "./triage.js";
+import { reviewPatch, type Attack, type ReviewResult, type ReviewVerdict } from "./reviewer.js";
+import { triageIncident, triageLevel, type AskJson, type TriageOptions, type TriageSubject } from "./triage.js";
 import { verifyPatch, type VerifyConfig, type VerifyRequest, type VerifyResult } from "./verifyGate.js";
 import { causeClass, type ReconsiderPolicy } from "./reconsider.js";
 import { isIndexIncident, runIndexPath, type IndexHealWiring } from "./indexPath.js";
@@ -272,8 +272,62 @@ export function retryWords(round: number, trigger: unknown): RetryWords {
   return { round, ...(because !== undefined && { retriedBecause: because }) };
 }
 
-/** Fixer errors that are the model's patch, not a failed call: retrying would most likely repeat them (#137). */
-export const UNFIT_PATCH_RULES: ReadonlySet<FixRule> = new Set<FixRule>(["patch-malformed", "patch-too-large", "patch-contains-secret-shape"]);
+/**
+ * The stage failures a later attempt may do better at (#418), the same for all three model stages: the model call failed
+ * or timed out, its answer could not be read, or the review listed no attacks. They release the cycle for a retry,
+ * counted against its attempts. Every other stage failure goes to a person now: a patch unfit to verify (malformed, too
+ * large, credential-shaped) is the model's considered answer (#137); an answer cut at the output limit or stopped by a
+ * filter would be cut or stopped again at temperature 0; and a review refused for its evidence is Starfish's own error,
+ * which no retry corrects.
+ */
+export const RETRYABLE_STAGE_RULES: ReadonlySet<string> = new Set(["model-call-failed", "model-output-invalid", "review-empty"]);
+
+export function releasesForRetry(rule: string): boolean {
+  return RETRYABLE_STAGE_RULES.has(rule);
+}
+
+/*
+ * What the loop does after each stage, as pure decisions, so the replay harness (scoreboard/replay.ts) takes exactly the
+ * loop's path through the same stages (#420): it had its own copy of the revision loop, and drifted from it.
+ */
+
+/** What triage is given: the admin's merge cases and class rules, and the files the fixer will be shown (#371). */
+export function triageOptionsFor(cfg: Pick<StarfishConfig, "mergeCases" | "classRules">, files: readonly SourceFile[]): TriageOptions {
+  return { mergeCases: cfg.mergeCases, classRules: cfg.classRules, source: { files } };
+}
+
+/** Where a stage's result sends the cycle, other than on: round again with feedback, released for a retry, or to a person. */
+export type Revise = { next: "revise"; feedback: RevisionFeedback };
+export type Retry = { next: "retry"; rule: string };
+export type ToPerson = { next: "person"; rule: string; reason: string };
+
+/** After the fixer: a proposed patch goes to verify; a failure worth retrying is released; anything else is a person's. */
+export function afterFix(fix: FixResult): { next: "verify"; patch: string } | Retry | ToPerson {
+  if (fix.outcome === "proposed" && fix.patch !== undefined) return { next: "verify", patch: fix.patch };
+  if (fix.outcome === "error" && releasesForRetry(fix.rule)) return { next: "retry", rule: fix.rule };
+  return { next: "person", rule: fix.rule, reason: fix.rootCause };
+}
+
+/** After verify: a passed patch goes on; a failed one gets the cycle's one revision, then goes to a person. */
+export function afterVerify(verified: VerifyResult, patch: string, revisions: number): { next: "review" } | Revise | ToPerson {
+  if (verified.status === "passed") return { next: "review" };
+  if (revisions < MAX_REVISIONS) return { next: "revise", feedback: verifyFeedback(patch, verified) };
+  return { next: "person", rule: `verify-${verified.rule}`, reason: verified.reason };
+}
+
+/** After review: approved goes on; blocked gets the one revision (#375), then a person; no review at all, see `releasesForRetry`. */
+export function afterReview(reviewed: ReviewResult, patch: string, revisions: number): { next: "pr"; verdict: ReviewVerdict } | Revise | Retry | ToPerson {
+  if (reviewed.verdict === undefined) {
+    // A review refused for its evidence (not passed, another patch's) is a logic error no retry corrects (#418).
+    if (releasesForRetry(reviewed.rule)) return { next: "retry", rule: reviewed.rule };
+    return { next: "person", rule: reviewed.rule, reason: reviewed.reason ?? "The patch could not be reviewed." };
+  }
+  if (reviewed.verdict !== "block") return { next: "pr", verdict: reviewed.verdict };
+  // Only what the review showed this patch breaks (#375): a revision that also takes on other problems in the file stops
+  // being the minimal fix and fails on its own (CODE-03's transaction rewrite).
+  if (revisions < MAX_REVISIONS) return { next: "revise", feedback: reviewFeedback(patch, reviewed.attacks ?? []) };
+  return { next: "person", rule: "review-blocked", reason: "The adversarial review broke the patch, and the one revision did not fix it." };
+}
 
 /** How many rejected alternatives and review attacks the run record keeps (each value is bounded by cycle.ts). */
 export const MAX_RECORDED_ALTERNATIVES = 5;
@@ -682,16 +736,7 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
       }
       return deps.ask<T>(prompt, system, schema);
     };
-    const triage = await triageIncident(loaded.subject, countedAsk, {
-      mergeCases: cfg.mergeCases,
-      classRules: cfg.classRules,
-      // The files the fixer will be shown (#371): "no code change helps" is judged against the code.
-      source: {
-        files: loaded.files,
-        ...(loaded.source && { rule: loaded.source.rule }),
-        ...(loaded.source?.imports !== undefined && { imports: loaded.source.imports }),
-      },
-    });
+    const triage = await triageIncident(loaded.subject, countedAsk, triageOptionsFor(cfg, loaded.files));
     if (spendError !== undefined) throw spendError;
     // The merge case Gemini named (triage.ts): Starfish may merge only what it named.
     const chosenCase = triage.mergeCase;
@@ -748,8 +793,10 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
       case "notify":
         return await handOver(factsOf(loaded), "notify", triage.rule, triage.reason, `notify:${triage.rule}`, "notify");
       case "defer":
-      case "error":
         return await release(triage.rule);
+      case "error":
+        if (releasesForRetry(triage.rule)) return await release(triage.rule);
+        return await handOver(factsOf(loaded), "human", triage.rule, triage.reason, triage.rule, "human");
       case "act":
         break;
     }
@@ -771,8 +818,6 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
         {
           subject: loaded.subject,
           files: loaded.files,
-          ...(loaded.source && { sourceRule: loaded.source.rule }),
-          ...(loaded.source?.imports !== undefined && { sourceImports: loaded.source.imports }),
           ...(feedback && { feedback }),
         },
         deps.ask
@@ -797,13 +842,12 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
           ...numbered("alternative", fix.rejectedAlternatives ?? [], MAX_RECORDED_ALTERNATIVES),
         },
       });
-      // A model that failed, or answered in the wrong shape, may do better next time: released to retry. A patch that is
-      // malformed, too large or carries a credential shape is the model's considered answer, and at temperature 0 the
-      // next attempt would most likely repeat it: that goes to a person now (#137).
-      if (fix.outcome === "error" && !UNFIT_PATCH_RULES.has(fix.rule)) return await release(fix.rule);
-      if (fix.outcome !== "proposed" || fix.patch === undefined) {
-        return await handOver(factsOf(loaded), "human", fix.rule, fix.rootCause, fix.rule, "human");
-      }
+      // A model call that failed, or an answer that could not be read, may do better next time: released to retry. Any other
+      // error (an unfit patch, an answer cut at the limit or filtered) would most likely repeat: a person, now (#137, #418).
+      const fixed = afterFix(fix);
+      if (fixed.next === "retry") return await release(fixed.rule);
+      if (fixed.next !== "verify") return await handOver(factsOf(loaded), "human", fixed.rule, fixed.reason, fixed.rule, "human");
+      const patch = fixed.patch;
 
       // ---- auto-merge evidence (#9): the safety floor, then the patch's tests alone on the base revision -------
       // Only where Gemini named a merge case: the decision to merge is its, inside the cases an admin listed.
@@ -811,15 +855,15 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
       const mayMerge = chosenCase !== undefined && (await autoMergeOn(chosenCase));
       const heldBack = mayMerge ? await mergeHeldBy() : null;
       if (mayMerge && heldBack === null) {
-        floor = assessMergeFloor(fix.patch, {
+        floor = assessMergeFloor(patch, {
           excludedPaths: [...cfg.patchExcludedPaths, ...cfg.autoMergeExcludedPaths],
           // The floor judges the whole function around each change, as the base revision has it (#202).
-          baseFiles: await readBaseFiles(loaded.sourceDir, fix.patch),
+          baseFiles: await readBaseFiles(loaded.sourceDir, patch),
         });
         if (floor.allowed) {
           stop = await halted();
           if (stop) return stop;
-          await recordFailsBefore(deps, { id, loaded, heartbeat: keeper.beat, note, renew }, fix.patch);
+          await recordFailsBefore(deps, { id, loaded, heartbeat: keeper.beat, note, renew }, patch);
         }
       }
 
@@ -832,7 +876,7 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
       const verified = await (deps.verify ?? verifyPatch)({
         cycleId: id,
         sourceDir: loaded.sourceDir,
-        patch: fix.patch,
+        patch,
         baseRevision: loaded.baseRevision,
         config: cfg,
         heartbeat: keeper.beat,
@@ -861,14 +905,13 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
           isolation: cfg.verifyIsolation,
         },
       });
-      if (verified.status !== "passed") {
-        if (revisions < MAX_REVISIONS) {
-          await spendRevision();
-          feedback = verifyFeedback(fix.patch, verified);
-          continue;
-        }
-        return await handOver(factsOf(loaded), "human", `verify-${verified.rule}`, verified.reason, `verify-${verified.rule}`, "human");
+      const checked = afterVerify(verified, patch, revisions);
+      if (checked.next === "revise") {
+        await spendRevision();
+        feedback = checked.feedback;
+        continue;
       }
+      if (checked.next !== "review") return await handOver(factsOf(loaded), "human", checked.rule, checked.reason, checked.rule, "human");
       // The floor read the patch's headers; the verify gate saw what `git apply` actually wrote. Unless they are the same
       // files, the floor judged a different change from the one that was verified, and it does not hold (#200).
       // Only the files, not their lines: the written tree is gone by now (a scratch copy, or a branch the target's CI
@@ -884,7 +927,7 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
         if (stop) return stop;
         await spendModelCall();
         const reviewed = await reviewPatch(
-          { subject: loaded.subject, patch: fix.patch, verify: verified, files: loaded.files, claimed: { rootCause: fix.rootCause, risk: fix.risk ?? "" } },
+          { subject: loaded.subject, patch, verify: verified, files: loaded.files, claimed: { rootCause: fix.rootCause, risk: fix.risk ?? "" } },
           deps.ask
         );
         await note({
@@ -907,25 +950,15 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
             ),
           },
         });
-        if (reviewed.verdict === undefined) return await release(reviewed.rule);
-        if (reviewed.verdict === "block") {
-          if (revisions < MAX_REVISIONS) {
-            await spendRevision();
-            // Only what the review showed this patch breaks (#375): a revision that also takes on other problems in the file
-            // stops being the minimal fix and fails on its own (CODE-03's transaction rewrite).
-            feedback = reviewFeedback(fix.patch, reviewed.attacks ?? []);
-            continue;
-          }
-          return await handOver(
-            factsOf(loaded),
-            "human",
-            "review-blocked",
-            "The adversarial review broke the patch, and the one revision did not fix it.",
-            "review-blocked",
-            "human"
-          );
+        const judged = afterReview(reviewed, patch, revisions);
+        if (judged.next === "retry") return await release(judged.rule);
+        if (judged.next === "revise") {
+          await spendRevision();
+          feedback = judged.feedback;
+          continue;
         }
-        review = { verdict: reviewed.verdict, attacks: reviewed.attacks ?? [] };
+        if (judged.next === "person") return await handOver(factsOf(loaded), "human", judged.rule, judged.reason, judged.rule, "human");
+        review = { verdict: judged.verdict, attacks: reviewed.attacks ?? [] };
       }
 
       // ---- the pull request ----------------------------------------------------------------------
@@ -947,7 +980,7 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
         cycleId: id,
         incidentId: key.incidentId,
         baseRevision: loaded.baseRevision,
-        patch: fix.patch,
+        patch,
         patchSha256: verified.patchSha256,
         rootCause: fix.rootCause,
         risk: fix.risk ?? "",

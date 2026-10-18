@@ -16,8 +16,8 @@
  *     name is lowercased: `orders-createorder`);
  *   - a compiled twin (`lib/orders.js` beside `src/orders.ts`) is dropped for its TypeScript source; then, of several,
  *     those whose path names the group (`orders/…` or `orders.ts`) are kept;
- *   - still more than one: nothing ("ambiguous"). Guessing between two files would show the fixer the wrong code with
- *     the same confidence as the right one.
+ *   - still more than one, or a file that could be the one could not be read (too big, binary): nothing ("ambiguous").
+ *     Guessing between two files would show the fixer the wrong code with the same confidence as the right one.
  *
  * The file found this way is evidence of a weaker kind than a stack frame, and the run record says which rule found the
  * source (loop.ts, `summary.fix.source`). It never makes the cause structural: auto-merge's `causeFrame` is computed from
@@ -172,8 +172,8 @@ function namesGroups(path: string, groups: readonly string[]): boolean {
 
 /**
  * The one repository file that defines the export a function name stands for, or why there is none. `read` returns the
- * file as the fixer would see it, or null when it may not be shown (too big, binary, a symlink): such a file is neither
- * a match nor a reason to stop. Never throws when `read` does not.
+ * file as the fixer would see it, or null when it may not be shown (too big, binary, a symlink): such a file is not a
+ * match, and when it could have been the answer the search is ambiguous (#417). Never throws when `read` does not.
  */
 export async function findSourceByFunctionName(
   functionName: string | undefined,
@@ -190,21 +190,33 @@ export async function findSourceByFunctionName(
   let chars = 0;
   const exact: SourceFile[] = [];
   const folded: SourceFile[] = [];
+  const unreadable: string[] = [];
+  const readTs = new Set<string>();
   for (const rel of candidates) {
     const file = await read(rel);
-    if (file === null) continue;
+    if (file === null) {
+      unreadable.push(rel);
+      continue;
+    }
     chars += file.content.length;
     if (chars > maxChars) return { outcome: "capped" };
+    if (TS_EXT.test(rel)) readTs.add(sourceKey(rel));
     const hit = definesExport(file.content, wanted.name);
     if (hit === "exact") exact.push(file);
     else if (hit === "folded") folded.push(file);
   }
 
   let hits = exact.length > 0 ? exact : folded;
-  if (hits.length === 0) return { outcome: "no-export" };
   // Compiled output kept in the repository defines the same export as its source: the source is the one to fix.
   const tsKeys = new Set(hits.filter((f) => TS_EXT.test(f.path)).map((f) => sourceKey(f.path)));
   hits = hits.filter((f) => TS_EXT.test(f.path) || !tsKeys.has(sourceKey(f.path)));
+  // A file that could not be read (too big, binary) may define the export as well as any file that was read (#417): with
+  // `orders/index.ts` over the size cap, `orders-getOrder` found the helper `getOrder` of `admin/reports.ts` instead. So
+  // an unread file that could be the answer makes the search ambiguous: one whose path names the function's groups (any
+  // file, for a function with none), unless it is compiled output whose TypeScript source was read (and so judged).
+  const couldBe = unreadable.filter((rel) => (wanted.groups.length === 0 || namesGroups(rel, wanted.groups)) && (TS_EXT.test(rel) || !readTs.has(sourceKey(rel))));
+  if (couldBe.length > 0) return { outcome: "ambiguous" };
+  if (hits.length === 0) return { outcome: "no-export" };
   if (hits.length > 1 && wanted.groups.length > 0) {
     const grouped = hits.filter((f) => namesGroups(f.path, wanted.groups));
     if (grouped.length > 0) hits = grouped;

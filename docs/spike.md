@@ -33,8 +33,13 @@ pnpm install
 pnpm spike
 ```
 
-For each fixture it prints the triage verdict, the proposed patch (when triage says urgent),
-and the ground truth side by side, plus whether triage agreed with reality.
+For each fixture it prints the triage decision, the proposed patch (when triage chose `act`, a code fix),
+and the ground truth side by side, plus whether triage agreed with reality ("urgent" is `act`).
+
+Since #420 it asks through the agent's own stages (`triageIncident`, `proposeFix`), so it shows the model the same
+prompts, bounds and redaction the agent does and gets back the same normalized patch. It used to carry prompts of its
+own, which had drifted from the agent's. The admin's merge cases and class rules are not applied: the spike reads no
+runtime settings.
 
 ## Running a patch, not reading it (#4)
 
@@ -44,7 +49,8 @@ command). For such a fixture the spike, through the verify gate (`src/scoreboard
 
 1. runs the evaluator on a disposable copy of the unpatched source, and refuses the fixture unless it **fails** there
    (the defect reproduces);
-2. applies the model's diff exactly as given (`git apply`; nothing is repaired by hand), and requires the target's command
+2. applies the patch the fixer stage returns (`git apply`), which is the model's diff with its hunks placed by
+   `normalizePatch` exactly as the agent places them (nothing is repaired by hand), and requires the target's command
    **and** the evaluator to pass. A patch that touches an evaluator file is refused.
 
 An empty patch on a fix case, a diff that does not apply, a timeout or a failing command is a FAIL, and makes

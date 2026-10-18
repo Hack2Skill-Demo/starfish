@@ -28,9 +28,9 @@ import { defaultRunGit, gitAuthEnv, gitBaseEnv, type RunGit } from "../integrati
 import type { Incident, IncidentStatus } from "../types.js";
 import { INCIDENT_STATUSES } from "../types.js";
 import type { LoopSubject } from "./loop.js";
-import { pathsFromStack } from "./pass.js";
+import { filesFromStack } from "./pass.js";
 import type { SourceFile } from "./fixer.js";
-import { findSourceByFunctionName, followRelativeImports, MAX_FOLLOWED_IMPORTS, type SourceProvenance } from "./sourceByName.js";
+import { findSourceByFunctionName, followRelativeImports, MAX_FOLLOWED_IMPORTS, type NameSearchOutcome, type SourceProvenance } from "./sourceByName.js";
 
 export interface Checkout {
   /** The working tree (no `.git` content is ever shown to a model). */
@@ -147,6 +147,21 @@ async function readSource(dir: string, rel: string, maxBytes: number): Promise<S
   }
 }
 
+/**
+ * Which rule found the files, as the run record keeps it (`summary.fix.source`), read off each file's `foundBy`: so a
+ * stack whose files could not be read is not recorded as "stack", nor a lone file found by name as anything else.
+ */
+export function provenanceOfFiles(files: readonly SourceFile[], search?: NameSearchOutcome): SourceProvenance {
+  const frames = files.some((f) => f.foundBy === "frame");
+  const byName = files.some((f) => f.foundBy === "name");
+  const rule = frames ? (byName ? "stack-and-function-name" : "stack") : byName ? "function-name" : "none";
+  return {
+    rule,
+    ...(search !== undefined && { search }),
+    ...(byName && { imports: files.filter((f) => f.foundBy === "import").length }),
+  };
+}
+
 export interface Loader {
   /** `LoopDeps.load`: null when the incident is gone, retired or another environment's. */
   load: (incidentId: string) => Promise<LoopSubject | null>;
@@ -192,52 +207,39 @@ export function createLoader(deps: AssembleDeps): Loader {
       // the function log an error could plant frames in it to choose which files the fixer is shown. The samples are
       // shown to the model as untrusted data, nothing more. (The stored stack is log text too, but it is the one record
       // of this incident ingest kept; it was always the source of the files, and still names only repository files.)
-      const wanted = pathsFromStack(incident.stackTrace, checkout.files, deps.config.patchExcludedPaths, maxFiles);
+      const read = (rel: string) => readSource(checkout.dir, rel, maxBytes);
+      const wanted = filesFromStack(incident.stackTrace, checkout.files, deps.config.patchExcludedPaths, maxFiles);
       const files: SourceFile[] = [];
-      for (const rel of wanted) {
-        const file = await readSource(checkout.dir, rel, maxBytes);
-        if (file) files.push(file);
+      for (const frame of wanted) {
+        const file = await read(frame.path);
+        // Each file says how it was found (#417), and a frame's line is where a file too long to show whole is windowed.
+        if (file) files.push({ ...file, foundBy: "frame", ...(frame.line !== undefined && { frameLine: frame.line }) });
       }
-      let provenance: SourceProvenance = { rule: "stack" };
-      if (wanted.length > 0 && files.length < maxFiles) {
-        // The stack named repository files, but a callable's own file often is not among them: the frames can be only the
-        // shared wrapper that logged the failure (`lib/track`), and the fixer would decline for lack of the function's code.
-        // So the file that exports the failing function by name is added after them, with the files it imports, when it is
-        // not already shown and the file budget has room.
-        const byName = await findSourceByFunctionName(incident.functionName, checkout.files, (rel) => readSource(checkout.dir, rel, maxBytes), {
+      let search: NameSearchOutcome | undefined;
+      // When no frame names a repository file (only framework frames, or no stack, #259), the function's name still says
+      // which export failed. When frames do, they can be only the shared wrapper that logged the failure (`lib/track`), and
+      // the fixer would decline for lack of the function's own code: so its exporting file is added after them, when not
+      // already shown and the budget has room. Either way followed by the files it imports by a relative path (#347).
+      // Never a structural cause: autoMerge.ts reads the stack alone.
+      if (files.length < maxFiles) {
+        const byName = await findSourceByFunctionName(incident.functionName, checkout.files, read, {
           roots: deps.config.functionsSourceRoots,
           excluded: deps.config.patchExcludedPaths,
         });
-        provenance = { rule: "stack", search: byName.outcome };
+        search = byName.outcome;
         if (byName.file && !files.some((f) => f.path === byName.file!.path)) {
+          const found = byName.file;
           const imports = (
-            await followRelativeImports(byName.file, checkout.files, (rel) => readSource(checkout.dir, rel, maxBytes), {
+            await followRelativeImports(found, checkout.files, read, {
               excluded: deps.config.patchExcludedPaths,
               max: Math.min(MAX_FOLLOWED_IMPORTS, maxFiles - files.length - 1),
             })
           ).filter((i) => !files.some((f) => f.path === i.path));
-          files.push(byName.file, ...imports);
-          provenance = { rule: "stack-and-function-name", search: byName.outcome, imports: imports.length };
+          files.push({ ...found, foundBy: "name" }, ...imports.map((i): SourceFile => ({ ...i, foundBy: "import", importedBy: found.path })));
         }
       }
-      if (wanted.length === 0) {
-        // Only framework frames (a callable failing through logger.error / HttpsError), or no stack at all (#259): the
-        // function's name still says which export failed. Never a structural cause (autoMerge.ts reads the stack alone).
-        const byName = await findSourceByFunctionName(incident.functionName, checkout.files, (rel) => readSource(checkout.dir, rel, maxBytes), {
-          roots: deps.config.functionsSourceRoots,
-          excluded: deps.config.patchExcludedPaths,
-        });
-        provenance = { rule: byName.file ? "function-name" : "none", search: byName.outcome };
-        if (byName.file) {
-          // The helpers it calls (#347): its own relative imports, one level, after it, within the same file budget.
-          const imports = await followRelativeImports(byName.file, checkout.files, (rel) => readSource(checkout.dir, rel, maxBytes), {
-            excluded: deps.config.patchExcludedPaths,
-            max: Math.min(MAX_FOLLOWED_IMPORTS, maxFiles - 1),
-          });
-          files.push(byName.file, ...imports);
-          provenance = { ...provenance, imports: imports.length };
-        }
-      }
+      // The record says what was shown, read off the files themselves, so it cannot disagree with them (#417).
+      const provenance = provenanceOfFiles(files, search);
 
       return {
         // An operator's correction (src/triageRules.ts): it caps triage, and is never shown to the model.

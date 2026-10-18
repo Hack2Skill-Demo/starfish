@@ -43,6 +43,12 @@ export interface StarfishConfig {
    * fetch gave up after its own 300 s and the stage said only "TypeError".
    */
   modelTimeoutSeconds: number;
+  /**
+   * The most tokens one model answer may take, thinking included (#418). Set on every call, so an answer cut off at the
+   * limit is known as one (the response says MAX_TOKENS) and goes to a person, rather than read as a failed call and
+   * retried at temperature 0 into the same cut. Lower it for a model whose own limit is lower.
+   */
+  modelMaxOutputTokens: number;
   /** Label attached to every incident, so environments can never mix. */
   environment: string;
   /**
@@ -622,6 +628,7 @@ export function loadConfig(): StarfishConfig {
     location: textOr(process.env.STARFISH_VERTEX_LOCATION, textOr(process.env.GOOGLE_CLOUD_LOCATION, "us-central1")),
     model: textOr(process.env.STARFISH_MODEL, "gemini-3.1-pro-preview"),
     modelTimeoutSeconds: positiveNumber(process.env.STARFISH_MODEL_TIMEOUT_SECONDS, 600, "STARFISH_MODEL_TIMEOUT_SECONDS"),
+    modelMaxOutputTokens: positiveInteger(process.env.STARFISH_MODEL_MAX_OUTPUT_TOKENS, 32_768, "STARFISH_MODEL_MAX_OUTPUT_TOKENS"),
     environment: textOr(process.env.STARFISH_ENV, "dev"),
     settingsCollection: textOr(process.env.STARFISH_SETTINGS_COLLECTION, "starfish_settings"),
     incidentCollection: textOr(process.env.STARFISH_INCIDENT_COLLECTION, "incidents"),

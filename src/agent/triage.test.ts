@@ -12,7 +12,8 @@ import {
   triageLevel,
   type AskJson,
 } from "./triage.js";
-import { FOUND_BY_NAME_NOTE } from "./sourceContext.js";
+import { WEAKER_EVIDENCE_NOTE } from "./sourceContext.js";
+import { ModelAnswerError } from "../vertex.js";
 import { SEEDED_SECRETS } from "../ingest/testSecrets.js";
 import { INCIDENT_STATUSES, OPEN_INCIDENT_STATUSES, type Incident, type SpikeFixture } from "../types.js";
 
@@ -145,6 +146,17 @@ describe("triageIncident: the model's decision", () => {
     expect(r.suspectedCause).toBeUndefined();
   });
 
+  it("says when the model's answer was cut at the output limit or filtered, which the loop hands to a person (#418)", async () => {
+    const cut = (async () => {
+      throw new ModelAnswerError("truncated", "MAX_TOKENS");
+    }) as AskJson;
+    expect(await triageIncident({ incident: incident(), status: "new" }, cut)).toMatchObject({ decision: "error", rule: "model-output-truncated" });
+    const blocked = (async () => {
+      throw new ModelAnswerError("blocked", "SAFETY");
+    }) as AskJson;
+    expect(await triageIncident({ incident: incident(), status: "new" }, blocked)).toMatchObject({ decision: "error", rule: "model-output-blocked" });
+  });
+
   it("fails closed when the model call throws, and records the error's name, not its message", async () => {
     const ask = (async () => {
       throw Object.assign(new Error(`upstream echoed ${SEEDED_SECRETS.github}`), { name: "ApiError" });
@@ -258,13 +270,13 @@ describe("the source triage is shown (#371)", () => {
 
   it("shows the files the caller assembled, after the incident, with the system prompt saying how to read them", async () => {
     const { ask, calls } = stub(act);
-    await triageIncident({ incident: incident({ message: "Gift card refund failed" }), status: "new" }, ask, { source: { files: [cancelOrder], rule: "stack" } });
+    await triageIncident({ incident: incident({ message: "Gift card refund failed" }), status: "new" }, ask, { source: { files: [{ ...cancelOrder, foundBy: "frame" }] } });
     const prompt = calls[0]!.prompt;
     expect(prompt.startsWith(renderForTriage({ incident: incident({ message: "Gift card refund failed" }), status: "new" }))).toBe(true);
     expect(prompt).toContain("SOURCE CONTEXT");
-    expect(prompt).toContain("--- functions/src/orders/cancelOrder.ts ---");
+    expect(prompt).toContain("--- functions/src/orders/cancelOrder.ts (named by a stack frame) ---");
     expect(prompt).toContain("return db.doc(`giftCards/${code}`).get()");
-    expect(prompt).not.toContain(FOUND_BY_NAME_NOTE);
+    expect(prompt).not.toContain(WEAKER_EVIDENCE_NOTE);
     expect(TRIAGE_SYSTEM).toContain("SOURCE CONTEXT");
     // The code is data under the system prompt, like the incident.
     expect(calls[0]!.system).not.toContain("giftCardFor");
@@ -277,16 +289,19 @@ describe("the source triage is shown (#371)", () => {
   });
 
   it("says when the file was found by the function's name, not a stack frame", () => {
-    const prompt = renderTriagePrompt({ incident: incident(), status: "new" }, { files: [cancelOrder], rule: "function-name" });
-    expect(prompt).toContain(FOUND_BY_NAME_NOTE);
+    const prompt = renderTriagePrompt({ incident: incident(), status: "new" }, { files: [{ ...cancelOrder, foundBy: "name" }] });
+    expect(prompt).toContain(WEAKER_EVIDENCE_NOTE);
+    expect(prompt).toContain("(exports the failing function by name; no stack frame named it)");
   });
 
   it("bounds each file and all of them together, smaller than the fixer's budget", () => {
     const files = Array.from({ length: 10 }, (_, i) => ({ path: `f${i}.ts`, content: "x".repeat(MAX_TRIAGE_FILE_CHARS * 2) }));
     const prompt = renderTriagePrompt({ incident: incident({ message: "m" }), status: "new" }, { files });
     expect(prompt.split("x").length - 1).toBeLessThanOrEqual(MAX_TRIAGE_SOURCE_CHARS);
-    expect(prompt).toContain("--- f0.ts ---");
-    expect(prompt).not.toContain("--- f9.ts ---");
+    expect(prompt).toContain("--- f0.ts (CUT: line 1 of 1 shown) ---");
+    expect(prompt).toContain("more characters of this line not shown");
+    expect(prompt).not.toContain("--- f9.ts");
+    expect(prompt).toMatch(/not shown, past the source budget: .*f9\.ts/);
   });
 
   it("redacts credential shapes in the source but keeps code that only names them", () => {
