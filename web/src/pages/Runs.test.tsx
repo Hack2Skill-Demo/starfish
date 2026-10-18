@@ -485,8 +485,14 @@ describe("Runs page", () => {
       ])
     );
     const words = within(screen.getByRole("region", { name: "In plain words" }));
-    expect(words.getByText(/^Round 1$/)).toBeInTheDocument();
-    expect(words.getByText(/^Round 2 · Handed to a person earlier; retried: an operator asked for a retriage$/)).toBeInTheDocument();
+    // Which round is over and which is the current one is said, not left to the numbers.
+    expect(words.getAllByText(/^Round \d$/).map((r) => r.closest("p")!.textContent)).toEqual([
+      "Round 1Earlier",
+      "Round 2CurrentHanded to a person earlier; retried: an operator asked for a retriage",
+    ]);
+    expect(words.getByText("Earlier")).toBeInTheDocument();
+    expect(words.getByText("Current")).toBeInTheDocument();
+    expect(words.getByText("Handed to a person earlier; retried: an operator asked for a retriage")).toBeInTheDocument();
     expect(words.getAllByText(/A person was told in Slack\./)).toHaveLength(2);
     expect(words.getByText("Handed to a person.")).toBeInTheDocument();
     expect(words.getByText(/no model wrote it/)).toBeInTheDocument();
