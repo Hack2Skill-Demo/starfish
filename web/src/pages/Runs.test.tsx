@@ -500,6 +500,29 @@ describe("Runs page", () => {
     expect(screen.getByTestId("run-why")).toHaveTextContent("Why: The rule counter-check-zero recorded it as noise, with nothing filed, with no model call. The recount found 0 errors in 24h.");
   });
 
+  it("lists a revision in the order it happened: the draft, its gate, the review that blocked it, then the revision", () => {
+    renderRuns();
+    act(() => mocks.cyclesCb!([cycle("inc-a_r0", { state: "waiting-human", path: "human", leaseExpiresAt: null })], false));
+    act(() =>
+      mocks.eventsCb!([
+        event(1, "triage", "decision", "a reason", 60_000),
+        event(2, "fix", "proposed", "first draft", 50_000),
+        event(3, "verify", "passed", "green", 45_000),
+        event(4, "review", "block", "3 attacks tried", 30_000),
+        event(5, "fix", "proposed", "revised draft", 20_000),
+        event(6, "verify", "passed", "green again", 10_000),
+      ])
+    );
+    const log = within(screen.getByRole("list", { name: "Step log" })).getAllByRole("listitem");
+    const heads = log.map((li) => li.textContent!.replace(/\s+/g, " "));
+    const order = ["Verify gate", "Draft a fix", "Adversarial review", "Verify gate", "Draft a fix", "Triage"];
+    order.forEach((title, i) => expect(heads[i]).toContain(title));
+    expect(heads[0]).toContain("Attempt 2 of 2");
+    expect(heads[3]).toContain("Attempt 1 of 2");
+    expect(heads[4]).toContain("first draft");
+    expect(heads[2]).not.toContain("Attempt");
+  });
+
   it("says nothing about rounds for a run that was never reopened", () => {
     renderRuns();
     act(() => mocks.cyclesCb!([cycle("inc-a_r0", { state: "declined", path: "decline", leaseExpiresAt: null })], false));

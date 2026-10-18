@@ -1527,6 +1527,11 @@ function StepRow({
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
           <span className="text-base font-semibold text-gray-900 dark:text-white">{step.title}</span>
           <Badge tone={verdictTone(step)}>{step.status === "running" ? "In progress" : stepVerdict(step)}</Badge>
+          {step.attempt && (
+            <span className="text-xs text-gray-600 dark:text-gray-400">
+              Attempt {step.attempt.n} of {step.attempt.of}
+            </span>
+          )}
           {step.at && (
             <span className="ml-auto text-xs text-gray-600 dark:text-gray-400">
               {formatDateTime(step.at)}
@@ -1573,7 +1578,9 @@ function Timeline({
   now: number;
 }) {
   const [oldestFirst, setOldestFirst] = useState(false);
-  const newest = stepLogOrder(water.steps);
+  // The earlier runs of a repeated stage (the draft a review blocked, its gate) are rows of their own, so a revision reads in
+  // the order it happened instead of the revised draft sitting above the review that sent it back.
+  const newest = stepLogOrder([...water.steps, ...water.attempts]);
   const steps = oldestFirst ? [...newest].reverse() : newest;
   const { earlier, rounds } = water;
   if (steps.length === 0 && earlier.length === 0) return null;
@@ -1621,7 +1628,7 @@ function Timeline({
       </div>
       <ol aria-label="Step log" className="divide-y divide-gray-100 dark:divide-gray-700">
         {steps.map((step) => (
-          <StepRow key={step.stage} step={step} cycle={cycle} events={events} pr={pr} issue={issue} finding={finding} now={now} />
+          <StepRow key={`${step.stage}-${step.attempt?.n ?? 0}`} step={step} cycle={cycle} events={events} pr={pr} issue={issue} finding={finding} now={now} />
         ))}
       </ol>
       {earlier.length > 0 && (

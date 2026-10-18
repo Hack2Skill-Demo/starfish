@@ -54,8 +54,8 @@ export interface RunWords {
   why?: string;
 }
 
-/** The steps that decide where a run goes, as against the ones that tell people (the issue, the alerts, the calls). */
-const DECIDING = new Set(["triage", "fix", "verify", "review", "index", "pr", "merge", "revert"]);
+/** The steps that decide where a run goes, as against the ones that tell people (the issue, the alerts, the calls); a stop note (`cycle`) is the reason when the run was stopped with no step to blame. */
+const DECIDING = new Set(["triage", "fix", "verify", "review", "index", "pr", "merge", "revert", "cycle"]);
 
 const LEVEL_WORDS: Record<string, string> = {
   noise: "recorded it as noise, with nothing filed",
@@ -240,13 +240,19 @@ export function runInWords(cycle: CycleRow, water: Waterfall, events: readonly E
     const began = r.round > 1 ? (reopenings.find((n) => n.round === r.round) ?? reopenings[r.round - 2])?.summary : undefined;
     rounds.push({ round: r.round, ...(began && { began }), sentences: steps.map(withStage) });
   }
-  const latest = [...stepLogOrder(water.steps)]
-    .reverse()
-    .filter((s) => s.status === "done" || s.status === "failed")
-    .map((s) => wordStep(s, recordOf(s.stage, s.at)));
-  if (latest.length > 0 || rounds.length === 0) {
+  // The latest round's steps in the order they happened, a repeated stage's earlier runs included (a draft, its gate, the
+  // review that blocked it, the revision), and the engine's own stop notes (the model-call budget used up, a stop before
+  // acting), which are why a run can end with no step to blame.
+  const stopNotes = water.notes.filter((n) => (n.type === "budget" || n.type === "stopped") && (!water.reopened || n.at.getTime() >= water.reopened.at.getTime()));
+  const timed: { at: number; s: StageSentence }[] = [
+    ...stepLogOrder([...water.steps, ...water.attempts])
+      .filter((s) => s.status === "done" || s.status === "failed")
+      .map((s) => ({ at: s.at?.getTime() ?? 0, s: withStage(wordStep(s, recordOf(s.stage, s.at))) })),
+    ...stopNotes.map((n) => ({ at: n.at.getTime(), s: { text: `${n.summary.replace(/[.\s]+$/, "")}.`, templated: false, stage: "cycle" } })),
+  ].sort((a, b) => a.at - b.at);
+  if (timed.length > 0 || rounds.length === 0) {
     const began = water.rounds > 1 ? water.reopened?.summary : undefined;
-    rounds.push({ round: water.rounds, ...(began && { began }), sentences: latest.map(withStage) });
+    rounds.push({ round: water.rounds, ...(began && { began }), sentences: timed.map((t) => t.s) });
   }
   const closing = cycle.state !== "running" && cycle.path ? `${PATH_LABELS[cycle.path]}.` : undefined;
   if (rounds.every((r) => r.sentences.length === 0)) return null;
