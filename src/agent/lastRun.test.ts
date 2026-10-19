@@ -91,6 +91,18 @@ describe("the agent's last-run record (#274)", () => {
     expect(agentLastRunFields(report, "*/10 * * * *", FINISHED)).toMatchObject({ intervalMinutes: 10 });
   });
 
+  it("records the daily reopen limit the pass applied, which the Runs page holds Retry back by (#456)", () => {
+    const report = newAgentPassReport(STARTED, "demo");
+    expect(agentLastRunFields(report, undefined, FINISHED)).not.toHaveProperty("reconsiderMaxPerDay");
+    report.reconsiderMaxPerDay = 3;
+    const fields = agentLastRunFields(report, undefined, FINISHED);
+    expect(fields).toMatchObject({ reconsiderMaxPerDay: 3 });
+    expect(parseAgentRunRecord({ ...fields, finishedAt: { toDate: () => FINISHED } })?.reconsiderMaxPerDay).toBe(3);
+    for (const bad of [0, -1, "3", Number.NaN]) {
+      expect(parseAgentRunRecord({ ...fields, finishedAt: { toDate: () => FINISHED }, reconsiderMaxPerDay: bad })).not.toHaveProperty("reconsiderMaxPerDay");
+    }
+  });
+
   it("records the skip and the capped scan", () => {
     const report = newAgentPassReport(STARTED, "demo");
     notePassSummary(report, { ...passSummary({ considered: 0, ran: 0 }), skipped: "automation-disabled" });

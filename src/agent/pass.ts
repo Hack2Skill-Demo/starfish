@@ -11,7 +11,7 @@ import type { DocumentSnapshot, Firestore, QueryDocumentSnapshot } from "firebas
 import type { StarfishConfig } from "../config.js";
 import { OPEN_INCIDENT_STATUSES } from "../types.js";
 import { SETTLED_STATES, cycleId, isReopenable, strandedReason, type CycleConfig, type CycleKey, type CycleState } from "./cycle.js";
-import { reconsiderTrigger, utcDay, type ReconsiderPolicy, type ReconsiderTrigger } from "./reconsider.js";
+import { reconsiderTrigger, refusedRetry, utcDay, type ReconsiderPolicy, type ReconsiderTrigger } from "./reconsider.js";
 import { isExcludedPath } from "./verifyGate.js";
 import type { LoopResult } from "./loop.js";
 
@@ -60,12 +60,21 @@ type Rank = 0 | 1 | 2;
  * cost: unless `limit` recurred ones turn up, a pass reads up to that bound, incidents and their cycles). Reaching
  * that bound with fewer than `limit` candidates is reported through `opts.onScanCapped`, never silent. Uses the same
  * (environment, lastOccurredAt) index as the incidents list, so it needs no new index.
+ *
+ * An operator's retry the daily reopen limit holds back (reconsider.ts `refusedRetry`, #456) is no candidate; each one the
+ * scan sees is handed to `opts.onRetryRefused`, so the pass can say so on the run (cycle.ts `recordRetryRefused`).
  */
 export async function selectCandidates(
   db: Firestore,
   cfg: PassConfig,
   limit: number,
-  opts: { reconsider?: ReconsiderPolicy; now?: Date; onScanCapped?: (scanned: number) => void; maxScanned?: number } = {}
+  opts: {
+    reconsider?: ReconsiderPolicy;
+    now?: Date;
+    onScanCapped?: (scanned: number) => void;
+    maxScanned?: number;
+    onRetryRefused?: (candidate: Pick<Candidate, "incidentId" | "recurrence">) => void;
+  } = {}
 ): Promise<Candidate[]> {
   if (!Number.isInteger(limit) || limit < 1) return [];
   const maxScanned = Math.max(1, Math.min(opts.maxScanned ?? MAX_SCANNED, MAX_SCANNED));
@@ -83,7 +92,7 @@ export async function selectCandidates(
     if (after) query = query.startAfter(after);
     const snap = await query.get();
     scanned += snap.size;
-    await collectCandidates(db, cfg, snap.docs, now, opts.reconsider, found);
+    await collectCandidates(db, cfg, snap.docs, now, opts.reconsider, found, opts.onRetryRefused);
     // Nothing later in the scan can outrank `limit` recurred candidates.
     if (found.filter((f) => f.rank === 0).length >= limit || snap.size < size) return ranked();
     if (scanned >= maxScanned) {
@@ -101,7 +110,8 @@ async function collectCandidates(
   docs: readonly QueryDocumentSnapshot[],
   now: Date,
   reconsider: ReconsiderPolicy | undefined,
-  found: { candidate: Candidate; rank: Rank }[]
+  found: { candidate: Candidate; rank: Rank }[],
+  onRetryRefused?: (candidate: Pick<Candidate, "incidentId" | "recurrence">) => void
 ): Promise<void> {
   const open: Candidate[] = [];
   const incidents = new Map<string, Record<string, unknown>>();
@@ -126,6 +136,7 @@ async function collectCandidates(
     if (isReopenable(state) && data && reconsider) {
       const trigger = reconsiderTrigger(data, incidents.get(c.incidentId), reconsider, now);
       if (trigger !== null) found.push({ candidate: { ...c, reconsider: trigger }, rank: recurred ? 0 : 2 });
+      else if (onRetryRefused && refusedRetry(data, incidents.get(c.incidentId), reconsider, now) !== null) onRetryRefused(c);
       return;
     }
     // Finished or waiting on a person: running it again would only repeat it.

@@ -41,7 +41,8 @@ import { clipWellFormed, isSensitiveKey } from "../ingest/redact.js";
 import type { PublicViewConfig } from "../publicView.js";
 import { refreshPublicCycle, writePublicEventInTx } from "../publicViewStore.js";
 import { ROUND_SCOPED_RECORDS, isReopenable, roundOf, type CycleState } from "./cycleStates.js";
-import { MAX_DECISION_HISTORY, reconsiderTrigger, recentReconsiderations, utcDay, type ReconsiderPolicy, type ReconsiderTrigger } from "./reconsider.js";
+import { MAX_DECISION_HISTORY, reconsiderTrigger, recentReconsiderations, refusedRetry, utcDay, type ReconsiderPolicy, type ReconsiderTrigger } from "./reconsider.js";
+import { retryRefusedSummary } from "../reopenLimit.js";
 
 /** With the public-view settings: a cycle of a public environment keeps its guest copy up to date (src/publicView.ts, #18). */
 export type CycleConfig = Pick<StarfishConfig, "cycleCollection" | "leaseSeconds" | "cycleDeadlineMinutes" | "maxCycleAttempts"> & PublicViewConfig;
@@ -592,6 +593,54 @@ export async function updateSettledCycle<R>(
     if (u.event) appendEventsInTransaction(tx, ref, d, now, [{ ...u.event, record: undefined }], cfg);
     tx.update(ref, Object.fromEntries(Object.entries(u.records).map(([stage, record]) => [`summary.${stage}`, record])));
     return u.result;
+  });
+}
+
+export type RetryRefusedWrite = { recorded: true; nextPossibleAt?: string } | { recorded: false; reason: "invalid-key" | "not-refused" | "already-recorded" };
+
+/**
+ * Say on the run that an operator's retry is held back by the daily reopen limit (#456, reconsider.ts `refusedRetry`): a
+ * run event (stage `cycle`, type `retry-refused`, in the engine's words: how many reopenings, the limit, when it can
+ * start) and `summary.retryRefused`, which the Runs page reads beside Retry. Before it, the pass found no candidate and
+ * said nothing anywhere, so the person who pressed Retry could not tell why nothing ran.
+ *
+ * ONCE PER REQUEST: the record names the request it answers (`requestedAt`, the incident's `retriageRequestedAt`), and a
+ * pass that finds the same request held back again writes nothing. A newer request gets its own record. The refusal is
+ * judged again here, in the transaction, on the cycle and the incident as stored, so a reopening or a close in between
+ * is never reported as a refusal. Appending the event moves `updatedAt`, never `settledAt`, so the request still counts
+ * once the limit allows it; the reopening then clears the record with the round's others (`ROUND_SCOPED_RECORDS`).
+ */
+export async function recordRetryRefused(
+  db: Firestore,
+  cfg: CycleConfig,
+  key: CycleKey,
+  opts: { incidentCollection: string; policy: ReconsiderPolicy },
+  now: Date
+): Promise<RetryRefusedWrite> {
+  const id = cycleId(key);
+  if (id === null) return { recorded: false, reason: "invalid-key" };
+  const incidentRef = db.collection(opts.incidentCollection).doc(key.incidentId);
+  return updateSettledCycle(db, cfg, id, now, async (tx, d): Promise<SettledUpdate<RetryRefusedWrite>> => {
+    if (d === undefined) return { result: { recorded: false, reason: "not-refused" } };
+    const refused = refusedRetry(d, (await tx.get(incidentRef)).data(), opts.policy, now);
+    if (refused === null) return { result: { recorded: false, reason: "not-refused" } };
+    const requestedAt = new Date(refused.requestedAtMs).toISOString();
+    const prior = (d.summary as { retryRefused?: { requestedAt?: unknown } } | undefined)?.retryRefused;
+    if (prior?.requestedAt === requestedAt) return { result: { recorded: false, reason: "already-recorded" } };
+    const { limit } = refused;
+    const nextPossibleAt = limit.nextPossibleAtMs !== undefined ? new Date(limit.nextPossibleAtMs).toISOString() : undefined;
+    const record = {
+      requestedAt,
+      reopenings: limit.recent,
+      maxPerDay: limit.maxPerDay,
+      ...(nextPossibleAt !== undefined && { nextPossibleAt }),
+      checkedAt: now.toISOString(),
+    };
+    return {
+      result: { recorded: true, ...(nextPossibleAt !== undefined && { nextPossibleAt }) },
+      records: { retryRefused: record },
+      event: { stage: "cycle", type: "retry-refused", summary: retryRefusedSummary(limit), data: record },
+    };
   });
 }
 

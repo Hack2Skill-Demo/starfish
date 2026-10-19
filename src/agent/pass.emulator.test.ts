@@ -84,6 +84,22 @@ describe("selectCandidates", () => {
     expect(await selectCandidates(db, cfg, 10, { reconsider, now })).toEqual([expect.objectContaining({ incidentId: "failed", reconsider: "operator" })]);
   });
 
+  it("hands a retry the daily reopen limit holds back to onRetryRefused, never to the candidates (#456)", async () => {
+    const now = new Date();
+    const reconsider = { reconsiderCooldownMinutes: 30, reconsiderMaxPerDay: 3, reconsiderBurstOccurrences: 20 };
+    await incident("held", { retriageRequestedAt: ts(1) });
+    await cycle("held_r0", "waiting-human");
+    await db.collection(cfg.cycleCollection).doc("held_r0").update({ settledAt: ts(10), recurrence: 0, reconsideredAt: [ts(300), ts(200), ts(100)] });
+    const refused: string[] = [];
+    expect(await selectCandidates(db, cfg, 10, { reconsider, now, onRetryRefused: (c) => refused.push(`${c.incidentId}:${c.recurrence}`) })).toEqual([]);
+    expect(refused).toEqual(["held:0"]);
+    // Under the limit the same request is a candidate, and nothing is reported held back.
+    refused.length = 0;
+    await db.collection(cfg.cycleCollection).doc("held_r0").update({ reconsideredAt: [ts(200), ts(100)] });
+    expect(await selectCandidates(db, cfg, 10, { reconsider, now, onRetryRefused: (c) => refused.push(c.incidentId) })).toEqual([expect.objectContaining({ incidentId: "held", reconsider: "operator" })]);
+    expect(refused).toEqual([]);
+  });
+
   it("gives a regression a fresh cycle: the old recurrence's settled cycle does not count", async () => {
     await incident("back", { status: "recurred", recurrenceCount: 1 });
     await cycle("back_r0", "done");

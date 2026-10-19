@@ -319,7 +319,13 @@ src/
                    in the same write (any other status kept; never `resolved`), which an operator can still acknowledge
   agent/reconsider.ts  when a DECLINED cycle is triaged again (#8): an operator's `retriageRequestedAt`, a burst, or a new
                    structural cause since the recorded decision, or an incident closed mid-cycle and reopened (#227);
-                   cooldown + cap per 24 h; never over ignored/resolved.
+                   cooldown + cap per 24 h (`src/reopenLimit.ts`, pure and shared with the Runs page, #456: an operator's request
+                   counts against it too; whether it should is an open product question in #456); never over ignored/resolved.
+                   A person's request over the cap is held, not dropped: it stays on the incident and reopens the cycle once
+                   the cap allows; meanwhile the pass's scan reports it (`refusedRetry`) and `cycle.ts` `recordRetryRefused`
+                   says so on the run ONCE PER REQUEST (a `cycle` event `retry-refused`, "Retry not started: reopened N times
+                   in 24 h, the limit is M; it can start at <ISO>…", and `summary.retryRefused`, round-scoped), and the agent's
+                   `agent_last_run` records the cap it applied (`reconsiderMaxPerDay`). Unit- and emulator-tested; not yet deployed.
                    cycle.ts reopens the same cycle in the lease transaction, so still one PR per recurrence and no second issue.
                    A WAITING-HUMAN cycle (a person was told) is reopened only on an operator's `retriageRequestedAt` (the Runs
                    page's "Retry with agent") later than the cycle settled (`settledAt`, which an escalation's later event does
@@ -501,7 +507,10 @@ collection-group query over `events`, with its own rule and index; a guest's rea
 **Incidents** page (read by cursor, 200 incidents a page: "Load more" reaches an incident past the first page, the status/service/function filters and the status counts cover the pages loaded and say so, a "+" on a count that may be higher, #388; under each error, the incident's current run: its state, triage's reason and a link to it, `lib/useIncidentRuns.ts`; with `VITE_STARFISH_DEMO_APP_URL`, a link to the demo app's Lab, `components/DemoAppLink.tsx`, also every page's header as a flask button opening it in a dialog), a **Runs** page (live subscription to `{cycleCollection}` and its newest 200 events, read newest first by `seq`; a run
 with more says older ones are not drawn, #326,
 `web/src/lib/runs.ts`; the run list shows 10 runs a page (`pageOf` in `runsModel.ts`, a linked run opens on its page, "Show
-older runs" on the last page, incidents read for the page shown only); a run waiting for the person it told, on an open incident, gets a "What you can do now" card
+older runs" on the last page, incidents read for the page shown only); Retry with agent is held back (disabled, with the count, the cap and when it can start, and that a request already
+made stands) once the run was reopened as often in 24 hours as the agent's last pass says the engine allows (`lib/retryHold.ts`
+over `src/reopenLimit.ts`, the cap read live from `agent_last_run`, `lib/useReopenLimit.ts`; without it, only the engine's
+own `summary.retryRefused` note, while its time is ahead; #456); a run waiting for the person it told, on an open incident, gets a "What you can do now" card
 (`components/HandoffCard.tsx`: acknowledge, fix and resolve, retry, correct triage, ignore, each beside its control; the
 same list `src/handoff.ts` puts in the Slack "needs a human" message; a viewer with no role, a guest, reads one line instead:
 a signed-in team member takes it from here, #360); the waterfall logic is pure in `runsModel.ts`: a step with no event is "not

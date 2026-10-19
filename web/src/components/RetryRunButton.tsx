@@ -9,6 +9,10 @@
  * agent's status then says a start was requested (`lib/agentStart.ts`). An operator's retry waits for the next pass:
  * starting the agent stays an admin's action, and the server checks the role again either way. Where the public demo's
  * open actions are on, a visitor's retry goes to the admin API and starts a pass too, within the visitor's hourly limits.
+ *
+ * Held back (#456): the engine reopens a run at most a few times a day (src/reopenLimit.ts). When the page knows the run
+ * has reached that limit (`hold`, lib/retryHold.ts), the button is disabled and says, beside it, how many reopenings,
+ * the limit, and when a retry can start again; a request already made stands until then.
  */
 import { useState } from "react";
 import { Bot } from "lucide-react";
@@ -20,12 +24,16 @@ import { webConfig } from "../lib/config";
 import { markAgentStartRequested } from "../lib/agentStart";
 import { appAdminApi, runAgentNow, type AdminResult } from "../lib/adminApi";
 import { actsThroughAdminApi, canOperate } from "../lib/dataSource";
+import { formatDateTime } from "../lib/formatters";
+import { retryHoldWords, type RetryHold } from "../lib/retryHold";
 
 export function RetryRunButton({
   incidentId,
   ask = requestRetriage,
   startAgent = () => runAgentNow(appAdminApi()),
   size = "sm",
+  hold = null,
+  onDark = false,
 }: {
   incidentId: string;
   ask?: (incidentId: string, uid: string) => Promise<void>;
@@ -33,6 +41,10 @@ export function RetryRunButton({
   startAgent?: () => Promise<AdminResult<null>>;
   /** `md` matches the run hero's other actions (44 px). */
   size?: "sm" | "md";
+  /** The daily reopen limit holds a retry back now (lib/retryHold.ts): disabled, with why and until when. */
+  hold?: RetryHold | null;
+  /** On the run hero's dark card: the note beside the button in light text. */
+  onDark?: boolean;
 }) {
   const { user, roles, guest } = useAuth();
   const [state, setState] = useState<"idle" | "busy" | "requested" | "started">("idle");
@@ -72,6 +84,20 @@ export function RetryRunButton({
   };
 
   const label = state === "started" ? "Agent started" : state === "requested" ? "Retry requested" : state === "busy" ? "Requesting…" : "Retry with agent";
+  // Only before a press: once this tab asked, the toast and the label say what happened, and the run says the rest.
+  if (hold && state === "idle") {
+    const noteId = `retry-hold-${incidentId}`;
+    return (
+      <span className="inline-flex max-w-md flex-wrap items-center gap-x-3 gap-y-1">
+        <Button variant="secondary" size={size} disabled aria-describedby={noteId}>
+          <Bot className="h-4 w-4" aria-hidden /> Retry with agent
+        </Button>
+        <span id={noteId} role="note" className={onDark ? "text-xs text-gray-300" : "text-xs text-gray-700 dark:text-gray-300"}>
+          {retryHoldWords(hold, formatDateTime(hold.nextPossibleAt))}
+        </span>
+      </span>
+    );
+  }
   return (
     <Button
       variant="secondary"

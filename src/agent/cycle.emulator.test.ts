@@ -8,7 +8,7 @@ import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { deleteApp, initializeApp } from "firebase-admin/app";
 import { getFirestore, Timestamp } from "firebase-admin/firestore";
 import type { Firestore } from "firebase-admin/firestore";
-import { acquireLease, appendEventsInTransaction, countSpend, cycleId, finishCycle, recordEvent, recordPrState, releaseLease, renewLease, sanitizeEvent, ROUND_SCOPED_RECORDS, type CycleConfig, type CycleKey, type PrStateRecord } from "./cycle.js";
+import { acquireLease, appendEventsInTransaction, countSpend, cycleId, finishCycle, recordEvent, recordPrState, recordRetryRefused, releaseLease, renewLease, sanitizeEvent, ROUND_SCOPED_RECORDS, type CycleConfig, type CycleKey, type PrStateRecord } from "./cycle.js";
 import { SEEDED_SECRETS } from "../ingest/testSecrets.js";
 import { causeClass } from "./reconsider.js";
 import { PUBLIC_VIEW_OFF } from "../testConfig.js";
@@ -637,6 +637,48 @@ describe("retrying a cycle that ended waiting-human, on a person's request (#317
     // Still once only: the retried run settles after the request, so the same request does not start it again.
     await finishCycle(db, cfg, "inc1_r0", "b", mins(4), "waiting-human", "verify-patch-does-not-apply", "human");
     expect(await acquireLease(db, cfg, key, "c", mins(5), { reconsider: policy() })).toEqual({ acquired: false, reason: "waiting-human" });
+  });
+
+  // #456: the fourth retry in a day was refused with no word anywhere: the pass found 0 candidates and that was all.
+  it("says once per request that the daily limit holds a retry back, and runs the same request once the limit allows", async () => {
+    await refusedFix();
+    for (const t of [10, 20, 30]) {
+      await setIncident({ retriageRequestedAt: mins(t - 1) });
+      expect(await acquireLease(db, cfg, key, `w${t}`, mins(t), { reconsider: policy() })).toMatchObject({ acquired: true, reconsidered: "operator" });
+      await finishCycle(db, cfg, "inc1_r0", `w${t}`, mins(t + 1), "waiting-human", "budget-exceeded", "human");
+    }
+    const opts = { incidentCollection: incidents(), policy: policy() };
+    // Not refused: no request since the cycle settled.
+    expect(await recordRetryRefused(db, cfg, key, opts, mins(35))).toEqual({ recorded: false, reason: "not-refused" });
+
+    await setIncident({ retriageRequestedAt: mins(40) });
+    const next = new Date(mins(10).getTime() + 86_400_000).toISOString();
+    expect(await acquireLease(db, cfg, key, "late", mins(41), { reconsider: policy() })).toEqual({ acquired: false, reason: "waiting-human" });
+    expect(await recordRetryRefused(db, cfg, key, opts, mins(41))).toEqual({ recorded: true, nextPossibleAt: next });
+    const before = (await events()).length;
+    const last = (await events()).at(-1)!;
+    expect(last).toMatchObject({ stage: "cycle", type: "retry-refused", round: 4 });
+    expect(last.summary).toBe(`Retry not started: reopened 3 times in 24 h, the limit is 3; it can start at ${next.replace(".000Z", "Z")}, and the request stands until then`);
+    expect(last.data).toMatchObject({ reopenings: 3, maxPerDay: 3, nextPossibleAt: next, requestedAt: mins(40).toISOString() });
+    let c = await cycle();
+    expect(c.summary.retryRefused).toEqual({ requestedAt: mins(40).toISOString(), reopenings: 3, maxPerDay: 3, nextPossibleAt: next, checkedAt: mins(41).toISOString() });
+    // The note is not a settle: the request still counts against the settle time, and the cycle still waits for a person.
+    expect(c.settledAt.toMillis()).toBe(mins(31).getTime());
+    expect(c.state).toBe("waiting-human");
+
+    // Once per request: the next passes find the same request held back and write nothing.
+    for (const m of [100, 200]) expect(await recordRetryRefused(db, cfg, key, opts, mins(m))).toEqual({ recorded: false, reason: "already-recorded" });
+    expect(await events()).toHaveLength(before);
+    // A newer request gets its own note.
+    await setIncident({ retriageRequestedAt: mins(300) });
+    expect(await recordRetryRefused(db, cfg, key, opts, mins(301))).toMatchObject({ recorded: true });
+    expect(await events()).toHaveLength(before + 1);
+
+    // The request stands: when the oldest reopening is 24 hours old, the same request reopens the cycle, and the note goes.
+    expect(await acquireLease(db, cfg, key, "next-day", new Date(Date.parse(next)), { reconsider: policy() })).toMatchObject({ acquired: true, reconsidered: "operator" });
+    c = await cycle();
+    expect(c.summary.retryRefused).toBeUndefined();
+    expect(c.reconsiderCount).toBe(4);
   });
 
   it("never reopens over an ignored or resolved incident, or one whose pull request is open", async () => {
