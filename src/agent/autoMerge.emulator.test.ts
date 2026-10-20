@@ -586,6 +586,36 @@ describe("runFastRevertStep: reverts Starfish's own merge when the incident come
     expect(gh.calls).toEqual([]);
   });
 
+  it("never closes clear on a retired or gone incident: a person is told at once, nothing is reverted, and a later merge is held (#425)", async () => {
+    for (const [name, change] of [
+      ["retired", () => db.collection(cfg.incidentCollection).doc("inc1").update({ retired: true, status: "resolved", lastOccurredAt: Timestamp.fromMillis(t0.getTime() + 25 * 60_000) })],
+      ["gone", () => db.collection(cfg.incidentCollection).doc("inc1").delete()],
+    ] as const) {
+      await seed("inc1_r0", watching());
+      await change();
+      const { reach, closesAt } = watchSpan(t0.getTime(), cfg);
+      await ingested(reach + 3_600_000);
+      told = [];
+      const gh = fakeGithub();
+      clock = new Date(t0.getTime() + 30 * 60_000);
+      expect(await runFastRevertStep(revertDeps(gh.client)), name).toMatchObject({ cleared: 0, opened: 0, escalated: 1 });
+      expect((await cycle("inc1_r0")).summary.revert, name).toMatchObject({ state: "escalated", reason: "incident-gone", escalation: "sent" });
+      expect(told.map((t) => t.rule), name).toEqual(["fast-revert-incident-gone"]);
+      expect(gh.calls, name).toEqual([]);
+      // Closed for good: a later pass, past the window's close, neither clears nor tells anyone again.
+      clock = new Date(closesAt + 1);
+      expect(await runFastRevertStep(revertDeps(gh.client)), name).toMatchObject({ considered: 0 });
+      expect(told, name).toHaveLength(1);
+    }
+    // The escalated watch still holds a later merge for the incident back.
+    await seed("inc1_r0", proven({ merge: { state: "merged", mergeSha: MERGED }, revert: { state: "escalated", reason: "incident-gone", mergeSha: MERGED } }));
+    await seed("inc1_r1", proven(), { recurrence: 1 });
+    const gh = fakeGithub();
+    await runAutoMergeStep(mergeDeps(gh.client));
+    expect(gh.merges).toEqual([]);
+    expect((await cycle("inc1_r1")).summary.merge).toMatchObject({ state: "skipped", reason: "incident-reverted-before" });
+  });
+
   it("opens a revert of the merge commit on a recurrence, tells a person, and merges it once its checks pass", async () => {
     await seed("inc1_r0", watching());
     await occurred(25);

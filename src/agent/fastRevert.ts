@@ -18,6 +18,11 @@
  * zero. Until then it keeps watching; a day past its close with the window still not read, a person is told that the
  * merge could not be confirmed (`escalated`, `ingest-not-covered`), and nothing is reverted.
  *
+ * A watch whose incident was retired, or is gone, never closes `clear` (#425): retiring frees the fingerprint, so the error
+ * coming back opens a NEW incident this watch never reads, and its silence proves nothing. It is handed to a person at
+ * once (`escalated`, `incident-gone`, as recovery.ts calls the same case), nothing is reverted, and, like any escalated
+ * watch, it holds later merges for the incident back (autoMerge.ts `earlierMergeHolds`).
+ *
  * What it will not do:
  *   - Revert a revert. Only a merge recorded in `summary.merge` is ever watched; the revert's own merge is recorded in
  *     `summary.revert` and nothing watches that.
@@ -111,7 +116,8 @@ export function watchSpan(mergedAtMs: number, cfg: Pick<FastRevertConfig, "fastR
 
 /**
  * Whether the incident came back after Starfish's merge: an occurrence later than the grace after the merge, in the
- * window. Pure. A retired incident never has (its fingerprint was freed: a new occurrence is a new incident).
+ * window. Pure. A retired incident never has (its fingerprint was freed: a new occurrence is a new incident); the step
+ * hands a watch on one to a person rather than closing it clear (#425).
  *
  * What the store keeps is not every occurrence's time, so the evidence is read for what it proves (#201):
  *   - `lastOccurredAt` is the LATEST occurrence ever seen (store.ts never moves it backwards). In the window: proof.
@@ -219,7 +225,18 @@ export async function runFastRevertStep(deps: FastRevertDeps): Promise<FastRever
       const mergedAtMs = millis(revert.mergedAt);
       if (mergedAtMs === undefined) return giveUp("merge-time-unknown", same("watching"));
       const incidentId = String(cycle.data.incidentId ?? "");
-      const incident = incidentId ? ((await db.collection(cfg.incidentCollection).doc(incidentId).get()).data() ?? {}) : {};
+      const incident = incidentId ? ((await db.collection(cfg.incidentCollection).doc(incidentId).get()).data() ?? null) : null;
+      if (incident === null || incident.retired === true) {
+        // Retired (its fingerprint freed) or gone: the error coming back would be a NEW incident this watch never reads, so
+        // nothing it reads can show the merge held. Never `clear`, never a revert: a person is told (#425).
+        const escalation = await escalate(
+          deps,
+          cycle,
+          "fast-revert-incident-gone",
+          "Starfish merged a fix for this incident, but the incident was retired (or can no longer be read) while the fast-revert watch was open. The error coming back would open a new incident that the watch cannot see, so Starfish cannot tell whether the fix held. Nothing was reverted. A person needs to check."
+        );
+        return (await moveRecord(db, cfg, cycle.id, now, "revert", same("watching"), { ...revert, state: "escalated", reason: "incident-gone", escalation, decidedAt: nowIso })) ? "escalated" : "unchanged";
+      }
       const recurrence = typeof cycle.data.recurrence === "number" ? cycle.data.recurrence : 0;
       if (!recurredAfterMerge(incident, { mergedAtMs, recurrence }, cfg)) {
         const { reach, closesAt } = watchSpan(mergedAtMs, cfg);

@@ -5,10 +5,12 @@
  *
  *   recurred        the incident occurred again after the index was READY (its `lastOccurredAt` is later);
  *   query-failing   it stayed quiet, but the configured query fails again asking for this index;
- *   unverified      no probe can be run for it now (the probe was removed from the configuration), the incident is gone,
- *                   ingest still had not read the logs through the window a day after it ended, or the probe still could
- *                   not run (inconclusive) a day after it ended;
- *   healed          no occurrence since READY, for the whole window, and the configured query passes at its end.
+ *   unverified      no probe can be run for it now (the probe was removed from the configuration), the incident is gone
+ *                   or retired (#425: its fingerprint was freed, so the error coming back opens a NEW incident this one
+ *                   never records), ingest still had not read the logs through the window a day after it ended, or the
+ *                   probe still could not run (inconclusive) a day after it ended;
+ *   healed          no occurrence since READY, for the whole window, and the configured query passes at its end. Never
+ *                   for a retired incident: its silence proves nothing.
  *
  * "Quiet" is the incident's own record: no occurrence since READY, and only once ingest's checkpoint for this target
  * (src/ingest/run.ts) is at or past the window's end. A stalled ingest records no occurrences either, so a window it
@@ -26,7 +28,7 @@ import type { Firestore, Timestamp } from "firebase-admin/firestore";
 import { readIngestCheckpoint } from "../ingest/run.js";
 import { COLLECTION_RE, DATABASE_RE, FIELD_PATH_RE, PROJECT_RE, type IndexSpec } from "./createIndexUrl.js";
 import type { ProbeVerdict } from "./probe.js";
-import { INCONCLUSIVE_BASIS, QUIET_BASIS, UNCOVERED_BASIS } from "./runtimeBasis.js";
+import { GONE_BASIS, INCONCLUSIVE_BASIS, QUIET_BASIS, UNCOVERED_BASIS } from "./runtimeBasis.js";
 import type { PublicViewConfig } from "../publicView.js";
 import { refreshPublicCycle } from "../publicViewStore.js";
 
@@ -124,11 +126,20 @@ export async function observeIndexHeals(deps: ObserveDeps): Promise<ObserveSumma
     let basis = QUIET_BASIS;
     try {
       const incident = typeof d.incidentId === "string" ? await db.collection(cfg.incidentCollection).doc(d.incidentId).get() : null;
-      const last = incident?.exists ? tsMs(incident.data()?.lastOccurredAt) : null;
+      const data = incident?.exists ? incident.data() : undefined;
+      const last = data ? tsMs(data.lastOccurredAt) : null;
       const spec = specFromRecord(rec);
-      if (!incident?.exists || spec === null) runtime = "unverified";
+      if (!data) {
+        runtime = "unverified";
+        basis = GONE_BASIS;
+      } else if (spec === null) runtime = "unverified";
+      // An occurrence after READY is a fact, retired or not: one dated before the retire still accrues onto it.
       else if (last !== null && last > readyAt) runtime = "recurred";
-      else {
+      else if (data.retired === true) {
+        // Retired: the error coming back opens a NEW incident, so this record's silence proves nothing (#425).
+        runtime = "unverified";
+        basis = GONE_BASIS;
+      } else {
         // No occurrence recorded is "quiet" only if ingest read the logs through the window (#188).
         const through = await ingestedThrough();
         if (through === null || through.getTime() < until) {

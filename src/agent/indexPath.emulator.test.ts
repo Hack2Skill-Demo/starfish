@@ -577,6 +577,22 @@ describe("observeIndexHeals", () => {
     expect(Object.fromEntries(r.decided.map((d) => [d.cycleId, d.runtime]))).toEqual({ r1_r0: "recurred", q1_r0: "query-failing", u1_r0: "unverified" });
   });
 
+  it("never reports healed for a retired or gone incident: its silence proves nothing; an occurrence after READY is still recurred (#425)", async () => {
+    await seed("t1", new Date(t0.getTime() - 60_000));
+    await db.collection(`incidents_${run}`).doc("t1").update({ retired: true });
+    await seed("t2", new Date(t0.getTime() + 5 * 60_000));
+    await db.collection(`incidents_${run}`).doc("t2").update({ retired: true });
+    await seed("t3", new Date(t0.getTime() - 60_000));
+    await db.collection(`incidents_${run}`).doc("t3").delete();
+    const probe = vi.fn(passed);
+    const r = await observeIndexHeals({ db, config: cfg(), probe, now: () => new Date(t0.getTime() + 70 * 60_000) });
+    expect(Object.fromEntries(r.decided.map((d) => [d.cycleId, d.runtime]))).toEqual({ t1_r0: "unverified", t2_r0: "recurred", t3_r0: "unverified" });
+    expect(probe).not.toHaveBeenCalled();
+    for (const id of ["t1_r0", "t3_r0"]) {
+      expect((await db.collection(`cycles_${run}`).doc(id).get()).data()!.summary.index.runtimeBasis).toContain("retired or is gone");
+    }
+  });
+
   it("leaves a cycle observing when the probe throws, to try again next pass", async () => {
     await seed("e1", new Date(t0.getTime() - 60_000));
     const r = await observeIndexHeals({

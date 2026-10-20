@@ -241,7 +241,8 @@ commit on `starfish/revert-<cycle>`, and merges it once its required checks pass
 instead when a later commit on the base branch touched a file the merge touched, when the merge
 does not revert cleanly, when the revert PR was retargeted to another base branch, or when a switch
 forbids merging. A
-revert is never itself watched, so never reverted; a retired incident never triggers one; an
+revert is never itself watched, so never reverted; a retired incident never triggers one (its watch
+goes to a person, never `clear`: the error coming back opens a new incident the watch cannot see, #425); an
 incident Starfish already reverted for is not auto-merged again. Reverts do not count against the
 daily cap.
 
