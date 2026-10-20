@@ -163,8 +163,9 @@ src/
     classify       error type (source class > code > HTTP status > keywords), service
     fingerprint    sha256(canonical functionName : first 100 chars of the normalized error core: a stack after the title
                    cut off (#361, so a stored record still holding frames hashes like a new one), then leading wrappers
-                   `Unhandled error`, `<Name>Error:` and the function's own `<fn> failed:` stripped, so one bug logged in two
-                   shapes is one incident, #318). Versioned (#432, `FINGERPRINT_VERSION`, now 4): each earlier version is
+                   `Unhandled error`, `<Name>Error:` and the function's own `<fn> failed:` (its whole name, or a grouped
+                   export's name after a `-`, `weeklyDigest` for `reports-weeklyDigest`, #463) stripped, so one bug logged in two
+                   shapes is one incident, #318). Versioned (#432, `FINGERPRINT_VERSION`, now 5): each earlier version is
                    kept as a function giving the fingerprint it stored for an occurrence, and on a key miss the store reads
                    those versions' keys in the same transaction, adopts an incident one names that hashes to the current
                    fingerprint (the record takes it, the key of the current one points at it carrying the old key's windows),
