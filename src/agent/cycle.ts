@@ -27,6 +27,13 @@
  *   spend    `modelCalls` and `revisions`: what the cycle has used of its model-call budget and its one revision, counted
  *            under the fence before each is spent, so a resumed attempt goes on from them instead of from zero (#182). A
  *            reconsideration starts a fresh count, as it does the attempts; reconsiderations are themselves capped per day.
+ *   observed `observedAt.<watcher>`: when a post-merge watcher last looked at this settled cycle (#422), so each reads the
+ *            least recently observed first and every watched cycle gets its turn, however old it is. `updatedAt` cannot
+ *            serve: the watchers' own records (recordPrState, recordRecovery) do not move it. `pr` and `recovery` are also
+ *            the MARK of being watched, queried directly: present (epoch 0 = not looked at yet) while reconcile.ts or
+ *            recoveryStep.ts has something to read, removed once it has not (`prWatchEnded`, recovery.ts
+ *            `isFinalRecovery`). `merge`, `revert` and `index` only order: their record's state is the mark
+ *            (autoMerge.ts `cyclesInState`, indexheal/observe.ts). Never copied to the guests' copy (publicView.ts).
  *
  * Logical refusals (lease held elsewhere, lease lost, cycle closed) are returned as reasons.
  * Infrastructure failures throw, deliberately: a worker that cannot reach the store must not go
@@ -539,6 +546,9 @@ export async function finishCycle(
     if (!snap.exists) return { ok: false, reason: "no-such-cycle" } as const;
     if (!fence(d, owner, now)) return { ok: false, reason: "lease-lost" } as const;
     wrote(d.environment);
+    // A finished cycle that opened a pull request is watched by reconcile.ts from now on, however old it gets (#422).
+    const opened = state === "done" && (d.summary as { pr?: { opened?: unknown } } | undefined)?.pr?.opened === true;
+    const watched = (d.observedAt as { pr?: unknown } | undefined)?.pr !== undefined;
     tx.update(ref, {
       state,
       outcome: clip(outcome, MAX_OUTCOME),
@@ -549,6 +559,7 @@ export async function finishCycle(
       updatedAt: Timestamp.fromDate(now),
       // When it settled: events appended later (appendEventsInTransaction) move updatedAt, never this (#365).
       settledAt: Timestamp.fromDate(now),
+      ...(opened && !watched && { "observedAt.pr": NEVER_OBSERVED }),
     });
     return { ok: true } as const;
   });
@@ -557,11 +568,13 @@ export async function finishCycle(
 /**
  * What a write to a SETTLED cycle's run record decided (`updateSettledCycle`): the result to return, and, when it writes,
  * the records to put at `summary.<stage>` (already flat: each caller shapes its own), an event to append when what it
- * records CHANGED, and any other writes of the same transaction (`also`, after every read).
+ * records CHANGED, any other top-level fields of the cycle to write with them (`fields`, dotted paths: the watchers'
+ * `observedAt` marks), and any other writes of the same transaction (`also`, after every read).
  */
 export interface SettledUpdate<R> {
   result: R;
   records?: Record<string, Record<string, unknown>>;
+  fields?: Record<string, unknown>;
   event?: RunEvent;
   also?: (tx: Transaction) => void;
 }
@@ -591,9 +604,42 @@ export async function updateSettledCycle<R>(
     u.also?.(tx);
     // Without a `record` on the event: the records are written here, whole, as the caller shaped them.
     if (u.event) appendEventsInTransaction(tx, ref, d, now, [{ ...u.event, record: undefined }], cfg);
-    tx.update(ref, Object.fromEntries(Object.entries(u.records).map(([stage, record]) => [`summary.${stage}`, record])));
+    tx.update(ref, { ...Object.fromEntries(Object.entries(u.records).map(([stage, record]) => [`summary.${stage}`, record])), ...u.fields });
     return u.result;
   });
+}
+
+/** `observedAt.<watcher>` of a cycle no watcher has looked at yet: sorts first (#422). */
+export const NEVER_OBSERVED = Timestamp.fromMillis(0);
+export type ObservedBy = "pr" | "recovery" | "merge" | "revert" | "index";
+
+/** `observedAt.<watcher>` as milliseconds, or -Infinity when absent or unreadable (never looked at: first in line). */
+export function observedMs(d: Record<string, unknown> | undefined, by: ObservedBy): number {
+  const v = (d?.observedAt as Record<string, unknown> | undefined)?.[by] as { toMillis?: unknown } | undefined;
+  return typeof v?.toMillis === "function" ? (v.toMillis() as number) : -Infinity;
+}
+
+/**
+ * Note that a watcher looked at a settled cycle now, so its next pass reads the others first (#422). Only an ordering hint:
+ * not transactional (a lost race costs one cycle a turn), and best effort: a failure is ignored, never the watcher's.
+ * Used where a look writes no record of its own (still waiting, an error), which would otherwise leave the cycle first in
+ * line on every pass.
+ */
+export async function markObserved(db: Firestore, cfg: Pick<CycleConfig, "cycleCollection">, id: string, by: ObservedBy, at: Date): Promise<void> {
+  try {
+    await db.collection(cfg.cycleCollection).doc(id).update({ [`observedAt.${by}`]: Timestamp.fromDate(at) });
+  } catch {
+    // An ordering hint: the next pass may read this cycle first again.
+  }
+}
+
+/** Stop marking a cycle as watched by `by` (reconcile.ts, recoveryStep.ts): it has nothing left to read. Best effort. */
+export async function unmarkWatched(db: Firestore, cfg: Pick<CycleConfig, "cycleCollection">, id: string, by: "pr" | "recovery"): Promise<void> {
+  try {
+    await db.collection(cfg.cycleCollection).doc(id).update({ [`observedAt.${by}`]: FieldValue.delete() });
+  } catch {
+    // Read again next pass, and filtered out again.
+  }
 }
 
 /**
@@ -633,7 +679,8 @@ const isoMs = (v: unknown): number | null => (typeof v === "string" && Number.is
  * and the incident is never touched: a merged PR is not proof that the incident is healed.
  *
  * A finished cycle has no lease, so this is not fenced by one; it is safe without it because it writes only
- * `summary.prState`, in a transaction, and only to a cycle that is `done` and recorded opening THIS pull request.
+ * `summary.prState` (and the watchers' `observedAt` marks), in a transaction, and only to a cycle that is `done` and
+ * recorded opening THIS pull request.
  * Two readers racing, or a slow one landing late, cannot move it backwards:
  *   - an observation read no later than the one recorded is ignored (`stale`; a duplicate is one of these);
  *   - a merge is final: nothing read afterwards makes a merged PR open or closed again (`merged-is-final`).
@@ -660,8 +707,34 @@ export async function recordPrState(db: Firestore, cfg: CycleConfig, id: string,
     const priorAt = isoMs(prior?.checkedAt);
     if (priorAt !== null && isoMs(observed.checkedAt)! <= priorAt) return { result: { ok: true, applied: false, reason: "stale" } };
     if (prior?.state === "merged" && observed.state !== "merged") return { result: { ok: true, applied: false, reason: "merged-is-final" } };
-    return { result: { ok: true, applied: true }, records: { prState: record } };
+    // The watch marks (#422): reconcile reads it again, at the back of the line, until nothing about the PR can change that
+    // matters; a merge it sees with its merge commit starts recovery's watch, unless recovery already has its answer.
+    const recovery = (d.summary as { recovery?: Record<string, unknown> } | undefined)?.recovery;
+    const startsRecovery = observed.state === "merged" && observed.mergeCommitSha !== undefined && observedMs(d, "recovery") === -Infinity && !isFinalRecovery(recovery);
+    const fields = {
+      "observedAt.pr": prWatchEnded(observed) ? FieldValue.delete() : Timestamp.fromMillis(isoMs(observed.checkedAt)!),
+      ...(startsRecovery && { "observedAt.recovery": NEVER_OBSERVED }),
+    };
+    return { result: { ok: true, applied: true }, records: { prState: record }, fields };
   });
+}
+
+/** A pull request closed without merging this long ago is not read again: one reopened later is a person's to follow (#422). */
+export const CLOSED_PR_WATCH_MS = 7 * 24 * 3_600_000;
+const SETTLED_CHECKS: readonly unknown[] = ["passed", "failed", "not-configured"];
+
+/**
+ * Whether reconcile.ts has nothing left to read on a pull request, from its state as recorded (`summary.prState`). Pure. A
+ * merged one whose checks are settled and whose merge commit is kept (recovery matches deployments against it, #390), or
+ * one closed without merging for `CLOSED_PR_WATCH_MS` by the time it was read. An open one is always read again: a
+ * person may merge it any day.
+ */
+export function prWatchEnded(s: { state?: unknown; checks?: unknown; mergeCommitSha?: unknown; closedAt?: unknown; checkedAt?: unknown } | undefined): boolean {
+  if (s?.state === "merged") return SETTLED_CHECKS.includes(s.checks) && typeof s.mergeCommitSha === "string";
+  if (s?.state !== "closed") return false;
+  const closed = isoMs(s.closedAt);
+  const checked = isoMs(s.checkedAt);
+  return closed !== null && checked !== null && checked - closed >= CLOSED_PR_WATCH_MS;
 }
 
 /**
@@ -705,7 +778,7 @@ const RECOVERY_STATES: readonly string[] = ["awaiting-deploy", "observing", "rec
 
 /**
  * Record a merged fix's recovery state on its finished cycle. Like `recordPrState`: no lease (the cycle is done), only
- * `summary.recovery` is written, in a transaction, and only for the merge `summary.prState` recorded. It never changes the
+ * `summary.recovery` (and its `observedAt` mark) is written, in a transaction, and only for the merge `summary.prState` recorded. It never changes the
  * cycle's state, path, outcome or `updatedAt`, and never touches the incident: an observation is not a resolution.
  *   - a result already final (`recovered`, `recurred`, `unverified`; recovery.ts `isFinalRecovery`, which does not count a
  *     configuration gap recorded before its bound, #423) is never replaced: it is a fact about what was seen then;
@@ -733,6 +806,8 @@ export async function recordRecovery(db: Firestore, cfg: CycleConfig, id: string
     if (isFinalRecovery(prior)) return { result: { ok: true, applied: false, reason: "final" } };
     const priorAt = isoMs(prior?.checkedAt);
     if (priorAt !== null && isoMs(observed.checkedAt)! <= priorAt) return { result: { ok: true, applied: false, reason: "stale" } };
-    return { result: { ok: true, applied: true }, records: { recovery: record } };
+    // Recovery's watch mark (#422): read again, at the back of the line, until the answer is final.
+    const fields = { "observedAt.recovery": isFinalRecovery(record) ? FieldValue.delete() : Timestamp.fromMillis(isoMs(observed.checkedAt)!) };
+    return { result: { ok: true, applied: true }, records: { recovery: record }, fields };
   });
 }

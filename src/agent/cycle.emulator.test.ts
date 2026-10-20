@@ -369,6 +369,20 @@ describe("recordPrState: a finished cycle's pull request, read back later (#17)"
     expect(await events()).toHaveLength(1);
   });
 
+  it("keeps the watch marks (#422): set when the PR's cycle finishes, moved by each read, removed once nothing is left to read; a merge starts recovery's", async () => {
+    const id = await prCycle();
+    expect((await cycle()).observedAt).toEqual({ pr: Timestamp.fromMillis(0) });
+    await recordPrState(db, cfg, id, obs());
+    expect((await cycle()).observedAt).toEqual({ pr: Timestamp.fromDate(at(100)) });
+    // Merged, checks still running: still read; recovery's watch starts, not yet looked at.
+    const merge = "e".repeat(40);
+    await recordPrState(db, cfg, id, obs({ state: "merged", mergedAt: at(150).toISOString(), mergeCommitSha: merge, checkedAt: at(200).toISOString() }));
+    expect((await cycle()).observedAt).toEqual({ pr: Timestamp.fromDate(at(200)), recovery: Timestamp.fromMillis(0) });
+    // Checks settled: nothing about the PR is left to read; recovery's mark is not moved by reconcile.
+    await recordPrState(db, cfg, id, obs({ state: "merged", mergedAt: at(150).toISOString(), mergeCommitSha: merge, checks: "passed", checkedAt: at(300).toISOString() }));
+    expect((await cycle()).observedAt).toEqual({ recovery: Timestamp.fromMillis(0) });
+  });
+
   it("ignores an observation no newer than the recorded one: a duplicate, or a slow reader landing late", async () => {
     const id = await prCycle();
     await recordPrState(db, cfg, id, obs({ state: "closed", checkedAt: at(200).toISOString() }));

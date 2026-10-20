@@ -145,10 +145,12 @@ describe("the whole story: fault, detection, verified PR, a person's merge, depl
     expect(done.decided).toEqual([{ cycleId: "inc1_r0", state: "recovered" }]);
     expect(await recovery("inc1_r0")).toMatchObject({ state: "recovered", expectedOccurrences: 10, windowEnd: new Date(T_END).toISOString() });
 
-    // 4. Final: it is not read, or changed, again; and nothing else of the cycle or the incident moved.
+    // 4. Final: it is not read, or changed, again (its watch mark is gone, #422); and nothing else of the cycle or the
+    // incident moved.
     expect(await selectMergedCycles(db, cfg, 10)).toEqual([]);
     const after = await cycle("inc1_r0");
-    expect({ ...after, summary: { ...after.summary, recovery: undefined } }).toEqual({ ...before, summary: { ...before.summary, recovery: undefined } });
+    expect(after.observedAt).toEqual({});
+    expect({ ...after, observedAt: undefined, summary: { ...after.summary, recovery: undefined } }).toEqual({ ...before, observedAt: undefined, summary: { ...before.summary, recovery: undefined } });
     expect(await incidentDoc("inc1")).toMatchObject({ status: "logged" });
   });
 
@@ -288,6 +290,40 @@ describe("selecting what to observe", () => {
     await db.collection(cfg.cycleCollection).doc("final_r0").update({ "summary.recovery": { state: "recovered", mergeCommitSha: MERGE_SHA, checkedAt: new Date(MERGED).toISOString() } });
     expect((await selectMergedCycles(db, cfg, 10)).map((c) => c.cycleId)).toEqual(["a_r0"]);
     expect(await selectMergedCycles(db, cfg, 0)).toEqual([]);
+  });
+
+  it("reads watched merges least recently observed first, however old and however many cycles came after them (#422)", async () => {
+    // More merged cycles with a final answer than the scan for unmarked ones reads, all ahead of the watched ones by id;
+    // none of them, nor a newer run of other cycles, moves the watched ones out of reach.
+    for (let start = 0; start < 210; start += 105) {
+      const batch = db.batch();
+      for (let i = start; i < start + 105; i++) {
+        const ts = Timestamp.fromMillis(MERGED + 30 * 24 * HOUR + i * 1000);
+        batch.set(db.collection(cfg.cycleCollection).doc(`a${String(i).padStart(4, "0")}_r0`), {
+          environment: "demo",
+          state: "done",
+          incidentId: "a",
+          recurrence: 0,
+          updatedAt: ts,
+          summary: { prState: { state: "merged", mergedAt: new Date(MERGED).toISOString(), mergeCommitSha: MERGE_SHA }, recovery: { state: "recovered", mergeCommitSha: MERGE_SHA, checkedAt: new Date(MERGED).toISOString() } },
+        });
+      }
+      await batch.commit();
+    }
+    for (const id of ["x", "y", "z"]) await seedIncident(id);
+    const mark = (minutes: number) => ({ observedAt: { recovery: Timestamp.fromMillis(MERGED + minutes * MIN) } });
+    await seedCycle("x_r0", mark(30));
+    await seedCycle("y_r0", mark(10));
+    await seedCycle("z_r0", mark(20));
+    const gh = fakeGithub({ state: "pending", deploymentId: 26, sha: MERGE_SHA });
+    cfg = { ...cfg, maxPrChecksPerPass: 1 };
+    for (let i = 0; i < 4; i++) await observe(gh.client, MERGED + (i + 1) * HOUR);
+    expect(gh.calls.map((c) => c.mergedAt)).toHaveLength(4);
+    const order: [string, unknown][] = [];
+    for (const id of ["x_r0", "y_r0", "z_r0"]) order.push([id, (await recovery(id)).checkedAt]);
+    // y (oldest mark), z, x, then y again: each look sends the cycle to the back.
+    expect(order.sort((a, b) => String(a[1]).localeCompare(String(b[1]))).map(([id]) => id)).toEqual(["z_r0", "x_r0", "y_r0"]);
+    expect(await recovery("y_r0")).toMatchObject({ checkedAt: new Date(MERGED + 4 * HOUR).toISOString() });
   });
 });
 

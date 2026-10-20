@@ -593,6 +593,19 @@ describe("observeIndexHeals", () => {
     }
   });
 
+  it("gives every observing heal its turn: one that stays undecided never keeps another from being decided (#422)", async () => {
+    await seed("a1", new Date(t0.getTime() - 60_000), { collectionGroup: "carts" });
+    await seed("b1", new Date(t0.getTime() - 60_000));
+    const probe = async (spec: { collectionGroup: string }): Promise<ProbeVerdict> => {
+      if (spec.collectionGroup === "carts") throw new Error("unavailable");
+      return { state: "passed", probes: 1 };
+    };
+    const look = (minutes: number) => observeIndexHeals({ db, config: cfg(), probe: probe as never, now: () => new Date(t0.getTime() + minutes * 60_000), limit: 1 });
+    expect((await look(70)).errors.map((e) => e.cycleId)).toEqual(["a1_r0"]);
+    expect((await look(71)).decided).toEqual([{ cycleId: "b1_r0", runtime: "healed" }]);
+    expect((await look(72)).errors.map((e) => e.cycleId)).toEqual(["a1_r0"]);
+  });
+
   it("leaves a cycle observing when the probe throws, to try again next pass", async () => {
     await seed("e1", new Date(t0.getTime() - 60_000));
     const r = await observeIndexHeals({

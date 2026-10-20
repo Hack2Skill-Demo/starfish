@@ -31,7 +31,8 @@
  *   - Merge a revert whose required checks did not pass, or whose head moved; or act while the switches forbid merging
  *     (then a person is told instead). Automation off pauses it, like everything else.
  *   - Retry a half-done step blindly: a claim left by a worker that stopped is handed to a person.
- *   - Read without bound: at most `maxPrChecksPerPass` watched or pending cycles a pass.
+ *   - Read without bound: at most `maxPrChecksPerPass` watched or pending cycles a pass, the least recently looked at
+ *     first (autoMerge.ts `cyclesInState`, #422), so a watch still open never keeps another from its turn.
  *
  * Reverts are not counted against the daily merge cap: a cap must never keep a bad merge in place. Never run against
  * real GitHub: tested with a fake client and the Firestore emulator.
@@ -43,7 +44,7 @@ import type { GithubClient } from "../integrations/githubPr.js";
 import type { DeliveryResult, NotifyRequest } from "../integrations/slack.js";
 import { readIngestCheckpoint } from "../ingest/run.js";
 import { CLAIM_STALE_MS, cyclesInState, escalate, millis, moveRecord } from "./autoMerge.js";
-import type { CycleConfig } from "./cycle.js";
+import { markObserved, type CycleConfig } from "./cycle.js";
 import { summarizeChecks } from "./reconcile.js";
 
 export type FastRevertConfig = Pick<
@@ -195,6 +196,8 @@ export async function runFastRevertStep(deps: FastRevertDeps): Promise<FastRever
     } catch (err) {
       out.errors.push({ cycleId: cycle.id, message: describe(err) });
     }
+    // Its turn is taken: the next pass looks at the others first, so no watch waits behind ones still open (#422).
+    await markObserved(db, cfg, cycle.id, "revert", deps.now());
   }
   return out;
 

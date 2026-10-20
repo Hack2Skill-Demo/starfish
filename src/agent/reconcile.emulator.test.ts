@@ -116,15 +116,74 @@ describe("selectPrCycles", () => {
     expect(await selectPrCycles(db, cfg, 10)).toEqual([]);
   });
 
-  it("looks only at the newest cycles, a bounded read", async () => {
-    await seed("old_r0", 1, {}, 60 * 24);
+  it("still reads an old cycle's PR however many cycles came after it, though its own reads never move updatedAt (#422)", async () => {
+    await seed("old_r0", 1, {}, 60 * 24 * 8);
     const batch = db.batch();
     for (let i = 0; i < MAX_SCAN; i++) {
       const ts = Timestamp.fromMillis(t0.getTime() - i * 1000);
       batch.set(db.collection(cfg.cycleCollection).doc(`n${i}_r0`), { environment: "demo", state: "declined", createdAt: ts, updatedAt: ts });
     }
     await batch.commit();
-    expect(await selectPrCycles(db, cfg, 10)).toEqual([]);
+    expect((await selectPrCycles(db, cfg, 10)).map((c) => c.cycleId)).toEqual(["old_r0"]);
+    // A person merges it a week later: the next pass records it.
+    const gh = fakeGithub({ 1: { state: "merged", mergedAt: t0.toISOString(), mergeCommitSha: "d".repeat(40) } }, [success]);
+    expect(await reconcilePullRequests({ db, config: cfg, client: gh.client, now: () => t0 })).toMatchObject({ recorded: 1 });
+    expect((await doc("old_r0")).summary.prState).toMatchObject({ state: "merged" });
+  });
+
+  it("reads watched cycles least recently observed first, each read sending it to the back, beyond any bounded scan (#422)", async () => {
+    // More settled PR cycles than the scan for unmarked ones reads, all ahead of the watched ones by id.
+    const merge = "d".repeat(40);
+    for (let start = 0; start < MAX_SCAN + 10; start += 100) {
+      const batch = db.batch();
+      for (let i = start; i < Math.min(start + 100, MAX_SCAN + 10); i++) {
+        batch.set(db.collection(cfg.cycleCollection).doc(`a${String(i).padStart(4, "0")}_r0`), {
+          environment: "demo",
+          state: "done",
+          summary: { pr: { opened: true, number: 1000 + i }, prState: { state: "merged", mergeCommitSha: merge, checks: "passed", checkedAt: t0.toISOString() } },
+        });
+      }
+      await batch.commit();
+    }
+    const mark = (minutesAgo: number) => ({ observedAt: { pr: Timestamp.fromMillis(t0.getTime() - minutesAgo * 60_000) } });
+    await seed("x_r0", 1, mark(30));
+    await seed("y_r0", 2, mark(90));
+    await seed("z_r0", 3, mark(60));
+    const gh = fakeGithub({ 1: {}, 2: {}, 3: {} });
+    const pass = (minutes: number) => reconcilePullRequests({ db, config: { ...cfg, maxPrChecksPerPass: 1 }, client: gh.client, now: () => new Date(t0.getTime() + minutes * 60_000) });
+    for (let i = 0; i < 4; i++) await pass(i + 1);
+    expect(gh.reads.map(([id]) => id)).toEqual(["y_r0", "z_r0", "x_r0", "y_r0"]);
+  });
+
+  it("drops the watch once nothing about the PR can change that matters: a merge settled, or a PR closed a week (#422)", async () => {
+    const merge = "d".repeat(40);
+    await seed("m_r0", 1, { observedAt: { pr: Timestamp.fromMillis(0) } });
+    await seed("c_r0", 2, { observedAt: { pr: Timestamp.fromMillis(0) } });
+    await seed("o_r0", 3, { observedAt: { pr: Timestamp.fromMillis(0) } });
+    const weekAgo = new Date(t0.getTime() - 7 * 24 * 3_600_000).toISOString();
+    const gh = fakeGithub({ 1: { state: "merged", mergedAt: weekAgo, mergeCommitSha: merge }, 2: { state: "closed", closedAt: weekAgo }, 3: { state: "closed", closedAt: t0.toISOString() } }, [success]);
+    await reconcilePullRequests({ db, config: cfg, client: gh.client, now: () => t0 });
+    expect((await doc("m_r0")).observedAt).toEqual({ recovery: Timestamp.fromMillis(0) });
+    expect((await doc("c_r0")).observedAt).toEqual({});
+    expect((await doc("o_r0")).observedAt).toEqual({ pr: Timestamp.fromDate(t0) });
+    expect((await selectPrCycles(db, cfg, 10)).map((c) => c.cycleId)).toEqual(["o_r0"]);
+  });
+
+  it("takes the mark off a watched cycle with nothing to read, so it never holds a turn (#422)", async () => {
+    await seed("s_r0", 1, { synthetic: true, observedAt: { pr: Timestamp.fromMillis(0) } });
+    await seed("b_r0", 2);
+    expect((await selectPrCycles(db, cfg, 10)).map((c) => c.cycleId)).toEqual(["b_r0"]);
+    expect((await doc("s_r0")).observedAt).toEqual({});
+  });
+
+  it("sends a PR that cannot be read to the back of the line, so it never starves the others (#422)", async () => {
+    await seed("a_r0", 1, { observedAt: { pr: Timestamp.fromMillis(0) } });
+    await seed("b_r0", 2, { observedAt: { pr: Timestamp.fromMillis(1) } });
+    const gh = fakeGithub({ 1: new GithubError("not-found", "gone"), 2: {} });
+    const pass = (minutes: number) => reconcilePullRequests({ db, config: { ...cfg, maxPrChecksPerPass: 1 }, client: gh.client, now: () => new Date(t0.getTime() + minutes * 60_000) });
+    await pass(1);
+    await pass(2);
+    expect(gh.reads.map(([id]) => id)).toEqual(["a_r0", "b_r0"]);
   });
 });
 
@@ -177,7 +236,7 @@ describe("reconcilePullRequests", () => {
     expect(r.recorded).toBe(2);
     expect(r.errors).toEqual([{ cycleId: "a_r0", message: "GithubError: gone" }]);
 
-    const limited = fakeGithub({ 1: new GithubError("rate-limited", "slow down"), 2: {}, 3: {} });
+    const limited = fakeGithub({ 1: new GithubError("rate-limited", "slow down"), 2: new GithubError("rate-limited", "slow down"), 3: new GithubError("rate-limited", "slow down") });
     const r2 = await reconcilePullRequests({ db, config: { ...cfg, cycleCollection: cfg.cycleCollection }, client: limited.client, now: () => new Date(t0.getTime() + 1000) });
     expect(r2.stoppedBecause).toBe("rate-limited");
     expect(limited.reads).toHaveLength(1);

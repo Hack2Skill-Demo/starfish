@@ -85,6 +85,22 @@
       ]
     },
     {
+      "collectionGroup": "starfish_cycles",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "environment", "order": "ASCENDING" },
+        { "fieldPath": "observedAt.pr", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "starfish_cycles",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "environment", "order": "ASCENDING" },
+        { "fieldPath": "observedAt.recovery", "order": "ASCENDING" }
+      ]
+    },
+    {
       "collectionGroup": "starfish_public_incidents",
       "queryScope": "COLLECTION",
       "fields": [

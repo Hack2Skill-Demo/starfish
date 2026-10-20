@@ -616,6 +616,22 @@ describe("runFastRevertStep: reverts Starfish's own merge when the incident come
     expect((await cycle("inc1_r1")).summary.merge).toMatchObject({ state: "skipped", reason: "incident-reverted-before" });
   });
 
+  it("gives every open watch its turn: more watches than a pass reads never hide a recurrence behind quiet ones (#422)", async () => {
+    for (const id of ["inc1_r0", "inc2_r0", "inc3_r0"]) await seed(id, watching());
+    await db.collection(cfg.incidentCollection).doc("inc3").update({ lastOccurredAt: Timestamp.fromMillis(t0.getTime() + 25 * 60_000) });
+    clock = new Date(t0.getTime() + 30 * 60_000);
+    const gh = fakeGithub();
+    const deps = revertDeps(gh.client, { config: { ...cfg, maxPrChecksPerPass: 2 } });
+    const seen: number[] = [];
+    for (let i = 0; i < 2; i++) {
+      const r = await runFastRevertStep(deps);
+      seen.push(r.considered);
+      clock = new Date(clock.getTime() + 60_000);
+    }
+    expect(seen).toEqual([2, 2]);
+    expect(gh.reverts.map((r) => r.cycleId)).toEqual(["inc3_r0"]);
+  });
+
   it("opens a revert of the merge commit on a recurrence, tells a person, and merges it once its checks pass", async () => {
     await seed("inc1_r0", watching());
     await occurred(25);

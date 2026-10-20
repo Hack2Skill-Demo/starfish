@@ -302,6 +302,10 @@ src/
   agent/reconcile.ts  after the pass (#17): polls a bounded number of opened PRs (state + named checks on the head), records
                    `summary.prState` via cycle.ts `recordPrState` (no lease; never changes the cycle's state; newest read wins;
                    merged is final; never marks an incident healed; copies the state to the incident's `githubPrState`).
+                   Which cycles each post-merge watcher reads (#422): the least recently observed first, by the cycle's
+                   `observedAt.<watcher>` (cycle.ts; reconcile and recovery query it as the mark of being watched, however old
+                   the cycle, with two composite indexes; auto-merge, fast revert and the index observation order a bounded
+                   scan of their record's state by it); a closed unmerged PR is dropped a week after it closed.
                    Fake GitHub + emulator tested, never run against real GitHub
   agent/recovery.ts + recoveryStep.ts  recovery of a MERGED fix, anyone's merge (#390): per merged cycle (reconcile now keeps the
                    merge commit, `prState.mergeCommitSha`, re-reading a settled merge that lacks it once) the pass reads GitHub's
