@@ -6,7 +6,9 @@ const HOUR = 60 * MIN;
 const MERGED = Date.parse("2026-10-15T03:36:40Z");
 const DEPLOYED_AT = MERGED + 6 * MIN;
 const CFG: RecoveryConfig = { deployEnvironment: "production", recoveryQuietMinutes: 60, recoveryGraceMinutes: 5, recoveryMinExpected: 5, recoveryGiveUpHours: 24 };
-const deployed: DeploymentFact = { state: "deployed", completedAtMs: DEPLOYED_AT, deploymentId: 7, sha: "a".repeat(40) };
+/** An occurrence well after the deployment and its grace. */
+const T_START_FOR_REVERT = DEPLOYED_AT + 40 * MIN;
+const deployed: DeploymentFact ={ state: "deployed", completedAtMs: DEPLOYED_AT, deploymentId: 7, sha: "a".repeat(40) };
 /** An error that fired 10 times an hour before the merge: a 60-minute window expects 10, more than the 5 asked for. */
 const BASE_10 = { perHour: 10, hours: 24 };
 /** The incident as stored, last seen well before the merge. */
@@ -24,6 +26,15 @@ describe("decideRecovery: before a deployment", () => {
     expect(decideRecovery(input({ cfg: none, nowMs: MERGED + CONFIG_GAP_GIVE_UP_MS - 1 }))).toEqual({ state: "awaiting-deploy", reason: "no-deployment-environment" });
     // The bound: a gap still open that long after the merge is final.
     expect(decideRecovery(input({ cfg: none, nowMs: MERGED + CONFIG_GAP_GIVE_UP_MS }))).toEqual({ state: "unverified", reason: "no-deployment-environment" });
+  });
+
+  it("never blames the fix for its revert: a merge the fast-revert watch reverted is unverified, never recurred (#424)", () => {
+    // The error the revert brought back, seen after the fix's own deployment: not the fix failing.
+    const back = quietIncident({ lastOccurredAt: new Date(T_START_FOR_REVERT).toISOString() });
+    expect(decideRecovery(input({ incident: back }))).toMatchObject({ state: "recurred" });
+    expect(decideRecovery(input({ incident: back, reverted: true }))).toEqual({ state: "unverified", reason: "reverted" });
+    expect(decideRecovery(input({ reverted: true, cfg: { ...CFG, deployEnvironment: "" } }))).toEqual({ state: "unverified", reason: "reverted" });
+    expect(decideRecovery(input({ reverted: false }))).toMatchObject({ state: "recovered" });
   });
 
   it("is unverified when the incident is gone or retired: a recurrence would be a new incident it cannot see", () => {

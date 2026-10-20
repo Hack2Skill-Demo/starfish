@@ -374,6 +374,7 @@ const UNVERIFIED_TEXT: Record<string, string> = {
   "deploy-not-observed": "Not verified: no deployment of the merge was seen",
   "deploy-unreadable": "Not verified: GitHub's deployments could not be read",
   "incident-gone": "Not verified: the incident was retired, so a return of the error would be a new incident",
+  reverted: "Not verified: Starfish reverted this merge, so the error coming back is the old code's, not the fix's",
   "low-traffic": "Not verified: the error was too rare before the merge for silence to show it stopped",
   "ingest-not-covering": "Not verified: ingest did not read the logs through the window",
 };

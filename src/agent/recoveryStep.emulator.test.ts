@@ -241,6 +241,21 @@ describe("what it will not call recovered", () => {
     expect(await recovery("inc1_r0")).toMatchObject({ state: "unverified", reason: "deploy-failed" });
   });
 
+  it("not for a merge Starfish's fast-revert watch reverted: the error the revert brings back is never the fix's recurrence (#424)", async () => {
+    await seedIncident("inc1", { lastOccurredAt: Timestamp.fromMillis(T_START + 20 * MIN), recurrenceCount: 0 });
+    await seedCycle("inc1_r0");
+    await seedCycle("inc1_r1", { recurrence: 1 });
+    await db.collection(cfg.cycleCollection).doc("inc1_r0").update({ "summary.revert": { state: "reverted", mergeSha: MERGE_SHA, by: "starfish" } });
+    // Another merge's revert record (a hand edit) does not count.
+    await db.collection(cfg.cycleCollection).doc("inc1_r1").update({ "summary.revert": { state: "reverted", mergeSha: "f".repeat(40) } });
+    await seedCheckpoint(T_END + 5 * MIN);
+    const gh = fakeGithub(deployedObs);
+    await observe(gh.client, T_END + 15 * MIN);
+    expect(await recovery("inc1_r0")).toMatchObject({ state: "unverified", reason: "reverted" });
+    expect(await recovery("inc1_r1")).toMatchObject({ state: "recurred" });
+    expect(gh.calls).toHaveLength(1);
+  });
+
   it("not for a retired or missing incident: a recurrence would be a new incident this one cannot see", async () => {
     await seedIncident("inc1", { retired: true });
     await seedCycle("inc1_r0");

@@ -179,7 +179,10 @@ function sentence(stage: string, outcome: string | undefined, f: Fields): Senten
     // Fast revert (#9): the watch every merge starts. Each move of its record is an event (#421).
     case "revert": {
       const reason = str(f.reason);
-      return outcome === "clear"
+      // `watching` is recorded again when the merge's deployment is seen: the watch runs from it (#424).
+      return outcome === "watching"
+        ? ok("The merge's deployment completed, and the watch for the incident coming back runs from it.")
+        : outcome === "clear"
         ? ok("The watch after the merge saw no recurrence, so the merge stands.")
         : outcome === "opening"
           ? ok("The incident came back after the merge, so Starfish began a revert.")

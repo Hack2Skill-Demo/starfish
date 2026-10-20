@@ -70,6 +70,7 @@ describe("sentenceFor: one sentence per stage and outcome the engine records", (
     ["merge", "merging", {}],
     ["merge", "merged", {}],
     // Each move of the auto-merge and fast-revert records is an event (#421, src/agent/autoMerge.ts `moveRecord`).
+    ["revert", "watching", {}],
     ["revert", "clear", {}],
     ["revert", "opening", {}],
     ["revert", "pending", {}],

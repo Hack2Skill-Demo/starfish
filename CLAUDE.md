@@ -288,8 +288,10 @@ src/
                    run of the named checks from `STARFISH_VERIFY_CHECK_APP` green on it, daily cap (transactional),
                    evidence comment, squash merge with `sha`. Any failure: PR stays open + notify. Fakes + emulator
                    tested, never run against real GitHub
-  agent/fastRevert.ts  the watch every merge starts: the incident seen again after a grace and within N minutes of the
-                   MERGE (the watch's window starts at the merge: recovery.ts reads deployments, this does not; counted by the hour, so an error that keeps firing past
+  agent/fastRevert.ts  the watch every merge starts: the incident seen again after a grace and within N minutes of its
+                   START (#424: with `STARFISH_DEPLOY_ENVIRONMENT`, when GitHub's deployments say the merge commit's deployment
+                   completed, recorded once seen; none seen within `STARFISH_RECOVERY_GIVE_UP_HOURS`: a person is told, nothing
+                   reverted; without it, as on the demo, the MERGE; counted by the hour, so an error that keeps firing past
                    the window is still seen) -> revert PR of Starfish's own merge commit, merged on
                    green checks; a later change to the same files escalates; a revert is never reverted. Cleared only
                    once the ingest checkpoint has read through the window, else a person is told after a day (#241).
@@ -317,7 +319,7 @@ src/
                    pre-merge rate, recorded once as a baseline, expects `STARFISH_RECOVERY_MIN_EXPECTED` occurrences, and ingest's
                    checkpoint must have read through it; too rare, retired, no deployment seen, or a failed one = unverified; no
                    environment or deployments unreadable are configuration gaps, #423: awaiting-deploy with that reason, read again
-                   once a person closes the gap, unverified only 14 days after the merge, `CONFIG_GAP_GIVE_UP_MS`). Observes only: never resolves, reverts, merges or notifies. The Runs and evidence pages show it; the
+                   once a person closes the gap, unverified only 14 days after the merge, `CONFIG_GAP_GIVE_UP_MS`; a merge its fast-revert watch reverted = unverified `reverted`, never recurred, #424). Observes only: never resolves, reverts, merges or notifies. The Runs and evidence pages show it; the
                    guests' copy carries the answer, reason and times. Pure decision unit-tested; the whole sequence (a person's merge,
                    the deployment, recovered, recurred, every unverified path) emulator-tested against a fake GitHub; never run against real GitHub
   agent/incidentLinks.ts  copies the issue and PR (number, URL, state) from the cycle onto the incident for the UI's links (#194):

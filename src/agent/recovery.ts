@@ -20,8 +20,11 @@
  *     firing while the old revision serves is not a failed fix, and a quiet pre-deploy hour is not a recovery.
  *   - Count a retired or missing incident: its fingerprint was freed, so a recurrence would be a NEW incident this one
  *     cannot see (`unverified: incident-gone`).
- *   - Resolve the incident, change the cycle's outcome, or revert anything. It observes. (A merge Starfish made itself
- *     also has the fast-revert watch, src/agent/fastRevert.ts, which acts; that is separate, and starts at the merge.)
+ *   - Blame the fix for its revert's error (#424). A merge Starfish made itself also has the fast-revert watch
+ *     (src/agent/fastRevert.ts), which acts; once that watch has REVERTED the merge, the old code is back and so is the
+ *     error, which says nothing about the fix: the answer is `unverified: reverted`, never `recurred` or `recovered`. (An
+ *     answer recorded before the revert stays: it was read while the fix was live.)
+ *   - Resolve the incident, change the cycle's outcome, or revert anything. It observes.
  *
  * What it cannot see: that the deployed revision actually exercised the fixed code path. "No occurrences in a window where
  * about N were expected" is evidence, with a stated expected count (a chance of `exp(-N)` of seeing none if the error was
@@ -44,6 +47,7 @@ export type RecoveryReason =
   | "deploy-not-observed"
   | "deploy-unreadable"
   | "incident-gone"
+  | "reverted"
   | "low-traffic"
   | "ingest-not-covering"
   | "waiting-for-deployment"
@@ -92,6 +96,8 @@ export interface RecoveryInput {
   incident: Record<string, unknown> | null;
   /** The cycle's recurrence, to tell a regression the ingest marked after it. */
   recurrence: number;
+  /** The fast-revert watch reverted this very merge (`summary.revert` reverted, its `mergeSha` this merge commit, #424). */
+  reverted?: boolean;
   baseline: Baseline | null;
   deployment: DeploymentFact;
   /** How far ingest has read this target's logs, or null when not known. */
@@ -186,6 +192,8 @@ export function decideRecovery(i: RecoveryInput): RecoveryDecision {
   // A configuration gap waits for a person to close it, up to its own bound (#423); only then is it final.
   const gap = (reason: RecoveryReason): RecoveryDecision => ({ state: i.nowMs >= i.mergedAtMs + CONFIG_GAP_GIVE_UP_MS ? "unverified" : "awaiting-deploy", reason });
 
+  // Reverted: the error the revert brings back is the old code's, not the fix failing (#424).
+  if (i.reverted === true) return { state: "unverified", reason: "reverted" };
   if (i.incident === null || i.incident.retired === true) return { state: "unverified", reason: "incident-gone" };
   if (cfg.deployEnvironment === "") return gap("no-deployment-environment");
 

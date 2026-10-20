@@ -323,9 +323,10 @@ export interface StarfishConfig {
   mergeCheckWaitMinutes: number;
   /**
    * Fast-revert (#9, src/agent/fastRevert.ts): an occurrence of the same incident later than `fastRevertGraceMinutes`
-   * after Starfish's merge and within `fastRevertMinutes` of it reverts that merge. The window starts at the MERGE,
-   * because when a deployment completes is not observable yet; the grace stands in for the deploy. A window no longer
-   * than its grace watches nothing, and auto-merge then refuses (`mergeBlockedBy`, #242).
+   * after the watch's start and within `fastRevertMinutes` of it reverts that merge. The start is when the merge's
+   * deployment completed, read from GitHub's deployments in `deployEnvironment` (#424; none seen within
+   * `recoveryGiveUpHours`: a person is told); with no deployment environment it is the MERGE, and the grace stands in for
+   * the deploy. A window no longer than its grace watches nothing, and auto-merge then refuses (`mergeBlockedBy`, #242).
    */
   fastRevertMinutes: number;
   fastRevertGraceMinutes: number;

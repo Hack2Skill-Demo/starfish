@@ -64,6 +64,8 @@ export interface MergedCycle {
   mergeCommitSha: string;
   mergedAt: string;
   prior: Rec;
+  /** Starfish's fast-revert watch reverted this very merge (#424): its recurrence is the revert's, not the fix's. */
+  reverted: boolean;
 }
 
 /** A finished cycle's merged PR whose recovery is not final yet, or null. A synthetic cycle (seedDemo.ts) is never one. */
@@ -79,7 +81,9 @@ function mergedCandidate(id: string, d: Rec): MergedCycle | null {
   // A record for another merge (the PR cannot be merged twice, so this is a hand edit) is not trusted: start again.
   const own = prior.mergeCommitSha === sha ? prior : {};
   if (isFinalRecovery(own)) return null;
-  return { cycleId: id, incidentId: d.incidentId, recurrence: d.recurrence as number, mergeCommitSha: sha, mergedAt: new Date(mergedMs).toISOString(), prior: own };
+  const revert = rec(summary.revert);
+  const reverted = revert.state === "reverted" && revert.mergeSha === sha;
+  return { cycleId: id, incidentId: d.incidentId, recurrence: d.recurrence as number, mergeCommitSha: sha, mergedAt: new Date(mergedMs).toISOString(), prior: own, reverted };
 }
 
 /**
@@ -114,7 +118,7 @@ export async function selectMergedCycles(db: Firestore, cfg: Pick<RecoveryStepCo
   return [...found.values()]
     .sort((a, b) => a.orderMs - b.orderMs)
     .slice(0, limit)
-    .map(({ cycleId, incidentId, recurrence, mergeCommitSha, mergedAt, prior }) => ({ cycleId, incidentId, recurrence, mergeCommitSha, mergedAt, prior }));
+    .map(({ cycleId, incidentId, recurrence, mergeCommitSha, mergedAt, prior, reverted }) => ({ cycleId, incidentId, recurrence, mergeCommitSha, mergedAt, prior, reverted }));
 }
 
 /** One bounded round of recovery observation. Never throws for one cycle: its error is kept and the next goes ahead. */
@@ -164,7 +168,8 @@ export async function observeRecoveries(deps: RecoveryStepDeps): Promise<Recover
         deployment = { state: "deployed", completedAtMs: priorDeployedMs, deploymentId: c.prior.deploymentId, sha: c.prior.deploymentSha };
         deploymentId = c.prior.deploymentId;
         deploymentSha = c.prior.deploymentSha;
-      } else if (cfg.deployEnvironment === "") {
+      } else if (c.reverted || cfg.deployEnvironment === "") {
+        // Nothing to read: no environment named, or the merge was reverted, which decides the answer by itself (#424).
         deployment = { state: "none" };
       } else {
         try {
@@ -192,6 +197,7 @@ export async function observeRecoveries(deps: RecoveryStepDeps): Promise<Recover
         cfg,
         incident,
         recurrence: c.recurrence,
+        reverted: c.reverted,
         baseline,
         deployment,
         checkpointMs: needsCheckpoint ? await ingestedThrough() : null,

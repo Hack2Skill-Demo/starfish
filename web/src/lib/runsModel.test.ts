@@ -669,7 +669,7 @@ describe("recoveryView: a merged fix, deployed, and whether the error stopped (#
   });
 
   it("names why a fix is unverified, and never as recovered", () => {
-    for (const reason of ["no-deployment-environment", "deploy-failed", "deploy-not-observed", "deploy-unreadable", "incident-gone", "low-traffic", "ingest-not-covering"]) {
+    for (const reason of ["no-deployment-environment", "deploy-failed", "deploy-not-observed", "deploy-unreadable", "incident-gone", "reverted", "low-traffic", "ingest-not-covering"]) {
       const v = recoveryView(withRecovery({ ...base, state: "unverified", reason }), NOW)!;
       expect(v.text.startsWith("Not verified")).toBe(true);
       expect(v.tone).toBe("neutral");

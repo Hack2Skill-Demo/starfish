@@ -36,7 +36,8 @@
  * Where the pieces run: the loop (loop.ts) records the "fails before" run and gate 1 when it opens the pull request
  * (`summary.before`, `summary.merge` pending); this step, once per agent pass (agentCli.ts), takes each pending
  * candidate to merged or skipped. A merge starts the fast-revert watch (fastRevert.ts). A merge is a release, though Starfish runs no deploy: the
- * target's own CI/CD does, and Starfish cannot see when it finishes.
+ * target's own CI/CD does, and Starfish sees when it finishes only through GitHub's deployments, where a deployment
+ * environment is configured (`deployEnvironment`; the fast-revert watch then runs from it, #424).
  */
 import { Timestamp, type DocumentReference, type Firestore, type Transaction } from "firebase-admin/firestore";
 import type { StarfishConfig } from "../config.js";
@@ -207,6 +208,8 @@ export interface EvidenceInput {
   requiredChecks: readonly string[];
   headSha: string;
   fastRevertMinutes: number;
+  /** The deployment environment the watch reads (#424); empty or absent: the watch runs from the merge. */
+  deployEnvironment?: string;
 }
 
 const codeSpan = (v: unknown, max: number) => `\`${String(v ?? "").replace(/[`\s]+/g, " ").slice(0, max)}\``;
@@ -262,7 +265,9 @@ export function mergeEvidenceText(input: EvidenceInput): string {
     "",
     index
       ? "A revert of this change would not remove the index, so no revert watch is started; if the error comes back, the index path's own observation tells a person."
-      : `If this error comes back within ${input.fastRevertMinutes} minutes of the merge, Starfish opens and merges a revert of it, and tells a person.`,
+      : input.deployEnvironment
+        ? `If this error comes back within ${input.fastRevertMinutes} minutes of this merge's deployment to ${codeSpan(input.deployEnvironment, 100)} completing (as GitHub's deployments record it), Starfish opens and merges a revert of it, and tells a person.`
+        : `If this error comes back within ${input.fastRevertMinutes} minutes of the merge, Starfish opens and merges a revert of it, and tells a person.`,
     "",
     `Run: ${codeSpan(input.cycleId, 128)}`,
     "",
@@ -274,7 +279,7 @@ export function mergeEvidenceText(input: EvidenceInput): string {
 
 export type AutoMergeConfig = Pick<
   StarfishConfig,
-  "environment" | "incidentCollection" | "runCollection" | "verifyChecks" | "verifyCheckApp" | "maxPrChecksPerPass" | "maxMergesPerDay" | "mergeCheckWaitMinutes" | "fastRevertMinutes"
+  "environment" | "incidentCollection" | "runCollection" | "verifyChecks" | "verifyCheckApp" | "maxPrChecksPerPass" | "maxMergesPerDay" | "mergeCheckWaitMinutes" | "fastRevertMinutes" | "deployEnvironment"
 > &
   CycleConfig;
 
@@ -416,6 +421,9 @@ export function moveSummary(stage: "merge" | "revert", next: Record<string, unkn
     }
   }
   switch (next.state) {
+    case "watching":
+      // The one move that keeps the state (#424): the merge's deployment was seen, and the watch runs from it.
+      return "The merge's deployment completed: the fast-revert watch runs from it";
     case "clear":
       return "The fast-revert watch saw no recurrence: the merge stands";
     case "opening":
@@ -661,7 +669,7 @@ export async function runAutoMergeStep(deps: AutoMergeDeps): Promise<AutoMergeSu
     }
 
     try {
-      await client.commentOnPullRequest(cycle.id, number, mergeEvidenceText({ cycleId: cycle.id, summary, checks: requiredRuns(runs, cfg.verifyChecks, cfg.verifyCheckApp), requiredChecks: cfg.verifyChecks, headSha, fastRevertMinutes: cfg.fastRevertMinutes }));
+      await client.commentOnPullRequest(cycle.id, number, mergeEvidenceText({ cycleId: cycle.id, summary, checks: requiredRuns(runs, cfg.verifyChecks, cfg.verifyCheckApp), requiredChecks: cfg.verifyChecks, headSha, fastRevertMinutes: cfg.fastRevertMinutes, deployEnvironment: cfg.deployEnvironment }));
     } catch {
       return skipClaimed("evidence-not-posted");
     }
@@ -674,7 +682,9 @@ export async function runAutoMergeStep(deps: AutoMergeDeps): Promise<AutoMergeSu
     } catch (err) {
       return skipClaimed(`merge-refused:${ruleOf(err)}`);
     }
-    return (await recordMerged(d, cycle, claimedMerge, merged.sha, now.toISOString(), mine)) ? "merged" : "unchanged";
+    // When the merge happened: once GitHub answered, not when this candidate was first read (before the checks, the
+    // comment and the merge call), which made the watch start early (#424).
+    return (await recordMerged(d, cycle, claimedMerge, merged.sha, d.now().toISOString(), mine)) ? "merged" : "unchanged";
 
     async function skipClaimed(reason: string): Promise<"skipped" | "unchanged"> {
       const escalation = QUIET.has(reason) ? "none" : await escalate(d, cycle, `auto-merge-${reason.split(":")[0]}`, skipSentence(reason));
