@@ -480,8 +480,10 @@ src/
   publicViewStore.ts  writes them (Admin SDK only): an event's copy in the event's own transaction (cycle.ts); an
                    incident's or cycle's refreshed after each engine write from what was committed (store.ts, cycle.ts,
                    incidentLinks.ts, observe.ts, escalation.ts, webhooks.ts; never throws), a retired incident's deleted
-                   in the retire's transaction; `syncRecentPublicView` (the newest 50 of each, after every ingest and
-                   agent run) for writes the engine does not make; `backfillPublicView` = `pnpm public-view`
+                   in the retire's transaction; `syncRecentPublicView` (after every ingest and agent run: every incident
+                   written since the last sweep, by `updatedAt` from a cursor in `{runCollection}/public_view_sweep`, 200
+                   a run, so an operator's triage of an old incident is not missed, #431; and the newest 50 of each) for
+                   writes the engine does not make; `backfillPublicView` = `pnpm public-view`
                    (`publicViewCli.ts`). Unit- and emulator-tested; never run on a real project
 ```
 

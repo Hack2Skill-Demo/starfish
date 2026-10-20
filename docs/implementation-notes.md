@@ -161,8 +161,8 @@ fix's root cause and risk, the review's attacks), patches, or event payloads; an
 for the stages whose summaries the engine writes in its own words. An event's copy is written in the same transaction
 as the event; an incident's or a cycle's is refreshed right after each engine write from what was committed (its
 updates are increments and field deletes, so the result is only known then), a retired incident's is deleted in the
-retire's transaction, and the ingest and agent jobs sweep the newest 50 of each after every run for changes the engine
-did not make (an operator's triage). Records stored before the copies existed get theirs from `pnpm public-view` (a dry
+retire's transaction, and the ingest and agent jobs sweep after every run for changes the engine did not make (an
+operator's triage): every incident written since the last sweep, by `updatedAt` (#431), and the newest 50 of each. Records stored before the copies existed get theirs from `pnpm public-view` (a dry
 run; `-- --apply --project=<id>` writes, and also removes copies whose record is gone, retired or private);
 `pnpm seed-demo --apply` writes its synthetic history's copies in the same batches. Built and tested (unit tests that
 plant seeded credentials and personal-looking text in every source field, the emulator for the writes and the rules);

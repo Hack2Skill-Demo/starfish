@@ -337,8 +337,9 @@ async function runPass(): Promise<number> {
       noteFailedStep(report, "escalation");
     }
 
-    // The guests' trimmed copies (#18) of the newest public records, for writes the pass's own refreshes cannot see (an
-    // operator's triage in the UI) or that failed. Never throws, and never fails the pass: a copy only lags.
+    // The guests' trimmed copies (#18) of the public records written since the last sweep and the newest ones, for
+    // writes the pass's own refreshes cannot see (an operator's triage in the UI) or that failed. Never throws, and
+    // never fails the pass: a copy only lags.
     if (cfg.publicEnvironments.length > 0) {
       const sweep = await syncRecentPublicView(db, cfg);
       console.log(

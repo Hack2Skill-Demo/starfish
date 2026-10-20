@@ -14,7 +14,7 @@ import { retireIncident } from "./ingest/retire.js";
 import { acquireLease, appendEventsInTransaction, finishCycle, recordEvent, type CycleKey } from "./agent/cycle.js";
 import { linkIncident } from "./agent/incidentLinks.js";
 import { publicEventId, toPublicCycle, toPublicIncident } from "./publicView.js";
-import { backfillPublicView, refreshPublicCycle, refreshPublicIncident, sameDocument, syncRecentPublicView } from "./publicViewStore.js";
+import { CHANGED_LIMIT, CURSOR_MARGIN_MS, SWEEP_CURSOR_DOC, backfillPublicView, refreshPublicCycle, refreshPublicIncident, sameDocument, syncRecentPublicView } from "./publicViewStore.js";
 import { SEEDED_SECRETS } from "./ingest/testSecrets.js";
 import { testConfig } from "./testConfig.js";
 import type { StarfishConfig } from "./config.js";
@@ -37,6 +37,7 @@ beforeEach(async () => {
     cycleCollection: `cycles_${run}`,
     usersCollection: `users_${run}`,
     auditCollection: `audit_${run}`,
+    runCollection: `runs_${run}`,
     publicEnvironments: ["demo"],
     publicIncidentCollection: `pub_incidents_${run}`,
     publicCycleCollection: `pub_cycles_${run}`,
@@ -200,6 +201,62 @@ describe("the sweep after each run", () => {
     expect((await copyOf(cfg.publicIncidentCollection, stored!.id))?.status).toBe("acknowledged");
     // Nothing differs now: nothing is written.
     expect((await syncRecentPublicView(db, cfg)).incidents.refreshed).toBe(0);
+  });
+
+  it("picks up an operator's triage of an incident outside the newest ones, and walks on from where it stopped (#431)", async () => {
+    // Two incidents; the list of the newest holds only the one that fired last.
+    const HOUR = 3_600_000;
+    await upsertIncident(db, cfg, occurrence({ functionName: "old", lastOccurredAt: new Date(NOW.getTime() - 5 * HOUR), firstOccurredAt: new Date(NOW.getTime() - 6 * HOUR) }), Timestamp.fromDate(new Date(NOW.getTime() - 5 * HOUR)));
+    await upsertIncident(db, cfg, occurrence({ functionName: "recent" }), Timestamp.fromDate(NOW));
+    const old = (await incidents()).find((d) => d.data().functionName === "old")!;
+    const later = NOW.getTime() + HOUR;
+    // The sweep after the run that wrote them: everything is up to date, and the cursor is past both.
+    expect(await syncRecentPublicView(db, cfg, 1, later)).toMatchObject({ incidents: { checked: 2, refreshed: 0 }, failures: 0 });
+
+    // An operator resolves the older incident in the UI (web/src/lib/incidents.ts applyAction; firestore.rules sets updatedAt
+    // to the server's time). Ingest then writes nothing to it, and it is not among the newest.
+    const resolvedAt = Timestamp.fromMillis(later + 60_000);
+    await old.ref.update({ status: "resolved", statusChangedBy: "op1", updatedAt: resolvedAt, resolvedAt });
+    expect((await copyOf(cfg.publicIncidentCollection, old.id))?.status).toBe("new");
+
+    const sweep = await syncRecentPublicView(db, cfg, 1, later + 2 * HOUR);
+    // The walk reads only it, going on from its cursor; the newest-first list reads the recent one.
+    expect(sweep).toMatchObject({ incidents: { checked: 2, refreshed: 1 }, failures: 0 });
+    expect((await copyOf(cfg.publicIncidentCollection, old.id))?.status).toBe("resolved");
+    const cursor = (await db.collection(cfg.runCollection).doc(SWEEP_CURSOR_DOC).get()).get("cursors.demo") as { id: string; updatedAt: Timestamp };
+    expect(cursor.id).toBe(old.id);
+    expect(cursor.updatedAt.toMillis()).toBe(resolvedAt.toMillis());
+  });
+
+  it("keeps its cursor short of the last few minutes, so a write stamped a little behind its clock is still read", async () => {
+    await upsertIncident(db, cfg, occurrence(), Timestamp.fromDate(NOW));
+    // Swept within the margin of the write: checked, and read again next time.
+    await syncRecentPublicView(db, cfg, 1, NOW.getTime() + CURSOR_MARGIN_MS - 1000);
+    expect((await db.collection(cfg.runCollection).doc(SWEEP_CURSOR_DOC).get()).exists).toBe(false);
+    // An operator's write stamped at the same instant (a clock behind the sweep's): the next sweep still reads it.
+    const [stored] = await incidents();
+    await stored!.ref.update({ status: "acknowledged", statusChangedBy: "op1", updatedAt: Timestamp.fromDate(NOW) });
+    const sweep = await syncRecentPublicView(db, cfg, 0, NOW.getTime() + CURSOR_MARGIN_MS + 1000);
+    expect(sweep).toMatchObject({ incidents: { checked: 1, refreshed: 1 } });
+    expect((await copyOf(cfg.publicIncidentCollection, stored!.id))?.status).toBe("acknowledged");
+  });
+
+  it("walks a long history a bounded page at a time, oldest written first", async () => {
+    // No cursor yet, and incidents stored with no copies: the first sweeps walk them from the oldest written.
+    const n = CHANGED_LIMIT + 3;
+    const batch = db.batch();
+    for (let i = 0; i < n; i++) {
+      batch.set(db.collection(cfg.incidentCollection).doc(`inc${String(i).padStart(4, "0")}`), {
+        environment: "demo", status: "new", functionName: "f", errorType: "TypeError", errorMessage: `e${i}`, occurrenceCount: 1,
+        firstOccurredAt: Timestamp.fromDate(NOW), lastOccurredAt: Timestamp.fromDate(NOW), updatedAt: Timestamp.fromMillis(NOW.getTime() - (n - i) * 1000),
+      });
+    }
+    await batch.commit();
+    const later = NOW.getTime() + 3_600_000;
+    expect((await syncRecentPublicView(db, cfg, 0, later)).incidents).toEqual({ checked: CHANGED_LIMIT, refreshed: CHANGED_LIMIT });
+    expect((await syncRecentPublicView(db, cfg, 0, later)).incidents).toEqual({ checked: 3, refreshed: 3 });
+    expect(await all(cfg.publicIncidentCollection)).toHaveLength(n);
+    expect((await syncRecentPublicView(db, cfg, 0, later)).incidents).toEqual({ checked: 0, refreshed: 0 });
   });
 
   it("copies a cycle written without copies, with its events", async () => {

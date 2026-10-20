@@ -231,11 +231,13 @@ person's, once, on a deployment that already holds demo records; **neither has b
    command of step 2; it never runs it.
 2. **Copy what is already stored**: `pnpm public-view` counts what it would write and remove, and
    `pnpm public-view -- --apply --project=<id>` writes the copies (and removes any whose record is gone, retired or
-   private). Until then a guest sees only what the engine has written or touched since the deploy: new incidents, and the
-   newest 50 incidents and cycles the jobs sweep after each run. `pnpm seed-demo -- --apply` writes its own copies.
+   private). Until then a guest sees only what the engine has written or touched since the deploy: new incidents, the
+   incidents the jobs' sweep has reached (it walks them all, oldest written first, 200 a run, #431), and the newest 50
+   cycles. `pnpm seed-demo -- --apply` writes its own copies.
 
-The ingest job (and the agent job, when deployed) keeps the copies up to date as it writes and sweeps the newest 50 after
-each run; an operator's triage reaches a guest at the next run.
+The ingest job (and the agent job, when deployed) keeps the copies up to date as it writes, and after each run sweeps
+every incident written since the last sweep and the newest 50 incidents and cycles; an operator's triage reaches a guest
+at the next run, however old the incident (#431).
 
 ## Deploy from GitHub Actions (#75)
 

@@ -51,8 +51,9 @@ const checkpointLine = ingestCheckpointLine(summary);
 if (checkpointLine !== undefined) console.log(checkpointLine);
 console.log(`config from ${summary.configSource}${summary.problems.length ? `; settings not used: ${summary.problems.join("; ")}` : ""}`);
 
-// The guests' trimmed copies (#18) of the newest public records, for changes the engine's own refreshes cannot see (an
-// operator's triage in the UI). Never throws, and never fails the run: the copies only lag until the next one.
+// The guests' trimmed copies (#18) of the public records written since the last sweep and the newest ones, for changes
+// the engine's own refreshes cannot see (an operator's triage in the UI). Never throws, and never fails the run: the
+// copies only lag until the next one.
 if (config.publicEnvironments.length > 0) {
   const sweep = await syncRecentPublicView(db, config);
   console.log(
