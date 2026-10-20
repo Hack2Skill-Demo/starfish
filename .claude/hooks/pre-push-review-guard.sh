@@ -96,13 +96,18 @@ parse_git() {
   return 0
 }
 
-# The push runs in the repo `-C` points at, so the review marker and the latest commit
-# must come from THAT repo, not the directory the shell happens to be in. Otherwise
-# `git -C other/repo push` is judged by the wrong repo's marker: allowed on a stale
-# review, or blocked on a fresh one. Run the lookups there, and make the marker path
-# absolute, since `--git-path` is relative to the repo it ran in.
+# The push runs in the directory the Bash tool runs the command in (the tool input's `cwd`),
+# then in the repo each `-C` points at from there. The review marker and the latest commit must
+# come from THAT repo, not the hook process's own directory, which need not be it: in a worktree
+# session it was another checkout, so a bare push was judged by that checkout's marker (#438).
+# Otherwise a push is judged by the wrong repo's marker: allowed on a stale review, or blocked
+# on a fresh one. Run the lookups there, and make the marker path absolute, since `--git-path`
+# is relative to the repo it ran in. A `cwd` that names no directory leaves no marker: blocked.
+# With no `cwd` in the input (an older client), the hook's own directory is all there is.
+tool_cwd="$(printf '%s' "$input" | jq -r '.cwd // ""')"
 in_repo() {
   (
+    if [ -n "$tool_cwd" ]; then cd "$tool_cwd" || exit 1; fi
     for d in ${c_dirs[@]+"${c_dirs[@]}"}; do cd "$d" || exit 1; done
     "$@"
   )

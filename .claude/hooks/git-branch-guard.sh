@@ -30,8 +30,9 @@
 # `FOO=1 git push`, `(git push -f)`, `if ok; then git push -f; fi` and a push chained after a
 # heredoc commit are all seen (lib/segments.sh says exactly what it does and does not follow).
 # It does NOT look inside strings (`bash -c "git push -f"`, `eval`, `$( )` inside double
-# quotes), follow `cd` (the current branch is the hook's own directory's), or catch aliases
-# and scripts that run git. These hooks stop recurring mistakes; they are not a sandbox.
+# quotes), follow `cd` (the current branch is that of the directory the command starts in, the
+# tool input's `cwd`, then any -C; #438), or catch aliases and scripts that run git. These
+# hooks stop recurring mistakes; they are not a sandbox.
 #
 # Testable: set GIT_BRANCH_GUARD_CURRENT_BRANCH to override the current-branch
 # lookup (used by git-branch-guard.test.sh).
@@ -40,6 +41,7 @@ set -euo pipefail
 
 input="$(cat)"
 cmd="$(printf '%s' "$input" | jq -r '.tool_input.command // ""')"
+tool_cwd="$(printf '%s' "$input" | jq -r '.cwd // ""')"   # where the Bash tool runs the command
 
 deny() {
   jq -n --arg reason "$1" '{
@@ -109,9 +111,12 @@ inspect_git() {
   args=()
   [ "$i" -lt "$n" ] && args=("${toks[@]:$((i + 1))}")
 
-  # Run git in the repo the command targets (honouring -C), for the branch lookups below.
+  # Run git in the repo the command targets, for the branch lookups below: the directory the
+  # Bash tool runs it in (the tool input's `cwd`; the hook process's own directory need not be
+  # it, #438), then each -C from there. With no `cwd` in the input, the hook's own directory.
   # (Kept to bash 3.2 features: macOS ships it. No ${var,,}, no `local` arrays.)
   c_args=()
+  [ -n "$tool_cwd" ] && c_args+=(-C "$tool_cwd")
   for d in ${c_dirs[@]+"${c_dirs[@]}"}; do c_args+=(-C "$d"); done
   repo_git() { git ${c_args[@]+"${c_args[@]}"} "$@"; }
   lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }

@@ -257,6 +257,34 @@ run_case allow feature/x "git log --oneline | head -5"
 run_case allow feature/x "git diff | git apply --check"
 run_case allow feature/x $'git add -A && git commit -q -F - <<\'EOF\'\nfix: don\'t "split" a; b\nEOF\ngit push --force-with-lease -u origin feature/x'
 
+# The current branch is the one where the Bash tool runs the command (the tool input's `cwd`,
+# then any -C), not the hook process's own directory (#438). Real repos, no override.
+# run_cwd_case <allow|deny> <hook process dir> <tool cwd> <command>
+run_cwd_case() {
+  local expected="$1" dir="$2" tool_cwd="$3" command="$4" out decision
+  out="$(jq -n --arg c "$command" --arg d "$tool_cwd" '{tool_input: {command: $c}, cwd: $d}' \
+    | (cd "$dir" && env -u GIT_BRANCH_GUARD_CURRENT_BRANCH bash "$HOOK"))"
+  decision="allow"
+  [ -n "$out" ] && decision="$(printf '%s' "$out" | jq -r '.hookSpecificOutput.permissionDecision // "allow"')"
+  if [ "$decision" = "$expected" ]; then
+    pass=$((pass + 1))
+  else
+    fail=$((fail + 1))
+    echo "FAIL: expected=$expected got=$decision | hook in $dir, tool cwd $tool_cwd | cmd: $command"
+  fi
+}
+REPOS="$(mktemp -d)"
+trap 'rm -rf "$REPOS"' EXIT
+for r in on-main on-feature; do
+  git init -q -b main "$REPOS/$r"
+  git -C "$REPOS/$r" -c user.name=t -c user.email=t@example.test commit -q --allow-empty -m init
+done
+git -C "$REPOS/on-feature" checkout -q -b feature/x
+run_cwd_case allow "$REPOS/on-main"    "$REPOS/on-feature" "git push -f"          # the tool's repo is on feature/x
+run_cwd_case deny  "$REPOS/on-feature" "$REPOS/on-main"    "git push -f"          # the tool's repo is on main
+run_cwd_case deny  "$REPOS/on-feature" "$REPOS"            "git -C on-main push -f"   # -C relative to the tool's cwd
+run_cwd_case allow "$REPOS/on-main"    "$REPOS"            "git -C on-feature push -f"
+
 echo ""
 echo "git-branch-guard tests: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
