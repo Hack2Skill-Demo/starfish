@@ -33,6 +33,16 @@ export interface CycleRow {
   eventCount: number;
   createdAt: Date;
   updatedAt: Date;
+  /**
+   * When the run last settled (`settledAt`, src/agent/cycle.ts, #365): events appended later (the phone escalation's) move
+   * `updatedAt`, never this. Absent on a run that has not settled, or settled before the engine kept it.
+   */
+  settledAt?: Date;
+  /**
+   * How many times the engine reopened the run (`reconsiderCount`): its round is this plus one, as Slack's "(round N)"
+   * says (src/agent/cycleStates.ts `roundOf`, #436). Absent on a run never reopened.
+   */
+  reconsiderCount?: number;
   /** Null when no worker holds the cycle. */
   leaseExpiresAt: Date | null;
   deadlineAt: Date | null;
@@ -88,6 +98,8 @@ export function parseCycle(id: string, d: Record<string, unknown>): CycleRow | n
   if (typeof d.summary === "object" && d.summary !== null && !Array.isArray(d.summary)) {
     for (const [stage, record] of Object.entries(d.summary)) summary[stage] = flat(record);
   }
+  const settledAt = date(d.settledAt);
+  const reconsiderCount = typeof d.reconsiderCount === "number" && Number.isSafeInteger(d.reconsiderCount) && d.reconsiderCount > 0 ? d.reconsiderCount : undefined;
   return {
     id,
     incidentId,
@@ -101,6 +113,8 @@ export function parseCycle(id: string, d: Record<string, unknown>): CycleRow | n
     eventCount: typeof d.eventCount === "number" ? d.eventCount : 0,
     createdAt,
     updatedAt,
+    ...(settledAt && { settledAt }),
+    ...(reconsiderCount !== undefined && { reconsiderCount }),
     leaseExpiresAt: date(d.leaseExpiresAt),
     deadlineAt: date(d.deadlineAt),
     summary,
@@ -589,6 +603,8 @@ export function earlierAsStep(e: EarlierStep): Step {
 export interface EarlierRound {
   /** 1 for the run's first round. */
   round: number;
+  /** The engine's words for the reopening that began this round, when it was read (a first round has none). */
+  began?: string;
   stage: string;
   title: string;
   outcome?: string;
@@ -634,7 +650,7 @@ export interface Waterfall {
   /** The axis: from the cycle's start (or its latest reopening) to its last update, or to now while a worker holds it. */
   startMs: number;
   endMs: number;
-  /** How many rounds the run has had: 1, plus one for each time it was reopened. */
+  /** How many rounds the run has had: 1, plus one for each time the engine reopened it (`reconsiderCount`). */
   rounds: number;
   /** The latest reopening, in the engine's own words, when there was one. */
   reopened?: { at: Date; summary: string };
@@ -698,8 +714,12 @@ export function buildWaterfall(cycle: CycleRow, events: readonly EventRow[], now
   }
   const createdMs = cycle.createdAt.getTime();
   // A round's number is the engine's when its events carry it (#436): a run with more events than the page read has lost its
-  // earliest reopenings, and counting the ones left would number the rounds from 1 again.
-  const roundBefore = (reopening: EventRow, r: number) => (reopening.round !== undefined && reopening.round > 1 ? reopening.round - 1 : r + 1);
+  // earliest reopenings, and counting the ones left would number the rounds from 1 again. An older reopening, written
+  // before events carried their round, is numbered from the run's own count of reopenings (`reconsiderCount`) when the
+  // page did not reach the run's first event; counted by its place among those read when it did.
+  const truncated = ordered.length > 0 && ordered[0]!.seq > 1;
+  const unread = truncated && cycle.reconsiderCount !== undefined ? Math.max(0, cycle.reconsiderCount - reopenings.length) : 0;
+  const roundBefore = (reopening: EventRow, r: number) => (reopening.round !== undefined && reopening.round > 1 ? reopening.round - 1 : unread + r + 1);
   const earlier: EarlierRound[] = reopenings.flatMap((reopening, r): EarlierRound[] => {
     const before = reopenings[r - 1];
     const inRound = ordered.filter((e) => e.stage !== NOTE_STAGE && e.seq < reopening.seq && (!before || e.seq > before.seq));
@@ -741,6 +761,7 @@ export function buildWaterfall(cycle: CycleRow, events: readonly EventRow[], now
     return [
       {
         round: roundBefore(reopening, r),
+        ...(before?.summary && { began: before.summary }),
         stage: last.stage,
         title: titleOf(last.stage),
         ...(last.type && { outcome: last.type }),
@@ -837,7 +858,9 @@ export function buildWaterfall(cycle: CycleRow, events: readonly EventRow[], now
     notes,
     startMs,
     endMs,
-    rounds: Math.max(reopenings.length + 1, ...ordered.map((e) => e.round ?? 1)),
+    // The engine's round (`reconsiderCount` + 1, src/agent/cycleStates.ts `roundOf`), the one Slack's "(round N)" says; the
+    // events read only when the run record does not carry it.
+    rounds: Math.max((cycle.reconsiderCount ?? 0) + 1, unread + reopenings.length + 1, ...ordered.map((e) => e.round ?? 1)),
     ...(lastReopening && { reopened: { at: lastReopening.at, summary: lastReopening.summary } }),
     earlier,
   };

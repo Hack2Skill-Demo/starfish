@@ -83,6 +83,11 @@ export interface TriageResult {
    * one applied. The rule is `rule-cap` or `correction-cap` only when the cap changed the decision.
    */
   cap?: LevelCap;
+  /**
+   * Set when triage decided before it read the independent log recount (an incident not open, a cap of noise, a kind's
+   * gate): the recount was not needed, so a missing one was not waited for (#436).
+   */
+  decidedBeforeRecount?: true;
 }
 
 /** How far Starfish goes with an incident, in the words the UI and the docs use. Null: nothing was decided yet. */
@@ -288,6 +293,9 @@ function result(decision: TriageDecision, rule: TriageRule, reason: string, susp
   };
 }
 
+/** A decision made before the recount was read: it was not needed (#436). */
+const beforeRecount = (r: TriageResult): TriageResult => ({ ...r, decidedBeforeRecount: true });
+
 /** A model answer that is the shape asked for, or null. Anything else is not trusted. */
 function parseModelAnswer(raw: unknown): { decision: ModelDecision; reasoning: string; suspectedCause?: string; mergeCase?: string } | null {
   if (raw === null || typeof raw !== "object") return null;
@@ -317,7 +325,7 @@ export function hasCauseEvidence(incident: Incident): boolean {
 /** Never throws: a failure is a result, because an unrecorded failure would look like a decision not to act. */
 export async function triageIncident(subject: TriageSubject, ask: AskJson = askJson, options: TriageOptions = {}): Promise<TriageResult> {
   if (!(OPEN_INCIDENT_STATUSES as readonly string[]).includes(subject.status)) {
-    return result("skip", "status-not-open", `Incident is ${subject.status}; triage only looks at open incidents.`);
+    return beforeRecount(result("skip", "status-not-open", `Incident is ${subject.status}; triage only looks at open incidents.`));
   }
 
   // The incident's kind (src/incidentKinds.ts) decides what follows before anything else may. The rules engine
@@ -327,13 +335,13 @@ export async function triageIncident(subject: TriageSubject, ask: AskJson = askJ
   const kind = incidentKindOf(subject.incident);
   const cap = levelCap(subject.incident, options.classRules ?? [], subject.correction) ?? undefined;
   if (cap?.level === "noise") {
-    return result("decline", `${cap.by}-cap`, `Declined without asking the model: ${capSource(cap)} holds this incident to noise.`, undefined, undefined, cap);
+    return beforeRecount(result("decline", `${cap.by}-cap`, `Declined without asking the model: ${capSource(cap)} holds this incident to noise.`, undefined, undefined, cap));
   }
 
   // A kind with a gate goes to a person, the model unasked: an overflow incident (#303) is many distinct errors with no
   // single cause, its text whatever the flood carried; a consolidated Cloud Run quota incident is the project's quota,
   // exhausted before any code ran, so no change to the code fixes it.
-  if (kind.gate) return result("notify", kind.gate.rule, kind.gate.reason, undefined, undefined, cap);
+  if (kind.gate) return beforeRecount(result("notify", kind.gate.rule, kind.gate.reason, undefined, undefined, cap));
 
   const check = subject.incident.logCounterCheck;
   if (!check || !Number.isFinite(check.count)) {

@@ -357,6 +357,20 @@ describe("triageIncident: a Monitoring-only incident (#19)", () => {
     expect(calls).toHaveLength(0);
   });
 
+  it("says which decisions came before the recount was read, so a missing one is not said to be waited for (#436)", async () => {
+    const { ask } = stub(act);
+    const noRecount = incident({ logCounterCheck: undefined });
+    const gated = [
+      await triageIncident({ incident: noRecount, status: "resolved" }, ask),
+      await triageIncident({ incident: incident({ signalSource: "overflow", logCounterCheck: undefined }), status: "new" }, ask),
+      await triageIncident({ incident: noRecount, status: "new", correction: { level: "noise", by: "u1" } }, ask),
+    ];
+    for (const r of gated) expect(r.decidedBeforeRecount).toBe(true);
+    // The recount's own gates, and the model's decisions, read it.
+    expect(await triageIncident({ incident: noRecount, status: "new" }, ask)).not.toHaveProperty("decidedBeforeRecount");
+    expect(await triageIncident({ incident: incident(), status: "new" }, ask)).not.toHaveProperty("decidedBeforeRecount");
+  });
+
   it("hands a consolidated Cloud Run quota incident to a person without asking the model: no code change fixes it", async () => {
     const { ask, calls } = stub(act);
     const r = await triageIncident({ incident: incident({ signalSource: "platform-quota" }), status: "new" }, ask);

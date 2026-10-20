@@ -227,8 +227,11 @@ const storedCycle = (over: Record<string, unknown> = {}): Record<string, unknown
   outcome: "notify:counter-check-zero",
   createdAt: t(NOW - HOUR),
   updatedAt: t(NOW),
+  settledAt: t(NOW - 1000),
+  reconsiderCount: 2,
+  reconsideredAt: [t(NOW - 2 * HOUR)],
   summary: {
-    triage: { decision: "act", rule: "model-act", reason: "r", suspectedCause: "c", model: "gemini-3.1-pro-preview", counterCount: null, counterFilter: "severity>=ERROR" },
+    triage: { decision: "act", rule: "model-act", reason: "r", suspectedCause: "c", model: "gemini-3.1-pro-preview", counterCount: null, counterRead: true, counterFilter: "severity>=ERROR" },
     fix: { outcome: "proposed", rule: "ok", model: "gemini-3.1-pro-preview", rootCause: "missing await", testAdded: true, risk: "low", revisions: 1, alternative1: "retry" },
     verify: { status: "passed", rule: "passed", patchSha256: "b".repeat(64), baseRevision: "c".repeat(40), files: 2, exitCode: 0, durationMs: 4200, isolation: "github-actions" },
     review: { verdict: "approve", rule: "ok", model: "gemini-3.1-pro-preview", attacks: 2, held: 2, flagged: 0, broken: 0, patchSha256: "b".repeat(64), attack1: "held: null input | fine" },
@@ -250,13 +253,16 @@ describe("toPublicCycle", () => {
   it("copies the cycle's state and times, and from its run record only the allowlisted keys", () => {
     const copy = toPublicCycle(storedCycle(), pub)!;
     expect(Object.keys(copy).sort()).toEqual(
-      ["publicView", "incidentId", "environment", "state", "createdAt", "updatedAt", "leaseExpiresAt", "deadlineAt", "summary", "recurrence", "stage", "path", "outcome", "attempts", "eventCount"].sort()
+      ["publicView", "incidentId", "environment", "state", "createdAt", "updatedAt", "settledAt", "leaseExpiresAt", "deadlineAt", "summary", "recurrence", "stage", "path", "outcome", "attempts", "eventCount", "reconsiderCount"].sort()
     );
     expect(copy.leaseExpiresAt).toBeNull();
     const summary = copy.summary as Record<string, Record<string, unknown>>;
     expect(Object.keys(summary).sort()).toEqual(["fix", "issue", "pr", "prState", "recovery", "review", "triage", "verify"]);
     expect(summary.issue).toEqual({ state: "opened", number: 30, url: "https://github.com/o/r/issues/30" });
-    expect(summary.triage).toEqual({ decision: "act", rule: "model-act", model: "gemini-3.1-pro-preview", counterCount: null });
+    expect(summary.triage).toEqual({ decision: "act", rule: "model-act", model: "gemini-3.1-pro-preview", counterCount: null, counterRead: true });
+    // When it settled and how many times it was reopened (#436): a time and a count.
+    expect(copy.settledAt).toEqual(t(NOW - 1000));
+    expect(copy.reconsiderCount).toBe(2);
     expect(summary.fix).toEqual({ outcome: "proposed", rule: "ok", model: "gemini-3.1-pro-preview", testAdded: true, revisions: 1 });
     expect(summary.verify).toMatchObject({ rule: "passed", isolation: "github-actions" });
     expect(summary.review).toEqual({ verdict: "approve", rule: "ok", model: "gemini-3.1-pro-preview", attacks: 2, held: 2, flagged: 0, broken: 0, patchSha256: "b".repeat(64) });
@@ -273,9 +279,15 @@ describe("toPublicCycle", () => {
     expect((http.summary as Record<string, Record<string, unknown>>).issue).toEqual({ state: "opened", number: 30 });
   });
 
+  it("drops a settle time or a reopen count that is not a time or a count", () => {
+    const copy = toPublicCycle(storedCycle({ settledAt: "2026-10-08T11:00:00Z", reconsiderCount: -1 }), pub)!;
+    expect(copy).not.toHaveProperty("settledAt");
+    expect(copy).not.toHaveProperty("reconsiderCount");
+  });
+
   it("leaves out the lease holder, the spend, the decline decision and its history", () => {
     const copy = toPublicCycle(storedCycle(), pub)!;
-    for (const k of ["owner", "modelCalls", "revisions", "startDays", "decision", "history", "releasedBecause"]) expect(copy).not.toHaveProperty(k);
+    for (const k of ["owner", "modelCalls", "revisions", "startDays", "decision", "history", "releasedBecause", "reconsideredAt"]) expect(copy).not.toHaveProperty(k);
   });
 
   it("keeps how far triage went and the admin's merge case (engine tokens), never the model's reason", () => {

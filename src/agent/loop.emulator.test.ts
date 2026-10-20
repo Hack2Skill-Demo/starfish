@@ -353,7 +353,7 @@ describe("runCycle: the run record on the cycle", () => {
     });
     await runCycle(deps(model), key);
     const doc = await cycleDoc();
-    expect(doc.summary.triage).toMatchObject({ counterCount: 42, counterWindow: "24h", counterCapped: false });
+    expect(doc.summary.triage).toMatchObject({ counterCount: 42, counterWindow: "24h", counterCapped: false, counterRead: true });
     expect(doc.summary.triage.model).toEqual(expect.any(String));
     expect(doc.summary.fix).toMatchObject({ alternative1: "Default couponCode to an empty string", alternative2: "Turn on ignoreUndefinedProperties" });
     expect(doc.summary.fix.alternative3).toBeUndefined();
@@ -369,6 +369,18 @@ describe("runCycle: the run record on the cycle", () => {
     expect(triage.counterWindow).toBeUndefined();
     // A gate decided, not the model: no model is named.
     expect(triage.model).toBeUndefined();
+    // The recount's own gate: triage read it, and waited for it.
+    expect(triage.counterRead).toBe(true);
+  });
+
+  it("records that triage decided before reading the recount when a gate before it decided (#436)", async () => {
+    const missing = { ...incident, logCounterCheck: undefined };
+    const d = deps(scripted({}), {
+      load: async () => ({ subject: { incident: missing, status: "new", correction: { level: "noise", by: "u1" } }, files: [], sourceDir: src, baseRevision: "r" }),
+    });
+    await runCycle(d, key);
+    const triage = (await cycleDoc()).summary.triage;
+    expect(triage).toMatchObject({ decision: "decline", rule: "correction-cap", counterCount: null, counterRead: false });
   });
 
   it("shows the final verify result when the first patch was rejected and the second passed", async () => {

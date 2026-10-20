@@ -89,8 +89,13 @@ function counterCheckStage(triage: Record<string, string | number | boolean | nu
   if (!("counterCount" in triage)) {
     return { ...base, status: "not-stored", note: "Not stored: this run was recorded before the engine kept its recount.", fields: [] };
   }
+  // Triage decided before it read the recount (a cap of noise, a kind's gate, an incident not open): it did not wait for one
+  // (#436). A record written before the engine said so (no `counterRead`) was read.
+  const unread = triage.counterRead === false;
   if (triage.counterCount === null) {
-    return { ...base, status: "recorded", note: "Missing: the independent recount was not available, so triage waited for it (missing is not zero).", fields: [] };
+    return unread
+      ? { ...base, status: "recorded", note: "Not needed: triage decided before reading the independent recount, and none was available.", fields: [] }
+      : { ...base, status: "recorded", note: "Missing: the independent recount was not available, so triage waited for it (missing is not zero).", fields: [] };
   }
   const capped = triage.counterCapped === true;
   const fields: EvidenceField[] = [
@@ -103,12 +108,11 @@ function counterCheckStage(triage: Record<string, string | number | boolean | nu
       ["counterFilter", "Filter counted", true],
     ]),
   ];
-  return {
-    ...base,
-    status: "recorded",
-    ...(!("counterFilter" in triage) && !trimmed && { note: "The filter was too long to store whole, so it is left out rather than cut." }),
-    fields,
-  };
+  const notes = [
+    ...(unread ? ["Triage decided before reading this recount, so it did not weigh it."] : []),
+    ...(!("counterFilter" in triage) && !trimmed ? ["The filter was too long to store whole, so it is left out rather than cut."] : []),
+  ];
+  return { ...base, status: "recorded", ...(notes.length > 0 && { note: notes.join(" ") }), fields };
 }
 
 /**

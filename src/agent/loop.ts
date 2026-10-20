@@ -831,6 +831,9 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
           // asked none. A cap that turned the model's act into notify still asked it.
           ...((triage.rule.startsWith("model-") || (triage.rule.endsWith("-cap") && triage.cap?.level !== "noise")) && { model: cfg.model }),
           ...counterCheckRecord(loaded.subject.incident.logCounterCheck),
+          // Whether triage read the recount at all (#436): a gate before it (a cap of noise, a kind's gate) did not need it,
+          // so a missing one there was not waited for.
+          counterRead: triage.decidedBeforeRecount !== true,
         },
       });
     }

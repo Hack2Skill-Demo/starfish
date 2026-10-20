@@ -888,6 +888,19 @@ describe("Runs page", () => {
     expect(screen.queryByRole("button", { name: /Retry with agent/ })).toBeNull();
   });
 
+  it("reads a pull request as the engine does, by the record's `opened`, not by its link (#436)", async () => {
+    mocks.getIncident.mockResolvedValue({ id: "inc-a", functionName: "orders-createorder", errorType: "DatabaseError", errorMessage: "x", status: "new" });
+    renderRuns();
+    // Opened, with a link the page does not draw (not https): the engine would not reopen it, so no retry is offered.
+    act(() => mocks.cyclesCb!([cycle("inc-a_r0", { state: "waiting-human", leaseExpiresAt: null, path: "human", summary: { pr: { opened: true, number: 3, url: "http://ghe.test/o/r/pull/3" } } })], false));
+    act(() => mocks.eventsCb!([event(1, "triage", "decision", "Act", 50_000)]));
+    await screen.findByRole("region", { name: "Run detail" });
+    expect(screen.queryByRole("button", { name: /Retry with agent/ })).toBeNull();
+    // A dry run opened nothing: the retry stays.
+    act(() => mocks.cyclesCb!([cycle("inc-a_r0", { state: "waiting-human", leaseExpiresAt: null, path: "human", summary: { pr: { opened: false, reason: "dry-run" } } })], false));
+    expect(await screen.findByRole("button", { name: /Retry with agent/ })).toBeInTheDocument();
+  });
+
   it("says what a person can do on a run that told one, while the incident is open; not on a dry-run draft or a closed incident", async () => {
     mocks.getIncident.mockResolvedValue({ id: "inc-a", functionName: "orders-getorder", errorType: "UnknownError", errorMessage: "x", status: "new" });
     renderRuns();
