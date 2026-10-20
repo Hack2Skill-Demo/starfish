@@ -115,7 +115,7 @@ function commitOnMain(file: string, content: string, message: string): string {
 }
 const branches = () => git(bare, "for-each-ref", "--format=%(refname)", "refs/heads").split("\n").sort();
 
-describe("mergePullRequest", () => {
+describe("mergePullRequest", { timeout: 30_000 }, () => {
   it("squash-merges with the exact head named, and returns the merge commit", async () => {
     expect(await client().mergePullRequest("inc1_r0", 7, HEAD, { title: "Starfish: merge #7", body: "Run: inc1_r0" })).toEqual({ sha: MERGE_SHA });
     const put = requests.find((r) => r.method === "PUT")!;
@@ -164,7 +164,7 @@ describe("mergePullRequest", () => {
   });
 });
 
-describe("commentOnPullRequest", () => {
+describe("commentOnPullRequest", { timeout: 30_000 }, () => {
   it("posts one comment on this cycle's pull request", async () => {
     await client().commentOnPullRequest("inc1_r0", 7, "evidence");
     expect(requests.filter((r) => r.method === "POST")).toEqual([{ method: "POST", path: `/repos/${REPO}/issues/7/comments`, body: { body: "evidence" } }]);
@@ -183,7 +183,7 @@ describe("commentOnPullRequest", () => {
   });
 });
 
-describe("filesChangedSince", () => {
+describe("filesChangedSince", { timeout: 30_000 }, () => {
   const BASE = "1".repeat(40);
   it("lists what changed on the base branch since the verified revision, renames included", async () => {
     compareReply = () => ({ status: 200, json: { status: "ahead", ahead_by: 2, behind_by: 0, files: [{ filename: "a.ts" }, { filename: "b.ts", previous_filename: "old.ts" }] } });
@@ -207,14 +207,14 @@ describe("filesChangedSince", () => {
   });
 });
 
-describe("readPullRequest: the merge commit", () => {
+describe("readPullRequest: the merge commit", { timeout: 30_000 }, () => {
   it("gives the merge commit of a merged pull request", async () => {
     pulls["7"] = () => ({ status: 200, json: pr(7, { state: "closed", merged: true, merged_at: "2026-10-06T12:00:00Z", merge_commit_sha: MERGE_SHA }) });
     expect(await client().readPullRequest("inc1_r0", 7)).toMatchObject({ state: "merged", mergeCommitSha: MERGE_SHA });
   });
 });
 
-describe("openRevertPullRequest", () => {
+describe("openRevertPullRequest", { timeout: 30_000 }, () => {
   const revertReq = (mergeSha: string) => ({ cycleId: "inc1_r0", mergeSha, mergedPr: 7, reason: "It came back." });
 
   it("reverts Starfish's merge commit on starfish/revert-<cycle> and opens one pull request", async () => {

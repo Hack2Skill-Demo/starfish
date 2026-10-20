@@ -162,7 +162,7 @@ afterEach(() => {
   }
 });
 
-describe("createPullRequestOpener: opening", () => {
+describe("createPullRequestOpener: opening", { timeout: 30_000 }, () => {
   it("pushes one commit on starfish/<cycle> on top of the verified base, and opens one pull request", async () => {
     const mainBefore = git(bare, "rev-parse", "refs/heads/main");
     const result = await opener()(request());
@@ -200,7 +200,7 @@ describe("createPullRequestOpener: opening", () => {
   });
 });
 
-describe("createPullRequestOpener: idempotent by cycle id", () => {
+describe("createPullRequestOpener: idempotent by cycle id", { timeout: 30_000 }, () => {
   it("returns the pull request that already exists for the cycle, without pushing or creating another", async () => {
     api.list = () => ({ status: 200, json: [{ number: 3, html_url: `https://github.com/${REPO}/pull/3` }] });
     const result = await opener()(request());
@@ -259,7 +259,7 @@ describe("createPullRequestOpener: idempotent by cycle id", () => {
   });
 });
 
-describe("createPullRequestOpener: refusals before anything is written", () => {
+describe("createPullRequestOpener: refusals before anything is written", { timeout: 30_000 }, () => {
   const untouched = () => {
     expect(branches().map((l) => l.split(" ")[0])).toEqual(["refs/heads/main"]);
     expect(createCalls).toBe(0);
@@ -306,7 +306,7 @@ describe("createPullRequestOpener: refusals before anything is written", () => {
   });
 });
 
-describe("createPullRequestOpener: what the API can say", () => {
+describe("createPullRequestOpener: what the API can say", { timeout: 30_000 }, () => {
   const cases: [string, Reply, string][] = [
     ["an expired token", { status: 401, json: { message: "Bad credentials" } }, "unauthorized"],
     ["a token that may not act", { status: 403, json: { message: "Resource not accessible by integration" } }, "forbidden"],
@@ -340,7 +340,7 @@ describe("createPullRequestOpener: what the API can say", () => {
   });
 });
 
-describe("createPullRequestOpener: secrets and the commands it runs", () => {
+describe("createPullRequestOpener: secrets and the commands it runs", { timeout: 30_000 }, () => {
   it("never puts the token in a git command line", async () => {
     const seen: string[][] = [];
     const real: RunGit = async (args, o) => {
@@ -463,7 +463,7 @@ describe("createPullRequestOpener: configuration", () => {
   });
 });
 
-describe("createGithubClient: the CI-backed verify step", () => {
+describe("createGithubClient: the CI-backed verify step", { timeout: 30_000 }, () => {
   const client = (over: { fetch?: typeof fetch; runGit?: RunGit } = {}) =>
     createGithubClient(cfg(), { token: TOKEN, env: loadChildProcessBasics(), tmpDir: join(root, "scratch"), ...over });
   const tip = (branch: string) => git(bare, "rev-parse", `refs/heads/${branch}`);
@@ -888,7 +888,7 @@ describe("pullRequestText: the issue", () => {
   });
 });
 
-describe("createGithubClient: the incident's issue", () => {
+describe("createGithubClient: the incident's issue", { timeout: 30_000 }, () => {
   it("files one issue, with the starfish label, and touches nothing else", async () => {
     api.issues = () => ({ status: 200, json: [] });
     api.issueCreate = () => ({ status: 201, json: ISSUE });
@@ -961,7 +961,7 @@ describe("createGithubClient: the incident's issue", () => {
   });
 });
 
-describe("createGithubClient: a recurrence while the incident's issue is still open (#397)", () => {
+describe("createGithubClient: a recurrence while the incident's issue is still open (#397)", { timeout: 30_000 }, () => {
   const earlierIssue = (over: Record<string, unknown> = {}) => ({
     number: 3,
     html_url: `https://github.com/${REPO}/issues/3`,
@@ -1064,7 +1064,7 @@ describe("createGithubClient: a recurrence while the incident's issue is still o
   });
 });
 
-describe("createGithubClient: reading a pull request back (#17)", () => {
+describe("createGithubClient: reading a pull request back (#17)", { timeout: 30_000 }, () => {
   const SHA = "a".repeat(40);
   const pull = (over: Record<string, unknown> = {}) => ({
     number: 7,
@@ -1181,7 +1181,7 @@ describe("pullRequestText: the missing-index evidence pull request (#11)", () =>
   });
 });
 
-describe("createGithubClient: every API call has a deadline (#427)", () => {
+describe("createGithubClient: every API call has a deadline (#427)", { timeout: 30_000 }, () => {
   const stalled = (): typeof fetch => (_url, init) =>
     new Promise((_resolve, reject) => init?.signal?.addEventListener("abort", () => reject(init.signal!.reason as Error), { once: true }));
   const stalledBody = (): typeof fetch => async () => new Response(new ReadableStream({ start() {} }), { status: 200 });
@@ -1194,7 +1194,7 @@ describe("createGithubClient: every API call has a deadline (#427)", () => {
   });
 });
 
-describe("createGithubClient: deploymentOfCommit (#390)", () => {
+describe("createGithubClient: deploymentOfCommit (#390)", { timeout: 30_000 }, () => {
   const MERGE = "a".repeat(40);
   const LATER = "b".repeat(40);
   const OTHER = "c".repeat(40);

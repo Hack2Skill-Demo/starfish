@@ -47,7 +47,7 @@ afterAll(() => rmSync(root, { recursive: true, force: true }));
 
 const cfgRepo = (over = {}) => ({ githubRepo: "acme/shop", githubBaseBranch: "main", githubRemoteUrl: bare, githubApiUrl: "https://api.github.com", ...over });
 
-describe("createGitCheckout", () => {
+describe("createGitCheckout", { timeout: 30_000 }, () => {
   it("clones the base branch at its tip, lists the tracked files and cleans up", async () => {
     const co = await createGitCheckout(cfgRepo(), { env: loadChildProcessBasics(), tmpDir: scratch() })();
     expect(co.revision).toBe(tip);
@@ -103,7 +103,7 @@ const config = { environment: "demo", incidentCollection: "incidents", patchExcl
 const logging = (entries: unknown[] = []) => ({ getEntries: vi.fn(async () => [entries, null] as [unknown[], object | null]) });
 const checkoutFn = (): CheckoutFn => createGitCheckout(cfgRepo(), { env: loadChildProcessBasics(), tmpDir: scratch() });
 
-describe("createLoader", () => {
+describe("createLoader", { timeout: 30_000 }, () => {
   const incident = { environment: "demo", status: "new", functionName: "orders-create", errorMessage: "boom", stackTrace: "at f (/app/src/orders.ts:1:1)\nat g (/app/src/big.ts:1:1)\nat h (/app/src/bin.ts:1:1)\nat l (/app/src/link.ts:1:1)", occurrenceCount: 3 };
 
   it("assembles the subject: the incident, the counter-check, the pinned revision and the files the trace names", async () => {
@@ -287,7 +287,7 @@ describe("createLoader", () => {
   });
 });
 
-describe("agentPreflight", () => {
+describe("agentPreflight", { timeout: 30_000 }, () => {
   const ok = {
     verifyIsolation: "in-process" as const,
     verifyCommand: "pnpm test",

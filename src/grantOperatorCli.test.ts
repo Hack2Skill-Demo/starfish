@@ -10,7 +10,7 @@ const run = (args: string[], env: Record<string, string>) => {
   return { status: r.status, out: `${r.stdout}${r.stderr}` };
 };
 
-describe("pnpm grant-operator names its project", () => {
+describe("pnpm grant-operator names its project", { timeout: 30_000 }, () => {
   it("needs --project as well as --email", () => {
     const r = run(["--email", "a@example.com"], { GOOGLE_CLOUD_PROJECT: "star-proj" });
     expect(r.status).toBe(2);

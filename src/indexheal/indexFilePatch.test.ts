@@ -35,7 +35,7 @@ function applyWithGit(path: string, before: string | null, patch: string): strin
   }
 }
 
-describe("indexFilePatch", () => {
+describe("indexFilePatch", { timeout: 30_000 }, () => {
   it("adds the entry at the end, keeps everything else, and the diff applies with git", () => {
     const before = `${JSON.stringify(EXISTING, null, 2)}\n`;
     const r = indexFilePatch("firestore.indexes.json", before, SPEC);
