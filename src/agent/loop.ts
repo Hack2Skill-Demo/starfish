@@ -14,8 +14,8 @@
  *   - RECHECKED BEFORE ACTING. Before each stage, before the issue is filed, before verify, before a person is told, and
  *     again before the pull request, the incident's status is read fresh and the automation switch is asked: an operator
  *     who resolved or ignored the incident settles the cycle at the next step; automation turned off releases it,
- *     uncounted, to be taken up again when it is back on (#133). A cycle that would wait for a person is never settled
- *     with nobody told because the switch went off (#180).
+ *     uncounted, to be taken up again when it is back on (#133). A cycle that would wait for a person, or whose open pull
+ *     request a person must decide on, is never settled with nobody told because the switch went off (#180, #412).
  *   - BOUNDED. At most `modelCallBudget` model calls (a used-up budget goes to a person; a triage decided by a
  *     deterministic gate costs none); at most ONE revision, shared between a failed
  *     verify and a blocking review (a second failure goes to a person). Both are counted on the cycle, not the attempt
@@ -64,6 +64,7 @@ import {
   releaseLease,
   renewLease,
   roundOf,
+  updateSettledCycle,
   type CycleConfig,
   LONG_VALUE_KEYS,
   type CycleKey,
@@ -632,7 +633,12 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
       return null;
     };
     const about = (facts: IncidentFacts) => ({ cycleId: id, incidentId: key.incidentId, ...facts, ...(issue && { issueUrl: issue.url }) });
-    const announce = async (facts: IncidentFacts, path: NotifyRequest["path"], rule: string, reason: string): Promise<string | null> => {
+    // The one way a person is told (#412). Asked first, and again by the delivery itself: resolves to why nobody was told
+    // (the incident closed, or automation off), or null once they were (or a dry run, or no notifier, says so). Only the
+    // two hand-offs below call it, and each branches on the answer: a stop is never read as "told".
+    const tellPerson = async (facts: IncidentFacts, path: NotifyRequest["path"], rule: string, reason: string): Promise<string | null> => {
+      const why = await stopReason();
+      if (why !== null) return why;
       const notify = deps.notify;
       if (!notify) return null;
       return deliverOnce(
@@ -641,14 +647,26 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
         (retry) => notify({ ...about(facts), ...retry, path, rule, reason })
       );
     };
-    // End the cycle waiting for a person, after telling them. Asked first, and again by the delivery itself: an incident
-    // an operator closed settles the cycle, and automation turned off releases it uncounted, to be told when it is back on.
-    // Never `waiting-human` with nobody told because the switch went off meanwhile (#180): nothing would ever resume it
-    // (pass.ts treats it as settled) and the phone escalation waits on the message that was never sent.
+    // End the cycle waiting for a person, after telling them: an incident an operator closed settles the cycle, and
+    // automation turned off releases it uncounted, to be told when it is back on. Never `waiting-human` with nobody told
+    // because the switch went off meanwhile (#180): nothing would ever resume it (pass.ts treats it as settled) and the
+    // phone escalation waits on the message that was never sent.
     const handOver = async (facts: IncidentFacts, path: NotifyRequest["path"], rule: string, reason: string, outcome: string, cyclePath: CyclePath): Promise<LoopResult> => {
-      const why = (await stopReason()) ?? (await announce(facts, path, rule, reason));
+      const why = await tellPerson(facts, path, rule, reason);
       if (why !== null) return haltFor(why);
       return finish("waiting-human", outcome, cyclePath);
+    };
+    // End a cycle whose pull request is open, telling a person first when its merge record owes them a word (`prHandOff`:
+    // Starfish will not merge it itself). The same rule as `handOver` (#412): automation turned off before they were told
+    // releases the cycle uncounted, and the attempt that resumes it finds the pull request and tells them then. A `done`
+    // cycle with nobody told would never be resumed, and its merge record is not `pending`, so the merge step would
+    // never speak either. An incident an operator closed or that is gone needs nobody told: the pull request stands.
+    const closeWithPr = async (facts: () => Promise<IncidentFacts>, merge: PrHandOff | null): Promise<LoopResult> => {
+      if (merge !== null) {
+        const why = await tellPerson(await facts(), "human", merge.rule, merge.reason);
+        if (why === "automation-disabled") return haltFor(why);
+      }
+      return finish("done", "pr-opened", "pr");
     };
     // The `#ops-alerts` "new incident" message: once for every cycle Starfish acts on or escalates, after its issue is
     // filed so the message can link to it. A declined incident gets none, as it gets no issue. A stop it meets is left to
@@ -675,32 +693,26 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
         record: { opened: true, number: priorPr.number, url: priorPr.url, ...(priorPr.patchSha256 !== undefined && { patchSha256: priorPr.patchSha256 }) },
       });
       if (priorPr.index) return await finish("done", "index-pr-opened", "index");
+      if (priorPr.issueNumber !== undefined && priorPr.issueUrl !== undefined) issue = { number: priorPr.issueNumber, url: priorPr.issueUrl };
+      const storedFacts = () => storedIncidentFacts(deps, key.incidentId);
       // Where auto-merge could apply, the attempt that opened it never recorded it as a candidate (#184): what the floor and
       // the "fails before" run saw is gone with it, so it is never merged on a guess. Recorded as skipped, and a person
       // is told the decision is theirs.
-      if (priorPr.mergeCase !== undefined && !priorPr.mergeRecorded && (await autoMergeOn(priorPr.mergeCase))) {
-        await note({
-          stage: "merge",
-          type: "skipped",
-          summary: "Not auto-merged: resumed-without-candidate",
-          record: {
-            state: "skipped",
-            reason: "resumed-without-candidate",
-            number: priorPr.number,
-            ...(priorPr.patchSha256 !== undefined && { patchSha256: priorPr.patchSha256 }),
-            headSha: null,
-            decidedAt: deps.now().toISOString(),
-          },
-        });
-        if (priorPr.issueNumber !== undefined && priorPr.issueUrl !== undefined) issue = { number: priorPr.issueNumber, url: priorPr.issueUrl };
-        await announce(
-          await storedIncidentFacts(deps, key.incidentId),
-          "human",
-          "auto-merge-resumed",
-          "The pull request is open, but the attempt that opened it did not record it as an auto-merge candidate, so Starfish will not merge it itself. A person decides."
-        );
+      if (priorPr.mergeCase !== undefined && priorPr.merge === undefined && (await autoMergeOn(priorPr.mergeCase))) {
+        const record = {
+          state: "skipped",
+          reason: "resumed-without-candidate",
+          number: priorPr.number,
+          ...(priorPr.patchSha256 !== undefined && { patchSha256: priorPr.patchSha256 }),
+          headSha: null,
+          decidedAt: deps.now().toISOString(),
+        };
+        await note({ stage: "merge", type: "skipped", summary: "Not auto-merged: resumed-without-candidate", record });
+        return await closeWithPr(storedFacts, prHandOff(record));
       }
-      return await finish("done", "pr-opened", "pr");
+      // A merge record the earlier attempt wrote may still owe a person a word: that attempt was stopped before telling
+      // them (#412), or before it could settle. Once they were told in this round, `deliverOnce` sends nothing again.
+      return await closeWithPr(storedFacts, prHandOff(priorPr.merge));
     }
 
     let modelCalls = lease.modelCalls;
@@ -1080,29 +1092,14 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
           data: { floor: floor.allowed ? "pass" : "fail", mergeCase: chosenCase },
           record,
         });
-        if (!pending) {
-          await announce(
-            factsOf(loaded),
-            "human",
-            "auto-merge-floor",
-            "The pull request is open, but Starfish may not merge it itself (the change is outside the safety floor, or its head is unknown). A person decides."
-          );
-        }
-      } else if (heldBack !== null) {
-        await note({
-          stage: "merge",
-          type: "skipped",
-          summary: `Not auto-merged: ${heldBack}`,
-          record: { state: "skipped", reason: heldBack, number: pr.number, patchSha256: verified.patchSha256, headSha: null, decidedAt: deps.now().toISOString() },
-        });
-        await announce(
-          factsOf(loaded),
-          "human",
-          `auto-merge-${heldBack}`,
-          "The pull request is open, but Starfish merged a fix for this incident before, and that merge is still watched for the incident coming back, or was reverted: Starfish will not merge a second fix itself. A person decides."
-        );
+        return await closeWithPr(async () => factsOf(loaded), prHandOff(record));
       }
-      return await finish("done", "pr-opened", "pr");
+      if (heldBack !== null) {
+        const record = { state: "skipped", reason: heldBack, number: pr.number, patchSha256: verified.patchSha256, headSha: null, decidedAt: deps.now().toISOString() };
+        await note({ stage: "merge", type: "skipped", summary: `Not auto-merged: ${heldBack}`, record });
+        return await closeWithPr(async () => factsOf(loaded), prHandOff(record));
+      }
+      return await closeWithPr(async () => factsOf(loaded), null);
     }
   } catch (err) {
     if (err instanceof LeaseLost) return { kind: "lease-lost" };
@@ -1183,13 +1180,55 @@ async function recordFailsBefore(
   });
 }
 
+/** What a merge record written as a pull request was opened says, as far as telling a person goes. */
+interface MergeRecordAtOpen {
+  state?: unknown;
+  reason?: unknown;
+}
+
+/** A word owed to a person about an open pull request: the rule and the plain reason the message carries. */
+export interface PrHandOff {
+  rule: string;
+  reason: string;
+}
+
+const HELD_BACK_REASONS: readonly string[] = ["incident-merge-watched", "incident-reverted-before"];
+
+/**
+ * What a person is owed about a pull request the loop opened, read from the merge record written with it (#412), or null
+ * when nothing is owed: no record (a plain PR a person merges), or a `pending` candidate the merge step takes from here.
+ * A `skipped` one means Starfish will not merge it itself, and a person decides: the attempt that opened it tells them,
+ * and an attempt that resumes it, when that one was stopped before it could. Shared by both so the words are the same.
+ */
+export function prHandOff(merge: MergeRecordAtOpen | undefined): PrHandOff | null {
+  if (merge?.state !== "skipped") return null;
+  const reason = typeof merge.reason === "string" ? merge.reason : "";
+  if (reason === "resumed-without-candidate") {
+    return {
+      rule: "auto-merge-resumed",
+      reason: "The pull request is open, but the attempt that opened it did not record it as an auto-merge candidate, so Starfish will not merge it itself. A person decides.",
+    };
+  }
+  if (HELD_BACK_REASONS.includes(reason)) {
+    return {
+      rule: `auto-merge-${reason}`,
+      reason:
+        "The pull request is open, but Starfish merged a fix for this incident before, and that merge is still watched for the incident coming back, or was reverted: Starfish will not merge a second fix itself. A person decides.",
+    };
+  }
+  return {
+    rule: "auto-merge-floor",
+    reason: "The pull request is open, but Starfish may not merge it itself (the change is outside the safety floor, or its head is unknown). A person decides.",
+  };
+}
+
 interface OpenedPullRequest {
   number: number;
   url: string;
   patchSha256?: string;
   index: boolean;
-  /** Whether the cycle holds an auto-merge record (`summary.merge`) for it (#184). */
-  mergeRecorded: boolean;
+  /** The cycle's auto-merge record (`summary.merge`) for it, when it holds one (#184): what a person may still be owed (#412). */
+  merge?: MergeRecordAtOpen;
   /** The merge case the cycle's triage named, when it named one: only then could the pull request have been a candidate. */
   mergeCase?: string;
   /** The incident's issue, when one was recorded: the message to a person links it. */
@@ -1211,18 +1250,19 @@ async function openedPullRequest(deps: LoopDeps, id: string): Promise<OpenedPull
     | undefined;
   // An index cycle's PR is its evidence PR: the cycle keeps the index path (and its runtime record) when it is resumed.
   const index = summary?.index !== undefined;
-  const mergeRecorded = summary?.merge !== undefined;
+  const rawMerge = summary?.merge as { state?: unknown; reason?: unknown } | null | undefined;
+  const merge = rawMerge === undefined || rawMerge === null ? {} : { merge: { state: rawMerge.state, reason: rawMerge.reason } };
   const mergeCase = typeof summary?.triage?.mergeCase === "string" && summary.triage.mergeCase !== "" ? { mergeCase: summary.triage.mergeCase } : {};
   const issue = summary?.issue;
   const issueFields =
     issue?.state === "opened" && typeof issue.number === "number" && typeof issue.url === "string" ? { issueNumber: issue.number, issueUrl: issue.url } : {};
   const pr = summary?.pr;
   if (pr?.opened === true && typeof pr.number === "number" && typeof pr.url === "string") {
-    return { number: pr.number, url: pr.url, ...(typeof pr.patchSha256 === "string" && { patchSha256: pr.patchSha256 }), index, mergeRecorded, ...mergeCase, ...issueFields };
+    return { number: pr.number, url: pr.url, ...(typeof pr.patchSha256 === "string" && { patchSha256: pr.patchSha256 }), index, ...merge, ...mergeCase, ...issueFields };
   }
   if (deps.config.dryRun || !deps.openPullRequest || !deps.findPullRequest) return null;
   const found = await deps.findPullRequest(id);
-  return found && { ...found, index, mergeRecorded, ...mergeCase, ...issueFields };
+  return found && { ...found, index, ...merge, ...mergeCase, ...issueFields };
 }
 
 /**
@@ -1248,8 +1288,9 @@ export async function giveUpStrandedCycles(deps: LoopDeps, keys: readonly CycleK
  * A cycle just given up on (its deadline passed, or its attempts ran out) is not left to fail silently (#137): a person
  * is told, once, and the delivery is recorded on the cycle (`summary.notify`). Only the worker whose acquire (or sweep,
  * `giveUpStrandedCycles`) made that transition gets here: every later one finds the cycle closed. No lease is held any
- * more, so the record is written straight to the (now failed) cycle. Never throws: the cycle is already settled, and a failure here must not read as
- * an infrastructure error of the pass.
+ * more, so the record goes through cycle.ts `updateSettledCycle` (#412), as every write to a settled cycle does: with the
+ * same fields a held cycle's delivery records (`at`, `round`), a `notify` run event, and the guest copy refreshed. Never
+ * throws: the cycle is already settled, and a failure here must not read as an infrastructure error of the pass.
  */
 async function announceGivenUp(deps: LoopDeps, key: CycleKey, rule: "deadline-passed" | "retries-exhausted"): Promise<void> {
   if (!deps.notify) return;
@@ -1257,30 +1298,50 @@ async function announceGivenUp(deps: LoopDeps, key: CycleKey, rule: "deadline-pa
   if (id === null) return;
   const { db, config: cfg } = deps;
   try {
-    const ref = db.collection(cfg.cycleCollection).doc(id);
-    if (cfg.dryRun) {
-      await ref.update({ "summary.notify": { state: "dry-run" } });
-      return;
+    let result: DeliveryResult | null = null;
+    if (!cfg.dryRun) {
+      const facts = await storedIncidentFacts(deps, key.incidentId);
+      try {
+        result = await deps.notify({
+          cycleId: id,
+          incidentId: key.incidentId,
+          ...facts,
+          path: "human",
+          rule,
+          reason:
+            rule === "deadline-passed"
+              ? "Starfish ran out of time on this incident before it could finish with it, so it has stopped trying."
+              : "Starfish tried this incident as many times as it may and could not finish, so it has stopped trying.",
+        });
+      } catch {
+        result = { state: "failed", attempts: 1, reason: "notifier-error" };
+      }
     }
-    const facts = await storedIncidentFacts(deps, key.incidentId);
-    let result: DeliveryResult;
-    try {
-      result = await deps.notify({
-        cycleId: id,
-        incidentId: key.incidentId,
-        ...facts,
-        path: "human",
-        rule,
-        reason:
-          rule === "deadline-passed"
-            ? "Starfish ran out of time on this incident before it could finish with it, so it has stopped trying."
-            : "Starfish tried this incident as many times as it may and could not finish, so it has stopped trying.",
-      });
-    } catch {
-      result = { state: "failed", attempts: 1, reason: "notifier-error" };
-    }
-    await ref.update({
-      "summary.notify": { state: result.state, attempts: result.attempts, ...(result.reason !== undefined && { reason: clipWellFormed(result.reason, 300) }) },
+    const now = deps.now();
+    const delivered = result;
+    await updateSettledCycle(db, cfg, id, now, async (_tx, d) => {
+      // Only the cycle this call just gave up: a running one belongs to its lease holder.
+      if (d === undefined || d.state !== "failed") return { result: undefined };
+      const round = roundOf(d);
+      const at = now.toISOString();
+      if (delivered === null) {
+        return {
+          result: undefined,
+          records: { notify: { state: "dry-run", at, round } },
+          event: { stage: "notify", type: "dry-run", summary: "A person would be told here; nothing sent (dry run)" },
+        };
+      }
+      const reason = delivered.reason !== undefined ? clipWellFormed(delivered.reason, 300) : undefined;
+      return {
+        result: undefined,
+        records: { notify: { state: delivered.state, attempts: delivered.attempts, at, round, ...(reason !== undefined && { reason }) } },
+        event: {
+          stage: "notify",
+          type: delivered.state,
+          summary: delivered.state === "sent" ? "A person was told" : `A person could not be told: ${reason ?? "unknown"}`,
+          data: { attempts: delivered.attempts },
+        },
+      };
     });
   } catch {
     // The store or the incident read failed: nothing more can be done for a cycle that is already settled.

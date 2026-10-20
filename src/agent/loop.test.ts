@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
-import { afterFix, afterReview, afterVerify, counterCheckRecord, keptTriage, MAX_REVISIONS, readBaseFiles, retryWords, roundOf, triageOptionsFor } from "./loop.js";
+import { afterFix, afterReview, afterVerify, counterCheckRecord, keptTriage, MAX_REVISIONS, prHandOff, readBaseFiles, retryWords, roundOf, triageOptionsFor } from "./loop.js";
 import type { VerifyResult } from "./verifyGate.js";
 
 describe("counterCheckRecord: the recount kept with triage's decision (#39)", () => {
@@ -175,5 +175,24 @@ describe("keptTriage: the round's decision a resumed attempt keeps (#414)", () =
 
   it("keeps a merge case only with act", () => {
     expect(keptTriage({ ...record, decision: "notify", rule: "model-notify" }, 2, null)?.mergeCase).toBeUndefined();
+  });
+});
+
+describe("prHandOff: the word a person is owed about an open pull request (#412)", () => {
+  it("owes nothing for a plain pull request or a pending candidate", () => {
+    expect(prHandOff(undefined)).toBeNull();
+    expect(prHandOff({ state: "pending" })).toBeNull();
+    expect(prHandOff({ state: "merged" })).toBeNull();
+  });
+
+  it("names the rule a skipped candidate's message carries, from the record's reason", () => {
+    expect(prHandOff({ state: "skipped", reason: "floor:excluded:configured" })?.rule).toBe("auto-merge-floor");
+    expect(prHandOff({ state: "skipped", reason: "head-unknown" })?.rule).toBe("auto-merge-floor");
+    expect(prHandOff({ state: "skipped", reason: "incident-merge-watched" })?.rule).toBe("auto-merge-incident-merge-watched");
+    expect(prHandOff({ state: "skipped", reason: "incident-reverted-before" })?.rule).toBe("auto-merge-incident-reverted-before");
+    expect(prHandOff({ state: "skipped", reason: "resumed-without-candidate" })?.rule).toBe("auto-merge-resumed");
+    // A skipped record whose reason is unreadable still owes a person a word: Starfish will not merge it.
+    expect(prHandOff({ state: "skipped" })).toMatchObject({ rule: "auto-merge-floor" });
+    expect(prHandOff({ state: "skipped", reason: "head-unknown" })?.reason).toContain("A person decides.");
   });
 });

@@ -1373,7 +1373,23 @@ describe("runCycle: a cycle given up on is not given up silently (#137)", () => 
     expect(await runCycle(d, key)).toEqual({ kind: "not-acquired", reason: "closed" });
     expect(calls).toHaveLength(1);
     expect(calls[0]).toMatchObject({ cycleId: "inc1_r0", functionName: "orders-createOrder", occurrenceCount: 42, path: "human", rule: "deadline-passed" });
-    expect((await cycleDoc()).summary.notify).toEqual({ state: "sent", attempts: 1 });
+    // Recorded as a held cycle's delivery is (#412): when, which round, and a run event.
+    expect((await cycleDoc()).summary.notify).toEqual({ state: "sent", attempts: 1, at: clock.toISOString(), round: 1 });
+    expect((await kinds()).at(-1)).toBe("notify:sent");
+  });
+
+  it("records the delivery through the settled-cycle write: an event in order, and its guest copy (#412)", async () => {
+    cfgOver = { cycleDeadlineMinutes: 10, publicEnvironments: ["demo"], publicEventCollection: `pub_events_${cfg}`, publicCycleCollection: `pub_cycles_${cfg}` };
+    const notify = async () => ({ state: "failed" as const, attempts: 3, reason: "http-500" });
+    const d = deps(scripted({}), { notify });
+    await acquireLease(db, d.config, key, "worker-b", clock);
+    clock = new Date(t0.getTime() + 601_000);
+    expect(await runCycle(d, key)).toEqual({ kind: "not-acquired", reason: "deadline-passed" });
+    const evs = await events();
+    expect(evs.at(-1)).toMatchObject({ stage: "notify", type: "failed", summary: "A person could not be told: http-500", seq: evs.length, round: 1 });
+    expect((await cycleDoc()).eventCount).toBe(evs.length);
+    const copies = await db.collection(`pub_events_${cfg}`).get();
+    expect(copies.docs.map((x) => x.data()).some((e) => e.stage === "notify" && e.type === "failed")).toBe(true);
   });
 
   it("tells a person when the attempts run out, and records a failed delivery", async () => {
@@ -1385,7 +1401,7 @@ describe("runCycle: a cycle given up on is not given up silently (#137)", () => 
     expect(calls).toHaveLength(1);
     // The incident is not in the store here: unknown, and no count rather than zero.
     expect(calls[0]).toMatchObject({ rule: "retries-exhausted", functionName: "unknown function", occurrenceCount: null });
-    expect((await cycleDoc()).summary.notify).toEqual({ state: "failed", attempts: 3, reason: "http-500" });
+    expect((await cycleDoc()).summary.notify).toEqual({ state: "failed", attempts: 3, reason: "http-500", at: clock.toISOString(), round: 1 });
   });
 
   it("a released cycle nobody selects again is given up by the pass's sweep, and a person is told once (#226)", async () => {
@@ -1442,7 +1458,8 @@ describe("runCycle: a cycle given up on is not given up silently (#137)", () => 
     for (let i = 0; i < 3; i++) await runCycle(d, key);
     expect(await runCycle(d, key)).toEqual({ kind: "not-acquired", reason: "retries-exhausted" });
     expect(calls).toHaveLength(0);
-    expect((await cycleDoc()).summary.notify).toEqual({ state: "dry-run" });
+    expect((await cycleDoc()).summary.notify).toEqual({ state: "dry-run", at: clock.toISOString(), round: 1 });
+    expect((await kinds()).at(-1)).toBe("notify:dry-run");
   });
 });
 
@@ -1792,6 +1809,79 @@ describe("runCycle: auto-merge evidence (#9): Gemini names the merge case, the f
     const s = (await cycleDoc()).summary;
     expect(s.before).toMatchObject({ status: "unavailable", rule: "no-test-in-patch" });
     expect(s.merge).toMatchObject({ state: "pending" }); // "fails before" is reported in the evidence, no longer required
+  });
+
+  describe("the kill switch going off between opening the pull request and telling a person (#412)", () => {
+    const told = () => {
+      const calls: NotifyRequest[] = [];
+      return { calls, notify: async (req: NotifyRequest) => (calls.push(req), { state: "sent" as const, attempts: 1 }) };
+    };
+    /** The opener the merge tests use, which also runs `during` while the pull request is opened. */
+    const openingThen = (during: () => void): LoopDeps["openPullRequest"] => async () => {
+      during();
+      return { number: 7, url: "https://example.test/pull/7", headSha: HEAD };
+    };
+
+    it("a candidate outside the floor: paused uncounted with nobody told, then told once and settled when it is back on", async () => {
+      const { calls, notify } = told();
+      cfgOver = { autoMergeExcludedPaths: ["functions/src/orders/"] };
+      const model = scripted({ triage: [actMerge], fix: [fixWithTest], review: [held] });
+      const d = mergeDeps(model, true, { notify, openPullRequest: openingThen(() => (enabled = false)) });
+      expect(await runCycle(d, key)).toEqual({ kind: "released", reason: "automation-disabled" });
+      expect(calls).toHaveLength(0);
+      expect(await cycleDoc()).toMatchObject({ state: "running", owner: null, resumeUncounted: true, summary: { merge: { state: "skipped", floor: "fail" } } });
+      expect((await cycleDoc()).summary.notify).toBeUndefined();
+
+      enabled = true;
+      const callsBefore = model.calls.length;
+      expect(await runCycle({ ...d, openPullRequest: openingThen(() => undefined) }, key)).toEqual({ kind: "finished", state: "done", outcome: "pr-opened" });
+      expect(model.calls).toHaveLength(callsBefore); // the pull request ends it: nothing drafted again
+      expect(calls).toHaveLength(1);
+      expect(calls[0]).toMatchObject({ path: "human", rule: "auto-merge-floor", cycleId: "inc1_r0" });
+      expect((await cycleDoc()).summary.notify).toMatchObject({ state: "sent" });
+      // Told once: another attempt (none should run, the cycle is done) finds it closed.
+      expect(await runCycle(d, key)).toEqual({ kind: "not-acquired", reason: "closed" });
+      expect(calls).toHaveLength(1);
+    });
+
+    it("a fix held back by an earlier merge: the same, with that rule", async () => {
+      await db.collection(`cycles_${cfg}`).doc("inc1_r9").set({ incidentId: "inc1", environment: "demo", state: "done", summary: { merge: { state: "merged" }, revert: { state: "watching" } } });
+      const { calls, notify } = told();
+      const d = mergeDeps(scripted({ triage: [actMerge], fix: [fixWithTest], review: [held] }), true, { notify, openPullRequest: openingThen(() => (enabled = false)) });
+      expect(await runCycle(d, key)).toEqual({ kind: "released", reason: "automation-disabled" });
+      expect(calls).toHaveLength(0);
+      enabled = true;
+      expect(await runCycle(d, key)).toEqual({ kind: "finished", state: "done", outcome: "pr-opened" });
+      expect(calls.map((c) => c.rule)).toEqual(["auto-merge-incident-merge-watched"]);
+    });
+
+    it("an incident a person closed meanwhile: the pull request stands, the cycle is done, nobody told", async () => {
+      const { calls, notify } = told();
+      cfgOver = { autoMergeExcludedPaths: ["functions/src/orders/"] };
+      const d = mergeDeps(scripted({ triage: [actMerge], fix: [fixWithTest], review: [held] }), true, { notify, openPullRequest: openingThen(() => (status = "resolved")) });
+      expect(await runCycle(d, key)).toEqual({ kind: "finished", state: "done", outcome: "pr-opened" });
+      expect(calls).toHaveLength(0);
+    });
+
+    it("a pending candidate owes nobody a word: the switch going off does not hold the cycle", async () => {
+      const { calls, notify } = told();
+      const d = mergeDeps(scripted({ triage: [actMerge], fix: [fixWithTest], review: [held] }), true, { notify, openPullRequest: openingThen(() => (enabled = false)) });
+      expect(await runCycle(d, key)).toEqual({ kind: "finished", state: "done", outcome: "pr-opened" });
+      expect((await cycleDoc()).summary.merge).toMatchObject({ state: "pending" });
+      expect(calls).toHaveLength(0);
+    });
+
+    it("an attempt that told a person and died before settling does not tell them twice", async () => {
+      const { calls, notify } = told();
+      cfgOver = { autoMergeExcludedPaths: ["functions/src/orders/"], maxCycleAttempts: 5 };
+      const d = mergeDeps(scripted({ triage: [actMerge], fix: [fixWithTest], review: [held] }), true, { notify });
+      expect(await runCycle(d, key)).toMatchObject({ state: "done" });
+      expect(calls).toHaveLength(1);
+      // As if that attempt had died after the delivery and before the finish: the cycle still running, its lease gone.
+      await db.collection(`cycles_${cfg}`).doc("inc1_r0").update({ state: "running", owner: null, leaseExpiresAt: null });
+      expect(await runCycle(d, key)).toEqual({ kind: "finished", state: "done", outcome: "pr-opened" });
+      expect(calls).toHaveLength(1);
+    });
   });
 
   it("a candidate whose head the opener cannot vouch for is handed to a person at once", async () => {
