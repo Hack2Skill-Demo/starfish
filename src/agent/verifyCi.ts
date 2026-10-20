@@ -18,11 +18,13 @@
  *      request already uses it, #134) is never deleted, and neither is one once the cycle's lease is lost: the cycle's
  *      new holder may be using it.
  *
- * Verdicts. All named checks succeeded: `passed`. A named check finished any other way: `failed`, with what the checks
- * said (names, conclusions, their summaries, a few annotations) as the fixer's feedback; this is thinner than a test
- * log. A named check still RUNNING at the deadline: `timeout`. A named check that never appeared, or is still only
- * queued, is the infrastructure's (the target's workflow does not run on `starfish/**`, no runner), not the patch's: it
- * THROWS, and the cycle is resumed and counted against its attempts.
+ * Verdicts, by the same rule as the reconciler's (reconcile.ts `summarizeChecks`, #428). All named checks succeeded:
+ * `passed`. A run of a named check finished any other way: `failed`, at once, whether or not the others have finished
+ * (nothing they do can make the patch pass), with what the checks said (names, conclusions, their summaries, a few
+ * annotations) as the fixer's feedback; this is thinner than a test log. None failed, and a named check still RUNNING
+ * at the deadline: `timeout`. A named check that never appeared, or is still only queued, is the infrastructure's (the
+ * target's workflow does not run on `starfish/**`, no runner), not the patch's: it THROWS, and the cycle is resumed and
+ * counted against its attempts.
  *
  * Trust, plainly: the target's CI is now the judge and the sandbox. Its workflow runs the patch's code on a push to a
  * branch in the target repository, where that workflow's secrets are available to it; the workflow that judges Starfish's
@@ -37,7 +39,7 @@ import { redactHead, redactTail } from "../ingest/redact.js";
 import type { CheckAnnotation, CheckRun, GithubClient } from "../integrations/githubPr.js";
 import { MAX_OUTPUT_CHARS, verifyPatch, type VerifyRequest, type VerifyResult } from "./verifyGate.js";
 import { VerifyRunnerError } from "./verifyProtocol.js";
-import { requiredRuns } from "./reconcile.js";
+import { requiredRuns, summarizeChecks } from "./reconcile.js";
 
 export type CiClient = Pick<GithubClient, "pushPatchBranch" | "deleteBranch" | "listCheckRuns" | "annotations">;
 
@@ -113,18 +115,20 @@ export function createCiVerifier(cfg: CiVerifyConfig, deps: CiVerifyDeps): (req:
       // Step 3.
       const deadline = now() + (cfg.verifyTimeoutSeconds + CI_SLACK_SECONDS) * 1000;
       for (;;) {
-        const runs = requiredRuns(await client.listCheckRuns(commit), names, cfg.verifyCheckApp);
-        const missing = names.filter((n) => !runs.some((r) => r.name === n));
-        const unfinished = runs.filter((r) => r.status !== "completed");
-        if (missing.length === 0 && unfinished.length === 0) {
-          const bad = runs.filter((r) => r.conclusion !== "success");
-          if (bad.length === 0) {
-            kept = !cfg.dryRun;
-            return done("passed", "command-passed", `The target's CI passed (${names.join(", ")}) on ${where}.`, summarize(runs, []), 0);
-          }
+        const all = await client.listCheckRuns(commit);
+        const runs = requiredRuns(all, names, cfg.verifyCheckApp);
+        const judged = summarizeChecks(all, names, cfg.verifyCheckApp).checks;
+        if (judged === "passed") {
+          kept = !cfg.dryRun;
+          return done("passed", "command-passed", `The target's CI passed (${names.join(", ")}) on ${where}.`, summarize(runs, []), 0);
+        }
+        if (judged === "failed") {
+          const bad = runs.filter((r) => r.status === "completed" && r.conclusion !== "success");
           const details = await describeFailures(client, bad);
           return done("failed", "command-failed", `The target's CI did not pass on ${where}: ${bad.map((r) => `${r.name} ${r.conclusion ?? r.status}`).join(", ")}.`, summarize(runs, details), 1);
         }
+        const missing = names.filter((n) => !runs.some((r) => r.name === n));
+        const unfinished = runs.filter((r) => r.status !== "completed");
         if (now() >= deadline) {
           if (missing.length === 0 && unfinished.some((r) => r.status === "in_progress")) {
             return done("timeout", "command-timeout", `The target's CI had not finished on ${where} within ${cfg.verifyTimeoutSeconds + CI_SLACK_SECONDS} seconds.`, summarize(runs, []), null);

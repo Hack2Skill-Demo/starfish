@@ -19,7 +19,7 @@ import { findStrandedCycles, selectCandidates } from "./pass.js";
 import { FIX_SYSTEM } from "./fixer.js";
 import { ModelAnswerError } from "../vertex.js";
 import { WEAKER_EVIDENCE_NOTE } from "./sourceContext.js";
-import { verifyPatch } from "./verifyGate.js";
+import { verifyPatch, VerifySetupError } from "./verifyGate.js";
 import { REVIEW_SYSTEM } from "./reviewer.js";
 import { TRIAGE_SYSTEM, type AskJson } from "./triage.js";
 import { SEEDED_SECRETS } from "../ingest/testSecrets.js";
@@ -1234,6 +1234,30 @@ describe("runCycle: a patch unfit to verify goes to a person, not round again (#
     expect(r).toEqual({ kind: "finished", state: "waiting-human", outcome: rule });
     expect(calls).toHaveLength(1);
     expect(calls[0]).toMatchObject({ path: "human", rule });
+  });
+});
+
+describe("runCycle: the in-process gate's own failure is not the patch's (#428)", () => {
+  it("throws out of the cycle, spends no revision and tells nobody; the cycle resumes and goes on", async () => {
+    const calls: NotifyRequest[] = [];
+    const notify = async (req: NotifyRequest) => (calls.push(req), { state: "sent" as const, attempts: 1 });
+    const model = scripted({ triage: [act], fix: [fixOf(GOOD_PATCH)], review: [held] });
+    // The real gate, on a checkout it cannot copy: its machinery failed, nothing about the patch was judged.
+    const broken: LoopDeps["verify"] = (req) => verifyPatch({ ...req, sourceDir: join(src, "gone") });
+    await expect(runCycle(deps(model, { notify, verify: broken }), key)).rejects.toThrow(VerifySetupError);
+    const c = await cycleDoc();
+    expect(c).toMatchObject({ state: "running", owner: "worker-a" });
+    expect(c.revisions ?? 0).toBe(0);
+    expect(c.summary?.verify).toBeUndefined();
+    expect(c.summary?.notify).toBeUndefined();
+    expect(model.count("fix")).toBe(1);
+    expect(calls).toHaveLength(0);
+
+    // The lease runs out and the next attempt takes the cycle up, with the gate working again.
+    clock = new Date(t0.getTime() + 301_000);
+    expect(await runCycle(deps(model, { notify }), key)).toEqual({ kind: "finished", state: "done", outcome: "pr-opened" });
+    expect(model.count("triage")).toBe(1); // the round's triage decision was kept (#414)
+    expect((await cycleDoc()).revisions ?? 0).toBe(0);
   });
 });
 

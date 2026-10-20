@@ -8,7 +8,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { MAX_CHANGED_FILES, MAX_OUTPUT_CHARS, MAX_PATCH_BYTES, isExcludedPath, runUnpatched, verifyPatch, type VerifyConfig } from "./verifyGate.js";
+import { MAX_CHANGED_FILES, MAX_OUTPUT_CHARS, MAX_PATCH_BYTES, isExcludedPath, runUnpatched, verifyPatch, VerifySetupError, type VerifyConfig } from "./verifyGate.js";
 import { parseRunnerResult } from "./verifyProtocol.js";
 import { DEFAULT_PATCH_EXCLUDED_PATHS } from "../config.js";
 import { SEEDED_SECRETS } from "../ingest/testSecrets.js";
@@ -150,6 +150,7 @@ describe("verifyPatch: a patch that does not work", () => {
     expect(r.output).toContain("checking");
   });
 
+  // git ran and exited non-zero: git's own word on the patch, a verdict, and not the gate failing (#428).
   it("rejects, without running anything, a patch that does not apply", async () => {
     const r = await verify("--- a/greeting.txt\n+++ b/greeting.txt\n@@ -1 +1 @@\n-something else entirely\n+x\n", cfg({ verifyCommand: `touch ${marker}` }));
     expect(r).toMatchObject({ status: "rejected", rule: "patch-does-not-apply" });
@@ -410,6 +411,33 @@ describe("isExcludedPath", () => {
   });
 });
 
+describe("verifyPatch: its own failures throw, and are never the patch's verdict (#428)", () => {
+  it("throws when the checkout cannot be copied, and leaves no scratch copy behind", async () => {
+    const before = leftovers().length;
+    await expect(verifyPatch({ sourceDir: join(src, "no-such-dir"), patch: goodPatch(), config: cfg() })).rejects.toThrow(VerifySetupError);
+    expect(leftovers().length).toBe(before);
+  });
+
+  it("throws when git apply cannot be run at all (no exit code), and runs nothing", async () => {
+    const patch = goodPatch();
+    const path = process.env.PATH;
+    // The command's PATH is this process's (config.ts `loadVerifyCommandBasics`): with no git on it, spawn fails.
+    process.env.PATH = join(src, "no-bin");
+    try {
+      const err = await verify(patch, cfg({ verifyCommand: `touch ${marker}` })).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(VerifySetupError);
+      expect((err as Error).message).toBe("git apply could not be run");
+    } finally {
+      process.env.PATH = path;
+    }
+    expect(existsSync(marker)).toBe(false);
+  });
+
+  it("names itself, so a pass's error list says what failed", () => {
+    expect(new VerifySetupError("x").name).toBe("VerifySetupError");
+  });
+});
+
 describe("verifyPatch: runAs", () => {
   // Dropping privileges needs root, which a test is not. Handing the scratch copy to this process's own user
   // exercises every step except the one that needs root: the copy is chowned, and the command still runs and
@@ -421,13 +449,12 @@ describe("verifyPatch: runAs", () => {
     expect(r).toMatchObject({ status: "passed", rule: "command-passed" });
   });
 
-  it("rejects, as setup failing, when the scratch copy cannot be handed over", async () => {
+  it("throws, as its own failure and not the patch's, when the scratch copy cannot be handed over (#428)", async () => {
     // A uid this user cannot chown to (unless root, where it is a real user and the command runs as it).
     if (process.getuid!() === 0) return;
     const patch = diffOf({ "greeting.txt": "hello new\n" });
-    const r = await verifyPatch({ sourceDir: src, patch, config: cfg(), runAs: { uid: 1, gid: 1 } });
-    expect(r).toMatchObject({ status: "rejected", rule: "setup-failed" });
-    expect(r.exitCode).toBeUndefined();
+    await expect(verifyPatch({ sourceDir: src, patch, config: cfg({ verifyCommand: `touch ${marker}` }), runAs: { uid: 1, gid: 1 } })).rejects.toThrow(VerifySetupError);
+    expect(existsSync(marker)).toBe(false);
   });
 
   it("does nothing different when runAs is absent", async () => {

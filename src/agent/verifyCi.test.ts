@@ -134,6 +134,20 @@ describe("createCiVerifier", () => {
     expect(bad.reason).toContain("lint failure");
   });
 
+  it.each([
+    ["still running", run({ id: 2, name: "lint", status: "in_progress", conclusion: null })],
+    ["still only queued", run({ id: 2, name: "lint", status: "queued", conclusion: null })],
+    ["not reported yet", null],
+  ])("fails at once when one named check failed and another is %s: a failure is a verdict, not a wait (#428)", async (_name, other) => {
+    const h = harness({ checks: ["verify", "lint"], runs: () => [run({ conclusion: "failure" }), ...(other ? [other] : [])] });
+    const r = await h.verify(request());
+    expect(r).toMatchObject({ status: "failed", rule: "command-failed", exitCode: 1 });
+    expect(r.reason).toContain("verify failure");
+    expect(h.calls.filter((c) => c.startsWith("list:"))).toHaveLength(1);
+    expect(h.clock()).toBe(0);
+    expect(h.calls).toContain("delete:inc1_r0");
+  });
+
   it("reports a check still running at the deadline as a timeout (a result), and deletes the branch", async () => {
     const h = harness({ runs: () => [run({ status: "in_progress", conclusion: null })] });
     const r = await h.verify(request());
