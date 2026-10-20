@@ -11,7 +11,7 @@
 import { parseAllowedTargets } from "./indexheal/createIndexUrl.js";
 import { INDEX_FILE_PATH_RE } from "./indexheal/indexFilePatch.js";
 import { parseIndexProbes, type IndexProbeSpec } from "./indexheal/probe.js";
-import { validateMergeCases, type MergeCase } from "./settingsSchema.js";
+import { SETTINGS_VERSION, validateMergeCases, validateSettings, type MergeCase, type RuntimeSettings } from "./settingsSchema.js";
 import { validateClassRules, type ClassRule } from "./triageRules.js";
 
 /** The thinking levels Gemini 3 models take (Vertex AI's `thinking_level`); which ones a model accepts varies by model. */
@@ -22,6 +22,13 @@ export type ModelThinkingLevel = (typeof MODEL_THINKING_LEVELS)[number];
  * Enough thinking for a minimal patch, without the open-ended think that can use up the output limit.
  */
 export const DEFAULT_MODEL_THINKING_LEVEL: ModelThinkingLevel = "medium";
+
+/**
+ * The longest the verify command (or the target's CI) may run, in seconds. The isolated verify runner refuses a request
+ * that asks for more (src/agent/verifyProtocol.ts), so a longer setting would make every remote verify wait out its
+ * deadline and throw; it is refused at startup instead (#429). scripts/deploy-gcp.sh keeps its own, lower cap.
+ */
+export const MAX_VERIFY_TIMEOUT_SECONDS = 3600;
 
 export interface StarfishConfig {
   /** GCP project Starfish runs in: its Firestore store and its Vertex AI calls. */
@@ -640,6 +647,12 @@ function loadDotEnv(): void {
 
 export function loadConfig(): StarfishConfig {
   loadDotEnv();
+  const config = readConfig();
+  checkRuntimeValues(config);
+  return config;
+}
+
+function readConfig(): StarfishConfig {
   const projectId = process.env.GOOGLE_CLOUD_PROJECT;
   if (!projectId) {
     throw new Error("GOOGLE_CLOUD_PROJECT is not set — copy .env.example to .env");
@@ -662,9 +675,10 @@ export function loadConfig(): StarfishConfig {
     databaseId: process.env.STARFISH_DATABASE_ID || "starfish",
     servicePatterns: parseServicePatterns(process.env.STARFISH_SERVICE_PATTERNS),
     verifyCommand: (process.env.STARFISH_VERIFY_COMMAND ?? "").trim(),
-    verifyTimeoutSeconds: positiveNumber(
+    verifyTimeoutSeconds: wholeNumberUpTo(
       process.env.STARFISH_VERIFY_TIMEOUT_SECONDS,
       600,
+      MAX_VERIFY_TIMEOUT_SECONDS,
       "STARFISH_VERIFY_TIMEOUT_SECONDS"
     ),
     verifyIsolation: parseVerifyIsolation(process.env.STARFISH_VERIFY_ISOLATION),
@@ -673,12 +687,12 @@ export function loadConfig(): StarfishConfig {
     verifyJobName: (process.env.STARFISH_VERIFY_JOB ?? "").trim(),
     verifyBucket: (process.env.STARFISH_VERIFY_BUCKET ?? "").trim(),
     verifyJobRegion: textOr(process.env.STARFISH_VERIFY_JOB_REGION, textOr(process.env.GOOGLE_CLOUD_LOCATION, "us-central1")),
-    maxCyclesPerPass: positiveNumber(process.env.STARFISH_MAX_CYCLES_PER_PASS, 3, "STARFISH_MAX_CYCLES_PER_PASS"),
-    maxPrChecksPerPass: positiveNumber(process.env.STARFISH_MAX_PR_CHECKS_PER_PASS, 10, "STARFISH_MAX_PR_CHECKS_PER_PASS"),
-    maxCyclesPerDay: positiveNumber(process.env.STARFISH_MAX_CYCLES_PER_DAY, 30, "STARFISH_MAX_CYCLES_PER_DAY"),
+    maxCyclesPerPass: positiveInteger(process.env.STARFISH_MAX_CYCLES_PER_PASS, 3, "STARFISH_MAX_CYCLES_PER_PASS"),
+    maxPrChecksPerPass: positiveInteger(process.env.STARFISH_MAX_PR_CHECKS_PER_PASS, 10, "STARFISH_MAX_PR_CHECKS_PER_PASS"),
+    maxCyclesPerDay: positiveInteger(process.env.STARFISH_MAX_CYCLES_PER_DAY, 30, "STARFISH_MAX_CYCLES_PER_DAY"),
     reconsiderCooldownMinutes: positiveNumber(process.env.STARFISH_RECONSIDER_COOLDOWN_MINUTES, 30, "STARFISH_RECONSIDER_COOLDOWN_MINUTES"),
-    reconsiderMaxPerDay: positiveNumber(process.env.STARFISH_RECONSIDER_MAX_PER_DAY, 3, "STARFISH_RECONSIDER_MAX_PER_DAY"),
-    reconsiderBurstOccurrences: positiveNumber(process.env.STARFISH_RECONSIDER_BURST_OCCURRENCES, 20, "STARFISH_RECONSIDER_BURST_OCCURRENCES"),
+    reconsiderMaxPerDay: positiveInteger(process.env.STARFISH_RECONSIDER_MAX_PER_DAY, 3, "STARFISH_RECONSIDER_MAX_PER_DAY"),
+    reconsiderBurstOccurrences: positiveInteger(process.env.STARFISH_RECONSIDER_BURST_OCCURRENCES, 20, "STARFISH_RECONSIDER_BURST_OCCURRENCES"),
     patchExcludedPaths: [
       ...DEFAULT_PATCH_EXCLUDED_PATHS,
       ...(parseList(process.env.STARFISH_PATCH_EXCLUDED_PATHS, ",") ?? []),
@@ -710,15 +724,15 @@ export function loadConfig(): StarfishConfig {
     dryRun: parseBoolean(process.env.STARFISH_DRY_RUN, true, "STARFISH_DRY_RUN"),
     reviewRequired: parseBoolean(process.env.STARFISH_REVIEW_REQUIRED, true, "STARFISH_REVIEW_REQUIRED"),
     automationEnabled: parseBoolean(process.env.STARFISH_AUTOMATION_ENABLED, true, "STARFISH_AUTOMATION_ENABLED"),
-    modelCallBudget: positiveNumber(process.env.STARFISH_MODEL_CALL_BUDGET, 6, "STARFISH_MODEL_CALL_BUDGET"),
+    modelCallBudget: positiveInteger(process.env.STARFISH_MODEL_CALL_BUDGET, 6, "STARFISH_MODEL_CALL_BUDGET"),
     githubRepo: (process.env.STARFISH_GITHUB_REPO ?? "").trim(),
     githubBaseBranch: (process.env.STARFISH_GITHUB_BASE_BRANCH ?? "").trim() || "main",
     githubApiUrl: (process.env.STARFISH_GITHUB_API_URL ?? "").trim() || "https://api.github.com",
     githubRemoteUrl: (process.env.STARFISH_GITHUB_REMOTE_URL ?? "").trim(),
     indexAllowedTargets: validIndexTargets(parseList(process.env.STARFISH_INDEX_ALLOWED_TARGETS, ",") ?? []),
     indexAutoApply: parseBoolean(process.env.STARFISH_INDEX_AUTO_APPLY, false, "STARFISH_INDEX_AUTO_APPLY"),
-    indexDailyCap: positiveNumber(process.env.STARFISH_INDEX_DAILY_CAP, 3, "STARFISH_INDEX_DAILY_CAP"),
-    indexMaxPerDatabase: positiveNumber(process.env.STARFISH_INDEX_MAX_PER_DATABASE, 100, "STARFISH_INDEX_MAX_PER_DATABASE"),
+    indexDailyCap: positiveInteger(process.env.STARFISH_INDEX_DAILY_CAP, 3, "STARFISH_INDEX_DAILY_CAP"),
+    indexMaxPerDatabase: positiveInteger(process.env.STARFISH_INDEX_MAX_PER_DATABASE, 100, "STARFISH_INDEX_MAX_PER_DATABASE"),
     indexProbes: parseIndexProbes(process.env.STARFISH_INDEX_PROBES),
     indexFilePath: validIndexFilePath(process.env.STARFISH_INDEX_FILE),
     indexWaitMinutes: positiveNumber(process.env.STARFISH_INDEX_WAIT_MINUTES, 10, "STARFISH_INDEX_WAIT_MINUTES"),
@@ -729,7 +743,7 @@ export function loadConfig(): StarfishConfig {
     autoMergeExcludedPaths: parseList(process.env.STARFISH_AUTO_MERGE_EXCLUDED_PATHS, ",") ?? [],
     mergeCases: parseMergeCases(process.env.STARFISH_MERGE_CASES),
     classRules: parseClassRules(process.env.STARFISH_CLASS_RULES),
-    maxMergesPerDay: positiveNumber(process.env.STARFISH_MAX_MERGES_PER_DAY, 3, "STARFISH_MAX_MERGES_PER_DAY"),
+    maxMergesPerDay: positiveInteger(process.env.STARFISH_MAX_MERGES_PER_DAY, 3, "STARFISH_MAX_MERGES_PER_DAY"),
     mergeCheckWaitMinutes: positiveNumber(process.env.STARFISH_MERGE_CHECK_WAIT_MINUTES, 120, "STARFISH_MERGE_CHECK_WAIT_MINUTES"),
     fastRevertMinutes: positiveNumber(process.env.STARFISH_FAST_REVERT_MINUTES, 60, "STARFISH_FAST_REVERT_MINUTES"),
     fastRevertGraceMinutes: positiveNumber(process.env.STARFISH_FAST_REVERT_GRACE_MINUTES, 10, "STARFISH_FAST_REVERT_GRACE_MINUTES"),
@@ -739,7 +753,7 @@ export function loadConfig(): StarfishConfig {
     recoveryMinExpected: positiveNumber(process.env.STARFISH_RECOVERY_MIN_EXPECTED, 5, "STARFISH_RECOVERY_MIN_EXPECTED"),
     recoveryGiveUpHours: positiveNumber(process.env.STARFISH_RECOVERY_GIVE_UP_HOURS, 24, "STARFISH_RECOVERY_GIVE_UP_HOURS"),
     adminApiOrigins: validOrigins(parseList(process.env.STARFISH_ADMIN_API_ORIGINS, ",") ?? []),
-    adminApiPort: positiveNumber(process.env.PORT, 8080, "PORT"),
+    adminApiPort: positiveInteger(process.env.PORT, 8080, "PORT"),
     adminApiRateLimitPerMinute: positiveInteger(process.env.STARFISH_ADMIN_API_RATE_LIMIT_PER_MINUTE, 30, "STARFISH_ADMIN_API_RATE_LIMIT_PER_MINUTE"),
     agentJobName: (process.env.STARFISH_AGENT_JOB ?? "").trim(),
     agentJobRegion: textOr(process.env.STARFISH_AGENT_JOB_REGION, textOr(process.env.GOOGLE_CLOUD_LOCATION, "us-central1")),
@@ -770,9 +784,9 @@ export function loadConfig(): StarfishConfig {
     publicIncidentCollection: textOr(process.env.STARFISH_PUBLIC_INCIDENT_COLLECTION, "starfish_public_incidents"),
     publicCycleCollection: textOr(process.env.STARFISH_PUBLIC_CYCLE_COLLECTION, "starfish_public_cycles"),
     publicEventCollection: textOr(process.env.STARFISH_PUBLIC_EVENT_COLLECTION, "starfish_public_events"),
-    leaseSeconds: positiveNumber(process.env.STARFISH_LEASE_SECONDS, 300, "STARFISH_LEASE_SECONDS"),
+    leaseSeconds: positiveInteger(process.env.STARFISH_LEASE_SECONDS, 300, "STARFISH_LEASE_SECONDS"),
     cycleDeadlineMinutes: positiveNumber(process.env.STARFISH_CYCLE_DEADLINE_MINUTES, 360, "STARFISH_CYCLE_DEADLINE_MINUTES"),
-    maxCycleAttempts: positiveNumber(process.env.STARFISH_MAX_CYCLE_ATTEMPTS, 3, "STARFISH_MAX_CYCLE_ATTEMPTS"),
+    maxCycleAttempts: positiveInteger(process.env.STARFISH_MAX_CYCLE_ATTEMPTS, 3, "STARFISH_MAX_CYCLE_ATTEMPTS"),
     logResourceTypes: requireNonEmpty(
       parseList(process.env.STARFISH_LOG_RESOURCE_TYPES, ",") ?? DEFAULT_LOG_RESOURCE_TYPES,
       "STARFISH_LOG_RESOURCE_TYPES"
@@ -780,7 +794,7 @@ export function loadConfig(): StarfishConfig {
     ignoredMessages:
       parseList(process.env.STARFISH_IGNORED_MESSAGES, "|") ?? DEFAULT_IGNORED_MESSAGES,
     ...monitoringSettings(),
-    monitoringMaxSeries: positiveNumber(process.env.STARFISH_MONITORING_MAX_SERIES, 500, "STARFISH_MONITORING_MAX_SERIES"),
+    monitoringMaxSeries: positiveInteger(process.env.STARFISH_MONITORING_MAX_SERIES, 500, "STARFISH_MONITORING_MAX_SERIES"),
   };
 }
 
@@ -1091,6 +1105,13 @@ function positiveInteger(raw: string | undefined, fallback: number, name: string
   return n;
 }
 
+/** A whole number from 1 to `max`, or the default when unset. */
+function wholeNumberUpTo(raw: string | undefined, fallback: number, max: number, name: string): number {
+  const n = positiveInteger(raw, fallback, name);
+  if (n > max) throw new Error(`${name} must be a whole number from 1 to ${max}, got "${raw}"`);
+  return n;
+}
+
 /**
  * The thinking setting (#452): a level (default `medium`), `default` to send none, or a token budget instead. A budget set
  * with no level replaces the default level (the two together fail the call, so a level and a budget both set is refused).
@@ -1143,15 +1164,58 @@ function parseBoolean(raw: string | undefined, fallback: boolean, name: string):
   throw new Error(`${name} must be true or false, got "${raw}"`);
 }
 
-/** `"api:api,worker:jobs"` → `{ api: "api", worker: "jobs" }`. Empty is valid. */
+/**
+ * `"api:api,worker:jobs"` → `{ api: "api", worker: "jobs" }`. Empty is valid. Built with `Object.fromEntries`, so a
+ * `__proto__` pattern stays an own key that `checkRuntimeValues` refuses, rather than being dropped by an assignment.
+ */
 function parseServicePatterns(raw: string | undefined): Record<string, string> {
   if (!raw) return {};
-  const out: Record<string, string> = {};
+  const pairs: [string, string][] = [];
   for (const pair of raw.split(",")) {
     const [pattern, service] = pair.split(":").map((s) => s.trim());
-    if (pattern && service) out[pattern.toLowerCase()] = service;
+    if (pattern && service) pairs.push([pattern.toLowerCase(), service]);
   }
-  return out;
+  return Object.fromEntries(pairs);
+}
+
+/**
+ * The environment's values for the settings an admin can also set (#429), checked by the settings document's own rule
+ * (`validateSettings`, src/settingsSchema.ts), so a value the Settings page would refuse cannot slip in through an
+ * environment variable: an ignored-message fragment of one letter (which drops nearly every error), a newline in a
+ * value the log filter quotes, a region that is not one (it becomes part of the Vertex API's host name). Refused at
+ * startup, naming the variable and the rule, never the value. Strict, as the editor is: the engine's leniency for short
+ * ignored messages is for documents saved before that rule existed, and an environment is read fresh at every start.
+ *
+ * The project ids are left out: GOOGLE_CLOUD_PROJECT, which they default to, is the store's own project and is not
+ * checked here either, and the settings document's pattern does not take every id GCP has issued (a domain-scoped one).
+ * Merge cases and class rules are checked by the same functions as they are parsed.
+ */
+function checkRuntimeValues(config: StarfishConfig): void {
+  const fromEnv: Required<Pick<RuntimeSettings, "environment" | "logResourceTypes" | "servicePatterns" | "ignoredMessages" | "modelCallBudget" | "model" | "location">> = {
+    environment: config.environment,
+    logResourceTypes: config.logResourceTypes,
+    servicePatterns: config.servicePatterns,
+    ignoredMessages: config.ignoredMessages,
+    modelCallBudget: config.modelCallBudget,
+    model: config.model,
+    location: config.location,
+  };
+  const checked = validateSettings({ version: SETTINGS_VERSION, ...fromEnv });
+  if (checked.ok) return;
+  const variable: Record<keyof typeof fromEnv, string> = {
+    environment: "STARFISH_ENV",
+    logResourceTypes: "STARFISH_LOG_RESOURCE_TYPES",
+    servicePatterns: "STARFISH_SERVICE_PATTERNS",
+    ignoredMessages: "STARFISH_IGNORED_MESSAGES",
+    modelCallBudget: "STARFISH_MODEL_CALL_BUDGET",
+    model: "STARFISH_MODEL",
+    location: (process.env.STARFISH_VERTEX_LOCATION ?? "").trim() ? "STARFISH_VERTEX_LOCATION" : "GOOGLE_CLOUD_LOCATION",
+  };
+  const named = checked.problems.map((problem) => {
+    const field = problem.slice(0, problem.indexOf(":"));
+    return Object.hasOwn(variable, field) ? `${variable[field as keyof typeof fromEnv]}${problem.slice(field.length)}` : problem;
+  });
+  throw new Error(`${named.join("; ")} (the rule the Settings page applies)`);
 }
 
 /**

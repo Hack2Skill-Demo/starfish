@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { loadChildProcessBasics, loadConfig, loadGithubToken, loadReplayConfig, loadSlackAlertsWebhook, loadSlackOnCallWebhook, loadTwilioCredentials, loadVerifyCommandBasics, loadVerifyRunnerRequest, usingFirestoreEmulator } from "./config.js";
+import { MAX_VERIFY_TIMEOUT_SECONDS, loadChildProcessBasics, loadConfig, loadGithubToken, loadReplayConfig, loadSlackAlertsWebhook, loadSlackOnCallWebhook, loadTwilioCredentials, loadVerifyCommandBasics, loadVerifyRunnerRequest, usingFirestoreEmulator } from "./config.js";
 
 // Env vars that loadConfig reads; cleared first so the developer's own .env/shell can't leak in.
 const KEYS = [
@@ -244,9 +244,16 @@ describe("loadConfig: the verify gate", () => {
     expect(loadConfig()).toMatchObject({ verifyCommand: "pnpm run verify", verifyTimeoutSeconds: 90 });
   });
 
-  it.each(["0", "-1", "soon"])("refuses a timeout of %s", (bad) => {
+  it.each(["0", "-1", "soon", "0.5", "90.5"])("refuses a timeout of %s", (bad) => {
     vi.stubEnv("STARFISH_VERIFY_TIMEOUT_SECONDS", bad);
     expect(() => loadConfig()).toThrow("STARFISH_VERIFY_TIMEOUT_SECONDS");
+  });
+
+  it("refuses a timeout the isolated verify runner would refuse, and takes its largest (#429)", () => {
+    vi.stubEnv("STARFISH_VERIFY_TIMEOUT_SECONDS", String(MAX_VERIFY_TIMEOUT_SECONDS + 1));
+    expect(() => loadConfig()).toThrow(`STARFISH_VERIFY_TIMEOUT_SECONDS must be a whole number from 1 to ${MAX_VERIFY_TIMEOUT_SECONDS}`);
+    vi.stubEnv("STARFISH_VERIFY_TIMEOUT_SECONDS", String(MAX_VERIFY_TIMEOUT_SECONDS));
+    expect(loadConfig().verifyTimeoutSeconds).toBe(MAX_VERIFY_TIMEOUT_SECONDS);
   });
 
   it("adds the deployment's excluded paths to the built-in ones, never replacing them", () => {
@@ -341,6 +348,101 @@ describe("loadConfig: the loop's switches", () => {
     expect(loadConfig()).toMatchObject({ reviewRequired: false, modelCallBudget: 10 });
     vi.stubEnv("STARFISH_MODEL_CALL_BUDGET", "0");
     expect(() => loadConfig()).toThrow("STARFISH_MODEL_CALL_BUDGET");
+  });
+});
+
+describe("loadConfig: values an admin can also set follow the Settings page's rule (#429)", () => {
+  const KEYS = [
+    "STARFISH_ENV",
+    "STARFISH_MODEL",
+    "STARFISH_VERTEX_LOCATION",
+    "GOOGLE_CLOUD_LOCATION",
+    "STARFISH_LOG_RESOURCE_TYPES",
+    "STARFISH_SERVICE_PATTERNS",
+    "STARFISH_IGNORED_MESSAGES",
+    "STARFISH_MODEL_CALL_BUDGET",
+  ];
+  beforeEach(() => {
+    for (const k of KEYS) vi.stubEnv(k, undefined);
+    vi.stubEnv("GOOGLE_CLOUD_PROJECT", "home-project");
+  });
+  afterEach(() => vi.unstubAllEnvs());
+
+  it("takes the defaults, .env.example's values and the demo deployment's", () => {
+    expect(() => loadConfig()).not.toThrow();
+    vi.stubEnv("GOOGLE_CLOUD_LOCATION", "us-central1");
+    vi.stubEnv("STARFISH_MODEL", "gemini-3.1-pro-preview");
+    vi.stubEnv("STARFISH_ENV", "dev");
+    expect(() => loadConfig()).not.toThrow();
+    vi.stubEnv("STARFISH_ENV", "demo");
+    vi.stubEnv("STARFISH_VERTEX_LOCATION", "global");
+    vi.stubEnv("STARFISH_SERVICE_PATTERNS", "orders:orders, Pay:payments");
+    vi.stubEnv("STARFISH_IGNORED_MESSAGES", "Invalid request, unable to process| Request has invalid method ");
+    vi.stubEnv("STARFISH_LOG_RESOURCE_TYPES", "cloud_function,cloud_run_revision");
+    expect(loadConfig()).toMatchObject({
+      environment: "demo",
+      location: "global",
+      servicePatterns: { orders: "orders", pay: "payments" },
+      ignoredMessages: ["Invalid request, unable to process", "Request has invalid method"],
+    });
+  });
+
+  it.each([
+    ["STARFISH_IGNORED_MESSAGES", "a|Request has invalid method", /STARFISH_IGNORED_MESSAGES: each entry must be 3-300 characters/],
+    ["STARFISH_IGNORED_MESSAGES", "first line\nsecond line", /STARFISH_IGNORED_MESSAGES: .*no control characters/],
+    ["STARFISH_IGNORED_MESSAGES", "x".repeat(301), /STARFISH_IGNORED_MESSAGES/],
+    ["STARFISH_SERVICE_PATTERNS", "__proto__:orders", /STARFISH_SERVICE_PATTERNS: patterns and services must be 1-100 characters/],
+    ["STARFISH_SERVICE_PATTERNS", `${"p".repeat(101)}:orders`, /STARFISH_SERVICE_PATTERNS/],
+    ["STARFISH_SERVICE_PATTERNS", "api:orders\u0007", /STARFISH_SERVICE_PATTERNS/],
+    ["STARFISH_ENV", "my env", /STARFISH_ENV: 1-64 letters/],
+    ["STARFISH_ENV", "-demo", /STARFISH_ENV/],
+    ["STARFISH_MODEL", "Gemini/../other", /STARFISH_MODEL: 1-64 lowercase/],
+    ["STARFISH_VERTEX_LOCATION", "evil.example.com#", /STARFISH_VERTEX_LOCATION: a GCP region/],
+    ["STARFISH_LOG_RESOURCE_TYPES", "cloud_function,Cloud Run", /STARFISH_LOG_RESOURCE_TYPES: each entry/],
+    ["STARFISH_MODEL_CALL_BUDGET", "51", /STARFISH_MODEL_CALL_BUDGET: a whole number from 1 to 50/],
+  ])("refuses %s=%j at startup, naming the variable", (name, value, message) => {
+    vi.stubEnv(name, value);
+    expect(() => loadConfig()).toThrow(message);
+  });
+
+  it("names GOOGLE_CLOUD_LOCATION when that is where Gemini's location came from", () => {
+    vi.stubEnv("GOOGLE_CLOUD_LOCATION", "us");
+    expect(() => loadConfig()).toThrow(/^GOOGLE_CLOUD_LOCATION: a GCP region/);
+  });
+
+  it("never repeats the value, which may be a pasted secret", () => {
+    vi.stubEnv("STARFISH_IGNORED_MESSAGES", "sk\nsecret-value-123");
+    expect(() => loadConfig()).toThrow(expect.objectContaining({ message: expect.not.stringContaining("secret-value-123") }));
+  });
+
+  it("lists every problem at once", () => {
+    vi.stubEnv("STARFISH_ENV", "my env");
+    vi.stubEnv("STARFISH_MODEL", "Bad Model");
+    expect(() => loadConfig()).toThrow(/STARFISH_ENV: .*; STARFISH_MODEL: /);
+  });
+});
+
+describe("loadConfig: counts are whole numbers (#429)", () => {
+  afterEach(() => vi.unstubAllEnvs());
+
+  it.each([
+    "STARFISH_MAX_MERGES_PER_DAY",
+    "STARFISH_MAX_CYCLE_ATTEMPTS",
+    "STARFISH_INDEX_DAILY_CAP",
+    "STARFISH_LEASE_SECONDS",
+    "STARFISH_MAX_CYCLES_PER_PASS",
+    "STARFISH_MAX_PR_CHECKS_PER_PASS",
+    "STARFISH_MAX_CYCLES_PER_DAY",
+    "STARFISH_RECONSIDER_MAX_PER_DAY",
+    "STARFISH_RECONSIDER_BURST_OCCURRENCES",
+    "STARFISH_INDEX_MAX_PER_DATABASE",
+    "STARFISH_MONITORING_MAX_SERIES",
+    "STARFISH_MODEL_CALL_BUDGET",
+    "PORT",
+  ])("refuses a fraction for %s", (name) => {
+    vi.stubEnv("GOOGLE_CLOUD_PROJECT", "home-project");
+    vi.stubEnv(name, "2.5");
+    expect(() => loadConfig()).toThrow(`${name} must be a whole number above zero`);
   });
 });
 

@@ -10,6 +10,7 @@
  * patch the agent sent, so a result for another patch, a malformed one, or an oversized one is refused.
  */
 import { redactHead, redactTail } from "../ingest/redact.js";
+import { MAX_VERIFY_TIMEOUT_SECONDS } from "../config.js";
 import { MAX_CHANGED_FILES, MAX_OUTPUT_CHARS, type VerifyResult, type VerifyRule, type VerifyStatus } from "./verifyGate.js";
 
 /** Thrown for anything wrong with the runner's request or result, or for the runner not answering. Never holds a URL. */
@@ -81,7 +82,7 @@ export function parseRunnerRequest(raw: string): RunnerRequest {
   if (typeof v.resultUrl !== "string" || !transferUrlOk(v.resultUrl)) throw bad("resultUrl");
   if (typeof v.patchSha256 !== "string" || !SHA256_RE.test(v.patchSha256)) throw bad("patchSha256");
   if (typeof v.command !== "string" || v.command.trim() === "" || v.command.length > MAX_COMMAND) throw bad("command");
-  if (typeof v.timeoutSeconds !== "number" || !Number.isFinite(v.timeoutSeconds) || v.timeoutSeconds < 1 || v.timeoutSeconds > 3600) throw bad("timeoutSeconds");
+  if (typeof v.timeoutSeconds !== "number" || !Number.isFinite(v.timeoutSeconds) || v.timeoutSeconds < 1 || v.timeoutSeconds > MAX_VERIFY_TIMEOUT_SECONDS) throw bad("timeoutSeconds");
   if (!isStrings(v.excludedPaths, MAX_EXCLUDED, 200)) throw bad("excludedPaths");
   if (v.baseRevision !== undefined && (typeof v.baseRevision !== "string" || v.baseRevision.length > 100)) throw bad("baseRevision");
   return {
