@@ -1077,6 +1077,98 @@ describe("runCycle: an attempt resumed within the round keeps its triage decisio
   });
 });
 
+describe("runCycle: an attempt resumed within the round keeps the patch it already verified (#450)", () => {
+  const checkpoint = () => db.collection(`cycles_${cfg}`).doc("inc1_r0").collection("checkpoints").doc("verified");
+  /** The real gate, counted: each call is one verify run (with `github-actions`, one push and one CI run). */
+  const counted = () => {
+    const ran: string[] = [];
+    const verify: LoopDeps["verify"] = async (req) => (ran.push(req.patch), verifyPatch(req));
+    return { ran, verify };
+  };
+
+  it("goes straight to review after the review call failed: no second fix call, no second verify, the same patch in the pull request", async () => {
+    const { ran, verify } = counted();
+    const opened: PullRequestRequest[] = [];
+    const model = scripted({ triage: [act], fix: [fixOf(GOOD_PATCH)], review: [new Error("model down"), held] });
+    expect(await runCycle(deps(model, { verify }), key)).toEqual({ kind: "released", reason: "model-call-failed" });
+    // Kept beside the cycle, bound to the hash the run record holds; the cycle document holds no patch.
+    const hash = createHash("sha256").update(GOOD_PATCH).digest("hex");
+    expect((await checkpoint().get()).data()).toMatchObject({ patch: GOOD_PATCH, patchSha256: hash, round: 1, revisions: 0, baseRevision: "rev1" });
+    expect((await cycleDoc()).summary.verify).toMatchObject({ status: "passed", patchSha256: hash });
+    expect(JSON.stringify(await cycleDoc())).not.toContain("hello new");
+
+    expect(await runCycle(deps(model, { verify }, opened), key)).toEqual({ kind: "finished", state: "done", outcome: "pr-opened" });
+    expect(model.count("fix")).toBe(1);
+    expect(model.count("review")).toBe(2);
+    expect(ran).toEqual([GOOD_PATCH]);
+    // triage, fix, the failed review, the second review: the kept patch cost no call.
+    expect((await cycleDoc()).modelCalls).toBe(4);
+    const ks = await kinds();
+    expect(ks.filter((k) => k === "fix:proposed" || k === "verify:passed")).toEqual(["fix:proposed", "verify:passed"]);
+    expect(ks.slice(-4)).toEqual(["cycle:triage-kept", "cycle:patch-kept", "review:approve", "pr:opened"]);
+    expect((await events()).find((e) => e.type === "patch-kept")).toMatchObject({ round: 1, data: { patchSha256: hash, files: 1 } });
+    expect(opened).toHaveLength(1);
+    expect(opened[0]).toMatchObject({
+      patch: GOOD_PATCH,
+      patchSha256: hash,
+      baseRevision: "rev1",
+      rootCause: "couponCode is written as undefined.",
+      risk: "Orders without a coupon.",
+      verify: { status: "passed", rule: "command-passed", changedFiles: ["greeting.txt"] },
+    });
+    // The cycle settled: its checkpoint went with it.
+    expect((await checkpoint().get()).exists).toBe(false);
+  });
+
+  it("drafts and verifies again when the base revision changed since", async () => {
+    const { ran, verify } = counted();
+    const model = scripted({ triage: [act], fix: [fixOf(GOOD_PATCH)], review: [new Error("model down"), held] });
+    expect(await runCycle(deps(model, { verify }), key)).toMatchObject({ kind: "released" });
+    const base = deps(model, { verify });
+    const load: LoopDeps["load"] = async (id) => {
+      const loaded = await base.load(id);
+      return loaded && { ...loaded, baseRevision: "rev2" };
+    };
+    expect(await runCycle({ ...base, load }, key)).toMatchObject({ kind: "finished", outcome: "pr-opened" });
+    expect(model.count("fix")).toBe(2);
+    expect(ran).toHaveLength(2);
+    expect(await kinds()).not.toContain("cycle:patch-kept");
+  });
+
+  it("drafts and verifies again when the stored patch is not the one the run record verified", async () => {
+    const { ran, verify } = counted();
+    const model = scripted({ triage: [act], fix: [fixOf(GOOD_PATCH)], review: [new Error("model down"), held] });
+    expect(await runCycle(deps(model, { verify }), key)).toMatchObject({ kind: "released" });
+    await checkpoint().update({ patch: BAD_PATCH });
+    expect(await runCycle(deps(model, { verify }), key)).toMatchObject({ kind: "finished", outcome: "pr-opened" });
+    expect(model.count("fix")).toBe(2);
+    expect(ran).toHaveLength(2);
+  });
+
+  it("never reuses a patch the review blocked: the revision is drafted again", async () => {
+    const { ran, verify } = counted();
+    // The review blocks the first patch, the revision's fix call fails: released. Resumed, it drafts again, and does not
+    // review the blocked patch a second time.
+    const model = scripted({ triage: [act], fix: [fixOf(GOOD_PATCH), new Error("model down"), fixOf(GOOD_PATCH)], review: [broken, held] });
+    expect(await runCycle(deps(model, { verify }), key)).toEqual({ kind: "released", reason: "model-call-failed" });
+    expect(await runCycle(deps(model, { verify }), key)).toMatchObject({ kind: "finished", outcome: "pr-opened" });
+    expect(model.count("fix")).toBe(3);
+    expect(model.count("review")).toBe(2);
+    expect(ran).toHaveLength(2);
+    expect(await kinds()).not.toContain("cycle:patch-kept");
+  });
+
+  it("lets the checkpoint go with the cycle when the cycle is given up", async () => {
+    const model = scripted({ triage: [act], fix: [fixOf(GOOD_PATCH)], review: [new Error("model down")] });
+    expect(await runCycle(deps(model), key)).toMatchObject({ kind: "released" });
+    expect((await checkpoint().get()).exists).toBe(true);
+    // The review keeps failing until the attempts run out: the cycle is given up, and its checkpoint with it.
+    for (let i = 0; i < 5; i++) await runCycle(deps(model), key);
+    expect((await cycleDoc()).state).toBe("failed");
+    expect((await checkpoint().get()).exists).toBe(false);
+  });
+});
+
 describe("runCycle: the incident's GitHub issue (#17)", () => {
   const notifyDecision = { decision: "notify", reasoning: "The API is not enabled.", suspectedCause: "Translation API disabled" };
   const ISSUE = { number: 12, url: "https://github.com/acme/shop/issues/12" };
@@ -1796,6 +1888,23 @@ describe("runCycle: auto-merge evidence (#9): Gemini names the merge case, the f
     expect(s.before).toBeUndefined();
     expect(s.merge).toBeUndefined();
     expect(opened[0]!.autoMerge).toBeUndefined();
+  });
+
+  it("resumed after the review call failed (#450): the floor judged again, the earlier 'fails before' run kept, nothing run twice", async () => {
+    const opened: PullRequestRequest[] = [];
+    const ran: string[] = [];
+    const verify: LoopDeps["verify"] = async (req) => (ran.push(req.patch), verifyPatch(req));
+    const model = scripted({ triage: [actMerge], fix: [fixWithTest], review: [new Error("model down"), held] });
+    expect(await runCycle(mergeDeps(model, true, { verify }, opened), key)).toEqual({ kind: "released", reason: "model-call-failed" });
+    expect(ran).toHaveLength(2); // the tests alone, then the patch
+    expect(await runCycle(mergeDeps(model, true, { verify }, opened), key)).toMatchObject({ kind: "finished", state: "done", outcome: "pr-opened" });
+    expect(ran).toHaveLength(2);
+    expect(model.count("fix")).toBe(1);
+    expect((await kinds()).slice(-5)).toEqual(["cycle:triage-kept", "cycle:patch-kept", "review:approve", "pr:opened", "merge:pending"]);
+    const s = (await cycleDoc()).summary;
+    expect(s.before).toMatchObject({ status: "failed", forPatchSha256: s.verify.patchSha256 });
+    expect(s.merge).toMatchObject({ state: "pending", floor: "pass", patchSha256: s.verify.patchSha256 });
+    expect(opened[0]).toMatchObject({ patch: FIX, autoMerge: true });
   });
 
   it("in a dry run prepares nothing, even with the switch on", async () => {

@@ -8,7 +8,24 @@ import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { deleteApp, initializeApp } from "firebase-admin/app";
 import { getFirestore, Timestamp } from "firebase-admin/firestore";
 import type { Firestore } from "firebase-admin/firestore";
-import { acquireLease, appendEventsInTransaction, countSpend, cycleId, finishCycle, recordEvent, recordPrState, releaseLease, renewLease, sanitizeEvent, ROUND_SCOPED_RECORDS, type CycleConfig, type CycleKey, type PrStateRecord } from "./cycle.js";
+import {
+  acquireLease,
+  appendEventsInTransaction,
+  countSpend,
+  cycleId,
+  finishCycle,
+  readVerifiedPatch,
+  recordEvent,
+  recordPrState,
+  recordVerifiedPatch,
+  releaseLease,
+  renewLease,
+  sanitizeEvent,
+  ROUND_SCOPED_RECORDS,
+  type CycleConfig,
+  type CycleKey,
+  type PrStateRecord,
+} from "./cycle.js";
 import { SEEDED_SECRETS } from "../ingest/testSecrets.js";
 import { causeClass } from "./reconsider.js";
 import { PUBLIC_VIEW_OFF } from "../testConfig.js";
@@ -660,5 +677,52 @@ describe("retrying a cycle that ended waiting-human, on a person's request (#317
     await setIncident({ retriageRequestedAt: mins(2) });
     await db.collection(cfg.cycleCollection).doc("inc1_r0").update({ "summary.pr": { opened: true, number: 9 } });
     expect(await acquireLease(db, cfg, key, "b", mins(3), { reconsider: policy() })).toEqual({ acquired: false, reason: "waiting-human" });
+  });
+});
+
+describe("the verified-patch checkpoint (#450)", () => {
+  const CHECKPOINT = { version: 1, round: 1, patch: "--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n", patchSha256: "a".repeat(64) };
+  const mins = (m: number) => at(m * 60);
+
+  it("is written only by the lease holder, beside the cycle, never on the cycle document", async () => {
+    await acquireLease(db, cfg, key, "a", t0);
+    expect(await recordVerifiedPatch(db, cfg, "inc1_r0", "b", at(1), CHECKPOINT)).toEqual({ ok: false, reason: "lease-lost" });
+    expect(await readVerifiedPatch(db, cfg, "inc1_r0")).toBeUndefined();
+    expect(await recordVerifiedPatch(db, cfg, "inc1_r0", "a", at(1), CHECKPOINT)).toEqual({ ok: true });
+    expect(await readVerifiedPatch(db, cfg, "inc1_r0")).toMatchObject(CHECKPOINT);
+    expect(JSON.stringify(await cycle())).not.toContain("+b");
+    // An expired lease writes nothing either.
+    expect(await recordVerifiedPatch(db, cfg, "inc1_r0", "a", at(301), { ...CHECKPOINT, round: 2 })).toEqual({ ok: false, reason: "lease-lost" });
+    expect((await readVerifiedPatch(db, cfg, "inc1_r0"))?.round).toBe(1);
+  });
+
+  it("goes when the cycle settles, and when it is given up", async () => {
+    await acquireLease(db, cfg, key, "a", t0);
+    await recordVerifiedPatch(db, cfg, "inc1_r0", "a", at(1), CHECKPOINT);
+    await finishCycle(db, cfg, "inc1_r0", "a", at(2), "done", "pr-opened", "pr");
+    expect(await readVerifiedPatch(db, cfg, "inc1_r0")).toBeUndefined();
+
+    const other: CycleKey = { ...key, recurrence: 1 };
+    await acquireLease(db, cfg, other, "a", t0);
+    await recordVerifiedPatch(db, cfg, "inc1_r1", "a", at(1), CHECKPOINT);
+    expect(await acquireLease(db, cfg, other, "b", mins(61))).toEqual({ acquired: false, reason: "deadline-passed" });
+    expect(await readVerifiedPatch(db, cfg, "inc1_r1")).toBeUndefined();
+  });
+
+  it("goes when the cycle is reopened for a new round: an earlier round's patch is never this round's", async () => {
+    const incidents = `${cfg.cycleCollection}_incidents`;
+    await db.collection(incidents).doc(key.incidentId).set({ environment: "demo", status: "new", occurrenceCount: 5 });
+    await acquireLease(db, cfg, key, "a", t0);
+    await recordVerifiedPatch(db, cfg, "inc1_r0", "a", at(1), CHECKPOINT);
+    // Settled by a path that leaves it (written by hand here): the reopening still clears it.
+    await db
+      .collection(cfg.cycleCollection)
+      .doc("inc1_r0")
+      .update({ state: "failed", outcome: "retries-exhausted", path: "failed", owner: null, leaseExpiresAt: null, settledAt: Timestamp.fromDate(at(2)) });
+    expect(await readVerifiedPatch(db, cfg, "inc1_r0")).toBeDefined();
+    await db.collection(incidents).doc(key.incidentId).update({ retriageRequestedAt: Timestamp.fromDate(mins(1)) });
+    const policy = { incidentCollection: incidents, reconsiderCooldownMinutes: 0, reconsiderMaxPerDay: 3, reconsiderBurstOccurrences: 20 };
+    expect(await acquireLease(db, cfg, key, "b", mins(2), { reconsider: policy })).toMatchObject({ acquired: true, reconsidered: "operator" });
+    expect(await readVerifiedPatch(db, cfg, "inc1_r0")).toBeUndefined();
   });
 });

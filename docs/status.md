@@ -76,6 +76,7 @@ it is corrected throughout.
 | Slack: "needs a human" and "new incident" | yes | yes: fake webhook | yes: posted to real Slack since 2026-10-11 [T] | yes |
 | Reading a pull request back (reconcile) | yes | yes: fake GitHub, emulator | no | no |
 | Reopening a declined or handed-off run ("Retry with agent") | yes | yes: emulator | no | no |
+| A resumed attempt keeps the round's triage decision (#414) and the patch the round already verified, going straight to review (#450) | yes | yes: emulator | no | no: #450 not yet deployed (as of 2026-10-20) |
 | Auto-merge | yes: for the demo target, default-off switches | yes: real git, fake GitHub, emulator | **no: never run against real GitHub** | **no.** The safety floor refused a real patch there (the docs name demo-app #41 and #49), so Starfish did not merge it [T]; a person did |
 | Fast revert after a merge | yes | yes | no | no |
 | Phone escalation (#37) | yes: off by default | yes: fake Twilio, emulator | no | no |

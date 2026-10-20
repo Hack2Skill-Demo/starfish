@@ -255,8 +255,14 @@ src/
                    `afterVerify`, `afterReview`, #420): a review refused for its evidence goes to a person, not a retry (#418).
                    An attempt resumed within the round keeps the round's triage decision from the run record (`keptTriage`,
                    #414: the record carries its `round`; act, notify or decline only; asked again when a cap made since holds
-                   it back), so a released fix call no longer costs a second triage call; it still drafts and verifies again
-                   (the patch is not stored, #450). Emulator-tested; not yet run on the demo project
+                   it back), so a released fix call no longer costs a second triage call. One released after verify passed
+                   (the review call failed) goes straight to review with the patch the round verified (`reusableVerifiedPatch`,
+                   #450): kept, under the fence, in the cycle's engine-only `checkpoints/verified` (closed to every client by
+                   firestore.rules, never in the guests' copy; bounded; deleted when the cycle settles, is given up or is
+                   reopened), used only while its hash is the verify record's passed one, in the same round, at the same
+                   revision count, base revision, files and verify setup, else drafted again; no second fix call or CI run,
+                   the floor judged again, the earlier "fails before" record kept, never re-run. Emulator-tested; not yet run
+                   on the demo project
   agent/blastRadius.ts  the safety floor every merge needs (`assessMergeFloor`: gate 1's parsing, hard-exclude list and
                    whole-function check, tests only as new files, one production file, any number of hunks, at most
                    40 changed lines; no fix class. Since the hard-exclude list is words, #295 added code rules: no

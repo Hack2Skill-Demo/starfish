@@ -27,6 +27,10 @@
  *   spend    `modelCalls` and `revisions`: what the cycle has used of its model-call budget and its one revision, counted
  *            under the fence before each is spent, so a resumed attempt goes on from them instead of from zero (#182). A
  *            reconsideration starts a fresh count, as it does the attempts; reconsiderations are themselves capped per day.
+ *   checkpoint `{cycle}/checkpoints/verified`: the patch this round's verify gate passed, with that verify result (#450), so
+ *            an attempt released before its review finished goes straight to review. ENGINE-ONLY (firestore.rules closes
+ *            it to every client, and it is never copied to the guests' copy): the cycle document holds no patch. Written
+ *            under the fence; deleted when the cycle settles, is given up, or is reopened for a new round.
  *   observed `observedAt.<watcher>`: when a post-merge watcher last looked at this settled cycle (#422), so each reads the
  *            least recently observed first and every watched cycle gets its turn, however old it is. `updatedAt` cannot
  *            serve: the watchers' own records (recordPrState, recordRecovery) do not move it. `pr` and `recovery` are also
@@ -119,6 +123,17 @@ const prOpened = (d: Record<string, unknown> | undefined): boolean => (d?.summar
 
 function cycleRef(db: Firestore, cfg: CycleConfig, id: string): DocumentReference {
   return db.collection(cfg.cycleCollection).doc(id);
+}
+
+/** The cycle's verified-patch checkpoint (#450): one document, engine-only, beside the events. */
+function checkpointRef(cycle: DocumentReference): DocumentReference {
+  return cycle.collection("checkpoints").doc("verified");
+}
+
+/** Give a cycle up in the caller's transaction: failed, settled, and its verified-patch checkpoint gone with its lease. */
+function giveUp(tx: Transaction, ref: DocumentReference, reason: "deadline-passed" | "retries-exhausted", now: Date): void {
+  tx.update(ref, failedUpdate(reason, now));
+  tx.delete(checkpointRef(ref));
 }
 
 /**
@@ -233,6 +248,8 @@ export async function acquireLease(db: Firestore, cfg: CycleConfig, key: CycleKe
           ...(state === "declined" && { "summary.notify": FieldValue.delete() }),
           updatedAt: Timestamp.fromDate(now),
         });
+        // An earlier round's verified patch is not this round's (#450).
+        tx.delete(checkpointRef(ref));
         return { acquired: true, cycleId: id, attempt: 1, resumed: false, leaseExpiresAt: new Date(expires), reconsidered: trigger, reopenedFrom: state, modelCalls: 0, revisions: 0 };
       }
     }
@@ -243,7 +260,7 @@ export async function acquireLease(db: Firestore, cfg: CycleConfig, key: CycleKe
     const deadlineMs = ms(d.deadlineAt) ?? 0;
     if (now.getTime() >= deadlineMs) {
       wrote(d.environment);
-      tx.update(ref, failedUpdate("deadline-passed", now));
+      giveUp(tx, ref, "deadline-passed", now);
       return { acquired: false, reason: "deadline-passed" };
     }
 
@@ -257,7 +274,7 @@ export async function acquireLease(db: Firestore, cfg: CycleConfig, key: CycleKe
     const free = d.resumeUncounted === true;
     if (!renewing && !free && attempts >= cfg.maxCycleAttempts) {
       wrote(d.environment);
-      tx.update(ref, failedUpdate("retries-exhausted", now));
+      giveUp(tx, ref, "retries-exhausted", now);
       return { acquired: false, reason: "retries-exhausted" };
     }
 
@@ -297,7 +314,7 @@ export async function giveUpStranded(db: Firestore, cfg: CycleConfig, key: Cycle
     const reason = strandedReason(snap.data(), now, cfg.maxCycleAttempts);
     if (reason === null) return null;
     wrote(snap.get("environment"));
-    tx.update(ref, failedUpdate(reason, now));
+    giveUp(tx, ref, reason, now);
     return reason;
   });
 }
@@ -323,7 +340,7 @@ export async function renewLease(db: Firestore, cfg: CycleConfig, id: string, ow
     wrote(d.environment);
     const deadlineMs = ms(d.deadlineAt) ?? 0;
     if (now.getTime() >= deadlineMs) {
-      tx.update(ref, failedUpdate("deadline-passed", now));
+      giveUp(tx, ref, "deadline-passed", now);
       return { ok: false, reason: "lease-lost" } as const;
     }
     const expires = leaseEnd(cfg, now, deadlineMs);
@@ -561,8 +578,34 @@ export async function finishCycle(
       settledAt: Timestamp.fromDate(now),
       ...(opened && !watched && { "observedAt.pr": NEVER_OBSERVED }),
     });
+    // Nothing resumes a settled cycle within its round, so its verified patch is of no more use (#450).
+    tx.delete(checkpointRef(ref));
     return { ok: true } as const;
   });
+}
+
+/**
+ * Keep the patch this round's verify gate passed, with that verify result (#450), so an attempt released before its review
+ * finished goes straight to review instead of drafting and verifying again (one fix call, and with `github-actions` one
+ * more CI run). Under the fence: only the lease holder writes it, and one that lost the lease writes nothing. The caller
+ * (loop.ts) shapes and bounds `checkpoint`; what is stored is ENGINE-ONLY (`checkpointRef`). Replaces the cycle's earlier
+ * one: a cycle keeps only its latest verified patch.
+ */
+export async function recordVerifiedPatch(db: Firestore, cfg: CycleConfig, id: string, owner: string, now: Date, checkpoint: Record<string, unknown>): Promise<FenceResult> {
+  const ref = cycleRef(db, cfg, id);
+  return db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    const d = snap.data() as Record<string, unknown> | undefined;
+    if (!snap.exists) return { ok: false, reason: "no-such-cycle" } as const;
+    if (!fence(d, owner, now)) return { ok: false, reason: "lease-lost" } as const;
+    tx.set(checkpointRef(ref), { ...checkpoint, at: Timestamp.fromDate(now) });
+    return { ok: true } as const;
+  });
+}
+
+/** The cycle's verified-patch checkpoint as stored, or undefined when there is none (#450). Throws when the store does. */
+export async function readVerifiedPatch(db: Firestore, cfg: CycleConfig, id: string): Promise<Record<string, unknown> | undefined> {
+  return (await checkpointRef(cycleRef(db, cfg, id)).get()).data();
 }
 
 /**

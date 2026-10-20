@@ -20,7 +20,8 @@
  *     deterministic gate costs none); at most ONE revision, shared between a failed
  *     verify and a blocking review (a second failure goes to a person). Both are counted on the cycle, not the attempt
  *     (cycle.ts `countSpend`, #182), so a resumed attempt goes on from what earlier ones spent, and keeps the round's
- *     triage decision rather than asking for it again (`keptTriage`, #414); the cycle's own deadline and
+ *     triage decision rather than asking for it again (`keptTriage`, #414), and the patch the round's verify gate already
+ *     passed rather than drafting and verifying again (`reusableVerifiedPatch`, #450); the cycle's own deadline and
  *     attempt cap (cycle.ts) bound the rest, and a person is told when either gives a cycle up. A failure
  *     worth retrying (a missing counter-check, a model call that failed) releases the lease so the next run
  *     tries again, counted against the cap; a patch unfit to verify goes to a person.
@@ -46,8 +47,10 @@
  * needs must not carry on. The lease then expires and the cycle is resumed.
  *
  * Events hold rule names, counts and hashes, never the patch, a log line or model text beyond the
- * short redacted reasons the stages already produce. Run by the agent job (`pnpm agent`), and not on the Agent
- * Development Kit: the stage ordering here is plain code, which an ADK workflow can wrap.
+ * short redacted reasons the stages already produce. The one copy of a patch the store keeps is the cycle's engine-only
+ * verified-patch checkpoint (cycle.ts `recordVerifiedPatch`, #450), which no client and no guest copy reads. Run by the
+ * agent job (`pnpm agent`), and not on the Agent Development Kit: the stage ordering here is plain code, which an ADK
+ * workflow can wrap.
  */
 import type { Firestore } from "firebase-admin/firestore";
 import type { StarfishConfig } from "../config.js";
@@ -60,7 +63,9 @@ import {
   cycleId,
   finishCycle,
   giveUpStranded,
+  readVerifiedPatch,
   recordEvent,
+  recordVerifiedPatch,
   releaseLease,
   renewLease,
   roundOf,
@@ -75,11 +80,11 @@ import {
 } from "./cycle.js";
 import type { IssueRequest, IssueResult } from "../integrations/githubPr.js";
 import type { AlertRequest, DeliveryResult, NotifyRequest } from "../integrations/slack.js";
-import { proposeFix, reviewFeedback, verifyFeedback, type FixRequest, type FixResult, type RevisionFeedback, type SourceFile } from "./fixer.js";
+import { MAX_FIX_PATCH_BYTES, proposeFix, reviewFeedback, verifyFeedback, type FixRequest, type FixResult, type RevisionFeedback, type SourceFile } from "./fixer.js";
 export { REVISION_SCOPE } from "./fixer.js";
 import { reviewPatch, type Attack, type ReviewResult, type ReviewVerdict } from "./reviewer.js";
 import { triageIncident, triageLevel, type AskJson, type TriageDecision, type TriageOptions, type TriageResult, type TriageRule, type TriageSubject } from "./triage.js";
-import { verifyPatch, type VerifyConfig, type VerifyRequest, type VerifyResult } from "./verifyGate.js";
+import { MAX_OUTPUT_CHARS, verifyPatch, type VerifyConfig, type VerifyRequest, type VerifyResult } from "./verifyGate.js";
 import { causeClass, type ReconsiderPolicy } from "./reconsider.js";
 import { isIndexIncident, runIndexPath, type IndexHealWiring } from "./indexPath.js";
 import { linkFromEvent, linkIncident } from "./incidentLinks.js";
@@ -337,6 +342,120 @@ export function keptTriage(record: unknown, round: number, cap: LevelCap | null)
   };
   const level = triageLevel(kept);
   return level !== null && capHolds(cap, level) ? null : kept;
+}
+
+/** A patch this round's verify gate passed, as an earlier attempt kept it (#450): what review and the pull request need. */
+export interface VerifiedPatch {
+  patch: string;
+  /** The fixer's own account, which the review checks the patch against and the pull request carries. */
+  rootCause: string;
+  risk: string;
+  verified: VerifyResult;
+  /** Whether the run record's "fails before" entry is this patch's (`summary.before.forPatchSha256`). */
+  beforeRecorded: boolean;
+}
+
+/** Where the verified patch was drafted and judged: the inputs a kept patch must still match, or it is drafted again. */
+export interface VerifiedPatchContext {
+  round: number;
+  /** The cycle's revisions now: a revision spent since the patch was verified means the review blocked it. */
+  revisions: number;
+  baseRevision: string;
+  /** `filesDigest` of the files the fixer and the reviewer are shown. */
+  filesSha256: string;
+  /** `verifySetupDigest` of the verify configuration: a patch judged by another command or isolation is judged again. */
+  verifySetup: string;
+}
+
+/** The checkpoint format; a document of any other version is not read. */
+const CHECKPOINT_VERSION = 1;
+/** The most changed files a checkpoint keeps; a patch a minimal fix makes changes a few. More: not kept, drafted again on resume. */
+const MAX_CHECKPOINT_FILES = 50;
+
+/** A digest of the files shown to the fixer and the reviewer, paths and contents, in order. */
+export function filesDigest(files: readonly SourceFile[]): string {
+  return sha256(JSON.stringify(files.map((f) => [f.path, f.content])));
+}
+
+/** A digest of what judges a patch: the isolation, the command and the excluded paths. Only the digest is stored. */
+export function verifySetupDigest(cfg: Pick<StarfishConfig, "verifyIsolation" | "verifyCommand" | "patchExcludedPaths">): string {
+  return sha256(JSON.stringify([cfg.verifyIsolation, cfg.verifyCommand, cfg.patchExcludedPaths]));
+}
+
+/**
+ * The checkpoint stored for a patch the verify gate just passed (#450), or null when it is not kept (too large, or a
+ * result that is not a pass): a resumed attempt then drafts and verifies again, as before. The patch is the very text the
+ * gate judged, bound to the hash its verify record holds; the fixer already dropped one whose added lines are
+ * credential-shaped, and the gate's output is redacted and bounded.
+ */
+export function verifiedPatchCheckpoint(
+  patch: string,
+  claimed: { rootCause: string; risk: string },
+  verified: VerifyResult,
+  at: VerifiedPatchContext
+): Record<string, unknown> | null {
+  if (verified.status !== "passed" || verified.patchSha256 !== sha256(patch)) return null;
+  if (Buffer.byteLength(patch) > MAX_FIX_PATCH_BYTES || verified.output.length > MAX_OUTPUT_CHARS || verified.changedFiles.length > MAX_CHECKPOINT_FILES) return null;
+  return {
+    version: CHECKPOINT_VERSION,
+    ...at,
+    patch,
+    patchSha256: verified.patchSha256,
+    rootCause: claimed.rootCause,
+    risk: claimed.risk,
+    verify: {
+      status: verified.status,
+      rule: verified.rule,
+      reason: verified.reason,
+      changedFiles: verified.changedFiles,
+      exitCode: verified.exitCode ?? null,
+      output: verified.output,
+      durationMs: verified.durationMs,
+    },
+  };
+}
+
+/**
+ * The patch this round already verified, for an attempt resumed within the round (#450), or null to draft and verify
+ * again. Kept only when every binding holds: the stored text hashes to the hash the cycle's verify record holds, that
+ * record is a pass on the same base revision, and the checkpoint is this round's, made at the cycle's current revision
+ * count, from the same files and under the same verify setup; a review that blocked this very patch is never reused. Any
+ * doubt is a re-draft, which costs what it did before this existed.
+ */
+export function reusableVerifiedPatch(checkpoint: unknown, cycle: Record<string, unknown> | undefined, at: VerifiedPatchContext): VerifiedPatch | null {
+  if (typeof checkpoint !== "object" || checkpoint === null) return null;
+  const c = checkpoint as Record<string, unknown>;
+  const summary = (cycle?.summary ?? {}) as Record<string, Record<string, unknown> | undefined>;
+  const record = summary.verify;
+  const v = c.verify as Record<string, unknown> | undefined;
+  if (c.version !== CHECKPOINT_VERSION || typeof c.patch !== "string" || typeof v !== "object" || v === null) return null;
+  if (Buffer.byteLength(c.patch) > MAX_FIX_PATCH_BYTES) return null;
+  const hash = sha256(c.patch);
+  if (c.patchSha256 !== hash || record?.status !== "passed" || record.patchSha256 !== hash || record.baseRevision !== at.baseRevision) return null;
+  if (c.round !== at.round || c.revisions !== at.revisions || c.baseRevision !== at.baseRevision || c.filesSha256 !== at.filesSha256 || c.verifySetup !== at.verifySetup) return null;
+  if (summary.review?.patchSha256 === hash && summary.review.verdict === "block") return null;
+  if (typeof c.rootCause !== "string" || c.rootCause === "" || typeof c.risk !== "string") return null;
+  const files = v.changedFiles;
+  if (v.status !== "passed" || typeof v.rule !== "string" || typeof v.reason !== "string" || typeof v.output !== "string") return null;
+  if (!Array.isArray(files) || files.length === 0 || files.length > MAX_CHECKPOINT_FILES || !files.every((f) => typeof f === "string")) return null;
+  if (!(v.exitCode === null || typeof v.exitCode === "number") || typeof v.durationMs !== "number") return null;
+  return {
+    patch: c.patch,
+    rootCause: c.rootCause,
+    risk: c.risk,
+    verified: {
+      status: "passed",
+      rule: v.rule as VerifyResult["rule"],
+      reason: v.reason,
+      patchSha256: hash,
+      baseRevision: at.baseRevision,
+      changedFiles: files as string[],
+      exitCode: v.exitCode,
+      output: v.output,
+      durationMs: v.durationMs,
+    },
+    beforeRecorded: summary.before?.forPatchSha256 === hash,
+  };
 }
 
 /** Where a stage's result sends the cycle, other than on: round again with feedback, released for a retry, or to a person. */
@@ -885,46 +1004,75 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
       if (!r.ok) throw new LeaseLost();
       revisions = r.count ?? revisions + 1;
     };
+    // The patch this round already verified, when an attempt released before its review finished kept it (#450): this
+    // attempt goes straight to review, with no second fix call and no second verify run (with `github-actions`, the
+    // branch that run judged is still there for the pull request). Read once, for the first time round only.
+    const checkpointAt: VerifiedPatchContext = {
+      round,
+      revisions,
+      baseRevision: loaded.baseRevision,
+      filesSha256: filesDigest(loaded.files),
+      verifySetup: verifySetupDigest(cfg),
+    };
+    let reusable: VerifiedPatch | null = lease.resumed
+      ? reusableVerifiedPatch(await readVerifiedPatch(db, cfg, id), (await db.collection(cfg.cycleCollection).doc(id).get()).data(), checkpointAt)
+      : null;
     for (;;) {
       stop = (await halted()) ?? (await overBudget(loaded));
       if (stop) return stop;
-      await spendModelCall();
-      const fix = await proposeFix(
-        {
-          subject: loaded.subject,
-          files: loaded.files,
-          ...(feedback && { feedback }),
-        },
-        deps.ask
-      );
-      await note({
-        stage: "fix",
-        type: fix.outcome,
-        summary: fix.rootCause,
-        data: { rule: fix.rule, testAdded: fix.testAdded ?? null },
-        record: {
-          outcome: fix.outcome,
-          rule: fix.rule,
-          rootCause: fix.rootCause,
-          testAdded: fix.testAdded ?? null,
-          risk: fix.risk ?? null,
-          revisions,
-          // The configured model: the fixer always asks it, and its words are what this record holds (the UI says whose they are).
-          model: cfg.model,
-          // Which rule found the source the fixer was shown (#259): a file found by the function's name is weaker evidence.
-          ...(loaded.source && { source: loaded.source.rule, sourceFiles: loaded.files.length }),
-          ...(loaded.source?.search && { sourceSearch: loaded.source.search }),
-          // How many of the files shown are ones the file found by name imports (#347).
-          ...(loaded.source?.imports !== undefined && { sourceImports: loaded.source.imports }),
-          ...numbered("alternative", fix.rejectedAlternatives ?? [], MAX_RECORDED_ALTERNATIVES),
-        },
-      });
-      // A model call that failed, or an answer that could not be read, may do better next time: released to retry. Any other
-      // error (an unfit patch, an answer cut at the limit or filtered) would most likely repeat: a person, now (#137, #418).
-      const fixed = afterFix(fix);
-      if (fixed.next === "retry") return await release(fixed.rule);
-      if (fixed.next !== "verify") return await handOver(factsOf(loaded), "human", fixed.rule, fixed.reason, fixed.rule, "human");
-      const patch = fixed.patch;
+      const reused = reusable;
+      reusable = null;
+      let patch: string;
+      let claimed: { rootCause: string; risk: string };
+      if (reused) {
+        patch = reused.patch;
+        claimed = { rootCause: reused.rootCause, risk: reused.risk };
+        await note({
+          stage: "cycle",
+          type: "patch-kept",
+          summary: "The patch verified earlier in this round kept; no second fix call or verify run",
+          data: { patchSha256: reused.verified.patchSha256, files: reused.verified.changedFiles.length },
+        });
+      } else {
+        await spendModelCall();
+        const fix = await proposeFix(
+          {
+            subject: loaded.subject,
+            files: loaded.files,
+            ...(feedback && { feedback }),
+          },
+          deps.ask
+        );
+        await note({
+          stage: "fix",
+          type: fix.outcome,
+          summary: fix.rootCause,
+          data: { rule: fix.rule, testAdded: fix.testAdded ?? null },
+          record: {
+            outcome: fix.outcome,
+            rule: fix.rule,
+            rootCause: fix.rootCause,
+            testAdded: fix.testAdded ?? null,
+            risk: fix.risk ?? null,
+            revisions,
+            // The configured model: the fixer always asks it, and its words are what this record holds (the UI says whose they are).
+            model: cfg.model,
+            // Which rule found the source the fixer was shown (#259): a file found by the function's name is weaker evidence.
+            ...(loaded.source && { source: loaded.source.rule, sourceFiles: loaded.files.length }),
+            ...(loaded.source?.search && { sourceSearch: loaded.source.search }),
+            // How many of the files shown are ones the file found by name imports (#347).
+            ...(loaded.source?.imports !== undefined && { sourceImports: loaded.source.imports }),
+            ...numbered("alternative", fix.rejectedAlternatives ?? [], MAX_RECORDED_ALTERNATIVES),
+          },
+        });
+        // A model call that failed, or an answer that could not be read, may do better next time: released to retry. Any other
+        // error (an unfit patch, an answer cut at the limit or filtered) would most likely repeat: a person, now (#137, #418).
+        const fixed = afterFix(fix);
+        if (fixed.next === "retry") return await release(fixed.rule);
+        if (fixed.next !== "verify") return await handOver(factsOf(loaded), "human", fixed.rule, fixed.reason, fixed.rule, "human");
+        patch = fixed.patch;
+        claimed = { rootCause: fix.rootCause, risk: fix.risk ?? "" };
+      }
 
       // ---- auto-merge evidence (#9): the safety floor, then the patch's tests alone on the base revision -------
       // Only where Gemini named a merge case: the decision to merge is its, inside the cases an admin listed.
@@ -937,58 +1085,75 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
           // The floor judges the whole function around each change, as the base revision has it (#202).
           baseFiles: await readBaseFiles(loaded.sourceDir, patch),
         });
-        if (floor.allowed) {
+        if (floor.allowed && !reused) {
           stop = await halted();
           if (stop) return stop;
           await recordFailsBefore(deps, { id, loaded, heartbeat: keeper.beat, note, renew }, patch);
+        } else if (floor.allowed && reused && !reused.beforeRecorded) {
+          // The earlier attempt ran it before verify, unless auto-merge came on since. Not run now: with `github-actions`
+          // it would replace the branch the verify run judged. Reported in the evidence, not required to merge.
+          await note({
+            stage: "before",
+            type: "unavailable",
+            summary: "Not run: the patch was verified by an earlier attempt, before auto-merge could apply to it",
+            record: { status: "unavailable", rule: "resumed-after-verify", forPatchSha256: reused.verified.patchSha256 },
+          });
         }
       }
 
-      // The kill switch is asked again before verify: with `github-actions` verify pushes a branch to the target (#138).
-      stop = await halted();
-      if (stop) return stop;
-      // Verify can take far longer than one lease: prove the lease is ours and extend it first; the keeper (and the
-      // heartbeat the waiting verifiers call on every poll) keeps it alive while it runs (#132).
-      await renew();
-      const verified = await (deps.verify ?? verifyPatch)({
-        cycleId: id,
-        sourceDir: loaded.sourceDir,
-        patch,
-        baseRevision: loaded.baseRevision,
-        config: cfg,
-        heartbeat: keeper.beat,
-      });
-      await note({
-        stage: "verify",
-        type: verified.status,
-        summary: verified.reason,
-        data: {
-          rule: verified.rule,
-          patchSha256: verified.patchSha256,
-          files: verified.changedFiles.length,
-          exitCode: verified.exitCode ?? null,
-          // Why a patch was refused (`git apply`'s own words, already redacted): without it a rejection cannot be explained (#317).
-          ...(verified.status !== "passed" && verified.output.trim() !== "" && { output: clipWellFormed(verified.output.trim(), 300) }),
-        },
-        record: {
-          status: verified.status,
-          rule: verified.rule,
-          patchSha256: verified.patchSha256,
+      let verified: VerifyResult;
+      if (reused) {
+        verified = reused.verified;
+      } else {
+        // The kill switch is asked again before verify: with `github-actions` verify pushes a branch to the target (#138).
+        stop = await halted();
+        if (stop) return stop;
+        // Verify can take far longer than one lease: prove the lease is ours and extend it first; the keeper (and the
+        // heartbeat the waiting verifiers call on every poll) keeps it alive while it runs (#132).
+        await renew();
+        verified = await (deps.verify ?? verifyPatch)({
+          cycleId: id,
+          sourceDir: loaded.sourceDir,
+          patch,
           baseRevision: loaded.baseRevision,
-          files: verified.changedFiles.length,
-          exitCode: verified.exitCode ?? null,
-          durationMs: verified.durationMs,
-          // Where the verdict came from: with `github-actions` a `command-*` rule is the target's checks on GitHub.
-          isolation: cfg.verifyIsolation,
-        },
-      });
-      const checked = afterVerify(verified, patch, revisions);
-      if (checked.next === "revise") {
-        await spendRevision();
-        feedback = checked.feedback;
-        continue;
+          config: cfg,
+          heartbeat: keeper.beat,
+        });
+        await note({
+          stage: "verify",
+          type: verified.status,
+          summary: verified.reason,
+          data: {
+            rule: verified.rule,
+            patchSha256: verified.patchSha256,
+            files: verified.changedFiles.length,
+            exitCode: verified.exitCode ?? null,
+            // Why a patch was refused (`git apply`'s own words, already redacted): without it a rejection cannot be explained (#317).
+            ...(verified.status !== "passed" && verified.output.trim() !== "" && { output: clipWellFormed(verified.output.trim(), 300) }),
+          },
+          record: {
+            status: verified.status,
+            rule: verified.rule,
+            patchSha256: verified.patchSha256,
+            baseRevision: loaded.baseRevision,
+            files: verified.changedFiles.length,
+            exitCode: verified.exitCode ?? null,
+            durationMs: verified.durationMs,
+            // Where the verdict came from: with `github-actions` a `command-*` rule is the target's checks on GitHub.
+            isolation: cfg.verifyIsolation,
+          },
+        });
+        const checked = afterVerify(verified, patch, revisions);
+        if (checked.next === "revise") {
+          await spendRevision();
+          feedback = checked.feedback;
+          continue;
+        }
+        if (checked.next !== "review") return await handOver(factsOf(loaded), "human", checked.rule, checked.reason, checked.rule, "human");
+        // Kept for an attempt that resumes this round before its review finishes (#450). Not kept (too large): it drafts again.
+        const checkpoint = verifiedPatchCheckpoint(patch, claimed, verified, { ...checkpointAt, revisions });
+        if (checkpoint !== null && !(await recordVerifiedPatch(db, cfg, id, owner, deps.now(), checkpoint)).ok) throw new LeaseLost();
       }
-      if (checked.next !== "review") return await handOver(factsOf(loaded), "human", checked.rule, checked.reason, checked.rule, "human");
       // The floor read the patch's headers; the verify gate saw what `git apply` actually wrote. Unless they are the same
       // files, the floor judged a different change from the one that was verified, and it does not hold (#200).
       // Only the files, not their lines: the written tree is gone by now (a scratch copy, or a branch the target's CI
@@ -1004,7 +1169,7 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
         if (stop) return stop;
         await spendModelCall();
         const reviewed = await reviewPatch(
-          { subject: loaded.subject, patch, verify: verified, files: loaded.files, claimed: { rootCause: fix.rootCause, risk: fix.risk ?? "" } },
+          { subject: loaded.subject, patch, verify: verified, files: loaded.files, claimed },
           deps.ask
         );
         await note({
@@ -1061,8 +1226,8 @@ export async function runCycle(deps: LoopDeps, key: CycleKey): Promise<LoopResul
         baseRevision: loaded.baseRevision,
         patch,
         patchSha256: verified.patchSha256,
-        rootCause: fix.rootCause,
-        risk: fix.risk ?? "",
+        rootCause: claimed.rootCause,
+        risk: claimed.risk,
         verify: { status: verified.status, rule: verified.rule, changedFiles: verified.changedFiles, output: verified.output },
         ...(issue && { issueNumber: issue.number }),
         ...(review && { review }),

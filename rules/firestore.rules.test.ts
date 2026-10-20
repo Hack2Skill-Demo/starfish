@@ -1353,6 +1353,29 @@ describe("public demo: open reads behind the gate document", () => {
     await assertFails(setDoc(doc(db, GATE), { enabled: false, environment: "demo" }));
   });
 
+  // #450: the patch a round's verify gate passed is kept beside the cycle for a resumed attempt. The cycle document holds
+  // no patch on purpose; its checkpoint is the engine's alone, whatever the gate says.
+  it("nobody reads or writes a cycle's verified-patch checkpoint from a client, an admin included, gate or no gate (#450)", async () => {
+    const CHECKPOINT = "starfish_cycles/demo-1_r0/checkpoints/verified";
+    await env.withSecurityRulesDisabled((ctx) =>
+      setDoc(doc(ctx.firestore(), CHECKPOINT), { version: 1, environment: "demo", round: 1, patch: "--- a/x\n+++ b/x\n", patchSha256: "a".repeat(64) })
+    );
+    for (const gate of [null, { enabled: true, environment: "demo" }]) {
+      await setGate(gate);
+      for (const db of [as("admin1"), as("op1"), emailNoRole(), guest(), anon()]) {
+        await assertFails(getDoc(doc(db, CHECKPOINT)));
+        await assertFails(getDocs(collection(db, "starfish_cycles/demo-1_r0/checkpoints")));
+        await assertFails(getDocs(query(collection(db, "starfish_cycles/demo-1_r0/checkpoints"), where("environment", "==", "demo"), limit(1))));
+        await assertFails(getDocs(query(collectionGroup(db, "checkpoints"), where("environment", "==", "demo"), limit(1))));
+        await assertFails(setDoc(doc(db, CHECKPOINT), { version: 1 }));
+        await assertFails(updateDoc(doc(db, CHECKPOINT), { round: 2 }));
+        await assertFails(deleteDoc(doc(db, CHECKPOINT)));
+      }
+    }
+    // The cycle itself stays readable to an operator, as before.
+    await assertSucceeds(getDoc(doc(as("op1"), "starfish_cycles/demo-1_r0")));
+  });
+
   it("nobody reads or writes the gate or the visitors' counters from a client, an admin included: only the engine", async () => {
     await setGate({ enabled: true, environment: "demo" });
     await env.withSecurityRulesDisabled((ctx) => setDoc(doc(ctx.firestore(), "starfish_public_actions/salt"), { value: "a".repeat(64) }));
