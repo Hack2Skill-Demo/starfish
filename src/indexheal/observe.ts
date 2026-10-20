@@ -5,10 +5,12 @@
  *
  *   recurred        the incident occurred again after the index was READY (its `lastOccurredAt` is later);
  *   query-failing   it stayed quiet, but the configured query fails again asking for this index;
- *   unverified      no probe can be run for it now (the probe was removed from the configuration), the incident is gone,
- *                   ingest still had not read the logs through the window a day after it ended, or the probe still could
- *                   not run (inconclusive) a day after it ended;
- *   healed          no occurrence since READY, for the whole window, and the configured query passes at its end.
+ *   unverified      no probe can be run for it now (the probe was removed from the configuration), the incident is gone
+ *                   or retired (#425: its fingerprint was freed, so the error coming back opens a NEW incident this one
+ *                   never records), ingest still had not read the logs through the window a day after it ended, or the
+ *                   probe still could not run (inconclusive) a day after it ended;
+ *   healed          no occurrence since READY, for the whole window, and the configured query passes at its end. Never
+ *                   for a retired incident: its silence proves nothing.
  *
  * "Quiet" is the incident's own record: no occurrence since READY, and only once ingest's checkpoint for this target
  * (src/ingest/run.ts) is at or past the window's end. A stalled ingest records no occurrences either, so a window it
@@ -16,7 +18,8 @@
  * not measure the traffic that would have run the query in that window; the replayed probe at the end is what stands
  * in for it, and the record says so.
  *
- * Only `summary.index.runtime` (and when it was decided) is written, on a cycle still `observing`, in a transaction: the
+ * Only `summary.index.runtime` (and when it was decided) is written, on a cycle still `observing`, in a transaction (and,
+ * as an ordering hint, when the cycle was last looked at: `observedAt.index`, cycle.ts, #422): the
  * cycle's state and path are not changed, and the incident is never touched. Resolving it stays a person's decision.
  * A probe or read that fails leaves the cycle observing, to be tried at the next pass: that includes a probe that could
  * not run or say anything about this index (`inconclusive`: UNAVAILABLE, a permission, another index named), until the
@@ -26,9 +29,10 @@ import type { Firestore, Timestamp } from "firebase-admin/firestore";
 import { readIngestCheckpoint } from "../ingest/run.js";
 import { COLLECTION_RE, DATABASE_RE, FIELD_PATH_RE, PROJECT_RE, type IndexSpec } from "./createIndexUrl.js";
 import type { ProbeVerdict } from "./probe.js";
-import { INCONCLUSIVE_BASIS, QUIET_BASIS, UNCOVERED_BASIS } from "./runtimeBasis.js";
+import { GONE_BASIS, INCONCLUSIVE_BASIS, QUIET_BASIS, UNCOVERED_BASIS } from "./runtimeBasis.js";
 import type { PublicViewConfig } from "../publicView.js";
 import { refreshPublicCycle } from "../publicViewStore.js";
+import { markObserved, observedMs } from "../agent/cycle.js";
 
 export type RuntimeVerdict = "healed" | "recurred" | "query-failing" | "unverified";
 
@@ -90,15 +94,25 @@ export function specFromRecord(r: Record<string, unknown>): IndexSpec | null {
   return { project, database, collectionGroup, queryScope, fields: parsed };
 }
 
+/** The most observing cycles read in one go, before the `limit` least recently looked at are taken (#422). */
+export const OBSERVE_SCAN = 200;
+
 export async function observeIndexHeals(deps: ObserveDeps): Promise<ObserveSummary> {
   const { db, config: cfg } = deps;
   const now = deps.now();
+  // The least recently looked at first (`observedAt.index`, moved after each look): an unordered read of 20 returned the
+  // same 20 every pass, so with 20 still in their window or waiting for ingest the rest were never decided (#422).
   const snap = await db
     .collection(cfg.cycleCollection)
     .where("environment", "==", cfg.environment)
     .where("summary.index.runtime", "==", "observing")
-    .limit(deps.limit ?? 20)
+    .limit(OBSERVE_SCAN)
     .get();
+  const docs = snap.docs
+    .map((doc) => ({ doc, seenMs: observedMs(doc.data(), "index") }))
+    .sort((a, b) => a.seenMs - b.seenMs)
+    .slice(0, deps.limit ?? 20)
+    .map(({ doc }) => doc);
   const out: ObserveSummary = { considered: 0, waiting: 0, uncovered: 0, decided: [], errors: [] };
   // Read once per call, when a cycle first needs it; a failed read is that cycle's error, and is tried again for the next.
   let checkpoint: { at: Date | null } | undefined;
@@ -106,9 +120,11 @@ export async function observeIndexHeals(deps: ObserveDeps): Promise<ObserveSumma
     checkpoint ??= { at: await readIngestCheckpoint(db, cfg.runCollection, { watchedProjectId: cfg.watchedProjectId, environment: cfg.environment }) };
     return checkpoint.at;
   };
-  for (const doc of snap.docs) {
+  for (const doc of docs) {
     const d = doc.data();
     out.considered += 1;
+    // Its turn is taken, whatever this look decides (best effort, an ordering hint only).
+    await markObserved(db, cfg, doc.id, "index", now);
     const rec = ((d.summary as Record<string, unknown> | undefined)?.index ?? {}) as Record<string, unknown>;
     const readyAt = isoMs(rec.readyAt);
     const until = isoMs(rec.observeUntil);
@@ -124,11 +140,20 @@ export async function observeIndexHeals(deps: ObserveDeps): Promise<ObserveSumma
     let basis = QUIET_BASIS;
     try {
       const incident = typeof d.incidentId === "string" ? await db.collection(cfg.incidentCollection).doc(d.incidentId).get() : null;
-      const last = incident?.exists ? tsMs(incident.data()?.lastOccurredAt) : null;
+      const data = incident?.exists ? incident.data() : undefined;
+      const last = data ? tsMs(data.lastOccurredAt) : null;
       const spec = specFromRecord(rec);
-      if (!incident?.exists || spec === null) runtime = "unverified";
+      if (!data) {
+        runtime = "unverified";
+        basis = GONE_BASIS;
+      } else if (spec === null) runtime = "unverified";
+      // An occurrence after READY is a fact, retired or not: one dated before the retire still accrues onto it.
       else if (last !== null && last > readyAt) runtime = "recurred";
-      else {
+      else if (data.retired === true) {
+        // Retired: the error coming back opens a NEW incident, so this record's silence proves nothing (#425).
+        runtime = "unverified";
+        basis = GONE_BASIS;
+      } else {
         // No occurrence recorded is "quiet" only if ingest read the logs through the window (#188).
         const through = await ingestedThrough();
         if (through === null || through.getTime() < until) {

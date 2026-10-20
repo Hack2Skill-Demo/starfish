@@ -3,20 +3,31 @@
  * comes back soon after that merge, Starfish opens a revert of its OWN merge commit and merges it once the required
  * checks pass, and tells a person either way.
  *
- * The watch. Every merge autoMerge.ts records starts `summary.revert` in `watching`, until `fastRevertMinutes` after the
- * merge. The incident has come back (`recurredAfterMerge`, pure) when it was seen again later than
- * `fastRevertGraceMinutes` after the merge and within the window: its `lastOccurredAt`, a regression the ingest marked
+ * The watch. Every merge autoMerge.ts records starts `summary.revert` in `watching`. Its window runs from its START to
+ * `fastRevertMinutes` after it. The incident has come back (`recurredAfterMerge`, pure) when it was seen again later than
+ * `fastRevertGraceMinutes` after the start and within the window: its `lastOccurredAt`, a regression the ingest marked
  * (`recurred`, a higher `recurrenceCount`, `lastRecurredAt`), or an hour of its occurrence series wholly inside the
  * window. A bucket crossing either boundary cannot prove an occurrence inside it, so it cannot trigger an automatic
- * revert (#252). HONESTLY: the window starts at the MERGE, not at the deployment, because Starfish cannot observe when the
- * target's CI/CD finishes deploying (#9 keeps "start at deployment completion" open). The grace stands in for the deploy:
- * an error seen during it is the old code still running, not the fix failing. A deploy slower than the grace would
- * look like a recurrence; set the grace above the target's deploy time.
+ * revert (#252).
+ *
+ * The start (#424). With a deployment environment configured (`deployEnvironment`, as recovery.ts reads it), the start is
+ * when GitHub's Deployments API says the merge commit's deployment COMPLETED (githubPr.ts `deploymentOfCommit`), recorded
+ * on the watch once seen (`deployedAt`): an error while the old revision still serves is not the fix failing, however long
+ * the deploy takes, and the grace is only for instances still draining. Until a completed deployment is seen the watch
+ * waits, still holding later merges back; with none seen `recoveryGiveUpHours` after the merge, a person is told
+ * (`escalated`, `deploy-not-observed`) and nothing is reverted. With no deployment environment configured (the demo
+ * today) Starfish cannot see the deploy, and the start is the MERGE, as before: the grace stands in for the deploy, and a
+ * deploy slower than the grace would look like a recurrence; set the grace above the target's deploy time.
  *
  * A watch that saw nothing closes `clear` only once ingest's checkpoint for this target (src/ingest/run.ts) has read the
  * logs through the last hour that counts (#241): a stalled ingest records no occurrences either, and missing is not
  * zero. Until then it keeps watching; a day past its close with the window still not read, a person is told that the
  * merge could not be confirmed (`escalated`, `ingest-not-covered`), and nothing is reverted.
+ *
+ * A watch whose incident was retired, or is gone, never closes `clear` (#425): retiring frees the fingerprint, so the error
+ * coming back opens a NEW incident this watch never reads, and its silence proves nothing. It is handed to a person at
+ * once (`escalated`, `incident-gone`, as recovery.ts calls the same case), nothing is reverted, and, like any escalated
+ * watch, it holds later merges for the incident back (autoMerge.ts `earlierMergeHolds`).
  *
  * What it will not do:
  *   - Revert a revert. Only a merge recorded in `summary.merge` is ever watched; the revert's own merge is recorded in
@@ -26,7 +37,8 @@
  *   - Merge a revert whose required checks did not pass, or whose head moved; or act while the switches forbid merging
  *     (then a person is told instead). Automation off pauses it, like everything else.
  *   - Retry a half-done step blindly: a claim left by a worker that stopped is handed to a person.
- *   - Read without bound: at most `maxPrChecksPerPass` watched or pending cycles a pass.
+ *   - Read without bound: at most `maxPrChecksPerPass` watched or pending cycles a pass, the least recently looked at
+ *     first (autoMerge.ts `cyclesInState`, #422), so a watch still open never keeps another from its turn.
  *
  * Reverts are not counted against the daily merge cap: a cap must never keep a bad merge in place. Never run against
  * real GitHub: tested with a fake client and the Firestore emulator.
@@ -38,7 +50,7 @@ import type { GithubClient } from "../integrations/githubPr.js";
 import type { DeliveryResult, NotifyRequest } from "../integrations/slack.js";
 import { readIngestCheckpoint } from "../ingest/run.js";
 import { CLAIM_STALE_MS, cyclesInState, escalate, millis, moveRecord } from "./autoMerge.js";
-import type { CycleConfig } from "./cycle.js";
+import { markObserved, type CycleConfig } from "./cycle.js";
 import { summarizeChecks } from "./reconcile.js";
 
 export type FastRevertConfig = Pick<
@@ -53,10 +65,12 @@ export type FastRevertConfig = Pick<
   | "fastRevertMinutes"
   | "fastRevertGraceMinutes"
   | "mergeCheckWaitMinutes"
+  | "deployEnvironment"
+  | "recoveryGiveUpHours"
 > &
   CycleConfig;
 
-export type RevertClient = Pick<GithubClient, "openRevertPullRequest" | "readPullRequest" | "listCheckRuns" | "mergePullRequest">;
+export type RevertClient = Pick<GithubClient, "openRevertPullRequest" | "readPullRequest" | "listCheckRuns" | "mergePullRequest" | "deploymentOfCommit">;
 
 export interface FastRevertDeps {
   db: Firestore;
@@ -96,22 +110,25 @@ type Rec = Record<string, unknown>;
 const rec = (v: unknown): Rec => (typeof v === "object" && v !== null ? (v as Rec) : {});
 
 /**
- * The times a watch works with, from the merge. `start`/`end`: the window, (merge + grace, merge + `fastRevertMinutes`].
+ * The times a watch works with, from its start `fromMs` (the deployment's completion, or the merge without a deployment
+ * environment: the file's header). `start`/`end`: the window, (from + grace, from + `fastRevertMinutes`].
  * `reach`: a conservative ingest coverage boundary: the window's end, or the first clock hour after `start` if no
  * clock hour starts before the deadline. `closesAt`: the earliest a watch that saw nothing is cleared, after that boundary's hour
  * and the settle hour. It is cleared only once ingest's checkpoint is at or past `reach` + 1 h (#241).
  */
-export function watchSpan(mergedAtMs: number, cfg: Pick<FastRevertConfig, "fastRevertMinutes" | "fastRevertGraceMinutes">): { start: number; end: number; reach: number; closesAt: number } {
-  const start = mergedAtMs + cfg.fastRevertGraceMinutes * 60_000;
-  const end = mergedAtMs + cfg.fastRevertMinutes * 60_000;
+export function watchSpan(fromMs: number, cfg: Pick<FastRevertConfig, "fastRevertMinutes" | "fastRevertGraceMinutes">): { start: number; end: number; reach: number; closesAt: number } {
+  const start = fromMs + cfg.fastRevertGraceMinutes * 60_000;
+  const end = fromMs + cfg.fastRevertMinutes * 60_000;
   const firstHourAfterStart = (Math.floor(start / HOUR_MS) + 1) * HOUR_MS;
   const reach = Math.max(end, firstHourAfterStart);
   return { start, end, reach, closesAt: reach + HOUR_MS + WATCH_SETTLE_MS };
 }
 
 /**
- * Whether the incident came back after Starfish's merge: an occurrence later than the grace after the merge, in the
- * window. Pure. A retired incident never has (its fingerprint was freed: a new occurrence is a new incident).
+ * Whether the incident came back after Starfish's merge: an occurrence later than the grace after the watch's start
+ * (`fromMs`: the deployment's completion, or the merge, #424), in the window. Pure. A retired incident never has (its
+ * fingerprint was freed: a new occurrence is a new incident); the step hands a watch on one to a person rather than
+ * closing it clear (#425).
  *
  * What the store keeps is not every occurrence's time, so the evidence is read for what it proves (#201):
  *   - `lastOccurredAt` is the LATEST occurrence ever seen (store.ts never moves it backwards). In the window: proof.
@@ -127,11 +144,11 @@ export function watchSpan(mergedAtMs: number, cfg: Pick<FastRevertConfig, "fastR
  */
 export function recurredAfterMerge(
   incident: Rec,
-  merge: { mergedAtMs: number; recurrence: number },
+  merge: { fromMs: number; recurrence: number },
   cfg: Pick<FastRevertConfig, "fastRevertMinutes" | "fastRevertGraceMinutes">
 ): boolean {
   if (incident.retired === true) return false;
-  const { start, end } = watchSpan(merge.mergedAtMs, cfg);
+  const { start, end } = watchSpan(merge.fromMs, cfg);
   if (start >= end) return false;
   const inWindow = (t: number | undefined) => t !== undefined && t > start && t <= end;
   if (inWindow(millis(incident.lastOccurredAt))) return true;
@@ -189,13 +206,16 @@ export async function runFastRevertStep(deps: FastRevertDeps): Promise<FastRever
     } catch (err) {
       out.errors.push({ cycleId: cycle.id, message: describe(err) });
     }
+    // Its turn is taken: the next pass looks at the others first, so no watch waits behind ones still open (#422).
+    await markObserved(db, cfg, cycle.id, "revert", deps.now());
   }
   return out;
 
   async function step(cycle: { id: string; data: Rec }): Promise<"cleared" | "uncovered" | "opened" | "reverted" | "escalated" | "waiting" | "unchanged" | "paused"> {
     const summary = rec(cycle.data.summary);
     const merge = rec(summary.merge);
-    const revert = rec(summary.revert);
+    // `let`: a deployment seen this pass is recorded on the watch, and every later move of this pass keeps it.
+    let revert = rec(summary.revert);
     const now = deps.now();
     const nowIso = now.toISOString();
     const same = (state: unknown, extra: (r: Rec) => boolean = () => true) => (r: Rec) => r.state === state && r.mergeSha === revert.mergeSha && extra(r);
@@ -219,10 +239,49 @@ export async function runFastRevertStep(deps: FastRevertDeps): Promise<FastRever
       const mergedAtMs = millis(revert.mergedAt);
       if (mergedAtMs === undefined) return giveUp("merge-time-unknown", same("watching"));
       const incidentId = String(cycle.data.incidentId ?? "");
-      const incident = incidentId ? ((await db.collection(cfg.incidentCollection).doc(incidentId).get()).data() ?? {}) : {};
+      const incident = incidentId ? ((await db.collection(cfg.incidentCollection).doc(incidentId).get()).data() ?? null) : null;
+      if (incident === null || incident.retired === true) {
+        // Retired (its fingerprint freed) or gone: the error coming back would be a NEW incident this watch never reads, so
+        // nothing it reads can show the merge held. Never `clear`, never a revert: a person is told (#425).
+        const escalation = await escalate(
+          deps,
+          cycle,
+          "fast-revert-incident-gone",
+          "Starfish merged a fix for this incident, but the incident was retired (or can no longer be read) while the fast-revert watch was open. The error coming back would open a new incident that the watch cannot see, so Starfish cannot tell whether the fix held. Nothing was reverted. A person needs to check."
+        );
+        return (await moveRecord(db, cfg, cycle.id, now, "revert", same("watching"), { ...revert, state: "escalated", reason: "incident-gone", escalation, decidedAt: nowIso })) ? "escalated" : "unchanged";
+      }
+      // The watch's start (#424): where Starfish can see deployments, when the merge's deployment completed, never before;
+      // with no deployment environment configured, the merge (the header says why). A deployment already recorded on the
+      // watch stands, even if the environment was unset since.
+      const recordedMs = millis(revert.deployedAt);
+      let fromMs = recordedMs ?? mergedAtMs;
+      if (cfg.deployEnvironment !== "") {
+        if (recordedMs === undefined) {
+          // Bounded: no completed deployment seen this long after the merge, a person is told; nothing is reverted.
+          if (now.getTime() >= mergedAtMs + cfg.recoveryGiveUpHours * HOUR_MS) {
+            const escalation = await escalate(
+              deps,
+              cycle,
+              "fast-revert-deploy-not-observed",
+              `Starfish merged a fix for this incident, but no completed deployment of it was seen within ${cfg.recoveryGiveUpHours} hours of the merge, so the fast-revert watch never started. Nothing was reverted. A person needs to check whether the fix is live and whether the error came back.`
+            );
+            return (await moveRecord(db, cfg, cycle.id, now, "revert", same("watching"), { ...revert, state: "escalated", reason: "deploy-not-observed", escalation, decidedAt: nowIso })) ? "escalated" : "unchanged";
+          }
+          // A read that fails throws: this watch's error, tried again next pass, and bounded by the give-up above.
+          const seen = await client.deploymentOfCommit(mergeSha, cfg.deployEnvironment, new Date(mergedAtMs).toISOString());
+          if (seen.state !== "deployed") return "waiting";
+          const completedMs = Date.parse(seen.completedAt);
+          if (!Number.isFinite(completedMs)) return "waiting";
+          const deployed = { ...revert, deployedAt: new Date(completedMs).toISOString(), deploymentId: seen.deploymentId, until: new Date(completedMs + cfg.fastRevertMinutes * 60_000).toISOString() };
+          if (!(await moveRecord(db, cfg, cycle.id, now, "revert", same("watching"), deployed))) return "unchanged";
+          revert = deployed;
+          fromMs = completedMs;
+        }
+      }
       const recurrence = typeof cycle.data.recurrence === "number" ? cycle.data.recurrence : 0;
-      if (!recurredAfterMerge(incident, { mergedAtMs, recurrence }, cfg)) {
-        const { reach, closesAt } = watchSpan(mergedAtMs, cfg);
+      if (!recurredAfterMerge(incident, { fromMs, recurrence }, cfg)) {
+        const { reach, closesAt } = watchSpan(fromMs, cfg);
         if (now.getTime() <= closesAt) return "waiting";
         // Nothing recorded is "no recurrence" only once ingest has read the logs through the last hour that counts: a
         // stalled ingest records nothing either, and missing is not zero (#241). No checkpoint at all is not covered.
@@ -252,7 +311,7 @@ export async function runFastRevertStep(deps: FastRevertDeps): Promise<FastRever
           cycleId: cycle.id,
           mergeSha,
           mergedPr: Number(merge.number),
-          reason: `The same incident was seen again after Starfish merged #${Number(merge.number)} at ${String(revert.mergedAt)}, within the ${cfg.fastRevertMinutes}-minute fast-revert window.`,
+          reason: `The same incident was seen again after Starfish merged #${Number(merge.number)} at ${String(revert.mergedAt)}${typeof revert.deployedAt === "string" ? ` and it was deployed at ${revert.deployedAt}` : ""}, within the ${cfg.fastRevertMinutes}-minute fast-revert window.`,
         });
       } catch (err) {
         const escalation = await escalate(deps, cycle, `fast-revert-${ruleOf(err)}`, sentence(ruleOf(err)));

@@ -241,13 +241,18 @@ commit on `starfish/revert-<cycle>`, and merges it once its required checks pass
 instead when a later commit on the base branch touched a file the merge touched, when the merge
 does not revert cleanly, when the revert PR was retargeted to another base branch, or when a switch
 forbids merging. A
-revert is never itself watched, so never reverted; a retired incident never triggers one; an
+revert is never itself watched, so never reverted; a retired incident never triggers one (its watch
+goes to a person, never `clear`: the error coming back opens a new incident the watch cannot see, #425); an
 incident Starfish already reverted for is not auto-merged again. Reverts do not count against the
 daily cap.
 
-**Not built, and said so.** The window starts at the **merge**, not at deployment completion:
-Starfish cannot observe the target's deploy yet, so the grace stands in for it (#9 keeps "start at
-deployment completion" open). Nothing confirms the revert deployed. Nothing marks an incident
+**Built, never run (#424):** with `STARFISH_DEPLOY_ENVIRONMENT` set, the window starts when GitHub's
+deployments say the merge commit's deployment **completed** (the same read recovery uses, #390); until
+one is seen the watch waits, and with none seen within `STARFISH_RECOVERY_GIVE_UP_HOURS` a person is
+told and nothing is reverted. A merge the watch reverted is never reported as the fix recurring.
+
+**Not built, and said so.** Without a deployment environment (the demo today) the window starts at
+the **merge**, and the grace stands in for the deploy. Nothing confirms the revert deployed. Nothing marks an incident
 healed. Fault rotation is not paused during the watch (#5). Replay evidence per class (#10) has not
 gated the classes yet. The Gemini spend cap per day is the existing daily cycle cap, not a token
 budget.

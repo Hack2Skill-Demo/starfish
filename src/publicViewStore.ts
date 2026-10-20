@@ -12,18 +12,20 @@
  *     copy is always a function of what is stored, and two refreshes cannot land out of order (each reads the source
  *     in its own transaction);
  *   - writes the engine does not make (an operator's triage in the UI, which may not touch these collections) reach
- *     the copy at the next sweep (`syncRecentPublicView`), which the ingest and agent jobs run after each run;
+ *     the copy at the next sweep (`syncRecentPublicView`), which the ingest and agent jobs run after each run. The sweep
+ *     walks every incident written since the one before it, by `updatedAt` (which firestore.rules makes a status change
+ *     set to the server's time), so an operator's triage of an incident far down the list reaches its copy too (#431);
  *   - records stored before the copies existed are copied by `pnpm public-view` (a dry run unless `--apply`), which
  *     also removes copies whose source is gone, retired, or no longer in a public environment.
  *
  * A refresh never throws: the source write it follows has committed, and failing it now would undo nothing. A failed
  * refresh leaves the copy behind until the next refresh or sweep, and says so in its result.
  */
-import { FieldPath, type DocumentData, type Firestore, type Transaction, type WriteBatch } from "firebase-admin/firestore";
+import { FieldPath, Timestamp, type DocumentData, type Firestore, type Transaction, type WriteBatch } from "firebase-admin/firestore";
 import type { StarfishConfig } from "./config.js";
 import { isPublicEnvironment, publicEventId, toPublicCycle, toPublicEvent, toPublicIncident, type PublicViewConfig } from "./publicView.js";
 
-export type PublicSyncConfig = PublicViewConfig & Pick<StarfishConfig, "incidentCollection" | "cycleCollection">;
+export type PublicSyncConfig = PublicViewConfig & Pick<StarfishConfig, "incidentCollection" | "cycleCollection" | "runCollection">;
 
 export type RefreshResult = "written" | "deleted" | "unchanged" | "not-public" | "off" | "failed";
 
@@ -34,6 +36,15 @@ const EVENTS = "events";
 export const MAX_EVENTS_PER_CYCLE = 200;
 /** What the sweep looks at per public environment: the newest incidents and cycles, as the UI's own lists show them. */
 export const SWEEP_LIMIT = 50;
+/** Incidents the sweep walks per public environment in one run, from where the last one stopped (#431). */
+export const CHANGED_LIMIT = 200;
+/**
+ * How far behind the sweep's own clock its cursor stays: an incident written that recently is read again next sweep, so
+ * a write whose server time is a little behind the engine's clock (skew, a commit in flight) is never stepped over.
+ */
+export const CURSOR_MARGIN_MS = 5 * 60_000;
+/** `{runCollection}/<this>`: where the sweep's cursor over each public environment's incidents is kept. No client reads it. */
+export const SWEEP_CURSOR_DOC = "public_view_sweep";
 const PAGE_SIZE = 300;
 const WRITES_PER_BATCH = 400;
 
@@ -149,20 +160,92 @@ async function copyMissingEvents(db: Firestore, cfg: PublicSyncConfig, cycleId: 
   return written;
 }
 
+/** Where the sweep stopped in one environment's incidents: the last one it brought up to date, by (`updatedAt`, id). */
+interface SweepCursor {
+  updatedAt: Timestamp;
+  id: string;
+}
+
+const cursorOf = (v: unknown): SweepCursor | undefined => {
+  const c = v as { updatedAt?: unknown; id?: unknown } | null | undefined;
+  return c?.updatedAt instanceof Timestamp && typeof c.id === "string" && c.id !== "" ? { updatedAt: c.updatedAt, id: c.id } : undefined;
+};
+
+/** (updatedAt, id) order, the order the walk reads in. */
+function cursorAfter(a: SweepCursor, b: SweepCursor): boolean {
+  if (a.updatedAt.seconds !== b.updatedAt.seconds) return a.updatedAt.seconds > b.updatedAt.seconds;
+  if (a.updatedAt.nanoseconds !== b.updatedAt.nanoseconds) return a.updatedAt.nanoseconds > b.updatedAt.nanoseconds;
+  return a.id > b.id;
+}
+
 /**
- * Bring the copies of the newest incidents and cycles of each public environment up to date: the ones the UI's lists
- * show (`limit` each, newest first). Picks up what the engine's own refreshes cannot see: an operator's triage in the UI,
- * and a refresh that failed. Reads `limit` sources and their copies per kind and environment, and writes only the copies
- * that differ. Never throws.
+ * Walk one environment's incidents written since the last sweep (by `updatedAt`, then id), at most `CHANGED_LIMIT` a
+ * sweep, and bring each copy that differs up to date (#431). An operator's status change in the UI moves `updatedAt`
+ * (firestore.rules requires it, at the server's time), so it is read here however old the incident is: the newest-first
+ * list below alone left an operator's triage of an incident outside it off the guests' copy until it fired again. The
+ * cursor moves only past incidents brought up to date, never past one whose refresh failed (the next sweep tries it
+ * again), and never within `CURSOR_MARGIN_MS` of now. With no cursor yet, the walk starts at the oldest incident, so the
+ * first sweeps also bring older copies up to date. Throws on a read failure; the caller counts it.
  */
-export async function syncRecentPublicView(db: Firestore, cfg: PublicSyncConfig, limit = SWEEP_LIMIT): Promise<SweepSummary> {
+async function syncChangedIncidents(db: Firestore, cfg: PublicSyncConfig, environment: string, nowMs: number, out: SweepSummary, checked: Set<string>): Promise<void> {
+  const cursorRef = db.collection(cfg.runCollection).doc(SWEEP_CURSOR_DOC);
+  const from = cursorOf(((await cursorRef.get()).get("cursors") as Record<string, unknown> | undefined)?.[environment]);
+  let q = db.collection(cfg.incidentCollection).where("environment", "==", environment).orderBy("updatedAt", "asc").orderBy(FieldPath.documentId(), "asc");
+  if (from) q = q.startAfter(from.updatedAt, from.id);
+  const page = await q.limit(CHANGED_LIMIT).get();
+  if (page.empty) return;
+  const copies = await db.getAll(...page.docs.map((d) => db.collection(cfg.publicIncidentCollection).doc(d.id)));
+  const settledBefore = nowMs - CURSOR_MARGIN_MS;
+  let next: SweepCursor | undefined;
+  let blocked = false;
+  for (const [i, d] of page.docs.entries()) {
+    checked.add(d.id);
+    out.incidents.checked += 1;
+    if (!sameDocument(toPublicIncident(d.data(), cfg), copies[i]!.data())) {
+      const r = await refreshPublicIncident(db, cfg, d.id, environment);
+      if (r === "failed") {
+        out.failures += 1;
+        // An id no copy can have fails every time: stepping past it loses nothing, waiting on it would stall the walk.
+        if (ID_RE.test(d.id)) blocked = true;
+      } else out.incidents.refreshed += 1;
+    }
+    // The cursor follows the walk until the first failure, and stops short of the last few minutes. A value that is not
+    // a time (never written by the engine or the UI) is checked but never a cursor: the walk orders by time.
+    const updatedAt = d.get("updatedAt") as unknown;
+    if (!blocked && updatedAt instanceof Timestamp && updatedAt.toMillis() <= settledBefore) next = { updatedAt, id: d.id };
+  }
+  if (!next) return;
+  const moveTo = next;
+  // Two sweeps at once (the ingest and the agent job) each move it forward only.
+  await db.runTransaction(async (tx) => {
+    const now = cursorOf(((await tx.get(cursorRef)).get("cursors") as Record<string, unknown> | undefined)?.[environment]);
+    if (now && !cursorAfter(moveTo, now)) return;
+    tx.set(cursorRef, { cursors: { [environment]: moveTo } }, { merge: true });
+  });
+}
+
+/**
+ * Bring the copies of each public environment's incidents and cycles up to date: every incident written since the last
+ * sweep (`syncChangedIncidents`), and the newest incidents and cycles the UI's lists show (`limit` each, newest first).
+ * Picks up what the engine's own refreshes cannot see: an operator's triage in the UI, and a refresh that failed. Writes
+ * only the copies that differ. Never throws.
+ */
+export async function syncRecentPublicView(db: Firestore, cfg: PublicSyncConfig, limit = SWEEP_LIMIT, nowMs = Date.now()): Promise<SweepSummary> {
   const out: SweepSummary = { incidents: { checked: 0, refreshed: 0 }, cycles: { checked: 0, refreshed: 0 }, events: { written: 0 }, failures: 0 };
   for (const environment of cfg.publicEnvironments) {
+    const checked = new Set<string>();
     try {
-      const incidents = await db.collection(cfg.incidentCollection).where("environment", "==", environment).orderBy("lastOccurredAt", "desc").limit(limit).get();
-      if (!incidents.empty) {
-        const copies = await db.getAll(...incidents.docs.map((d) => db.collection(cfg.publicIncidentCollection).doc(d.id)));
-        for (const [i, d] of incidents.docs.entries()) {
+      await syncChangedIncidents(db, cfg, environment, nowMs, out, checked);
+    } catch {
+      out.failures += 1;
+    }
+    try {
+      // `limit` 0: no newest-first list, the walk alone.
+      const incidents = limit > 0 ? (await db.collection(cfg.incidentCollection).where("environment", "==", environment).orderBy("lastOccurredAt", "desc").limit(limit).get()).docs : [];
+      const unchecked = incidents.filter((d) => !checked.has(d.id));
+      if (unchecked.length > 0) {
+        const copies = await db.getAll(...unchecked.map((d) => db.collection(cfg.publicIncidentCollection).doc(d.id)));
+        for (const [i, d] of unchecked.entries()) {
           out.incidents.checked += 1;
           if (sameDocument(toPublicIncident(d.data(), cfg), copies[i]!.data())) continue;
           const r = await refreshPublicIncident(db, cfg, d.id, environment);
@@ -174,10 +257,10 @@ export async function syncRecentPublicView(db: Firestore, cfg: PublicSyncConfig,
       out.failures += 1;
     }
     try {
-      const cycles = await db.collection(cfg.cycleCollection).where("environment", "==", environment).orderBy("updatedAt", "desc").limit(limit).get();
-      if (!cycles.empty) {
-        const copies = await db.getAll(...cycles.docs.map((d) => db.collection(cfg.publicCycleCollection).doc(d.id)));
-        for (const [i, d] of cycles.docs.entries()) {
+      const cycles = limit > 0 ? (await db.collection(cfg.cycleCollection).where("environment", "==", environment).orderBy("updatedAt", "desc").limit(limit).get()).docs : [];
+      if (cycles.length > 0) {
+        const copies = await db.getAll(...cycles.map((d) => db.collection(cfg.publicCycleCollection).doc(d.id)));
+        for (const [i, d] of cycles.entries()) {
           out.cycles.checked += 1;
           if (sameDocument(toPublicCycle(d.data(), cfg), copies[i]!.data())) continue;
           const r = await refreshPublicCycle(db, cfg, d.id, environment);

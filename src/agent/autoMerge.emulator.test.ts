@@ -9,7 +9,7 @@ import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { deleteApp, initializeApp } from "firebase-admin/app";
 import { getFirestore, Timestamp } from "firebase-admin/firestore";
 import type { Firestore } from "firebase-admin/firestore";
-import { GithubError, type CheckRun, type PullRequestState, type RevertRequest } from "../integrations/githubPr.js";
+import { GithubError, type CheckRun, type DeploymentObservation, type PullRequestState, type RevertRequest } from "../integrations/githubPr.js";
 import { stateDocId } from "../ingest/run.js";
 import type { NotifyRequest } from "../integrations/slack.js";
 import { testConfig } from "../testConfig.js";
@@ -109,7 +109,21 @@ const cycle = async (id: string) => (await db.collection(cfg.cycleCollection).do
 const success: CheckRun = { id: 11, name: "verify", status: "completed", conclusion: "success", url: "https://github.com/acme/demo-shop/actions/runs/1", app: "github-actions", title: "", summary: "" };
 
 function fakeGithub(
-  opts: { pr?: Partial<PullRequestState>; readError?: Error; revertReadError?: Error; checks?: CheckRun[] | Error; mergeError?: Error; commentError?: Error; revertError?: Error; revertPr?: Partial<PullRequestState>; changed?: string[] | Error } = {}
+  opts: {
+    pr?: Partial<PullRequestState>;
+    readError?: Error;
+    revertReadError?: Error;
+    checks?: CheckRun[] | Error;
+    mergeError?: Error;
+    commentError?: Error;
+    revertError?: Error;
+    revertPr?: Partial<PullRequestState>;
+    changed?: string[] | Error;
+    /** What GitHub's deployments say of the merge commit (#424); a function reads it at each call. */
+    deployment?: DeploymentObservation | Error | (() => DeploymentObservation);
+    /** Minutes the merge call takes on the test's clock. */
+    mergeTakes?: number;
+  } = {}
 ) {
   const calls: string[] = [];
   const merges: { id: string; number: number; sha: string }[] = [];
@@ -139,6 +153,7 @@ function fakeGithub(
     mergePullRequest: async (id, number, sha) => {
       calls.push(`merge ${id} #${number}`);
       if (opts.mergeError) throw opts.mergeError;
+      if (opts.mergeTakes) clock = new Date(clock.getTime() + opts.mergeTakes * 60_000);
       merges.push({ id, number, sha });
       return { sha: id.startsWith("revert-") ? "9".repeat(40) : MERGED };
     },
@@ -147,6 +162,12 @@ function fakeGithub(
       if (opts.revertError) throw opts.revertError;
       reverts.push(req);
       return { number: 8, url: "https://github.com/acme/demo-shop/pull/8", headSha: REVERT_HEAD };
+    },
+    deploymentOfCommit: async (commit, environment) => {
+      calls.push(`deployments ${commit.slice(0, 4)} ${environment}`);
+      const d = opts.deployment ?? { state: "none" };
+      if (d instanceof Error) throw d;
+      return typeof d === "function" ? d() : d;
     },
   };
   return { client, calls, merges, reverts };
@@ -203,6 +224,16 @@ describe("runAutoMergeStep: merges only what every switch and gate allows", () =
     // Settled: a second pass does nothing more.
     expect(await runAutoMergeStep(mergeDeps(gh.client))).toMatchObject({ considered: 0 });
     expect(gh.merges).toHaveLength(1);
+  });
+
+  it("records when the merge happened once GitHub answered, not when the candidate was first read (#424)", async () => {
+    await seed("inc1_r0");
+    const gh = fakeGithub({ mergeTakes: 7 });
+    await runAutoMergeStep(mergeDeps(gh.client));
+    const after = new Date(t0.getTime() + 7 * 60_000).toISOString();
+    const s = (await cycle("inc1_r0")).summary;
+    expect(s.merge).toMatchObject({ state: "merged", mergedAt: after });
+    expect(s.revert).toMatchObject({ state: "watching", mergedAt: after });
   });
 
   it.each(["auto-merge-off", "target-not-allowed", "merge-freeze", "dry-run", "settings-unusable"])(
@@ -586,6 +617,52 @@ describe("runFastRevertStep: reverts Starfish's own merge when the incident come
     expect(gh.calls).toEqual([]);
   });
 
+  it("never closes clear on a retired or gone incident: a person is told at once, nothing is reverted, and a later merge is held (#425)", async () => {
+    for (const [name, change] of [
+      ["retired", () => db.collection(cfg.incidentCollection).doc("inc1").update({ retired: true, status: "resolved", lastOccurredAt: Timestamp.fromMillis(t0.getTime() + 25 * 60_000) })],
+      ["gone", () => db.collection(cfg.incidentCollection).doc("inc1").delete()],
+    ] as const) {
+      await seed("inc1_r0", watching());
+      await change();
+      const { reach, closesAt } = watchSpan(t0.getTime(), cfg);
+      await ingested(reach + 3_600_000);
+      told = [];
+      const gh = fakeGithub();
+      clock = new Date(t0.getTime() + 30 * 60_000);
+      expect(await runFastRevertStep(revertDeps(gh.client)), name).toMatchObject({ cleared: 0, opened: 0, escalated: 1 });
+      expect((await cycle("inc1_r0")).summary.revert, name).toMatchObject({ state: "escalated", reason: "incident-gone", escalation: "sent" });
+      expect(told.map((t) => t.rule), name).toEqual(["fast-revert-incident-gone"]);
+      expect(gh.calls, name).toEqual([]);
+      // Closed for good: a later pass, past the window's close, neither clears nor tells anyone again.
+      clock = new Date(closesAt + 1);
+      expect(await runFastRevertStep(revertDeps(gh.client)), name).toMatchObject({ considered: 0 });
+      expect(told, name).toHaveLength(1);
+    }
+    // The escalated watch still holds a later merge for the incident back.
+    await seed("inc1_r0", proven({ merge: { state: "merged", mergeSha: MERGED }, revert: { state: "escalated", reason: "incident-gone", mergeSha: MERGED } }));
+    await seed("inc1_r1", proven(), { recurrence: 1 });
+    const gh = fakeGithub();
+    await runAutoMergeStep(mergeDeps(gh.client));
+    expect(gh.merges).toEqual([]);
+    expect((await cycle("inc1_r1")).summary.merge).toMatchObject({ state: "skipped", reason: "incident-reverted-before" });
+  });
+
+  it("gives every open watch its turn: more watches than a pass reads never hide a recurrence behind quiet ones (#422)", async () => {
+    for (const id of ["inc1_r0", "inc2_r0", "inc3_r0"]) await seed(id, watching());
+    await db.collection(cfg.incidentCollection).doc("inc3").update({ lastOccurredAt: Timestamp.fromMillis(t0.getTime() + 25 * 60_000) });
+    clock = new Date(t0.getTime() + 30 * 60_000);
+    const gh = fakeGithub();
+    const deps = revertDeps(gh.client, { config: { ...cfg, maxPrChecksPerPass: 2 } });
+    const seen: number[] = [];
+    for (let i = 0; i < 2; i++) {
+      const r = await runFastRevertStep(deps);
+      seen.push(r.considered);
+      clock = new Date(clock.getTime() + 60_000);
+    }
+    expect(seen).toEqual([2, 2]);
+    expect(gh.reverts.map((r) => r.cycleId)).toEqual(["inc3_r0"]);
+  });
+
   it("opens a revert of the merge commit on a recurrence, tells a person, and merges it once its checks pass", async () => {
     await seed("inc1_r0", watching());
     await occurred(25);
@@ -603,6 +680,77 @@ describe("runFastRevertStep: reverts Starfish's own merge when the incident come
     await occurred(40);
     expect(await runFastRevertStep(revertDeps(gh.client))).toMatchObject({ considered: 0 });
     expect(gh.reverts).toHaveLength(1);
+  });
+
+  describe("with a deployment environment: the watch runs from the deployment, not the merge (#424)", () => {
+    const deployedAt = (minutesAfterMerge: number): Extract<DeploymentObservation, { state: "deployed" }> => ({ state: "deployed", deploymentId: 26, sha: MERGED, completedAt: new Date(t0.getTime() + minutesAfterMerge * 60_000).toISOString(), exact: true });
+
+    it("waits for the deployment: an error while the old revision still serves, past the grace, is not the fix failing", async () => {
+      cfg = { ...cfg, deployEnvironment: "production" };
+      await seed("inc1_r0", watching());
+      // A 40-minute deploy: the error at 25 minutes is the old code, though it is past the 10-minute grace from the merge.
+      await occurred(25);
+      let seen: DeploymentObservation = { state: "pending", deploymentId: 26, sha: MERGED };
+      const gh = fakeGithub({ deployment: () => seen });
+      clock = new Date(t0.getTime() + 30 * 60_000);
+      expect(await runFastRevertStep(revertDeps(gh.client))).toMatchObject({ opened: 0, escalated: 0, errors: [] });
+      expect(gh.calls).toEqual(["deployments eeee production"]);
+      expect((await cycle("inc1_r0")).summary.revert.state).toBe("watching");
+
+      // Deployed at 40: recorded on the watch, which runs from it; the error at 25 is before it, so nothing is reverted.
+      seen = deployedAt(40);
+      clock = new Date(t0.getTime() + 45 * 60_000);
+      expect(await runFastRevertStep(revertDeps(gh.client))).toMatchObject({ opened: 0 });
+      expect((await cycle("inc1_r0")).summary.revert).toMatchObject({ state: "watching", deployedAt: deployedAt(40).completedAt, deploymentId: 26, until: new Date(t0.getTime() + 100 * 60_000).toISOString() });
+      const events = (await db.collection(cfg.cycleCollection).doc("inc1_r0").collection("events").orderBy("seq").get()).docs.map((d) => d.data());
+      expect(events.map((e) => [e.stage, e.type])).toEqual([["revert", "watching"]]);
+
+      // Once found, it is not read again. The error after the deployment and its grace: the fix failed, and it is reverted.
+      await occurred(55);
+      clock = new Date(t0.getTime() + 60 * 60_000);
+      expect(await runFastRevertStep(revertDeps(gh.client))).toMatchObject({ opened: 1 });
+      expect(gh.calls.filter((c) => c.startsWith("deployments"))).toHaveLength(2);
+      expect(gh.reverts[0]!.reason).toContain(`deployed at ${deployedAt(40).completedAt}`);
+    });
+
+    it("clears a watch only after the window from the deployment has passed and been read", async () => {
+      cfg = { ...cfg, deployEnvironment: "production" };
+      await seed("inc1_r0", watching());
+      const gh = fakeGithub({ deployment: deployedAt(40) });
+      const fromMerge = watchSpan(t0.getTime(), cfg);
+      const fromDeploy = watchSpan(t0.getTime() + 40 * 60_000, cfg);
+      await ingested(fromDeploy.reach + 3_600_000);
+      clock = new Date(fromMerge.closesAt + 1);
+      expect(await runFastRevertStep(revertDeps(gh.client))).toMatchObject({ cleared: 0 });
+      clock = new Date(fromDeploy.closesAt + 1);
+      expect(await runFastRevertStep(revertDeps(gh.client))).toMatchObject({ cleared: 1 });
+    });
+
+    it("tells a person, and reverts nothing, when no completed deployment is seen in time; a failed read is retried until then", async () => {
+      cfg = { ...cfg, deployEnvironment: "production" };
+      await seed("inc1_r0", watching());
+      await occurred(25);
+      const denied = fakeGithub({ deployment: new GithubError("forbidden", "no access to deployments") });
+      clock = new Date(t0.getTime() + 30 * 60_000);
+      expect(await runFastRevertStep(revertDeps(denied.client))).toMatchObject({ opened: 0, escalated: 0, errors: [expect.objectContaining({ cycleId: "inc1_r0" })] });
+      expect((await cycle("inc1_r0")).summary.revert.state).toBe("watching");
+      const never = fakeGithub({ deployment: { state: "none" } });
+      clock = new Date(t0.getTime() + 24 * 3_600_000);
+      expect(await runFastRevertStep(revertDeps(never.client))).toMatchObject({ opened: 0, escalated: 1 });
+      expect(never.calls).toEqual([]);
+      expect((await cycle("inc1_r0")).summary.revert).toMatchObject({ state: "escalated", reason: "deploy-not-observed", escalation: "sent" });
+      expect(told.map((t) => t.rule)).toEqual(["fast-revert-deploy-not-observed"]);
+      expect(never.reverts).toEqual([]);
+    });
+  });
+
+  it("without a deployment environment, never asks GitHub for deployments: the watch runs from the merge, as before", async () => {
+    await seed("inc1_r0", watching());
+    await occurred(25);
+    clock = new Date(t0.getTime() + 30 * 60_000);
+    const gh = fakeGithub({ deployment: new Error("must not be called") });
+    expect(await runFastRevertStep(revertDeps(gh.client))).toMatchObject({ opened: 1 });
+    expect(gh.calls.filter((c) => c.startsWith("deployments"))).toEqual([]);
   });
 
   it("does not revert for an occurrence during the grace (the old code still deploying)", async () => {

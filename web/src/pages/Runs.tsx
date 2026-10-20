@@ -582,14 +582,15 @@ function RunDetail({
   const replayAt = replay ? replay.atMs + Math.max(0, clock - replay.wallMs) * speed : null;
   const replaying = replay !== null && replayAt !== null && replayAt < lastMs;
   const canReplay = !status.live && events !== null && spanMs > 0;
-  // A run a person was told about, or that was declined, on an open incident, and with no pull request of its own: the
-  // engine reopens that same run on request (src/agent/reconsider.ts), so it opens no second issue or pull request.
+  // A run a person was told about, or that was declined, on an open incident, and with no pull request of its own (the
+  // record's `pr.opened`, the engine's own test, not a link's shape): the engine reopens that same run on request
+  // (src/agent/reconsider.ts), so it opens no second issue or pull request.
   const canRetry =
     (cycle.state === "waiting-human" || cycle.state === "declined" || cycle.state === "failed") &&
     !status.live &&
     incident !== undefined &&
     ["new", "acknowledged", "logged", "recurred"].includes(incident.status) &&
-    prLink(cycle) === undefined;
+    cycle.summary.pr?.opened !== true;
   const toggleReplay = () => setReplay(replaying ? null : { wallMs: Date.now(), atMs: startMs });
   const changeSpeed = (next: ReplaySpeedChoice) => {
     // Re-anchored on the same clock replayAt was read with, so the replay neither jumps nor stalls. A replay that already

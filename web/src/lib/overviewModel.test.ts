@@ -137,6 +137,14 @@ describe("runKpis", () => {
     expect(runKpis([run("done", "pr", 10_000), run("done", "pr", 20_000)]).medianRunMs).toBe(15_000);
   });
 
+  it("times a run to when it settled, not to an escalation's later event (#436)", () => {
+    // Settled 10 s after it started; a phone call an hour later moved its last write.
+    const settled = cycle({ state: "waiting-human", path: "human", createdAt: ts(NOW - 3_600_000), settledAt: ts(NOW - 3_590_000), updatedAt: ts(NOW) });
+    expect(runKpis([settled]).medianRunMs).toBe(10_000);
+    // A run settled before the engine kept the time falls back to its last write.
+    expect(runKpis([run("done", "pr", 7000)]).medianRunMs).toBe(7000);
+  });
+
   it("has no median, and a zero denominator, for no finished runs", () => {
     const k = runKpis([run("running", undefined, 1000)]);
     expect(k.medianRunMs).toBeUndefined();

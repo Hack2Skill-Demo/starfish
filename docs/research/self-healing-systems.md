@@ -144,7 +144,7 @@ How the literature maps onto the design:
 | Lesson | Starfish's answer | Gap |
 | --- | --- | --- |
 | Tests are not correctness | Adversarial reviewer; a "fails before the fix" run reported in the auto-merge evidence | Built; the reviewer has run on real incidents since 2026-10-12; "fails before" is reported, not required; no differential or generated tests planned |
-| Re-observe after acting | Fast-revert: the same incident seen again within N minutes of the merge | Built, never run against real GitHub; the window starts at the merge, since deploy completion is not observable |
+| Re-observe after acting | Fast-revert: the same incident seen again within N minutes of the merge | Built, never run against real GitHub; the window starts at the deployment GitHub records where a deployment environment is named (#424), else at the merge |
 | Cheapest safe action first | Class table: decline, notify, draft PR, auto-merge | No revert-first strategy like SapFix's |
 | Validate by execution | Deterministic verify gate; index heal re-runs the failing query | Both built; the verify gate has judged real patches on the demo project since 2026-10-12 (the demo app's own CI runs the command); the index heal has never run against Google |
 | Learn from history | Feedback engine and replay scoring | Corrections only hold Starfish back; no class widens from a replay score by itself, and no retrieval of similar past incidents yet (cf. RCACopilot) |

@@ -27,10 +27,14 @@ fresh()  { touch "$(marker_of "$1")"; }
 stale()  { touch -t 200001010000 "$(marker_of "$1")"; }
 none()   { rm -f "$(marker_of "$1")"; }
 
-# run_case <allow|deny> <cwd> <command> <description>
+# run_case <allow|deny> <cwd> <command> <description> [tool cwd]
+# <cwd> is where the hook process runs. [tool cwd], when given, is the `cwd` field of the
+# tool-call JSON: the directory the Bash tool runs the command in, which need not be the hook's.
 run_case() {
-  local expected="$1" cwd="$2" command="$3" what="$4" out decision
-  out="$(jq -n --arg c "$command" '{tool_input:{command:$c}}' | (cd "$cwd" && bash "$HOOK"))"
+  local expected="$1" cwd="$2" command="$3" what="$4" tool_cwd="${5:-}" out decision
+  out="$(jq -n --arg c "$command" --arg d "$tool_cwd" \
+    '{tool_input: {command: $c}} + (if $d == "" then {} else {cwd: $d} end)' \
+    | (cd "$cwd" && bash "$HOOK"))"
   if [ -z "$out" ]; then
     decision="allow"
   else
@@ -130,6 +134,29 @@ fresh "$HERE"; none "$THERE"
 run_case deny  "$HERE" "git push origin x && git -C $THERE push origin x" "second push targets an unreviewed repo"
 fresh "$THERE"
 run_case allow "$HERE" "git push origin x && git -C $THERE push origin x" "both targets reviewed"
+
+# ── The tool's cwd, not the hook's (#438) ───────────────────────────────────
+# In a worktree session the hook process ran in another checkout than the command, so a bare
+# `git push` was judged by that checkout's marker: denied although the worktree's own review was
+# fresh. The tool input's `cwd` names where the command runs, and -C is relative to it.
+MAIN="$ROOT/main"
+WT="$ROOT/wt"
+make_repo "$MAIN"
+git -C "$MAIN" worktree add -q -b wt-branch "$WT"
+git -C "$WT" -c user.name=t -c user.email=t@example.test commit -q --allow-empty -m "worktree work"
+stale "$MAIN"; fresh "$WT"
+run_case allow "$MAIN" "git push origin wt-branch" "worktree reviewed, hook run in the main checkout (stale there)" "$WT"
+run_case allow "$ROOT" "git push origin wt-branch" "worktree reviewed, hook run outside any repo" "$WT"
+fresh "$MAIN"; stale "$WT"
+run_case deny  "$MAIN" "git push origin wt-branch" "worktree NOT reviewed, main checkout reviewed" "$WT"
+none "$WT"
+run_case deny  "$MAIN" "git push origin wt-branch" "worktree has no review, main checkout reviewed" "$WT"
+fresh "$THERE"; none "$HERE"
+run_case allow "$HERE" "git -C there push origin x" "-C is relative to the tool's cwd" "$ROOT"
+none "$THERE"; fresh "$HERE"
+run_case deny  "$HERE" "git -C there push origin x" "-C relative to the tool's cwd, target not reviewed" "$ROOT"
+fresh "$HERE"
+run_case deny  "$HERE" "git push origin x" "the tool's cwd names a missing directory: cannot be judged" "$ROOT/does-not-exist"
 
 echo ""
 echo "pre-push-review-guard tests: $pass passed, $fail failed"

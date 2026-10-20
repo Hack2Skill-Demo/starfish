@@ -5,8 +5,9 @@
  * are mounted, to the phone escalation's opt-in routes and Twilio's webhooks (#37; never run against real Twilio).
  * When the deploy names the agent job (`STARFISH_AGENT_JOB`), also to "Run agent now" (#276): it starts that job
  * through Cloud Run and holds none of the agent's credentials (never run against real Cloud Run).
- * Where the public demo's open actions are on (`STARFISH_PUBLIC_DEMO_ACTIONS` on a public environment, src/publicDemo.ts),
- * also to those, for anonymous callers, and it writes their reads' gate document as it starts (never run on a real project).
+ * Where the public demo's open actions are on (`STARFISH_PUBLIC_DEMO_ACTIONS`, src/publicDemo.ts), also to those, for
+ * anonymous callers, while the runtime settings' environment is a public one (read per call, #430), and it writes their
+ * reads' gate document as it starts and at each visitor's call (never run on a real project).
  */
 // First, so its uptime mark is taken before any other module's code runs (#275, src/startupLog.ts).
 import { logStartup } from "./startupLog.js";
@@ -31,7 +32,7 @@ import { confirmNumber, sendConfirmationCode } from "./oncall/optIn.js";
 import { readPolicy, stepEscalation } from "./oncall/escalation.js";
 import {
   correctTriageAsGuest,
-  publicDemoActionsOn,
+  publicDemoSettings,
   requestRetriageAsGuest,
   setIncidentStatusAsGuest,
   syncPublicAccess,
@@ -64,14 +65,20 @@ const startAgent = async (start: () => Promise<void>): Promise<void> => {
     throw e;
   }
 };
-// The public demo's open actions: only where the deployment turned them on, on a public environment.
-const publicDemoOn = publicDemoActionsOn(config);
-// Their reads' gate (firestore.rules reads it): written as the service starts, on or off. A failure leaves the gate as
-// it was and is logged; the service still serves.
-syncPublicAccess(db, config, new Date()).then(
-  (r) => console.log(JSON.stringify({ severity: "INFO", message: "public demo reads gate", publicDemoActions: publicDemoOn, gate: r })),
-  (e: unknown) => console.log(JSON.stringify({ severity: "ERROR", message: "could not write the public demo reads gate", reason: e instanceof Error ? e.message : "unknown" }))
-);
+// The public demo's open actions: wired only where the deployment turned them on. Whether they are on for a call is
+// decided then, from the runtime settings' environment (#430): this service runs for days, and an admin can move the
+// environment in Settings at any time, as ingest and the agent follow it at their next run.
+const publicDemoConfig = publicDemoSettings({
+  resolve: () => loader.resolve(db),
+  syncGate: (cfg) => syncPublicAccess(db, cfg, new Date()),
+  // Their reads' gate (firestore.rules reads it). A failure leaves the gate as it was and is logged; the service still serves.
+  onGate: (e) =>
+    "error" in e
+      ? console.log(JSON.stringify({ severity: "ERROR", message: "could not write the public demo reads gate", publicDemoActions: e.on, environment: e.environment, reason: e.error }))
+      : e.gate !== "unchanged" && console.log(JSON.stringify({ severity: "INFO", message: "public demo reads gate", publicDemoActions: e.on, environment: e.environment, gate: e.gate })),
+});
+// Written as the service starts, on or off, so a deployment that turned the actions off closes the gate without a visitor.
+void publicDemoConfig().then((cfg) => console.log(JSON.stringify({ severity: "INFO", message: "public demo actions at start", switch: config.publicDemoActions, on: cfg !== null })));
 
 const handle = createAdminApi({
   // A signature and expiry check against Google's public keys, and `checkRevoked` (#141): one Auth lookup per call, so
@@ -100,14 +107,21 @@ const handle = createAdminApi({
       // The caller gets only a 502 when the start fails; why is in the service's log.
       triggerAgentPass(db, config, () => startAgent(startAgentJob), uid),
   }),
-  ...(publicDemoOn && {
-    publicDemo: {
-      claim: (kind, key) => claimPublicAction(db, config, kind, key, new Date()),
-      setStatus: (id, action, uid) => setIncidentStatusAsGuest(db, config, id, action, uid, new Date()),
-      requestRetriage: (id, uid) => requestRetriageAsGuest(db, config, id, uid, new Date()),
-      correct: (id, level, note, uid) => correctTriageAsGuest(db, config, id, level, note, uid, new Date()),
-      runIngest: (uid) => triggerIngestAsGuest(db, config, loader, uid),
-      ...(startAgentJob && { runAgent: (uid: string) => triggerAgentPassAsGuest(db, config, () => startAgent(startAgentJob), uid) }),
+  ...(config.publicDemoActions && {
+    // One frozen snapshot of the runtime settings per call, like a run's; null (off for this call) when the settings'
+    // environment is not a public one or the settings are unusable.
+    publicDemo: async () => {
+      const cfg = await publicDemoConfig();
+      return (
+        cfg && {
+          claim: (kind, key) => claimPublicAction(db, cfg, kind, key, new Date()),
+          setStatus: (id, action, uid) => setIncidentStatusAsGuest(db, cfg, id, action, uid, new Date()),
+          requestRetriage: (id, uid) => requestRetriageAsGuest(db, cfg, id, uid, new Date()),
+          correct: (id, level, note, uid) => correctTriageAsGuest(db, cfg, id, level, note, uid, new Date()),
+          runIngest: (uid) => triggerIngestAsGuest(db, cfg, loader, uid),
+          ...(startAgentJob && { runAgent: (uid: string) => triggerAgentPassAsGuest(db, cfg, () => startAgent(startAgentJob), uid) }),
+        }
+      );
     },
   }),
   allowedOrigins: config.adminApiOrigins,
@@ -141,6 +155,6 @@ const server = startAdminApiServer(handle, config.adminApiPort, {
   onLimited: (key) => console.log(JSON.stringify({ severity: "WARNING", message: "admin API rate limit reached", key })),
 });
 console.log(
-  `admin api on :${config.adminApiPort}, ${config.adminApiRateLimitPerMinute} requests a minute per address, ${config.adminApiOrigins.length} browser origin(s) allowed, App Check ${config.adminApiRequireAppCheck ? "required" : "not required"}, Twilio ${twilio ? "wired" : "not configured"}, agent job ${startAgentJob ? config.agentJobName : "not named"}, public demo actions ${publicDemoOn ? `on (${config.publicActionsPerIpPerHour} actions and ${config.publicRunsPerIpPerHour} runs an hour per address, ${config.publicAgentRunsPerHour} agent passes an hour in all)` : "off"}`
+  `admin api on :${config.adminApiPort}, ${config.adminApiRateLimitPerMinute} requests a minute per address, ${config.adminApiOrigins.length} browser origin(s) allowed, App Check ${config.adminApiRequireAppCheck ? "required" : "not required"}, Twilio ${twilio ? "wired" : "not configured"}, agent job ${startAgentJob ? config.agentJobName : "not named"}, public demo actions ${config.publicDemoActions ? `switched on, honoured while the settings' environment is public (${config.publicActionsPerIpPerHour} actions and ${config.publicRunsPerIpPerHour} runs an hour per address, ${config.publicAgentRunsPerHour} agent passes an hour in all)` : "off"}`
 );
 process.on("SIGTERM", () => server.close());

@@ -13,12 +13,14 @@ import { testConfig } from "./testConfig.js";
 import {
   PUBLIC_ACCESS_DOC,
   correctTriageAsGuest,
+  publicDemoSettings,
   requestRetriageAsGuest,
   setIncidentStatusAsGuest,
   syncPublicAccess,
   triggerAgentPassAsGuest,
 } from "./publicDemo.js";
 import { SALT_DOC, claimPublicAction, resetSaltCache } from "./publicDemoLimit.js";
+import { RuntimeConfigLoader, SETTINGS_DOC, SETTINGS_VERSION } from "./runtimeSettings.js";
 
 if (!process.env.FIRESTORE_EMULATOR_HOST) {
   throw new Error("publicDemo.emulator.test.ts needs the Firestore emulator: run `pnpm test:emulator`");
@@ -47,6 +49,7 @@ beforeEach(async () => {
     runCollection: `runs_${run}`,
     publicActionCollection: `public_actions_${run}`,
     publicIncidentCollection: `public_incidents_${run}`,
+    settingsCollection: `settings_${run}`,
   });
   const col = db.collection(config.incidentCollection);
   await col.doc("demo-1").set({ environment: "demo", status: "new", functionName: "f", errorMessage: "boom", firstOccurredAt: Timestamp.fromDate(now), lastOccurredAt: Timestamp.fromDate(now) });
@@ -157,6 +160,41 @@ describe("the gate document firestore.rules reads", () => {
     // On a private environment the switch is not honoured: the gate is turned off too.
     await syncPublicAccess(db, config, now);
     expect(await syncPublicAccess(db, { ...config, environment: "prod" }, now)).toBe("disabled");
+  });
+});
+
+describe("the environment the admin API acts in follows the runtime settings (#430)", () => {
+  const gate = async () => (await db.collection(config.runCollection).doc(PUBLIC_ACCESS_DOC).get()).data();
+  const follow = (base: StarfishConfig) => {
+    const loader = new RuntimeConfigLoader(base);
+    return publicDemoSettings({ resolve: () => loader.resolve(db), syncGate: (cfg) => syncPublicAccess(db, cfg, now) });
+  };
+  const saveSettings = (environment: string) => db.collection(config.settingsCollection).doc(SETTINGS_DOC).set({ version: SETTINGS_VERSION, environment });
+
+  it("STARFISH_ENV=x with Settings saying demo: the actions are on in demo, and the gate is written", async () => {
+    await saveSettings("demo");
+    const current = follow({ ...config, environment: "x" });
+    const cfg = await current();
+    expect(cfg?.environment).toBe("demo");
+    expect(await gate()).toMatchObject({ enabled: true, environment: "demo" });
+    expect(await setIncidentStatusAsGuest(db, cfg!, "demo-1", "acknowledge", GUEST, now)).toEqual({ ok: true });
+  });
+
+  it("follows a Settings change made while the service runs, closing the gate when it leaves the demo", async () => {
+    await saveSettings("demo");
+    const current = follow({ ...config, environment: "demo" });
+    expect(await current()).not.toBeNull();
+    await saveSettings("prod");
+    expect(await current()).toBeNull();
+    expect(await gate()).toMatchObject({ enabled: false });
+    await saveSettings("demo");
+    expect((await current())?.environment).toBe("demo");
+    expect(await gate()).toMatchObject({ enabled: true, environment: "demo" });
+  });
+
+  it("with no settings document, the environment variable's label is the configuration, as for every other job", async () => {
+    expect((await follow(config)())?.environment).toBe("demo");
+    expect(await follow({ ...config, environment: "x" })()).toBeNull();
   });
 });
 

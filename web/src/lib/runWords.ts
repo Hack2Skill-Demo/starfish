@@ -179,7 +179,10 @@ function sentence(stage: string, outcome: string | undefined, f: Fields): Senten
     // Fast revert (#9): the watch every merge starts. Each move of its record is an event (#421).
     case "revert": {
       const reason = str(f.reason);
-      return outcome === "clear"
+      // `watching` is recorded again when the merge's deployment is seen: the watch runs from it (#424).
+      return outcome === "watching"
+        ? ok("The merge's deployment completed, and the watch for the incident coming back runs from it.")
+        : outcome === "clear"
         ? ok("The watch after the merge saw no recurrence, so the merge stands.")
         : outcome === "opening"
           ? ok("The incident came back after the merge, so Starfish began a revert.")
@@ -246,13 +249,11 @@ const wordStep = (s: Pick<Step, "stage" | "outcome" | "summary" | "data">, recor
  */
 export function runInWords(cycle: CycleRow, water: Waterfall, events: readonly EventRow[]): RunWords | null {
   const recordOf = (stage: string, at: Date | undefined): Fields | undefined => (at && recordIsTheStep({ stage, at }, events) ? cycle.summary[stage] : undefined);
-  const reopenings = water.notes.filter((n) => n.type === "reconsidered");
   const rounds: WordsRound[] = [];
   for (const r of water.earlier) {
     const steps = [...r.steps].reverse().map((s) => wordStep({ stage: s.stage, ...(s.outcome && { outcome: s.outcome }), ...(s.summary && { summary: s.summary }), ...(s.data && { data: s.data }) }, recordOf(s.stage, s.at)));
-    // The reopening that began this round: by the round the engine stamped on it (#436), else by its place.
-    const began = r.round > 1 ? (reopenings.find((n) => n.round === r.round) ?? reopenings[r.round - 2])?.summary : undefined;
-    rounds.push({ round: r.round, ...(began && { began }), sentences: steps.map(withStage) });
+    // The reopening that began this round, as buildWaterfall read it (#436): none for the first round, or one past the page read.
+    rounds.push({ round: r.round, ...(r.began && { began: r.began }), sentences: steps.map(withStage) });
   }
   // The latest round's steps in the order they happened, a repeated stage's earlier runs included (a draft, its gate, the
   // review that blocked it, the revision), and the engine's own stop notes (the model-call budget used up, a stop before

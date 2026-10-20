@@ -231,11 +231,13 @@ person's, once, on a deployment that already holds demo records; **neither has b
    command of step 2; it never runs it.
 2. **Copy what is already stored**: `pnpm public-view` counts what it would write and remove, and
    `pnpm public-view -- --apply --project=<id>` writes the copies (and removes any whose record is gone, retired or
-   private). Until then a guest sees only what the engine has written or touched since the deploy: new incidents, and the
-   newest 50 incidents and cycles the jobs sweep after each run. `pnpm seed-demo -- --apply` writes its own copies.
+   private). Until then a guest sees only what the engine has written or touched since the deploy: new incidents, the
+   incidents the jobs' sweep has reached (it walks them all, oldest written first, 200 a run, #431), and the newest 50
+   cycles. `pnpm seed-demo -- --apply` writes its own copies.
 
-The ingest job (and the agent job, when deployed) keeps the copies up to date as it writes and sweeps the newest 50 after
-each run; an operator's triage reaches a guest at the next run.
+The ingest job (and the agent job, when deployed) keeps the copies up to date as it writes, and after each run sweeps
+every incident written since the last sweep and the newest 50 incidents and cycles; an operator's triage reaches a guest
+at the next run, however old the incident (#431).
 
 ## Deploy from GitHub Actions (#75)
 
@@ -426,7 +428,7 @@ defaults when empty.
 | `STARFISH_INDEX_TARGETS` | `INDEX_TARGETS` | with the agent: the databases the missing-index repair may create an index in, `project/database` comma-separated (`STARFISH_INDEX_ALLOWED_TARGETS`). Grants the agent `roles/datastore.indexAdmin` and `roles/datastore.viewer` on each, conditioned to that database. Creating still needs `STARFISH_INDEX_AUTO_APPLY=true` in `STARFISH_AGENT_EXTRA_ENV_VARS`. It also needs `STARFISH_INDEX_PROBES` there, **one probe per query shape that can fail**: a create is refused (`probe-not-confirmed`, reason "the configured query already succeeds") when no probe fails naming exactly the index the error asks for, so a probe for the customer query never confirms a `status` + `createdAt` index. The probes run together and any one that confirms is enough, so add a probe for each new shape and keep the old ones; the step's reason is on the run's missing-index step Run `setup-github-deploy.sh` again with the same `INDEX_TARGETS` first, so the deployer may grant them |
 | `STARFISH_DEPLOY_AGENT`, `STARFISH_AGENT_REPO` | `DEPLOY_AGENT`, `AGENT_REPO` | set `1` and `owner/name` to deploy the agent too ([below](#the-agent-and-where-its-tests-run-74)); default off |
 | `STARFISH_VERIFY_ISOLATION`, `STARFISH_VERIFY_CHECKS`, `STARFISH_VERIFY_COMMAND` | `VERIFY_ISOLATION`, `VERIFY_CHECKS`, `VERIFY_COMMAND` | `github-actions` (default) with the check names that must pass, or `cloud-run-job` with a command |
-| `STARFISH_DEPLOY_ENVIRONMENT` | `DEPLOY_ENVIRONMENT` | the GitHub deployment environment the **target's** pipeline deploys to, e.g. `production` (#390): with it the agent says, for a merged pull request (anyone's merge), whether it was deployed and the error stopped ([`status.md`](status.md#what-recovery-covers-today-and-what-it-does-not-390)). The agent's GitHub token needs read access to deployments. Always set on the agent job, so emptying it turns it off and a merge is then only ever reported unverified |
+| `STARFISH_DEPLOY_ENVIRONMENT` | `DEPLOY_ENVIRONMENT` | the GitHub deployment environment the **target's** pipeline deploys to, e.g. `production` (#390): with it the agent says, for a merged pull request (anyone's merge), whether it was deployed and the error stopped ([`status.md`](status.md#what-recovery-covers-today-and-what-it-does-not-390)). The agent's GitHub token needs read access to deployments. Always set on the agent job, so emptying it turns it off and a merge then waits as not verified yet (`unverified` 14 days after the merge, #423), never recovered |
 | `STARFISH_VERIFY_CHECK_APP` | `VERIFY_CHECK_APP` | the slug of the GitHub App whose check runs count (#229); default the engine's, `github-actions`. Always set on the agent job, so emptying it restores the default |
 | `STARFISH_VERIFY_TIMEOUT_SECONDS`, `STARFISH_VERIFY_BUCKET`, `STARFISH_AGENT_BASE_BRANCH`, `STARFISH_AGENT_SCHEDULE`, `STARFISH_AGENT_EXTRA_ENV_VARS` | `VERIFY_TIMEOUT_SECONDS`, `VERIFY_BUCKET`, `AGENT_BASE_BRANCH`, `AGENT_SCHEDULE`, `AGENT_EXTRA_ENV_VARS` | default 600, `<project>-starfish-verify`, `main`, `30 * * * *`. The base branch is always set on the agent job, so emptying it restores `main` (#233). The schedule is also set on the agent job as `STARFISH_AGENT_SCHEDULE`, so the UI's agent line can say when the next pass is expected (#274) |
 | `STARFISH_DEPLOY_ADMIN_API`, `STARFISH_ADMIN_API_ORIGINS` | `DEPLOY_ADMIN_API`, `ADMIN_API_ORIGINS` | set `1` and the site's origin to deploy the admin API too ([below](#the-admin-api-run-ingest-now-and-retire-an-incident-63-65)); default off. Its service name is kept out of ingest either way (#177) |
@@ -669,7 +671,9 @@ jobs:
   a commit compare), so the token also needs read access to deployments (a fine-grained token's "Deployments: read"). Set
   `STARFISH_DEPLOY_ENVIRONMENT` (the script's `DEPLOY_ENVIRONMENT`) to the environment name the target's deploy job runs in
   (`environment: production` records a Deployment, with the job's result as its status). Without the name, or without the
-  permission (the pass records `deploy-unreadable` and says so), a merge is reported `unverified`, never `recovered`. It reads
+  permission (the pass records `deploy-unreadable` and says so), a merge is never `recovered`: it waits as not verified yet
+  (`awaiting-deploy`) and is judged once the name or the permission is set, if that is within 14 days of the merge; after that
+  it is `unverified` (#423). It reads
   the newest 30 deployments of that environment and makes at most 5 ancestry checks per merge. Written and tested against a fake
   GitHub; never run against real GitHub.
 - Only runs posted by **one GitHub App** count (`STARFISH_VERIFY_CHECK_APP`, default `github-actions`); a run of the same
@@ -867,7 +871,8 @@ kill switch, the auto-merge switches), On-call (phone numbers and the Twilio rou
   --collection-group=starfish_public_actions --enable-ttl --database=<db>`); without one, one small document per address and
   hour stays. The per-minute limit above still applies first. A claimed call that then fails still counts. There is no
   deployment-wide cap on ingest runs: each is the scheduled run, one at a time per instance.
-- **Reads**: as it starts, the admin API writes `starfish_runs/public_access` (`{enabled, environment}`, `STARFISH_RUN_COLLECTION`),
+- **Reads**: as it starts, and at each visitor's call from the runtime settings that call resolved (so it follows a change
+  of the environment in Settings, #430), the admin API writes `starfish_runs/public_access` (`{enabled, environment}`, `STARFISH_RUN_COLLECTION`),
   a document only the engine writes. `firestore.rules` let a guest read the demo's stored incidents, their corrections,
   cycles and run events only while it says `enabled: true, environment: 'demo'`, and still only the `demo` environment, a
   query's limit at most 500. Turned off, the next start of the admin API writes `enabled: false`; a deploy starts a new

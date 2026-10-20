@@ -23,7 +23,9 @@
  * authenticate the person and hand over their uid, but cannot widen what that uid may do.
  *
  * The fast-revert watch (#9, src/agent/fastRevert.ts) honours `retired`: a retired incident never counts
- * as having come back, so a watch on it never opens a revert and ends `clear` when its window closes.
+ * as having come back, so a watch on it never opens a revert; nor does it end `clear`, since the error coming back
+ * now opens a new incident the watch cannot see: it is handed to a person (#425). Recovery (src/agent/recovery.ts)
+ * and the index heal's observation (src/indexheal/observe.ts) report it unverified, never recovered or healed.
  */
 import { Timestamp } from "firebase-admin/firestore";
 import type { Firestore } from "firebase-admin/firestore";

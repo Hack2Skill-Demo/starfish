@@ -577,6 +577,35 @@ describe("observeIndexHeals", () => {
     expect(Object.fromEntries(r.decided.map((d) => [d.cycleId, d.runtime]))).toEqual({ r1_r0: "recurred", q1_r0: "query-failing", u1_r0: "unverified" });
   });
 
+  it("never reports healed for a retired or gone incident: its silence proves nothing; an occurrence after READY is still recurred (#425)", async () => {
+    await seed("t1", new Date(t0.getTime() - 60_000));
+    await db.collection(`incidents_${run}`).doc("t1").update({ retired: true });
+    await seed("t2", new Date(t0.getTime() + 5 * 60_000));
+    await db.collection(`incidents_${run}`).doc("t2").update({ retired: true });
+    await seed("t3", new Date(t0.getTime() - 60_000));
+    await db.collection(`incidents_${run}`).doc("t3").delete();
+    const probe = vi.fn(passed);
+    const r = await observeIndexHeals({ db, config: cfg(), probe, now: () => new Date(t0.getTime() + 70 * 60_000) });
+    expect(Object.fromEntries(r.decided.map((d) => [d.cycleId, d.runtime]))).toEqual({ t1_r0: "unverified", t2_r0: "recurred", t3_r0: "unverified" });
+    expect(probe).not.toHaveBeenCalled();
+    for (const id of ["t1_r0", "t3_r0"]) {
+      expect((await db.collection(`cycles_${run}`).doc(id).get()).data()!.summary.index.runtimeBasis).toContain("retired or is gone");
+    }
+  });
+
+  it("gives every observing heal its turn: one that stays undecided never keeps another from being decided (#422)", async () => {
+    await seed("a1", new Date(t0.getTime() - 60_000), { collectionGroup: "carts" });
+    await seed("b1", new Date(t0.getTime() - 60_000));
+    const probe = async (spec: { collectionGroup: string }): Promise<ProbeVerdict> => {
+      if (spec.collectionGroup === "carts") throw new Error("unavailable");
+      return { state: "passed", probes: 1 };
+    };
+    const look = (minutes: number) => observeIndexHeals({ db, config: cfg(), probe: probe as never, now: () => new Date(t0.getTime() + minutes * 60_000), limit: 1 });
+    expect((await look(70)).errors.map((e) => e.cycleId)).toEqual(["a1_r0"]);
+    expect((await look(71)).decided).toEqual([{ cycleId: "b1_r0", runtime: "healed" }]);
+    expect((await look(72)).errors.map((e) => e.cycleId)).toEqual(["a1_r0"]);
+  });
+
   it("leaves a cycle observing when the probe throws, to try again next pass", async () => {
     await seed("e1", new Date(t0.getTime() - 60_000));
     const r = await observeIndexHeals({

@@ -36,7 +36,8 @@
  * Where the pieces run: the loop (loop.ts) records the "fails before" run and gate 1 when it opens the pull request
  * (`summary.before`, `summary.merge` pending); this step, once per agent pass (agentCli.ts), takes each pending
  * candidate to merged or skipped. A merge starts the fast-revert watch (fastRevert.ts). A merge is a release, though Starfish runs no deploy: the
- * target's own CI/CD does, and Starfish cannot see when it finishes.
+ * target's own CI/CD does, and Starfish sees when it finishes only through GitHub's deployments, where a deployment
+ * environment is configured (`deployEnvironment`; the fast-revert watch then runs from it, #424).
  */
 import { Timestamp, type DocumentReference, type Firestore, type Transaction } from "firebase-admin/firestore";
 import type { StarfishConfig } from "../config.js";
@@ -47,9 +48,9 @@ import { OPEN_INCIDENT_STATUSES, type Incident, type IncidentStatus } from "../t
 import { INDEX_MERGE_CASE } from "../settingsSchema.js";
 import type { LevelCap } from "../triageRules.js";
 import type { BlastRadius } from "./blastRadius.js";
-import { sanitizeEvent, updateSettledCycle, type CycleConfig, type SettledUpdate } from "./cycle.js";
+import { markObserved, observedMs, sanitizeEvent, updateSettledCycle, type CycleConfig, type SettledUpdate } from "./cycle.js";
 import { pathsFromStack } from "./pass.js";
-import { requiredRuns, summarizeChecks } from "./reconcile.js";
+import { MAX_SCAN, requiredRuns, summarizeChecks } from "./reconcile.js";
 
 // ---- Switches --------------------------------------------------------------------------------------------------
 
@@ -207,6 +208,8 @@ export interface EvidenceInput {
   requiredChecks: readonly string[];
   headSha: string;
   fastRevertMinutes: number;
+  /** The deployment environment the watch reads (#424); empty or absent: the watch runs from the merge. */
+  deployEnvironment?: string;
 }
 
 const codeSpan = (v: unknown, max: number) => `\`${String(v ?? "").replace(/[`\s]+/g, " ").slice(0, max)}\``;
@@ -262,7 +265,9 @@ export function mergeEvidenceText(input: EvidenceInput): string {
     "",
     index
       ? "A revert of this change would not remove the index, so no revert watch is started; if the error comes back, the index path's own observation tells a person."
-      : `If this error comes back within ${input.fastRevertMinutes} minutes of the merge, Starfish opens and merges a revert of it, and tells a person.`,
+      : input.deployEnvironment
+        ? `If this error comes back within ${input.fastRevertMinutes} minutes of this merge's deployment to ${codeSpan(input.deployEnvironment, 100)} completing (as GitHub's deployments record it), Starfish opens and merges a revert of it, and tells a person.`
+        : `If this error comes back within ${input.fastRevertMinutes} minutes of the merge, Starfish opens and merges a revert of it, and tells a person.`,
     "",
     `Run: ${codeSpan(input.cycleId, 128)}`,
     "",
@@ -274,7 +279,7 @@ export function mergeEvidenceText(input: EvidenceInput): string {
 
 export type AutoMergeConfig = Pick<
   StarfishConfig,
-  "environment" | "incidentCollection" | "runCollection" | "verifyChecks" | "verifyCheckApp" | "maxPrChecksPerPass" | "maxMergesPerDay" | "mergeCheckWaitMinutes" | "fastRevertMinutes"
+  "environment" | "incidentCollection" | "runCollection" | "verifyChecks" | "verifyCheckApp" | "maxPrChecksPerPass" | "maxMergesPerDay" | "mergeCheckWaitMinutes" | "fastRevertMinutes" | "deployEnvironment"
 > &
   CycleConfig;
 
@@ -337,6 +342,12 @@ export function flat(record: Record<string, unknown>): Record<string, string | n
  * A cycle still running (the loop records the merge candidate just before it finishes), or one that ended otherwise, is
  * never one either: `moveRecord` refuses to move its record, and a refusal read as the daily cap told a person every
  * pass that the cap was reached (#364). A revert record is only ever written on a done cycle, and done is final.
+ *
+ * The least recently looked at first (#422): up to `MAX_SCAN` of them are read, ordered by `observedAt.<stage>` (never
+ * looked at first), which the step moves after each look (`markObserved`), and `limit` taken. An unordered `limit` read
+ * returned the same first ones every pass, so with more than `limit` candidates waiting (checks still running, a watch
+ * not yet closed) the rest were never looked at, a recurrence after a later merge included. More than `MAX_SCAN` at
+ * once would starve again; with `maxMergesPerDay` merges a day, that many watches open together is not expected.
  */
 export async function cyclesInState(db: Firestore, cfg: Pick<AutoMergeConfig, "cycleCollection" | "environment">, stage: "merge" | "revert", states: string[], limit: number) {
   if (!Number.isInteger(limit) || limit < 1) return [];
@@ -345,9 +356,14 @@ export async function cyclesInState(db: Firestore, cfg: Pick<AutoMergeConfig, "c
     .where("environment", "==", cfg.environment)
     .where("state", "==", "done")
     .where(`summary.${stage}.state`, "in", states)
-    .limit(limit)
+    .limit(MAX_SCAN)
     .get();
-  return snap.docs.filter((d) => d.data().synthetic !== true).map((d) => ({ id: d.id, data: d.data() }));
+  return snap.docs
+    .filter((d) => d.data().synthetic !== true)
+    .map((d) => ({ id: d.id, data: d.data(), seenMs: observedMs(d.data(), stage) }))
+    .sort((a, b) => a.seenMs - b.seenMs)
+    .slice(0, limit)
+    .map(({ id, data }) => ({ id, data }));
 }
 
 /**
@@ -405,6 +421,9 @@ export function moveSummary(stage: "merge" | "revert", next: Record<string, unkn
     }
   }
   switch (next.state) {
+    case "watching":
+      // The one move that keeps the state (#424): the merge's deployment was seen, and the watch runs from it.
+      return "The merge's deployment completed: the fast-revert watch runs from it";
     case "clear":
       return "The fast-revert watch saw no recurrence: the merge stands";
     case "opening":
@@ -524,6 +543,8 @@ export async function runAutoMergeStep(deps: AutoMergeDeps): Promise<AutoMergeSu
     } catch (err) {
       out.errors.push({ cycleId: cycle.id, message: describe(err) });
     }
+    // Its turn is taken: the next pass looks at the others first (#422).
+    await markObserved(db, cfg, cycle.id, "merge", deps.now());
   }
   return out;
 
@@ -648,7 +669,7 @@ export async function runAutoMergeStep(deps: AutoMergeDeps): Promise<AutoMergeSu
     }
 
     try {
-      await client.commentOnPullRequest(cycle.id, number, mergeEvidenceText({ cycleId: cycle.id, summary, checks: requiredRuns(runs, cfg.verifyChecks, cfg.verifyCheckApp), requiredChecks: cfg.verifyChecks, headSha, fastRevertMinutes: cfg.fastRevertMinutes }));
+      await client.commentOnPullRequest(cycle.id, number, mergeEvidenceText({ cycleId: cycle.id, summary, checks: requiredRuns(runs, cfg.verifyChecks, cfg.verifyCheckApp), requiredChecks: cfg.verifyChecks, headSha, fastRevertMinutes: cfg.fastRevertMinutes, deployEnvironment: cfg.deployEnvironment }));
     } catch {
       return skipClaimed("evidence-not-posted");
     }
@@ -661,7 +682,9 @@ export async function runAutoMergeStep(deps: AutoMergeDeps): Promise<AutoMergeSu
     } catch (err) {
       return skipClaimed(`merge-refused:${ruleOf(err)}`);
     }
-    return (await recordMerged(d, cycle, claimedMerge, merged.sha, now.toISOString(), mine)) ? "merged" : "unchanged";
+    // When the merge happened: once GitHub answered, not when this candidate was first read (before the checks, the
+    // comment and the merge call), which made the watch start early (#424).
+    return (await recordMerged(d, cycle, claimedMerge, merged.sha, d.now().toISOString(), mine)) ? "merged" : "unchanged";
 
     async function skipClaimed(reason: string): Promise<"skipped" | "unchanged"> {
       const escalation = QUIET.has(reason) ? "none" : await escalate(d, cycle, `auto-merge-${reason.split(":")[0]}`, skipSentence(reason));

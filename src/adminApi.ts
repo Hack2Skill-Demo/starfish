@@ -32,8 +32,9 @@
  * carry no ID token and are handed to src/oncall/webhooks.ts, which refuses anything without a valid Twilio signature.
  * Absent wiring (no Twilio configured): all of them are a 404.
  *
- * The public demo's open actions (src/publicDemo.ts): wired (`publicDemo`) only where a deployment turns them on on a
- * public environment (`STARFISH_PUBLIC_DEMO_ACTIONS`, off by default). Then, and only for an ANONYMOUS caller (the
+ * The public demo's open actions (src/publicDemo.ts): wired (`publicDemo`) only where a deployment turns them on
+ * (`STARFISH_PUBLIC_DEMO_ACTIONS`, off by default), and on for a call only while the runtime settings' environment is a
+ * public one (resolved per call, #430). Then, and only for an ANONYMOUS caller (the
  * verified token's sign-in provider, never anything the caller says), `POST /api/ingest/run` and `POST /api/agent/run`
  * skip the admin check, and three more routes exist: `POST /api/incidents/<id>/status` (`{ action }`: acknowledge,
  * resolve, ignore, reopen), `.../retriage` and `.../correction` (`{ level, note? }`). Each call is first claimed against
@@ -99,8 +100,8 @@ export function refusalReason(e: unknown): string {
 }
 
 /**
- * The public demo's open actions (src/publicDemo.ts), for an anonymous caller only. Present only where the deployment
- * turned them on; each action checks the switch again itself.
+ * The public demo's open actions (src/publicDemo.ts), for an anonymous caller only, bound to the configuration one call
+ * resolved; each action checks the switch again itself.
  */
 export interface PublicDemoDeps {
   /** Claim one call against the hourly limits (src/publicDemoLimit.ts). Throws only when the store does. */
@@ -152,8 +153,13 @@ export interface AdminApiDeps {
   confirmOnCallNumber?(personId: string, code: string, actorUid: string): Promise<ConfirmResult>;
   /** Twilio's webhooks (#37), signature-checked there. Absent: `/twilio/*` is a 404. */
   twilioWebhooks?(req: TwilioWebhookRequest): Promise<TwilioWebhookResponse>;
-  /** The public demo's open actions, for anonymous callers. Absent (the default): none, and their routes are a 404. */
-  publicDemo?: PublicDemoDeps;
+  /**
+   * The public demo's open actions, for anonymous callers: asked once per anonymous call to one of their routes, it
+   * resolves the runtime settings and returns the actions bound to them, or null when they are off for this call (the
+   * call is then answered as if they were not wired; a throw is a 500). Absent (the default): none, and their routes are
+   * a 404.
+   */
+  publicDemo?: () => Promise<PublicDemoDeps | null>;
 }
 
 const RETIRE_RE = /^\/api\/incidents\/([A-Za-z0-9_-]{1,128})\/retire$/;
@@ -358,8 +364,18 @@ export function createAdminApi(deps: AdminApiDeps): (req: ApiRequest) => Promise
 
     // A visitor of the public demo (an anonymous session), where its open actions are on: the routes it may use, each
     // claimed against the hourly limits before it runs. Everyone else, and a visitor anywhere else, goes on to the role.
-    const pub = deps.publicDemo;
-    if (pub && anonymous && (route === "ingest" || route === "incident" || (route === "agent" && pub.runAgent))) {
+    // Whether they are on is decided per call, from the runtime settings (#430).
+    let pub: PublicDemoDeps | null = null;
+    if (deps.publicDemo && anonymous && (route === "ingest" || route === "incident" || route === "agent")) {
+      try {
+        pub = await deps.publicDemo();
+      } catch {
+        return reply(500, { error: "could not read the public demo's settings" });
+      }
+      // Off for this call: the visitors' incident routes do not exist, as when the actions are not wired.
+      if (!pub && route === "incident") return reply(404, { error: "not found" });
+    }
+    if (pub && (route === "ingest" || route === "incident" || (route === "agent" && pub.runAgent))) {
       return handlePublic(pub, route, uid, publicMatch);
     }
     if (route === "incident") return reply(403, { error: "for the public demo's visitors only" });

@@ -18,6 +18,14 @@
       ]
     },
     {
+      "collectionGroup": "incidents",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "environment", "order": "ASCENDING" },
+        { "fieldPath": "updatedAt", "order": "ASCENDING" }
+      ]
+    },
+    {
       "collectionGroup": "starfish_cycles",
       "queryScope": "COLLECTION",
       "fields": [
@@ -74,6 +82,22 @@
         { "fieldPath": "environment", "order": "ASCENDING" },
         { "fieldPath": "state", "order": "ASCENDING" },
         { "fieldPath": "summary.revert.state", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "starfish_cycles",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "environment", "order": "ASCENDING" },
+        { "fieldPath": "observedAt.pr", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "starfish_cycles",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "environment", "order": "ASCENDING" },
+        { "fieldPath": "observedAt.recovery", "order": "ASCENDING" }
       ]
     },
     {

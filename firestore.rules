@@ -418,6 +418,14 @@ service cloud.firestore {
         allow list: if isOperator() || openGuestList();
         allow write: if false;
       }
+
+      // starfish_cycles/{id}/checkpoints/verified   engine-only (#450): the patch the round's verify gate passed, kept so a
+      // resumed attempt goes straight to review. Closed to every client, admins and the public demo's open reads
+      // included: the cycle document deliberately holds no patch, and no guest copy carries one.
+      // Explicit, though the closing rule would refuse it too: no later rule may open it.
+      match /checkpoints/{checkpointId} {
+        allow read, write: if false;
+      }
     }
 
     // The Overview's activity feed for operators: the newest events across every cycle, one

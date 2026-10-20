@@ -2,7 +2,24 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
-import { afterFix, afterReview, afterVerify, counterCheckRecord, keptTriage, MAX_REVISIONS, readBaseFiles, retryWords, roundOf, triageOptionsFor } from "./loop.js";
+import {
+  afterFix,
+  afterReview,
+  afterVerify,
+  counterCheckRecord,
+  filesDigest,
+  keptTriage,
+  MAX_REVISIONS,
+  prHandOff,
+  readBaseFiles,
+  retryWords,
+  reusableVerifiedPatch,
+  roundOf,
+  triageOptionsFor,
+  verifiedPatchCheckpoint,
+  verifySetupDigest,
+} from "./loop.js";
+import { sha256 } from "./reviewer.js";
 import type { VerifyResult } from "./verifyGate.js";
 
 describe("counterCheckRecord: the recount kept with triage's decision (#39)", () => {
@@ -175,5 +192,75 @@ describe("keptTriage: the round's decision a resumed attempt keeps (#414)", () =
 
   it("keeps a merge case only with act", () => {
     expect(keptTriage({ ...record, decision: "notify", rule: "model-notify" }, 2, null)?.mergeCase).toBeUndefined();
+  });
+});
+
+describe("the verified-patch checkpoint a resumed attempt reuses (#450)", () => {
+  const PATCH = "--- a/greeting.txt\n+++ b/greeting.txt\n@@ -1 +1 @@\n-hello old\n+hello new\n";
+  const HASH = sha256(PATCH);
+  const at = {
+    round: 1,
+    revisions: 0,
+    baseRevision: "rev1",
+    filesSha256: filesDigest([{ path: "greeting.txt", content: "hello old\n" }]),
+    verifySetup: verifySetupDigest({ verifyIsolation: "in-process", verifyCommand: "pnpm test", patchExcludedPaths: [".github/"] }),
+  };
+  const passed: VerifyResult = { status: "passed", rule: "command-passed", reason: "Passed.", patchSha256: HASH, baseRevision: "rev1", changedFiles: ["greeting.txt"], exitCode: 0, output: "ok", durationMs: 12 };
+  const claimed = { rootCause: "The greeting is old.", risk: "None." };
+  const checkpoint = () => verifiedPatchCheckpoint(PATCH, claimed, passed, at)!;
+  const cycle = (over: Record<string, unknown> = {}) => ({ summary: { verify: { status: "passed", patchSha256: HASH, baseRevision: "rev1" }, ...over } });
+
+  it("keeps exactly the patch the gate passed, with its verify result, bound to the hash the run record holds", () => {
+    const kept = reusableVerifiedPatch(checkpoint(), cycle(), at);
+    expect(kept).toEqual({ patch: PATCH, rootCause: claimed.rootCause, risk: claimed.risk, verified: passed, beforeRecorded: false });
+    expect(reusableVerifiedPatch(checkpoint(), cycle({ before: { status: "failed", forPatchSha256: HASH } }), at)?.beforeRecorded).toBe(true);
+  });
+
+  it("keeps nothing that is not a pass, or is too large to keep", () => {
+    expect(verifiedPatchCheckpoint(PATCH, claimed, { ...passed, status: "failed", rule: "command-failed" }, at)).toBeNull();
+    expect(verifiedPatchCheckpoint(PATCH, claimed, { ...passed, patchSha256: "b".repeat(64) }, at)).toBeNull();
+    expect(verifiedPatchCheckpoint(PATCH + "x".repeat(40_000), claimed, { ...passed, patchSha256: sha256(PATCH + "x".repeat(40_000)) }, at)).toBeNull();
+  });
+
+  it("drafts again when the stored text or the run record's verify does not match", () => {
+    expect(reusableVerifiedPatch(undefined, cycle(), at)).toBeNull();
+    expect(reusableVerifiedPatch({ ...checkpoint(), patch: PATCH.replace("new", "newer") }, cycle(), at)).toBeNull();
+    expect(reusableVerifiedPatch(checkpoint(), { summary: {} }, at)).toBeNull();
+    expect(reusableVerifiedPatch(checkpoint(), cycle({ verify: { status: "failed", patchSha256: HASH, baseRevision: "rev1" } }), at)).toBeNull();
+    expect(reusableVerifiedPatch(checkpoint(), cycle({ verify: { status: "passed", patchSha256: "c".repeat(64), baseRevision: "rev1" } }), at)).toBeNull();
+    expect(reusableVerifiedPatch({ ...checkpoint(), version: 2 }, cycle(), at)).toBeNull();
+    expect(reusableVerifiedPatch({ ...checkpoint(), verify: { ...(checkpoint().verify as object), changedFiles: [] } }, cycle(), at)).toBeNull();
+  });
+
+  it("drafts again in another round, after a revision, on another base, from other files or under another verify setup", () => {
+    expect(reusableVerifiedPatch(checkpoint(), cycle(), { ...at, round: 2 })).toBeNull();
+    expect(reusableVerifiedPatch(checkpoint(), cycle(), { ...at, revisions: 1 })).toBeNull();
+    expect(reusableVerifiedPatch(checkpoint(), cycle({ verify: { status: "passed", patchSha256: HASH, baseRevision: "rev2" } }), { ...at, baseRevision: "rev2" })).toBeNull();
+    expect(reusableVerifiedPatch(checkpoint(), cycle(), { ...at, filesSha256: filesDigest([{ path: "greeting.txt", content: "hello older\n" }]) })).toBeNull();
+    expect(reusableVerifiedPatch(checkpoint(), cycle(), { ...at, verifySetup: verifySetupDigest({ verifyIsolation: "github-actions", verifyCommand: "pnpm test", patchExcludedPaths: [".github/"] }) })).toBeNull();
+  });
+
+  it("never reuses a patch the review already blocked", () => {
+    expect(reusableVerifiedPatch(checkpoint(), cycle({ review: { verdict: "block", patchSha256: HASH } }), at)).toBeNull();
+    expect(reusableVerifiedPatch(checkpoint(), cycle({ review: { verdict: null, rule: "model-call-failed", patchSha256: HASH } }), at)).not.toBeNull();
+  });
+});
+
+describe("prHandOff: the word a person is owed about an open pull request (#412)", () => {
+  it("owes nothing for a plain pull request or a pending candidate", () => {
+    expect(prHandOff(undefined)).toBeNull();
+    expect(prHandOff({ state: "pending" })).toBeNull();
+    expect(prHandOff({ state: "merged" })).toBeNull();
+  });
+
+  it("names the rule a skipped candidate's message carries, from the record's reason", () => {
+    expect(prHandOff({ state: "skipped", reason: "floor:excluded:configured" })?.rule).toBe("auto-merge-floor");
+    expect(prHandOff({ state: "skipped", reason: "head-unknown" })?.rule).toBe("auto-merge-floor");
+    expect(prHandOff({ state: "skipped", reason: "incident-merge-watched" })?.rule).toBe("auto-merge-incident-merge-watched");
+    expect(prHandOff({ state: "skipped", reason: "incident-reverted-before" })?.rule).toBe("auto-merge-incident-reverted-before");
+    expect(prHandOff({ state: "skipped", reason: "resumed-without-candidate" })?.rule).toBe("auto-merge-resumed");
+    // A skipped record whose reason is unreadable still owes a person a word: Starfish will not merge it.
+    expect(prHandOff({ state: "skipped" })).toMatchObject({ rule: "auto-merge-floor" });
+    expect(prHandOff({ state: "skipped", reason: "head-unknown" })?.reason).toContain("A person decides.");
   });
 });

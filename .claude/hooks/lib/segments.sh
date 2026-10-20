@@ -26,7 +26,8 @@
 # What it does NOT understand, so does not claim to catch:
 #   - code inside strings: `bash -c "git push -f ..."`, `eval "..."`, and `$( )` or backticks
 #     INSIDE double quotes
-#   - where the shell is: `cd other && git push` is judged by the hook's own directory
+#   - where the shell is: `cd other && git push` is judged by the directory the command starts
+#     in (the tool input's `cwd`, which the hooks read: #438), not by `other`
 #   - aliases, functions, scripts that run git, or `git` reached through a variable (`$G push`)
 #     or a substitution (`$(which git) push` runs a `git push` the hooks never see)
 #   - quoting that joins or splits words: `git "push -f"` and `git push\ -f` are read as one

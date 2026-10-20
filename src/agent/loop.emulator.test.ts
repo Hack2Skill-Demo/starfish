@@ -19,7 +19,7 @@ import { findStrandedCycles, selectCandidates } from "./pass.js";
 import { FIX_SYSTEM } from "./fixer.js";
 import { ModelAnswerError } from "../vertex.js";
 import { WEAKER_EVIDENCE_NOTE } from "./sourceContext.js";
-import { verifyPatch } from "./verifyGate.js";
+import { verifyPatch, VerifySetupError } from "./verifyGate.js";
 import { REVIEW_SYSTEM } from "./reviewer.js";
 import { TRIAGE_SYSTEM, type AskJson } from "./triage.js";
 import { SEEDED_SECRETS } from "../ingest/testSecrets.js";
@@ -353,7 +353,7 @@ describe("runCycle: the run record on the cycle", () => {
     });
     await runCycle(deps(model), key);
     const doc = await cycleDoc();
-    expect(doc.summary.triage).toMatchObject({ counterCount: 42, counterWindow: "24h", counterCapped: false });
+    expect(doc.summary.triage).toMatchObject({ counterCount: 42, counterWindow: "24h", counterCapped: false, counterRead: true });
     expect(doc.summary.triage.model).toEqual(expect.any(String));
     expect(doc.summary.fix).toMatchObject({ alternative1: "Default couponCode to an empty string", alternative2: "Turn on ignoreUndefinedProperties" });
     expect(doc.summary.fix.alternative3).toBeUndefined();
@@ -369,6 +369,18 @@ describe("runCycle: the run record on the cycle", () => {
     expect(triage.counterWindow).toBeUndefined();
     // A gate decided, not the model: no model is named.
     expect(triage.model).toBeUndefined();
+    // The recount's own gate: triage read it, and waited for it.
+    expect(triage.counterRead).toBe(true);
+  });
+
+  it("records that triage decided before reading the recount when a gate before it decided (#436)", async () => {
+    const missing = { ...incident, logCounterCheck: undefined };
+    const d = deps(scripted({}), {
+      load: async () => ({ subject: { incident: missing, status: "new", correction: { level: "noise", by: "u1" } }, files: [], sourceDir: src, baseRevision: "r" }),
+    });
+    await runCycle(d, key);
+    const triage = (await cycleDoc()).summary.triage;
+    expect(triage).toMatchObject({ decision: "decline", rule: "correction-cap", counterCount: null, counterRead: false });
   });
 
   it("shows the final verify result when the first patch was rejected and the second passed", async () => {
@@ -1065,6 +1077,98 @@ describe("runCycle: an attempt resumed within the round keeps its triage decisio
   });
 });
 
+describe("runCycle: an attempt resumed within the round keeps the patch it already verified (#450)", () => {
+  const checkpoint = () => db.collection(`cycles_${cfg}`).doc("inc1_r0").collection("checkpoints").doc("verified");
+  /** The real gate, counted: each call is one verify run (with `github-actions`, one push and one CI run). */
+  const counted = () => {
+    const ran: string[] = [];
+    const verify: LoopDeps["verify"] = async (req) => (ran.push(req.patch), verifyPatch(req));
+    return { ran, verify };
+  };
+
+  it("goes straight to review after the review call failed: no second fix call, no second verify, the same patch in the pull request", async () => {
+    const { ran, verify } = counted();
+    const opened: PullRequestRequest[] = [];
+    const model = scripted({ triage: [act], fix: [fixOf(GOOD_PATCH)], review: [new Error("model down"), held] });
+    expect(await runCycle(deps(model, { verify }), key)).toEqual({ kind: "released", reason: "model-call-failed" });
+    // Kept beside the cycle, bound to the hash the run record holds; the cycle document holds no patch.
+    const hash = createHash("sha256").update(GOOD_PATCH).digest("hex");
+    expect((await checkpoint().get()).data()).toMatchObject({ patch: GOOD_PATCH, patchSha256: hash, round: 1, revisions: 0, baseRevision: "rev1" });
+    expect((await cycleDoc()).summary.verify).toMatchObject({ status: "passed", patchSha256: hash });
+    expect(JSON.stringify(await cycleDoc())).not.toContain("hello new");
+
+    expect(await runCycle(deps(model, { verify }, opened), key)).toEqual({ kind: "finished", state: "done", outcome: "pr-opened" });
+    expect(model.count("fix")).toBe(1);
+    expect(model.count("review")).toBe(2);
+    expect(ran).toEqual([GOOD_PATCH]);
+    // triage, fix, the failed review, the second review: the kept patch cost no call.
+    expect((await cycleDoc()).modelCalls).toBe(4);
+    const ks = await kinds();
+    expect(ks.filter((k) => k === "fix:proposed" || k === "verify:passed")).toEqual(["fix:proposed", "verify:passed"]);
+    expect(ks.slice(-4)).toEqual(["cycle:triage-kept", "cycle:patch-kept", "review:approve", "pr:opened"]);
+    expect((await events()).find((e) => e.type === "patch-kept")).toMatchObject({ round: 1, data: { patchSha256: hash, files: 1 } });
+    expect(opened).toHaveLength(1);
+    expect(opened[0]).toMatchObject({
+      patch: GOOD_PATCH,
+      patchSha256: hash,
+      baseRevision: "rev1",
+      rootCause: "couponCode is written as undefined.",
+      risk: "Orders without a coupon.",
+      verify: { status: "passed", rule: "command-passed", changedFiles: ["greeting.txt"] },
+    });
+    // The cycle settled: its checkpoint went with it.
+    expect((await checkpoint().get()).exists).toBe(false);
+  });
+
+  it("drafts and verifies again when the base revision changed since", async () => {
+    const { ran, verify } = counted();
+    const model = scripted({ triage: [act], fix: [fixOf(GOOD_PATCH)], review: [new Error("model down"), held] });
+    expect(await runCycle(deps(model, { verify }), key)).toMatchObject({ kind: "released" });
+    const base = deps(model, { verify });
+    const load: LoopDeps["load"] = async (id) => {
+      const loaded = await base.load(id);
+      return loaded && { ...loaded, baseRevision: "rev2" };
+    };
+    expect(await runCycle({ ...base, load }, key)).toMatchObject({ kind: "finished", outcome: "pr-opened" });
+    expect(model.count("fix")).toBe(2);
+    expect(ran).toHaveLength(2);
+    expect(await kinds()).not.toContain("cycle:patch-kept");
+  });
+
+  it("drafts and verifies again when the stored patch is not the one the run record verified", async () => {
+    const { ran, verify } = counted();
+    const model = scripted({ triage: [act], fix: [fixOf(GOOD_PATCH)], review: [new Error("model down"), held] });
+    expect(await runCycle(deps(model, { verify }), key)).toMatchObject({ kind: "released" });
+    await checkpoint().update({ patch: BAD_PATCH });
+    expect(await runCycle(deps(model, { verify }), key)).toMatchObject({ kind: "finished", outcome: "pr-opened" });
+    expect(model.count("fix")).toBe(2);
+    expect(ran).toHaveLength(2);
+  });
+
+  it("never reuses a patch the review blocked: the revision is drafted again", async () => {
+    const { ran, verify } = counted();
+    // The review blocks the first patch, the revision's fix call fails: released. Resumed, it drafts again, and does not
+    // review the blocked patch a second time.
+    const model = scripted({ triage: [act], fix: [fixOf(GOOD_PATCH), new Error("model down"), fixOf(GOOD_PATCH)], review: [broken, held] });
+    expect(await runCycle(deps(model, { verify }), key)).toEqual({ kind: "released", reason: "model-call-failed" });
+    expect(await runCycle(deps(model, { verify }), key)).toMatchObject({ kind: "finished", outcome: "pr-opened" });
+    expect(model.count("fix")).toBe(3);
+    expect(model.count("review")).toBe(2);
+    expect(ran).toHaveLength(2);
+    expect(await kinds()).not.toContain("cycle:patch-kept");
+  });
+
+  it("lets the checkpoint go with the cycle when the cycle is given up", async () => {
+    const model = scripted({ triage: [act], fix: [fixOf(GOOD_PATCH)], review: [new Error("model down")] });
+    expect(await runCycle(deps(model), key)).toMatchObject({ kind: "released" });
+    expect((await checkpoint().get()).exists).toBe(true);
+    // The review keeps failing until the attempts run out: the cycle is given up, and its checkpoint with it.
+    for (let i = 0; i < 5; i++) await runCycle(deps(model), key);
+    expect((await cycleDoc()).state).toBe("failed");
+    expect((await checkpoint().get()).exists).toBe(false);
+  });
+});
+
 describe("runCycle: the incident's GitHub issue (#17)", () => {
   const notifyDecision = { decision: "notify", reasoning: "The API is not enabled.", suspectedCause: "Translation API disabled" };
   const ISSUE = { number: 12, url: "https://github.com/acme/shop/issues/12" };
@@ -1237,6 +1341,30 @@ describe("runCycle: a patch unfit to verify goes to a person, not round again (#
   });
 });
 
+describe("runCycle: the in-process gate's own failure is not the patch's (#428)", () => {
+  it("throws out of the cycle, spends no revision and tells nobody; the cycle resumes and goes on", async () => {
+    const calls: NotifyRequest[] = [];
+    const notify = async (req: NotifyRequest) => (calls.push(req), { state: "sent" as const, attempts: 1 });
+    const model = scripted({ triage: [act], fix: [fixOf(GOOD_PATCH)], review: [held] });
+    // The real gate, on a checkout it cannot copy: its machinery failed, nothing about the patch was judged.
+    const broken: LoopDeps["verify"] = (req) => verifyPatch({ ...req, sourceDir: join(src, "gone") });
+    await expect(runCycle(deps(model, { notify, verify: broken }), key)).rejects.toThrow(VerifySetupError);
+    const c = await cycleDoc();
+    expect(c).toMatchObject({ state: "running", owner: "worker-a" });
+    expect(c.revisions ?? 0).toBe(0);
+    expect(c.summary?.verify).toBeUndefined();
+    expect(c.summary?.notify).toBeUndefined();
+    expect(model.count("fix")).toBe(1);
+    expect(calls).toHaveLength(0);
+
+    // The lease runs out and the next attempt takes the cycle up, with the gate working again.
+    clock = new Date(t0.getTime() + 301_000);
+    expect(await runCycle(deps(model, { notify }), key)).toEqual({ kind: "finished", state: "done", outcome: "pr-opened" });
+    expect(model.count("triage")).toBe(1); // the round's triage decision was kept (#414)
+    expect((await cycleDoc()).revisions ?? 0).toBe(0);
+  });
+});
+
 describe("runCycle: the lease is kept alive through a long verify (#132)", () => {
   it("renews it before verify, and on every heartbeat the verifier beats while it waits", async () => {
     const expiries: number[] = [];
@@ -1373,7 +1501,23 @@ describe("runCycle: a cycle given up on is not given up silently (#137)", () => 
     expect(await runCycle(d, key)).toEqual({ kind: "not-acquired", reason: "closed" });
     expect(calls).toHaveLength(1);
     expect(calls[0]).toMatchObject({ cycleId: "inc1_r0", functionName: "orders-createOrder", occurrenceCount: 42, path: "human", rule: "deadline-passed" });
-    expect((await cycleDoc()).summary.notify).toEqual({ state: "sent", attempts: 1 });
+    // Recorded as a held cycle's delivery is (#412): when, which round, and a run event.
+    expect((await cycleDoc()).summary.notify).toEqual({ state: "sent", attempts: 1, at: clock.toISOString(), round: 1 });
+    expect((await kinds()).at(-1)).toBe("notify:sent");
+  });
+
+  it("records the delivery through the settled-cycle write: an event in order, and its guest copy (#412)", async () => {
+    cfgOver = { cycleDeadlineMinutes: 10, publicEnvironments: ["demo"], publicEventCollection: `pub_events_${cfg}`, publicCycleCollection: `pub_cycles_${cfg}` };
+    const notify = async () => ({ state: "failed" as const, attempts: 3, reason: "http-500" });
+    const d = deps(scripted({}), { notify });
+    await acquireLease(db, d.config, key, "worker-b", clock);
+    clock = new Date(t0.getTime() + 601_000);
+    expect(await runCycle(d, key)).toEqual({ kind: "not-acquired", reason: "deadline-passed" });
+    const evs = await events();
+    expect(evs.at(-1)).toMatchObject({ stage: "notify", type: "failed", summary: "A person could not be told: http-500", seq: evs.length, round: 1 });
+    expect((await cycleDoc()).eventCount).toBe(evs.length);
+    const copies = await db.collection(`pub_events_${cfg}`).get();
+    expect(copies.docs.map((x) => x.data()).some((e) => e.stage === "notify" && e.type === "failed")).toBe(true);
   });
 
   it("tells a person when the attempts run out, and records a failed delivery", async () => {
@@ -1385,7 +1529,7 @@ describe("runCycle: a cycle given up on is not given up silently (#137)", () => 
     expect(calls).toHaveLength(1);
     // The incident is not in the store here: unknown, and no count rather than zero.
     expect(calls[0]).toMatchObject({ rule: "retries-exhausted", functionName: "unknown function", occurrenceCount: null });
-    expect((await cycleDoc()).summary.notify).toEqual({ state: "failed", attempts: 3, reason: "http-500" });
+    expect((await cycleDoc()).summary.notify).toEqual({ state: "failed", attempts: 3, reason: "http-500", at: clock.toISOString(), round: 1 });
   });
 
   it("a released cycle nobody selects again is given up by the pass's sweep, and a person is told once (#226)", async () => {
@@ -1442,7 +1586,8 @@ describe("runCycle: a cycle given up on is not given up silently (#137)", () => 
     for (let i = 0; i < 3; i++) await runCycle(d, key);
     expect(await runCycle(d, key)).toEqual({ kind: "not-acquired", reason: "retries-exhausted" });
     expect(calls).toHaveLength(0);
-    expect((await cycleDoc()).summary.notify).toEqual({ state: "dry-run" });
+    expect((await cycleDoc()).summary.notify).toEqual({ state: "dry-run", at: clock.toISOString(), round: 1 });
+    expect((await kinds()).at(-1)).toBe("notify:dry-run");
   });
 });
 
@@ -1745,6 +1890,23 @@ describe("runCycle: auto-merge evidence (#9): Gemini names the merge case, the f
     expect(opened[0]!.autoMerge).toBeUndefined();
   });
 
+  it("resumed after the review call failed (#450): the floor judged again, the earlier 'fails before' run kept, nothing run twice", async () => {
+    const opened: PullRequestRequest[] = [];
+    const ran: string[] = [];
+    const verify: LoopDeps["verify"] = async (req) => (ran.push(req.patch), verifyPatch(req));
+    const model = scripted({ triage: [actMerge], fix: [fixWithTest], review: [new Error("model down"), held] });
+    expect(await runCycle(mergeDeps(model, true, { verify }, opened), key)).toEqual({ kind: "released", reason: "model-call-failed" });
+    expect(ran).toHaveLength(2); // the tests alone, then the patch
+    expect(await runCycle(mergeDeps(model, true, { verify }, opened), key)).toMatchObject({ kind: "finished", state: "done", outcome: "pr-opened" });
+    expect(ran).toHaveLength(2);
+    expect(model.count("fix")).toBe(1);
+    expect((await kinds()).slice(-5)).toEqual(["cycle:triage-kept", "cycle:patch-kept", "review:approve", "pr:opened", "merge:pending"]);
+    const s = (await cycleDoc()).summary;
+    expect(s.before).toMatchObject({ status: "failed", forPatchSha256: s.verify.patchSha256 });
+    expect(s.merge).toMatchObject({ state: "pending", floor: "pass", patchSha256: s.verify.patchSha256 });
+    expect(opened[0]).toMatchObject({ patch: FIX, autoMerge: true });
+  });
+
   it("in a dry run prepares nothing, even with the switch on", async () => {
     cfgOver = { dryRun: true };
     await runCycle(mergeDeps(scripted({ triage: [actMerge], fix: [fixWithTest], review: [held] }), true), key);
@@ -1792,6 +1954,79 @@ describe("runCycle: auto-merge evidence (#9): Gemini names the merge case, the f
     const s = (await cycleDoc()).summary;
     expect(s.before).toMatchObject({ status: "unavailable", rule: "no-test-in-patch" });
     expect(s.merge).toMatchObject({ state: "pending" }); // "fails before" is reported in the evidence, no longer required
+  });
+
+  describe("the kill switch going off between opening the pull request and telling a person (#412)", () => {
+    const told = () => {
+      const calls: NotifyRequest[] = [];
+      return { calls, notify: async (req: NotifyRequest) => (calls.push(req), { state: "sent" as const, attempts: 1 }) };
+    };
+    /** The opener the merge tests use, which also runs `during` while the pull request is opened. */
+    const openingThen = (during: () => void): LoopDeps["openPullRequest"] => async () => {
+      during();
+      return { number: 7, url: "https://example.test/pull/7", headSha: HEAD };
+    };
+
+    it("a candidate outside the floor: paused uncounted with nobody told, then told once and settled when it is back on", async () => {
+      const { calls, notify } = told();
+      cfgOver = { autoMergeExcludedPaths: ["functions/src/orders/"] };
+      const model = scripted({ triage: [actMerge], fix: [fixWithTest], review: [held] });
+      const d = mergeDeps(model, true, { notify, openPullRequest: openingThen(() => (enabled = false)) });
+      expect(await runCycle(d, key)).toEqual({ kind: "released", reason: "automation-disabled" });
+      expect(calls).toHaveLength(0);
+      expect(await cycleDoc()).toMatchObject({ state: "running", owner: null, resumeUncounted: true, summary: { merge: { state: "skipped", floor: "fail" } } });
+      expect((await cycleDoc()).summary.notify).toBeUndefined();
+
+      enabled = true;
+      const callsBefore = model.calls.length;
+      expect(await runCycle({ ...d, openPullRequest: openingThen(() => undefined) }, key)).toEqual({ kind: "finished", state: "done", outcome: "pr-opened" });
+      expect(model.calls).toHaveLength(callsBefore); // the pull request ends it: nothing drafted again
+      expect(calls).toHaveLength(1);
+      expect(calls[0]).toMatchObject({ path: "human", rule: "auto-merge-floor", cycleId: "inc1_r0" });
+      expect((await cycleDoc()).summary.notify).toMatchObject({ state: "sent" });
+      // Told once: another attempt (none should run, the cycle is done) finds it closed.
+      expect(await runCycle(d, key)).toEqual({ kind: "not-acquired", reason: "closed" });
+      expect(calls).toHaveLength(1);
+    });
+
+    it("a fix held back by an earlier merge: the same, with that rule", async () => {
+      await db.collection(`cycles_${cfg}`).doc("inc1_r9").set({ incidentId: "inc1", environment: "demo", state: "done", summary: { merge: { state: "merged" }, revert: { state: "watching" } } });
+      const { calls, notify } = told();
+      const d = mergeDeps(scripted({ triage: [actMerge], fix: [fixWithTest], review: [held] }), true, { notify, openPullRequest: openingThen(() => (enabled = false)) });
+      expect(await runCycle(d, key)).toEqual({ kind: "released", reason: "automation-disabled" });
+      expect(calls).toHaveLength(0);
+      enabled = true;
+      expect(await runCycle(d, key)).toEqual({ kind: "finished", state: "done", outcome: "pr-opened" });
+      expect(calls.map((c) => c.rule)).toEqual(["auto-merge-incident-merge-watched"]);
+    });
+
+    it("an incident a person closed meanwhile: the pull request stands, the cycle is done, nobody told", async () => {
+      const { calls, notify } = told();
+      cfgOver = { autoMergeExcludedPaths: ["functions/src/orders/"] };
+      const d = mergeDeps(scripted({ triage: [actMerge], fix: [fixWithTest], review: [held] }), true, { notify, openPullRequest: openingThen(() => (status = "resolved")) });
+      expect(await runCycle(d, key)).toEqual({ kind: "finished", state: "done", outcome: "pr-opened" });
+      expect(calls).toHaveLength(0);
+    });
+
+    it("a pending candidate owes nobody a word: the switch going off does not hold the cycle", async () => {
+      const { calls, notify } = told();
+      const d = mergeDeps(scripted({ triage: [actMerge], fix: [fixWithTest], review: [held] }), true, { notify, openPullRequest: openingThen(() => (enabled = false)) });
+      expect(await runCycle(d, key)).toEqual({ kind: "finished", state: "done", outcome: "pr-opened" });
+      expect((await cycleDoc()).summary.merge).toMatchObject({ state: "pending" });
+      expect(calls).toHaveLength(0);
+    });
+
+    it("an attempt that told a person and died before settling does not tell them twice", async () => {
+      const { calls, notify } = told();
+      cfgOver = { autoMergeExcludedPaths: ["functions/src/orders/"], maxCycleAttempts: 5 };
+      const d = mergeDeps(scripted({ triage: [actMerge], fix: [fixWithTest], review: [held] }), true, { notify });
+      expect(await runCycle(d, key)).toMatchObject({ state: "done" });
+      expect(calls).toHaveLength(1);
+      // As if that attempt had died after the delivery and before the finish: the cycle still running, its lease gone.
+      await db.collection(`cycles_${cfg}`).doc("inc1_r0").update({ state: "running", owner: null, leaseExpiresAt: null });
+      expect(await runCycle(d, key)).toEqual({ kind: "finished", state: "done", outcome: "pr-opened" });
+      expect(calls).toHaveLength(1);
+    });
   });
 
   it("a candidate whose head the opener cannot vouch for is handed to a person at once", async () => {

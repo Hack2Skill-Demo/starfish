@@ -506,6 +506,42 @@ describe("upsertIncident: a fingerprint change never forks a stored incident (#4
     expect(await upsert(now(base))).toBe("new");
     expect(await incidents()).toHaveLength(2);
   });
+
+  it("adopts the incident version 4 keyed a grouped export's `<short name> failed:` line under (#463)", async () => {
+    const wrapped = "Error: weeklyDigest failed: 7 PERMISSION_DENIED: Missing or insufficient permissions.";
+    const line = (atMs: number): IncidentInput => ({ ...occurrence(atMs, 1), functionName: "reports-weeklyDigest", errorMessage: wrapped });
+    const v4 = earlierFingerprints(line(base))[0]!;
+    const current = fingerprintOf("reports-weeklyDigest", wrapped);
+    expect(v4).not.toBe(current);
+    await db.collection(store.incidentCollection).doc("wrapped").set({
+      functionName: "reports-weeklyDigest",
+      service: null,
+      environment: "prod",
+      errorType: "UnknownError",
+      errorMessage: wrapped,
+      occurrenceCount: 2,
+      occurrencesByHour: {},
+      firstOccurredAt: Timestamp.fromMillis(base - HOUR),
+      lastOccurredAt: Timestamp.fromMillis(base - HOUR),
+      status: "new",
+      fingerprint: v4,
+      createdAt: Timestamp.fromMillis(base - HOUR),
+      updatedAt: Timestamp.fromMillis(base - HOUR),
+    });
+    await db
+      .collection(store.incidentKeyCollection)
+      .doc(incidentKeyId("prod", v4))
+      .set({ incidentId: "wrapped", environment: "prod", fingerprint: v4, updatedAt: Timestamp.fromMillis(base - HOUR), appliedWindows: ["w1"] });
+
+    expect(await upsert({ ...line(base), windowId: "w2" })).toBe("updated");
+    // The runtime's own unwrapped line of the same failure now lands on it too.
+    expect(await upsert({ ...line(base + 1000), errorMessage: "Error: 7 PERMISSION_DENIED: Missing or insufficient permissions.", windowId: "w3" })).toBe(
+      "updated"
+    );
+    const docs = await incidents();
+    expect(docs.map((d) => d.id)).toEqual(["wrapped"]);
+    expect(docs[0]!.data()).toMatchObject({ occurrenceCount: 4, fingerprint: current });
+  });
 });
 
 describe("upsertIncident: the daily cap's count on the overflow incident's key (#434)", () => {

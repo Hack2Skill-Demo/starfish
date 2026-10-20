@@ -27,6 +27,17 @@
  *   spend    `modelCalls` and `revisions`: what the cycle has used of its model-call budget and its one revision, counted
  *            under the fence before each is spent, so a resumed attempt goes on from them instead of from zero (#182). A
  *            reconsideration starts a fresh count, as it does the attempts; reconsiderations are themselves capped per day.
+ *   checkpoint `{cycle}/checkpoints/verified`: the patch this round's verify gate passed, with that verify result (#450), so
+ *            an attempt released before its review finished goes straight to review. ENGINE-ONLY (firestore.rules closes
+ *            it to every client, and it is never copied to the guests' copy): the cycle document holds no patch. Written
+ *            under the fence; deleted when the cycle settles, is given up, or is reopened for a new round.
+ *   observed `observedAt.<watcher>`: when a post-merge watcher last looked at this settled cycle (#422), so each reads the
+ *            least recently observed first and every watched cycle gets its turn, however old it is. `updatedAt` cannot
+ *            serve: the watchers' own records (recordPrState, recordRecovery) do not move it. `pr` and `recovery` are also
+ *            the MARK of being watched, queried directly: present (epoch 0 = not looked at yet) while reconcile.ts or
+ *            recoveryStep.ts has something to read, removed once it has not (`prWatchEnded`, recovery.ts
+ *            `isFinalRecovery`). `merge`, `revert` and `index` only order: their record's state is the mark
+ *            (autoMerge.ts `cyclesInState`, indexheal/observe.ts). Never copied to the guests' copy (publicView.ts).
  *
  * Logical refusals (lease held elsewhere, lease lost, cycle closed) are returned as reasons.
  * Infrastructure failures throw, deliberately: a worker that cannot reach the store must not go
@@ -41,6 +52,7 @@ import { clipWellFormed, isSensitiveKey } from "../ingest/redact.js";
 import type { PublicViewConfig } from "../publicView.js";
 import { refreshPublicCycle, writePublicEventInTx } from "../publicViewStore.js";
 import { ROUND_SCOPED_RECORDS, isReopenable, roundOf, type CycleState } from "./cycleStates.js";
+import { isFinalRecovery } from "./recovery.js";
 import { MAX_DECISION_HISTORY, reconsiderTrigger, recentReconsiderations, utcDay, type ReconsiderPolicy, type ReconsiderTrigger } from "./reconsider.js";
 
 /** With the public-view settings: a cycle of a public environment keeps its guest copy up to date (src/publicView.ts, #18). */
@@ -111,6 +123,17 @@ const prOpened = (d: Record<string, unknown> | undefined): boolean => (d?.summar
 
 function cycleRef(db: Firestore, cfg: CycleConfig, id: string): DocumentReference {
   return db.collection(cfg.cycleCollection).doc(id);
+}
+
+/** The cycle's verified-patch checkpoint (#450): one document, engine-only, beside the events. */
+function checkpointRef(cycle: DocumentReference): DocumentReference {
+  return cycle.collection("checkpoints").doc("verified");
+}
+
+/** Give a cycle up in the caller's transaction: failed, settled, and its verified-patch checkpoint gone with its lease. */
+function giveUp(tx: Transaction, ref: DocumentReference, reason: "deadline-passed" | "retries-exhausted", now: Date): void {
+  tx.update(ref, failedUpdate(reason, now));
+  tx.delete(checkpointRef(ref));
 }
 
 /**
@@ -225,6 +248,8 @@ export async function acquireLease(db: Firestore, cfg: CycleConfig, key: CycleKe
           ...(state === "declined" && { "summary.notify": FieldValue.delete() }),
           updatedAt: Timestamp.fromDate(now),
         });
+        // An earlier round's verified patch is not this round's (#450).
+        tx.delete(checkpointRef(ref));
         return { acquired: true, cycleId: id, attempt: 1, resumed: false, leaseExpiresAt: new Date(expires), reconsidered: trigger, reopenedFrom: state, modelCalls: 0, revisions: 0 };
       }
     }
@@ -235,7 +260,7 @@ export async function acquireLease(db: Firestore, cfg: CycleConfig, key: CycleKe
     const deadlineMs = ms(d.deadlineAt) ?? 0;
     if (now.getTime() >= deadlineMs) {
       wrote(d.environment);
-      tx.update(ref, failedUpdate("deadline-passed", now));
+      giveUp(tx, ref, "deadline-passed", now);
       return { acquired: false, reason: "deadline-passed" };
     }
 
@@ -249,7 +274,7 @@ export async function acquireLease(db: Firestore, cfg: CycleConfig, key: CycleKe
     const free = d.resumeUncounted === true;
     if (!renewing && !free && attempts >= cfg.maxCycleAttempts) {
       wrote(d.environment);
-      tx.update(ref, failedUpdate("retries-exhausted", now));
+      giveUp(tx, ref, "retries-exhausted", now);
       return { acquired: false, reason: "retries-exhausted" };
     }
 
@@ -289,7 +314,7 @@ export async function giveUpStranded(db: Firestore, cfg: CycleConfig, key: Cycle
     const reason = strandedReason(snap.data(), now, cfg.maxCycleAttempts);
     if (reason === null) return null;
     wrote(snap.get("environment"));
-    tx.update(ref, failedUpdate(reason, now));
+    giveUp(tx, ref, reason, now);
     return reason;
   });
 }
@@ -315,7 +340,7 @@ export async function renewLease(db: Firestore, cfg: CycleConfig, id: string, ow
     wrote(d.environment);
     const deadlineMs = ms(d.deadlineAt) ?? 0;
     if (now.getTime() >= deadlineMs) {
-      tx.update(ref, failedUpdate("deadline-passed", now));
+      giveUp(tx, ref, "deadline-passed", now);
       return { ok: false, reason: "lease-lost" } as const;
     }
     const expires = leaseEnd(cfg, now, deadlineMs);
@@ -538,6 +563,9 @@ export async function finishCycle(
     if (!snap.exists) return { ok: false, reason: "no-such-cycle" } as const;
     if (!fence(d, owner, now)) return { ok: false, reason: "lease-lost" } as const;
     wrote(d.environment);
+    // A finished cycle that opened a pull request is watched by reconcile.ts from now on, however old it gets (#422).
+    const opened = state === "done" && (d.summary as { pr?: { opened?: unknown } } | undefined)?.pr?.opened === true;
+    const watched = (d.observedAt as { pr?: unknown } | undefined)?.pr !== undefined;
     tx.update(ref, {
       state,
       outcome: clip(outcome, MAX_OUTCOME),
@@ -548,19 +576,48 @@ export async function finishCycle(
       updatedAt: Timestamp.fromDate(now),
       // When it settled: events appended later (appendEventsInTransaction) move updatedAt, never this (#365).
       settledAt: Timestamp.fromDate(now),
+      ...(opened && !watched && { "observedAt.pr": NEVER_OBSERVED }),
     });
+    // Nothing resumes a settled cycle within its round, so its verified patch is of no more use (#450).
+    tx.delete(checkpointRef(ref));
     return { ok: true } as const;
   });
 }
 
 /**
+ * Keep the patch this round's verify gate passed, with that verify result (#450), so an attempt released before its review
+ * finished goes straight to review instead of drafting and verifying again (one fix call, and with `github-actions` one
+ * more CI run). Under the fence: only the lease holder writes it, and one that lost the lease writes nothing. The caller
+ * (loop.ts) shapes and bounds `checkpoint`; what is stored is ENGINE-ONLY (`checkpointRef`). Replaces the cycle's earlier
+ * one: a cycle keeps only its latest verified patch.
+ */
+export async function recordVerifiedPatch(db: Firestore, cfg: CycleConfig, id: string, owner: string, now: Date, checkpoint: Record<string, unknown>): Promise<FenceResult> {
+  const ref = cycleRef(db, cfg, id);
+  return db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    const d = snap.data() as Record<string, unknown> | undefined;
+    if (!snap.exists) return { ok: false, reason: "no-such-cycle" } as const;
+    if (!fence(d, owner, now)) return { ok: false, reason: "lease-lost" } as const;
+    tx.set(checkpointRef(ref), { ...checkpoint, at: Timestamp.fromDate(now) });
+    return { ok: true } as const;
+  });
+}
+
+/** The cycle's verified-patch checkpoint as stored, or undefined when there is none (#450). Throws when the store does. */
+export async function readVerifiedPatch(db: Firestore, cfg: CycleConfig, id: string): Promise<Record<string, unknown> | undefined> {
+  return (await checkpointRef(cycleRef(db, cfg, id)).get()).data();
+}
+
+/**
  * What a write to a SETTLED cycle's run record decided (`updateSettledCycle`): the result to return, and, when it writes,
  * the records to put at `summary.<stage>` (already flat: each caller shapes its own), an event to append when what it
- * records CHANGED, and any other writes of the same transaction (`also`, after every read).
+ * records CHANGED, any other top-level fields of the cycle to write with them (`fields`, dotted paths: the watchers'
+ * `observedAt` marks), and any other writes of the same transaction (`also`, after every read).
  */
 export interface SettledUpdate<R> {
   result: R;
   records?: Record<string, Record<string, unknown>>;
+  fields?: Record<string, unknown>;
   event?: RunEvent;
   also?: (tx: Transaction) => void;
 }
@@ -590,9 +647,42 @@ export async function updateSettledCycle<R>(
     u.also?.(tx);
     // Without a `record` on the event: the records are written here, whole, as the caller shaped them.
     if (u.event) appendEventsInTransaction(tx, ref, d, now, [{ ...u.event, record: undefined }], cfg);
-    tx.update(ref, Object.fromEntries(Object.entries(u.records).map(([stage, record]) => [`summary.${stage}`, record])));
+    tx.update(ref, { ...Object.fromEntries(Object.entries(u.records).map(([stage, record]) => [`summary.${stage}`, record])), ...u.fields });
     return u.result;
   });
+}
+
+/** `observedAt.<watcher>` of a cycle no watcher has looked at yet: sorts first (#422). */
+export const NEVER_OBSERVED = Timestamp.fromMillis(0);
+export type ObservedBy = "pr" | "recovery" | "merge" | "revert" | "index";
+
+/** `observedAt.<watcher>` as milliseconds, or -Infinity when absent or unreadable (never looked at: first in line). */
+export function observedMs(d: Record<string, unknown> | undefined, by: ObservedBy): number {
+  const v = (d?.observedAt as Record<string, unknown> | undefined)?.[by] as { toMillis?: unknown } | undefined;
+  return typeof v?.toMillis === "function" ? (v.toMillis() as number) : -Infinity;
+}
+
+/**
+ * Note that a watcher looked at a settled cycle now, so its next pass reads the others first (#422). Only an ordering hint:
+ * not transactional (a lost race costs one cycle a turn), and best effort: a failure is ignored, never the watcher's.
+ * Used where a look writes no record of its own (still waiting, an error), which would otherwise leave the cycle first in
+ * line on every pass.
+ */
+export async function markObserved(db: Firestore, cfg: Pick<CycleConfig, "cycleCollection">, id: string, by: ObservedBy, at: Date): Promise<void> {
+  try {
+    await db.collection(cfg.cycleCollection).doc(id).update({ [`observedAt.${by}`]: Timestamp.fromDate(at) });
+  } catch {
+    // An ordering hint: the next pass may read this cycle first again.
+  }
+}
+
+/** Stop marking a cycle as watched by `by` (reconcile.ts, recoveryStep.ts): it has nothing left to read. Best effort. */
+export async function unmarkWatched(db: Firestore, cfg: Pick<CycleConfig, "cycleCollection">, id: string, by: "pr" | "recovery"): Promise<void> {
+  try {
+    await db.collection(cfg.cycleCollection).doc(id).update({ [`observedAt.${by}`]: FieldValue.delete() });
+  } catch {
+    // Read again next pass, and filtered out again.
+  }
 }
 
 /**
@@ -632,7 +722,8 @@ const isoMs = (v: unknown): number | null => (typeof v === "string" && Number.is
  * and the incident is never touched: a merged PR is not proof that the incident is healed.
  *
  * A finished cycle has no lease, so this is not fenced by one; it is safe without it because it writes only
- * `summary.prState`, in a transaction, and only to a cycle that is `done` and recorded opening THIS pull request.
+ * `summary.prState` (and the watchers' `observedAt` marks), in a transaction, and only to a cycle that is `done` and
+ * recorded opening THIS pull request.
  * Two readers racing, or a slow one landing late, cannot move it backwards:
  *   - an observation read no later than the one recorded is ignored (`stale`; a duplicate is one of these);
  *   - a merge is final: nothing read afterwards makes a merged PR open or closed again (`merged-is-final`).
@@ -659,8 +750,34 @@ export async function recordPrState(db: Firestore, cfg: CycleConfig, id: string,
     const priorAt = isoMs(prior?.checkedAt);
     if (priorAt !== null && isoMs(observed.checkedAt)! <= priorAt) return { result: { ok: true, applied: false, reason: "stale" } };
     if (prior?.state === "merged" && observed.state !== "merged") return { result: { ok: true, applied: false, reason: "merged-is-final" } };
-    return { result: { ok: true, applied: true }, records: { prState: record } };
+    // The watch marks (#422): reconcile reads it again, at the back of the line, until nothing about the PR can change that
+    // matters; a merge it sees with its merge commit starts recovery's watch, unless recovery already has its answer.
+    const recovery = (d.summary as { recovery?: Record<string, unknown> } | undefined)?.recovery;
+    const startsRecovery = observed.state === "merged" && observed.mergeCommitSha !== undefined && observedMs(d, "recovery") === -Infinity && !isFinalRecovery(recovery);
+    const fields = {
+      "observedAt.pr": prWatchEnded(observed) ? FieldValue.delete() : Timestamp.fromMillis(isoMs(observed.checkedAt)!),
+      ...(startsRecovery && { "observedAt.recovery": NEVER_OBSERVED }),
+    };
+    return { result: { ok: true, applied: true }, records: { prState: record }, fields };
   });
+}
+
+/** A pull request closed without merging this long ago is not read again: one reopened later is a person's to follow (#422). */
+export const CLOSED_PR_WATCH_MS = 7 * 24 * 3_600_000;
+const SETTLED_CHECKS: readonly unknown[] = ["passed", "failed", "not-configured"];
+
+/**
+ * Whether reconcile.ts has nothing left to read on a pull request, from its state as recorded (`summary.prState`). Pure. A
+ * merged one whose checks are settled and whose merge commit is kept (recovery matches deployments against it, #390), or
+ * one closed without merging for `CLOSED_PR_WATCH_MS` by the time it was read. An open one is always read again: a
+ * person may merge it any day.
+ */
+export function prWatchEnded(s: { state?: unknown; checks?: unknown; mergeCommitSha?: unknown; closedAt?: unknown; checkedAt?: unknown } | undefined): boolean {
+  if (s?.state === "merged") return SETTLED_CHECKS.includes(s.checks) && typeof s.mergeCommitSha === "string";
+  if (s?.state !== "closed") return false;
+  const closed = isoMs(s.closedAt);
+  const checked = isoMs(s.checkedAt);
+  return closed !== null && checked !== null && checked - closed >= CLOSED_PR_WATCH_MS;
 }
 
 /**
@@ -701,13 +818,13 @@ export type RecoveryWrite =
   | { ok: false; reason: "no-such-cycle" | "not-merged" | "invalid" };
 
 const RECOVERY_STATES: readonly string[] = ["awaiting-deploy", "observing", "recovered", "recurred", "unverified"];
-const RECOVERY_FINAL: readonly string[] = ["recovered", "recurred", "unverified"];
 
 /**
  * Record a merged fix's recovery state on its finished cycle. Like `recordPrState`: no lease (the cycle is done), only
- * `summary.recovery` is written, in a transaction, and only for the merge `summary.prState` recorded. It never changes the
+ * `summary.recovery` (and its `observedAt` mark) is written, in a transaction, and only for the merge `summary.prState` recorded. It never changes the
  * cycle's state, path, outcome or `updatedAt`, and never touches the incident: an observation is not a resolution.
- *   - a result already final (`recovered`, `recurred`, `unverified`) is never replaced: it is a fact about what was seen then;
+ *   - a result already final (`recovered`, `recurred`, `unverified`; recovery.ts `isFinalRecovery`, which does not count a
+ *     configuration gap recorded before its bound, #423) is never replaced: it is a fact about what was seen then;
  *   - one read no later than the recorded one is ignored (`stale`).
  */
 export async function recordRecovery(db: Firestore, cfg: CycleConfig, id: string, observed: RecoveryRecord): Promise<RecoveryWrite> {
@@ -726,12 +843,14 @@ export async function recordRecovery(db: Firestore, cfg: CycleConfig, id: string
   const record = sanitizeFlat({ ...observed });
   return updateSettledCycle(db, cfg, id, new Date(observed.checkedAt), async (_tx, d): Promise<SettledUpdate<RecoveryWrite>> => {
     if (d === undefined) return { result: { ok: false, reason: "no-such-cycle" } };
-    const summary = (d.summary ?? {}) as { prState?: { state?: unknown; mergeCommitSha?: unknown }; recovery?: { state?: unknown; checkedAt?: unknown } };
+    const summary = (d.summary ?? {}) as { prState?: { state?: unknown; mergeCommitSha?: unknown }; recovery?: Record<string, unknown> };
     if (d.state !== "done" || summary.prState?.state !== "merged" || summary.prState.mergeCommitSha !== observed.mergeCommitSha) return { result: { ok: false, reason: "not-merged" } };
     const prior = summary.recovery;
-    if (typeof prior?.state === "string" && RECOVERY_FINAL.includes(prior.state)) return { result: { ok: true, applied: false, reason: "final" } };
+    if (isFinalRecovery(prior)) return { result: { ok: true, applied: false, reason: "final" } };
     const priorAt = isoMs(prior?.checkedAt);
     if (priorAt !== null && isoMs(observed.checkedAt)! <= priorAt) return { result: { ok: true, applied: false, reason: "stale" } };
-    return { result: { ok: true, applied: true }, records: { recovery: record } };
+    // Recovery's watch mark (#422): read again, at the back of the line, until the answer is final.
+    const fields = { "observedAt.recovery": isFinalRecovery(record) ? FieldValue.delete() : Timestamp.fromMillis(isoMs(observed.checkedAt)!) };
+    return { result: { ok: true, applied: true }, records: { recovery: record }, fields };
   });
 }

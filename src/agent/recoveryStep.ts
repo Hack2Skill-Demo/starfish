@@ -9,8 +9,11 @@
  *   - Write to GitHub (one GET family: deployments, their statuses, a compare), change the incident, resolve it, revert,
  *     merge or notify. It observes.
  *   - Decide a result twice: a `recovered`, `recurred` or `unverified` record is final and its cycle is not read again.
- *   - Read without bound: at most `maxPrChecksPerPass` cycles a pass, among the newest `MAX_SCAN` of this environment, the
- *     least recently checked first; a deployment once found is recorded and not read again.
+ *     A configuration gap (no deployment environment, deployments unreadable) is not a result: it waits, and is read
+ *     again, until its bound (recovery.ts `CONFIG_GAP_GIVE_UP_MS`, #423).
+ *   - Read without bound: at most `maxPrChecksPerPass` cycles a pass, the least recently observed first, by the cycle's
+ *     watch mark (`observedAt.recovery`, #422), however old the merge; a deployment once found is recorded and not read
+ *     again.
  *   - Take the baseline twice: the error's rate before the merge is recorded the first time the merge is seen, because the
  *     hourly buckets it comes from are pruned after a week.
  *
@@ -22,9 +25,9 @@ import type { StarfishConfig } from "../config.js";
 import { readIngestCheckpoint } from "../ingest/run.js";
 import { redactPii } from "../ingest/redact.js";
 import type { GithubClient } from "../integrations/githubPr.js";
-import { recordRecovery, type CycleConfig, type RecoveryRecord } from "./cycle.js";
-import { baselineBefore, decideRecovery, FINAL_STATES, type Baseline, type DeploymentFact, type RecoveryConfig } from "./recovery.js";
-import { MAX_SCAN } from "./reconcile.js";
+import { markObserved, observedMs, recordRecovery, unmarkWatched, type CycleConfig, type RecoveryRecord } from "./cycle.js";
+import { baselineBefore, decideRecovery, isFinalRecovery, type Baseline, type DeploymentFact, type RecoveryConfig } from "./recovery.js";
+import { isMarked, MAX_SCAN } from "./reconcile.js";
 
 export type RecoveryStepConfig = Pick<StarfishConfig, "environment" | "incidentCollection" | "runCollection" | "watchedProjectId" | "maxPrChecksPerPass"> & RecoveryConfig & CycleConfig;
 export type DeploymentReader = Pick<GithubClient, "deploymentOfCommit">;
@@ -61,36 +64,61 @@ export interface MergedCycle {
   mergeCommitSha: string;
   mergedAt: string;
   prior: Rec;
+  /** Starfish's fast-revert watch reverted this very merge (#424): its recurrence is the revert's, not the fix's. */
+  reverted: boolean;
+}
+
+/** A finished cycle's merged PR whose recovery is not final yet, or null. A synthetic cycle (seedDemo.ts) is never one. */
+function mergedCandidate(id: string, d: Rec): MergedCycle | null {
+  if (d.synthetic === true || d.state !== "done") return null;
+  const summary = rec(d.summary);
+  const pr = rec(summary.prState);
+  const sha = pr.mergeCommitSha;
+  if (pr.state !== "merged" || typeof sha !== "string" || !/^[0-9a-f]{40}$/.test(sha)) return null;
+  const mergedMs = isoMs(pr.mergedAt);
+  if (mergedMs === null || typeof d.incidentId !== "string" || !Number.isInteger(d.recurrence)) return null;
+  const prior = rec(summary.recovery);
+  // A record for another merge (the PR cannot be merged twice, so this is a hand edit) is not trusted: start again.
+  const own = prior.mergeCommitSha === sha ? prior : {};
+  if (isFinalRecovery(own)) return null;
+  const revert = rec(summary.revert);
+  const reverted = revert.state === "reverted" && revert.mergeSha === sha;
+  return { cycleId: id, incidentId: d.incidentId, recurrence: d.recurrence as number, mergeCommitSha: sha, mergedAt: new Date(mergedMs).toISOString(), prior: own, reverted };
 }
 
 /**
- * The finished cycles with a merged PR whose recovery is not final, least recently checked first, at most `limit`. A
- * synthetic cycle (seedDemo.ts) names a pull request that does not exist and is never read.
+ * The finished cycles with a merged PR whose recovery is not final, least recently observed first, at most `limit`
+ * (#422). Two bounded reads: the cycles carrying recovery's watch mark (`observedAt.recovery`, set by reconcile when it
+ * records the merge, cycle.ts), oldest mark first, however old the cycle is; and, for merges recorded before the mark
+ * existed, up to `MAX_SCAN` merged cycles without one (equality filters only), ordered by when they were last checked. A
+ * marked cycle whose answer turns out final loses its mark. Until #422 this read the newest 200 cycles by `updatedAt`,
+ * which none of these writes move, so a merge whose cycle had fallen out of them was never observed.
  */
 export async function selectMergedCycles(db: Firestore, cfg: Pick<RecoveryStepConfig, "cycleCollection" | "environment">, limit: number): Promise<MergedCycle[]> {
   if (!Number.isInteger(limit) || limit < 1) return [];
-  const snap = await db.collection(cfg.cycleCollection).where("environment", "==", cfg.environment).orderBy("updatedAt", "desc").limit(MAX_SCAN).get();
-  const found: (MergedCycle & { checkedMs: number })[] = [];
-  for (const doc of snap.docs) {
-    const d = doc.data();
-    if (d.synthetic === true || d.state !== "done") continue;
-    const summary = rec(d.summary);
-    const pr = rec(summary.prState);
-    const sha = pr.mergeCommitSha;
-    if (pr.state !== "merged" || typeof sha !== "string" || !/^[0-9a-f]{40}$/.test(sha)) continue;
-    const mergedMs = isoMs(pr.mergedAt);
-    if (mergedMs === null || typeof d.incidentId !== "string" || !Number.isInteger(d.recurrence)) continue;
-    const prior = rec(summary.recovery);
-    // A record for another merge (the PR cannot be merged twice, so this is a hand edit) is not trusted: start again.
-    const own = prior.mergeCommitSha === sha ? prior : {};
-    if (typeof own.state === "string" && (FINAL_STATES as readonly string[]).includes(own.state)) continue;
-    const checked = isoMs(own.checkedAt);
-    found.push({ cycleId: doc.id, incidentId: d.incidentId, recurrence: d.recurrence as number, mergeCommitSha: sha, mergedAt: new Date(mergedMs).toISOString(), prior: own, checkedMs: checked ?? -Infinity });
+  const cycles = db.collection(cfg.cycleCollection).where("environment", "==", cfg.environment);
+  const [marked, unmarked] = await Promise.all([
+    cycles.orderBy("observedAt.recovery", "asc").limit(limit).get(),
+    cycles.where("state", "==", "done").where("summary.prState.state", "==", "merged").limit(MAX_SCAN).get(),
+  ]);
+  const found = new Map<string, MergedCycle & { orderMs: number }>();
+  const ended: string[] = [];
+  for (const doc of marked.docs) {
+    const c = mergedCandidate(doc.id, doc.data());
+    if (c) found.set(doc.id, { ...c, orderMs: observedMs(doc.data(), "recovery") });
+    else ended.push(doc.id);
   }
-  return found
-    .sort((a, b) => a.checkedMs - b.checkedMs)
+  for (const doc of unmarked.docs) {
+    const d = doc.data();
+    if (isMarked(d, "recovery") || found.has(doc.id)) continue;
+    const c = mergedCandidate(doc.id, d);
+    if (c) found.set(doc.id, { ...c, orderMs: isoMs(c.prior.checkedAt) ?? -Infinity });
+  }
+  for (const id of ended) await unmarkWatched(db, cfg, id, "recovery");
+  return [...found.values()]
+    .sort((a, b) => a.orderMs - b.orderMs)
     .slice(0, limit)
-    .map(({ cycleId, incidentId, recurrence, mergeCommitSha, mergedAt, prior }) => ({ cycleId, incidentId, recurrence, mergeCommitSha, mergedAt, prior }));
+    .map(({ cycleId, incidentId, recurrence, mergeCommitSha, mergedAt, prior, reverted }) => ({ cycleId, incidentId, recurrence, mergeCommitSha, mergedAt, prior, reverted }));
 }
 
 /** One bounded round of recovery observation. Never throws for one cycle: its error is kept and the next goes ahead. */
@@ -140,7 +168,8 @@ export async function observeRecoveries(deps: RecoveryStepDeps): Promise<Recover
         deployment = { state: "deployed", completedAtMs: priorDeployedMs, deploymentId: c.prior.deploymentId, sha: c.prior.deploymentSha };
         deploymentId = c.prior.deploymentId;
         deploymentSha = c.prior.deploymentSha;
-      } else if (cfg.deployEnvironment === "") {
+      } else if (c.reverted || cfg.deployEnvironment === "") {
+        // Nothing to read: no environment named, or the merge was reverted, which decides the answer by itself (#424).
         deployment = { state: "none" };
       } else {
         try {
@@ -168,6 +197,7 @@ export async function observeRecoveries(deps: RecoveryStepDeps): Promise<Recover
         cfg,
         incident,
         recurrence: c.recurrence,
+        reverted: c.reverted,
         baseline,
         deployment,
         checkpointMs: needsCheckpoint ? await ingestedThrough() : null,
@@ -191,10 +221,12 @@ export async function observeRecoveries(deps: RecoveryStepDeps): Promise<Recover
         checkedAt: now.toISOString(),
       };
       const written = await recordRecovery(db, cfg, c.cycleId, record);
+      // A look that wrote nothing still had its turn (#422): to the back of the line, or it would be first every pass.
+      if (!written.ok || !written.applied) await markObserved(db, cfg, c.cycleId, "recovery", now);
       if (!written.ok) out.errors.push({ cycleId: c.cycleId, message: `not recorded: ${written.reason}` });
       else if (written.applied) {
         out.recorded += 1;
-        if ((FINAL_STATES as readonly string[]).includes(decision.state)) out.decided.push({ cycleId: c.cycleId, state: decision.state, ...(decision.reason !== undefined && { reason: decision.reason }) });
+        if (isFinalRecovery(record as unknown as Rec)) out.decided.push({ cycleId: c.cycleId, state: decision.state, ...(decision.reason !== undefined && { reason: decision.reason }) });
       }
       if (stop !== undefined) {
         out.stoppedBecause = stop;
@@ -202,6 +234,7 @@ export async function observeRecoveries(deps: RecoveryStepDeps): Promise<Recover
       }
     } catch (err) {
       out.errors.push({ cycleId: c.cycleId, message: describeError(err) });
+      await markObserved(db, cfg, c.cycleId, "recovery", deps.now());
     }
   }
   return out;

@@ -34,7 +34,7 @@ and anything inside Google Cloud. `pnpm status` and the Settings page are the li
 |---|---|---|---|
 | **Proposed PR** | a verified, reviewed pull request that fixes the error was opened | yes: the cycle's run record and links | three on the demo app: demo-app #41, #42 and #49 [G]. Each PR page shows the target's verify check passed and the reviewer's verdict "approve with flags" |
 | **Merged change** | the pull request was merged | **by Starfish: never run** (built, switched on for the demo target, never run against real GitHub [C][T]). A person's merge is read back by the PR reconcile step, which has not been confirmed against real GitHub [C] | **by a person: two.** demo-app #49 on 2026-10-13 and #41 on 2026-10-15, merged by the maintainer ("merged commit … into main"), with no review on the PR page [G]. #42 was closed unmerged on 2026-10-16 as redundant [G] |
-| **Deployed fix** | the merge commit is serving | **built, never run (#390):** the recovery observer reads GitHub's Deployments API for the merge commit, in the environment `STARFISH_DEPLOY_ENVIRONMENT` names (empty by default, so off) [C]. The fast-revert watch still starts at the merge, not at a deployment [C] | the target's own pipeline deployed both merges: demo-app Deploy run #25 (for #49) and #26 (for #41) succeeded [G]. That workflow's deploy job runs in `environment: production`, which GitHub records as a Deployment [C: its workflow file; the Deployments API itself was not read for this page] |
+| **Deployed fix** | the merge commit is serving | **built, never run (#390):** the recovery observer reads GitHub's Deployments API for the merge commit, in the environment `STARFISH_DEPLOY_ENVIRONMENT` names (empty by default, so off) [C]. The fast-revert watch starts at that deployment where the environment is named, and at the merge where it is not, as on the demo (#424) [C] | the target's own pipeline deployed both merges: demo-app Deploy run #25 (for #49) and #26 (for #41) succeeded [G]. That workflow's deploy job runs in `environment: production`, which GitHub records as a Deployment [C: its workflow file; the Deployments API itself was not read for this page] |
 | **Verified recovery** | the error stopped, with evidence that it would have shown if it had not | missing-index path: built, **never run** [C]. Merge recurrence watch: built, **never run** [C]. **General code fixes, whoever merged: built, never run (#390):** `recovered` only after a confirmed deployment, a quiet window long enough for the error's old rate to have shown, and ingest read through it [C] | **none.** No fix has been verified to have cured its error. demo-app #56 (2026-10-15) deliberately put `getOrder.ts` back to its baseline so the demo's fault exists again [G], so the merged fix is not in effect either |
 
 So the precise answer to "has Starfish fixed anything?" is: **it has proposed fixes (three pull requests). A person merged two of
@@ -76,6 +76,7 @@ it is corrected throughout.
 | Slack: "needs a human" and "new incident" | yes | yes: fake webhook | yes: posted to real Slack since 2026-10-11 [T] | yes |
 | Reading a pull request back (reconcile) | yes | yes: fake GitHub, emulator | no | no |
 | Reopening a declined or handed-off run ("Retry with agent") | yes | yes: emulator | no | no |
+| A resumed attempt keeps the round's triage decision (#414) and the patch the round already verified, going straight to review (#450) | yes | yes: emulator | no | no: #450 not yet deployed (as of 2026-10-20) |
 | Auto-merge | yes: for the demo target, default-off switches | yes: real git, fake GitHub, emulator | **no: never run against real GitHub** | **no.** The safety floor refused a real patch there (the docs name demo-app #41 and #49), so Starfish did not merge it [T]; a person did |
 | Fast revert after a merge | yes | yes | no | no |
 | Phone escalation (#37) | yes: off by default | yes: fake Twilio, emulator | no | no |
@@ -100,9 +101,11 @@ Recovery has three pieces. All three are built; none has run against a real serv
    observing, and a day later it is **unverified**), and the failing query, replayed read-only, passes at the end. Otherwise it is
    **recurred** or query-failing. It never resolves the incident itself. This is the one place with a positive probe.
 2. **Merge recurrence watch and revert (built, never run).** A merge **Starfish made** starts `src/agent/fastRevert.ts`: the
-   same incident seen again after a grace and within a window of the **merge** opens a revert pull request of Starfish's own
-   merge commit. A watch that saw nothing clears only once ingest has read through the window. **A clear watch is not proof
-   of a deployed, healthy revision:** the window starts at the merge, not the deploy, and silence is not recovery.
+   same incident seen again after a grace and within a window of the watch's start opens a revert pull request of Starfish's own
+   merge commit. The start is the merge's **deployment** completing, from GitHub's deployments, where `STARFISH_DEPLOY_ENVIRONMENT`
+   is set (#424; none seen in time: a person is told), and the **merge** where it is not (the demo today). A watch that saw
+   nothing clears only once ingest has read through the window. **A clear watch is not proof of a healthy revision:**
+   silence is not recovery.
 3. **Recovery of a merged fix, whoever merged it (built, never run, #390).** For every pull request Starfish opened that is merged,
    `src/agent/recoveryStep.ts` records one of five answers on the cycle (`summary.recovery`), shown on the Runs and evidence pages:
    - **awaiting-deploy:** merged; no deployment of the merge commit has completed. GitHub's Deployments API is read for the
@@ -115,8 +118,11 @@ Recovery has three pieces. All three are built; none has run against a real serv
    - **recurred:** the incident was seen again after the deployment and `STARFISH_RECOVERY_GRACE_MINUTES` (5) for the old revision to
      drain, from the incident's latest occurrence (which never moves back) or a regression the ingest marked. It does not wait for
      the window to end.
-   - **unverified, with a reason, never recovered:** no deployment environment is configured; the deployment failed, was not seen,
-     or could not be read within `STARFISH_RECOVERY_GIVE_UP_HOURS` (24) of the merge; the incident was retired or is gone (a
+   - **not verified yet, a configuration gap (#423):** no deployment environment is configured, or GitHub's deployments could not
+     be read past `STARFISH_RECOVERY_GIVE_UP_HOURS`. It waits (`awaiting-deploy`, with the reason) and is judged once a person
+     closes the gap, if that is within 14 days of the merge; after that it is unverified.
+   - **unverified, with a reason, never recovered:** the deployment failed or was not seen within `STARFISH_RECOVERY_GIVE_UP_HOURS`
+     (24) of the merge; a configuration gap still open 14 days after it; the incident was retired or is gone (a
      recurrence would be a new incident); the error was too rare for silence to mean anything (the window it would need is longer
      than the give-up time); ingest did not read through the window within a day of its end.
 
@@ -125,7 +131,8 @@ Recovery has three pieces. All three are built; none has run against a real serv
 
 **What the recovery check cannot do, and does not claim.**
 - It needs the target's pipeline to record a GitHub deployment (a workflow job that runs in an `environment:`; demo-app's does) and
-  the agent's token to read deployments; without either the answer is `unverified`, never a guess. Neither is set up in the demo
+  the agent's token to read deployments; without either the answer is "not verified yet" (then `unverified` 14 days after the
+  merge), never a guess. Neither is set up in the demo
   deployment yet: the variable `STARFISH_DEPLOY_ENVIRONMENT` is not among the ones the team lists, and the token's scope for
   deployments is unknown.
 - "The error did not show in a window where about N occurrences were expected" is evidence (about a `exp(-N)` chance of seeing none

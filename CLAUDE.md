@@ -163,8 +163,9 @@ src/
     classify       error type (source class > code > HTTP status > keywords), service
     fingerprint    sha256(canonical functionName : first 100 chars of the normalized error core: a stack after the title
                    cut off (#361, so a stored record still holding frames hashes like a new one), then leading wrappers
-                   `Unhandled error`, `<Name>Error:` and the function's own `<fn> failed:` stripped, so one bug logged in two
-                   shapes is one incident, #318). Versioned (#432, `FINGERPRINT_VERSION`, now 4): each earlier version is
+                   `Unhandled error`, `<Name>Error:` and the function's own `<fn> failed:` (its whole name, or a grouped
+                   export's name after a `-`, `weeklyDigest` for `reports-weeklyDigest`, #463) stripped, so one bug logged in two
+                   shapes is one incident, #318). Versioned (#432, `FINGERPRINT_VERSION`, now 5): each earlier version is
                    kept as a function giving the fingerprint it stored for an occurrence, and on a key miss the store reads
                    those versions' keys in the same transaction, adopts an incident one names that hashes to the current
                    fingerprint (the record takes it, the key of the current one points at it carrying the old key's windows),
@@ -254,8 +255,14 @@ src/
                    `afterVerify`, `afterReview`, #420): a review refused for its evidence goes to a person, not a retry (#418).
                    An attempt resumed within the round keeps the round's triage decision from the run record (`keptTriage`,
                    #414: the record carries its `round`; act, notify or decline only; asked again when a cap made since holds
-                   it back), so a released fix call no longer costs a second triage call; it still drafts and verifies again
-                   (the patch is not stored, #450). Emulator-tested; not yet run on the demo project
+                   it back), so a released fix call no longer costs a second triage call. One released after verify passed
+                   (the review call failed) goes straight to review with the patch the round verified (`reusableVerifiedPatch`,
+                   #450): kept, under the fence, in the cycle's engine-only `checkpoints/verified` (closed to every client by
+                   firestore.rules, never in the guests' copy; bounded; deleted when the cycle settles, is given up or is
+                   reopened), used only while its hash is the verify record's passed one, in the same round, at the same
+                   revision count, base revision, files and verify setup, else drafted again; no second fix call or CI run,
+                   the floor judged again, the earlier "fails before" record kept, never re-run. Emulator-tested; not yet run
+                   on the demo project
   agent/blastRadius.ts  the safety floor every merge needs (`assessMergeFloor`: gate 1's parsing, hard-exclude list and
                    whole-function check, tests only as new files, one production file, any number of hunks, at most
                    40 changed lines; no fix class. Since the hard-exclude list is words, #295 added code rules: no
@@ -287,8 +294,10 @@ src/
                    run of the named checks from `STARFISH_VERIFY_CHECK_APP` green on it, daily cap (transactional),
                    evidence comment, squash merge with `sha`. Any failure: PR stays open + notify. Fakes + emulator
                    tested, never run against real GitHub
-  agent/fastRevert.ts  the watch every merge starts: the incident seen again after a grace and within N minutes of the
-                   MERGE (the watch's window starts at the merge: recovery.ts reads deployments, this does not; counted by the hour, so an error that keeps firing past
+  agent/fastRevert.ts  the watch every merge starts: the incident seen again after a grace and within N minutes of its
+                   START (#424: with `STARFISH_DEPLOY_ENVIRONMENT`, when GitHub's deployments say the merge commit's deployment
+                   completed, recorded once seen; none seen within `STARFISH_RECOVERY_GIVE_UP_HOURS`: a person is told, nothing
+                   reverted; without it, as on the demo, the MERGE; counted by the hour, so an error that keeps firing past
                    the window is still seen) -> revert PR of Starfish's own merge commit, merged on
                    green checks; a later change to the same files escalates; a revert is never reverted. Cleared only
                    once the ingest checkpoint has read through the window, else a person is told after a day (#241).
@@ -301,6 +310,10 @@ src/
   agent/reconcile.ts  after the pass (#17): polls a bounded number of opened PRs (state + named checks on the head), records
                    `summary.prState` via cycle.ts `recordPrState` (no lease; never changes the cycle's state; newest read wins;
                    merged is final; never marks an incident healed; copies the state to the incident's `githubPrState`).
+                   Which cycles each post-merge watcher reads (#422): the least recently observed first, by the cycle's
+                   `observedAt.<watcher>` (cycle.ts; reconcile and recovery query it as the mark of being watched, however old
+                   the cycle, with two composite indexes; auto-merge, fast revert and the index observation order a bounded
+                   scan of their record's state by it); a closed unmerged PR is dropped a week after it closed.
                    Fake GitHub + emulator tested, never run against real GitHub
   agent/recovery.ts + recoveryStep.ts  recovery of a MERGED fix, anyone's merge (#390): per merged cycle (reconcile now keeps the
                    merge commit, `prState.mergeCommitSha`, re-reading a settled merge that lacks it once) the pass reads GitHub's
@@ -310,8 +323,9 @@ src/
                    recurred, or unverified with a reason, never recovered from silence (the window starts at the deployment's
                    completion + `STARFISH_RECOVERY_GRACE_MINUTES`, is `STARFISH_RECOVERY_QUIET_MINUTES` lengthened until the error's
                    pre-merge rate, recorded once as a baseline, expects `STARFISH_RECOVERY_MIN_EXPECTED` occurrences, and ingest's
-                   checkpoint must have read through it; too rare, retired, no environment, no deployment seen, or unreadable =
-                   unverified). Observes only: never resolves, reverts, merges or notifies. The Runs and evidence pages show it; the
+                   checkpoint must have read through it; too rare, retired, no deployment seen, or a failed one = unverified; no
+                   environment or deployments unreadable are configuration gaps, #423: awaiting-deploy with that reason, read again
+                   once a person closes the gap, unverified only 14 days after the merge, `CONFIG_GAP_GIVE_UP_MS`; a merge its fast-revert watch reverted = unverified `reverted`, never recurred, #424). Observes only: never resolves, reverts, merges or notifies. The Runs and evidence pages show it; the
                    guests' copy carries the answer, reason and times. Pure decision unit-tested; the whole sequence (a person's merge,
                    the deployment, recovered, recurred, every unverified path) emulator-tested against a fake GitHub; never run against real GitHub
   agent/incidentLinks.ts  copies the issue and PR (number, URL, state) from the cycle onto the incident for the UI's links (#194):
@@ -395,14 +409,15 @@ src/
                    each action checks it again. A per-address
                    limit (`ipRateLimit.ts`, `STARFISH_ADMIN_API_RATE_LIMIT_PER_MINUTE`, default 30) answers 429 before any token check. `adminApiServer.ts` is its HTTP
                    shell, `adminApiCli.ts` the Cloud Run service (`DEPLOY_ADMIN_API=1`): deployed once to the demo project (2026-10-07), "Run ingest now" run from the UI; Retire and the Twilio routes not yet tried.
-                   The public demo's OPEN ACTIONS (`publicDemo` dep, wired only with `STARFISH_PUBLIC_DEMO_ACTIONS` on a public environment,
-                   off by default): for an ANONYMOUS token (the verified sign-in provider) `/api/ingest/run`, `/api/agent/run` and
+                   The public demo's OPEN ACTIONS (`publicDemo` dep, wired only with `STARFISH_PUBLIC_DEMO_ACTIONS`, off by default, and on for
+                   a call only while the runtime settings' environment, resolved per call, is a public one, #430): for an ANONYMOUS token (the verified sign-in provider) `/api/ingest/run`, `/api/agent/run` and
                    `POST /api/incidents/<id>/status|retriage|correction` skip the admin check, each first claimed against hourly limits
                    (429 with the reason and `retry-after`); Retire and On-call stay 403; off, the three routes are a 404
   publicDemo.ts    those actions (`setIncidentStatusAsGuest`, `requestRetriageAsGuest`, `correctTriageAsGuest`, `triggerIngestAsGuest`,
                    `triggerAgentPassAsGuest`): Admin SDK writes in the shape firestore.rules require of an operator, own environment only,
                    never retired, audited in the same transaction (`actorKind: anonymous`, never the address), each checking the switch
-                   itself; `syncPublicAccess` writes the rules' gate `{runCollection}/public_access` as the admin API starts.
+                   itself; `syncPublicAccess` writes the rules' gate `{runCollection}/public_access` as the admin API starts and at each
+                   visitor's call, from that call's settings (`publicDemoSettings`, #430).
                    `incidentActions.ts` is the transition table shared with the UI. `publicDemoLimit.ts`: per-address (salted HMAC, never
                    the address) and deployment-wide hourly counters in `STARFISH_PUBLIC_ACTION_COLLECTION`, one transaction per claim
                    (30 actions and 3 runs per address, 6 visitor agent passes in all). Stub- and emulator-tested; never run on a real project
@@ -478,8 +493,10 @@ src/
   publicViewStore.ts  writes them (Admin SDK only): an event's copy in the event's own transaction (cycle.ts); an
                    incident's or cycle's refreshed after each engine write from what was committed (store.ts, cycle.ts,
                    incidentLinks.ts, observe.ts, escalation.ts, webhooks.ts; never throws), a retired incident's deleted
-                   in the retire's transaction; `syncRecentPublicView` (the newest 50 of each, after every ingest and
-                   agent run) for writes the engine does not make; `backfillPublicView` = `pnpm public-view`
+                   in the retire's transaction; `syncRecentPublicView` (after every ingest and agent run: every incident
+                   written since the last sweep, by `updatedAt` from a cursor in `{runCollection}/public_view_sweep`, 200
+                   a run, so an operator's triage of an old incident is not missed, #431; and the newest 50 of each) for
+                   writes the engine does not make; `backfillPublicView` = `pnpm public-view`
                    (`publicViewCli.ts`). Unit- and emulator-tested; never run on a real project
 ```
 
@@ -632,7 +649,9 @@ Facts the team has confirmed (2026-10-15/16). Don't ask them again; check here f
   demo-app deploys on merge to its `main`.
 - **Recovery of merged fixes (#390) is built and off here:** `STARFISH_DEPLOY_ENVIRONMENT` (repo variable, `production` for demo-app, whose
   deploy job runs in `environment: production`) is not among the variables listed above, and whether the agent's GitHub token can read
-  deployments is unknown. Until both are done every merge is reported `unverified`. Setting it is a person's step (`docs/deploy.md`).
+  deployments is unknown. Until both are done every merge waits as "not verified yet" (`awaiting-deploy`, #423) and is judged once
+  they are, if that is within 14 days of the merge; a merge recorded `unverified` for this before #423 is read again the same way.
+  Setting it is a person's step (`docs/deploy.md`).
 - **Not known here:** the admin's merge cases (Settings → Auto-merge); the full `STARFISH_AGENT_EXTRA_ENV_VARS`. Ask for these
   only when a task needs them.
 - **Assumptions that turned out wrong, so don't repeat them:** that the team deploys the engine from a terminal (GitHub does);

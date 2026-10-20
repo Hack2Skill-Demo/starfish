@@ -22,6 +22,12 @@
  * The result carries the SHA-256 of the exact patch and the revision it was based on, so evidence
  * ("the tests passed") can never be shown for a patch other than the one that was tested.
  *
+ * A result is a verdict on the PATCH. A failure of the gate's own machinery (the checkout could not be copied or read,
+ * `git apply` could not be started or did not finish, the scratch copy could not be handed to the unprivileged user)
+ * says nothing about the patch: it THROWS a `VerifySetupError`, as the CI and remote verifiers throw theirs, so the loop
+ * resumes the cycle instead of spending the one revision and a model call on it and handing it to a person (#428).
+ * `git apply` refusing the patch (it ran, and exited non-zero) stays a verdict: `patch-does-not-apply`.
+ *
  * THIS IS NOT A SANDBOX. The command is the deployment's own and runs as this process's OS user,
  * with the machine's network and filesystem. The scrubbed environment keeps this process's
  * credentials out of it; it does nothing about code the patch adds that the command then runs. The
@@ -55,7 +61,16 @@ export type VerifyRule =
   | "command-passed"
   | "command-failed"
   | "command-timeout"
+  // Only `runUnpatched` (the replay's "before" check) still returns it; `verifyPatch` throws a `VerifySetupError` (#428).
   | "setup-failed";
+
+/**
+ * The gate's own machinery failed, not the patch (#428). Thrown, never returned: the cycle is resumed, as for the CI and
+ * remote verifiers' infrastructure errors. The message is fixed words, never a path, a patch or command output.
+ */
+export class VerifySetupError extends Error {
+  override name = "VerifySetupError";
+}
 
 export interface VerifyResult {
   status: VerifyStatus;
@@ -255,6 +270,9 @@ function run(
   });
 }
 
+/** How long `git apply` may take: far longer than any patch the gate accepts needs. */
+const GIT_APPLY_TIMEOUT_MS = 30_000;
+
 /** How long the output pipes may stay open after the command itself has exited. */
 const EXIT_GRACE_MS = 1000;
 
@@ -286,20 +304,20 @@ export async function verifyPatch(req: VerifyRequest): Promise<VerifyResult> {
   const scratch = await mkdtemp(join(tmpdir(), "starfish-verify-"));
   try {
     const { tree, home } = scratchPaths(scratch);
-    if (!(await copyToScratch(req.sourceDir, scratch))) {
-      return done("rejected", "setup-failed", "The checkout could not be copied to a scratch directory.");
-    }
+    if (!(await copyToScratch(req.sourceDir, scratch))) throw new VerifySetupError("the checkout could not be copied to a scratch directory");
 
     let before: Map<string, Entry>;
     try {
       before = await snapshot(tree);
     } catch (err) {
       if (err instanceof TreeTooLarge) return done("rejected", "tree-too-large", `The checkout has more than ${MAX_TREE_FILES} files.`);
-      return done("rejected", "setup-failed", "The scratch copy could not be read.");
+      throw new VerifySetupError("the scratch copy could not be read");
     }
 
     const env = scrubbedEnv(home, req.extraEnv ?? {});
-    const applied = await run("git", ["apply", "--whitespace=nowarn", "-"], { cwd: tree, env, stdin: req.patch, timeoutMs: 30_000 });
+    const applied = await run("git", ["apply", "--whitespace=nowarn", "-"], { cwd: tree, env, stdin: req.patch, timeoutMs: GIT_APPLY_TIMEOUT_MS });
+    // No exit code: git could not be started, did not finish in time, or was killed. Not git's word on the patch (#428).
+    if (applied.code === null) throw new VerifySetupError(applied.timedOut ? "git apply did not finish in time" : "git apply could not be run");
     if (applied.code !== 0) {
       return done("rejected", "patch-does-not-apply", "The patch does not apply to the checkout.", { output: tail(applied) });
     }
@@ -307,8 +325,9 @@ export async function verifyPatch(req: VerifyRequest): Promise<VerifyResult> {
     let after: Map<string, Entry>;
     try {
       after = await snapshot(tree);
-    } catch {
-      return done("rejected", "tree-too-large", "The patched tree is too large to inspect.");
+    } catch (err) {
+      if (err instanceof TreeTooLarge) return done("rejected", "tree-too-large", "The patched tree is too large to inspect.");
+      throw new VerifySetupError("the patched scratch copy could not be read");
     }
     const changedFiles = changedBetween(before, after);
     // A refusal lists at most MAX_CHANGED_FILES + 1 paths: enough to show "too many", and no more than
@@ -331,7 +350,7 @@ export async function verifyPatch(req: VerifyRequest): Promise<VerifyResult> {
 
     if (req.runAs) {
       const handed = await run("chown", ["-R", `${req.runAs.uid}:${req.runAs.gid}`, scratch], { cwd: scratch, env, timeoutMs: 60_000 });
-      if (handed.code !== 0) return done("rejected", "setup-failed", "The scratch copy could not be handed to the unprivileged user.", { changedFiles });
+      if (handed.code !== 0) throw new VerifySetupError("the scratch copy could not be handed to the unprivileged user");
     }
     return await runCommand(tree, env, req, (status, rule, reason, extra) => done(status, rule, reason, { changedFiles, ...extra }));
   } finally {

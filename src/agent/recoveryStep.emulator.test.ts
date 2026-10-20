@@ -14,6 +14,7 @@ import { GithubError, type DeploymentObservation } from "../integrations/githubP
 import { stateDocId } from "../ingest/run.js";
 import { PUBLIC_VIEW_OFF } from "../testConfig.js";
 import { recordRecovery } from "./cycle.js";
+import { CONFIG_GAP_GIVE_UP_MS } from "./recovery.js";
 import { observeRecoveries, selectMergedCycles, type DeploymentReader, type RecoveryStepConfig } from "./recoveryStep.js";
 
 if (!process.env.FIRESTORE_EMULATOR_HOST) {
@@ -144,10 +145,12 @@ describe("the whole story: fault, detection, verified PR, a person's merge, depl
     expect(done.decided).toEqual([{ cycleId: "inc1_r0", state: "recovered" }]);
     expect(await recovery("inc1_r0")).toMatchObject({ state: "recovered", expectedOccurrences: 10, windowEnd: new Date(T_END).toISOString() });
 
-    // 4. Final: it is not read, or changed, again; and nothing else of the cycle or the incident moved.
+    // 4. Final: it is not read, or changed, again (its watch mark is gone, #422); and nothing else of the cycle or the
+    // incident moved.
     expect(await selectMergedCycles(db, cfg, 10)).toEqual([]);
     const after = await cycle("inc1_r0");
-    expect({ ...after, summary: { ...after.summary, recovery: undefined } }).toEqual({ ...before, summary: { ...before.summary, recovery: undefined } });
+    expect(after.observedAt).toEqual({});
+    expect({ ...after, observedAt: undefined, summary: { ...after.summary, recovery: undefined } }).toEqual({ ...before, observedAt: undefined, summary: { ...before.summary, recovery: undefined } });
     expect(await incidentDoc("inc1")).toMatchObject({ status: "logged" });
   });
 
@@ -195,14 +198,38 @@ describe("what it will not call recovered", () => {
     expect(await recovery("inc1_r0")).toMatchObject({ state: "unverified", reason: "low-traffic" });
   });
 
-  it("not with no deployment environment configured: every merge is unverified, and GitHub is not asked", async () => {
+  it("not with no deployment environment configured: it waits, GitHub is not asked, and once a person sets one it is judged (#423)", async () => {
     cfg = { ...cfg, deployEnvironment: "" };
     await seedIncident("inc1");
     await seedCycle("inc1_r0");
+    await seedCheckpoint(T_END + 5 * MIN);
     const gh = fakeGithub(deployedObs);
     await observe(gh.client, DEPLOYED + 3 * HOUR);
     expect(gh.calls).toEqual([]);
-    expect(await recovery("inc1_r0")).toMatchObject({ state: "unverified", reason: "no-deployment-environment" });
+    expect(await recovery("inc1_r0")).toMatchObject({ state: "awaiting-deploy", reason: "no-deployment-environment", baselineTaken: true });
+    // Days on, still unset: still waiting, never a final answer (the gap is a person's to close).
+    await observe(gh.client, MERGED + 3 * 24 * HOUR);
+    expect(await recovery("inc1_r0")).toMatchObject({ state: "awaiting-deploy", reason: "no-deployment-environment" });
+    // A person sets it: the merge is read again, its deployment found and judged.
+    cfg = { ...cfg, deployEnvironment: "production" };
+    const r = await observe(gh.client, MERGED + 3 * 24 * HOUR + HOUR);
+    expect(gh.calls).toHaveLength(1);
+    expect(r.decided).toEqual([{ cycleId: "inc1_r0", state: "recovered" }]);
+    expect(await recovery("inc1_r0")).toMatchObject({ state: "recovered", deployedAt: new Date(DEPLOYED).toISOString() });
+  });
+
+  it("re-reads a merge recorded unverified for a configuration gap before #423, and leaves one past the gap's bound final", async () => {
+    await seedIncident("inc1");
+    await seedCycle("inc1_r0");
+    await seedCycle("inc1_r1", { recurrence: 1 });
+    const old = (checkedAt: number) => ({ state: "unverified", reason: "no-deployment-environment", mergeCommitSha: MERGE_SHA, mergedAt: new Date(MERGED).toISOString(), baselineTaken: true, baselinePerHour: 10, baselineHours: 24, checkedAt: new Date(checkedAt).toISOString() });
+    await db.collection(cfg.cycleCollection).doc("inc1_r0").update({ "summary.recovery": old(MERGED + HOUR) });
+    await db.collection(cfg.cycleCollection).doc("inc1_r1").update({ "summary.recovery": old(MERGED + CONFIG_GAP_GIVE_UP_MS) });
+    await seedCheckpoint(T_END + 5 * MIN);
+    expect((await selectMergedCycles(db, cfg, 10)).map((c) => c.cycleId)).toEqual(["inc1_r0"]);
+    await observe(fakeGithub(deployedObs).client, MERGED + 2 * 24 * HOUR);
+    expect(await recovery("inc1_r0")).toMatchObject({ state: "recovered" });
+    expect(await recovery("inc1_r1")).toMatchObject({ state: "unverified", reason: "no-deployment-environment" });
   });
 
   it("not for a merge nobody can see deployed: it waits, then says so, naming a failed deployment as one", async () => {
@@ -212,6 +239,21 @@ describe("what it will not call recovered", () => {
     expect(await recovery("inc1_r0")).toMatchObject({ state: "awaiting-deploy" });
     await observe(fakeGithub({ state: "failed", deploymentId: 9, sha: MERGE_SHA, failedAt: new Date(MERGED + HOUR).toISOString() }).client, MERGED + 25 * HOUR);
     expect(await recovery("inc1_r0")).toMatchObject({ state: "unverified", reason: "deploy-failed" });
+  });
+
+  it("not for a merge Starfish's fast-revert watch reverted: the error the revert brings back is never the fix's recurrence (#424)", async () => {
+    await seedIncident("inc1", { lastOccurredAt: Timestamp.fromMillis(T_START + 20 * MIN), recurrenceCount: 0 });
+    await seedCycle("inc1_r0");
+    await seedCycle("inc1_r1", { recurrence: 1 });
+    await db.collection(cfg.cycleCollection).doc("inc1_r0").update({ "summary.revert": { state: "reverted", mergeSha: MERGE_SHA, by: "starfish" } });
+    // Another merge's revert record (a hand edit) does not count.
+    await db.collection(cfg.cycleCollection).doc("inc1_r1").update({ "summary.revert": { state: "reverted", mergeSha: "f".repeat(40) } });
+    await seedCheckpoint(T_END + 5 * MIN);
+    const gh = fakeGithub(deployedObs);
+    await observe(gh.client, T_END + 15 * MIN);
+    expect(await recovery("inc1_r0")).toMatchObject({ state: "unverified", reason: "reverted" });
+    expect(await recovery("inc1_r1")).toMatchObject({ state: "recurred" });
+    expect(gh.calls).toHaveLength(1);
   });
 
   it("not for a retired or missing incident: a recurrence would be a new incident this one cannot see", async () => {
@@ -238,10 +280,16 @@ describe("a GitHub that cannot be read", () => {
     expect(r.errors).toHaveLength(1);
     const first = (await Promise.all(["inc1_r0", "inc2_r0"].map(recovery))).find((x) => x !== undefined)!;
     expect(first).toMatchObject({ state: "awaiting-deploy", readError: "forbidden" });
-    // A day on, still unreadable: it says so rather than "never deployed".
+    // A day on, still unreadable: it says so rather than "never deployed", and keeps waiting: a permission is a gap a
+    // person can close, not a fact about the fix (#423).
     await observe(fakeGithub(new GithubError("forbidden", "x")).client, MERGED + 25 * HOUR);
     const states = await Promise.all(["inc1_r0", "inc2_r0"].map(recovery));
-    expect(states.some((s) => s && s.state === "unverified" && s.reason === "deploy-unreadable")).toBe(true);
+    expect(states.some((s) => s && s.state === "awaiting-deploy" && s.reason === "deploy-unreadable")).toBe(true);
+    expect(states.some((s) => s && s.state === "unverified")).toBe(false);
+    // The bound: still unreadable that long after the merge, it is final.
+    for (let i = 0; i < 2; i++) await observe(fakeGithub(new GithubError("forbidden", "x")).client, MERGED + CONFIG_GAP_GIVE_UP_MS + i * HOUR);
+    for (const id of ["inc1_r0", "inc2_r0"]) expect(await recovery(id)).toMatchObject({ state: "unverified", reason: "deploy-unreadable" });
+    expect(await selectMergedCycles(db, cfg, 10)).toEqual([]);
   });
 });
 
@@ -257,6 +305,40 @@ describe("selecting what to observe", () => {
     await db.collection(cfg.cycleCollection).doc("final_r0").update({ "summary.recovery": { state: "recovered", mergeCommitSha: MERGE_SHA, checkedAt: new Date(MERGED).toISOString() } });
     expect((await selectMergedCycles(db, cfg, 10)).map((c) => c.cycleId)).toEqual(["a_r0"]);
     expect(await selectMergedCycles(db, cfg, 0)).toEqual([]);
+  });
+
+  it("reads watched merges least recently observed first, however old and however many cycles came after them (#422)", async () => {
+    // More merged cycles with a final answer than the scan for unmarked ones reads, all ahead of the watched ones by id;
+    // none of them, nor a newer run of other cycles, moves the watched ones out of reach.
+    for (let start = 0; start < 210; start += 105) {
+      const batch = db.batch();
+      for (let i = start; i < start + 105; i++) {
+        const ts = Timestamp.fromMillis(MERGED + 30 * 24 * HOUR + i * 1000);
+        batch.set(db.collection(cfg.cycleCollection).doc(`a${String(i).padStart(4, "0")}_r0`), {
+          environment: "demo",
+          state: "done",
+          incidentId: "a",
+          recurrence: 0,
+          updatedAt: ts,
+          summary: { prState: { state: "merged", mergedAt: new Date(MERGED).toISOString(), mergeCommitSha: MERGE_SHA }, recovery: { state: "recovered", mergeCommitSha: MERGE_SHA, checkedAt: new Date(MERGED).toISOString() } },
+        });
+      }
+      await batch.commit();
+    }
+    for (const id of ["x", "y", "z"]) await seedIncident(id);
+    const mark = (minutes: number) => ({ observedAt: { recovery: Timestamp.fromMillis(MERGED + minutes * MIN) } });
+    await seedCycle("x_r0", mark(30));
+    await seedCycle("y_r0", mark(10));
+    await seedCycle("z_r0", mark(20));
+    const gh = fakeGithub({ state: "pending", deploymentId: 26, sha: MERGE_SHA });
+    cfg = { ...cfg, maxPrChecksPerPass: 1 };
+    for (let i = 0; i < 4; i++) await observe(gh.client, MERGED + (i + 1) * HOUR);
+    expect(gh.calls.map((c) => c.mergedAt)).toHaveLength(4);
+    const order: [string, unknown][] = [];
+    for (const id of ["x_r0", "y_r0", "z_r0"]) order.push([id, (await recovery(id)).checkedAt]);
+    // y (oldest mark), z, x, then y again: each look sends the cycle to the back.
+    expect(order.sort((a, b) => String(a[1]).localeCompare(String(b[1]))).map(([id]) => id)).toEqual(["z_r0", "x_r0", "y_r0"]);
+    expect(await recovery("y_r0")).toMatchObject({ checkedAt: new Date(MERGED + 4 * HOUR).toISOString() });
   });
 });
 

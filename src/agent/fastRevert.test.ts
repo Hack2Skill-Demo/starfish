@@ -10,7 +10,7 @@ import { recurredAfterMerge, watchSpan } from "./fastRevert.js";
 const cfg = { fastRevertMinutes: 60, fastRevertGraceMinutes: 10 };
 const merged = Date.parse("2026-10-06T12:00:00.000Z");
 const at = (minutes: number) => Timestamp.fromMillis(merged + minutes * 60_000);
-const watch = { mergedAtMs: merged, recurrence: 0 };
+const watch = { fromMs: merged, recurrence: 0 };
 
 describe("recurredAfterMerge", () => {
   it("is an occurrence after the grace and within the window", () => {
@@ -32,7 +32,7 @@ describe("recurredAfterMerge", () => {
     expect(recurredAfterMerge({ lastOccurredAt: at(200), recurrenceCount: 1, lastRecurredAt: at(30) }, watch, cfg)).toBe(true);
     expect(recurredAfterMerge({ lastOccurredAt: at(200), recurrenceCount: 1, lastRecurredAt: at(-30) }, watch, cfg)).toBe(false);
     // A regression counted before this cycle began is not a new one.
-    expect(recurredAfterMerge({ lastOccurredAt: at(200), recurrenceCount: 1, lastRecurredAt: at(30) }, { mergedAtMs: merged, recurrence: 1 }, cfg)).toBe(false);
+    expect(recurredAfterMerge({ lastOccurredAt: at(200), recurrenceCount: 1, lastRecurredAt: at(30) }, { fromMs: merged, recurrence: 1 }, cfg)).toBe(false);
   });
 
   it("sees an occurrence whose last one is already past the window, from an hour of the series wholly inside it", () => {
@@ -45,33 +45,33 @@ describe("recurredAfterMerge", () => {
   });
 
   /** One occurrence a minute from `from` to `to` (minutes from the merge), counted by the hour as the store does. */
-  const firing = (mergedAtMs: number, from: number, to: number) => {
+  const firing = (fromMs: number, from: number, to: number) => {
     const byHour: Record<string, number> = {};
     for (let t = from; t <= to; t++) {
-      const k = hourBucketKey(mergedAtMs + t * 60_000);
+      const k = hourBucketKey(fromMs + t * 60_000);
       byHour[k] = (byHour[k] ?? 0) + 1;
     }
-    return { lastOccurredAt: Timestamp.fromMillis(mergedAtMs + to * 60_000), occurrencesByHour: byHour };
+    return { lastOccurredAt: Timestamp.fromMillis(fromMs + to * 60_000), occurrencesByHour: byHour };
   };
 
   it("does not infer an in-window occurrence from a bucket crossing the deadline (#252)", () => {
     // The aggregate cannot distinguish an error that fired continuously from one that first fired after the deadline.
     const at1035 = Date.parse("2026-10-06T10:35:00.000Z");
-    expect(recurredAfterMerge(firing(at1035, -60, 63), { mergedAtMs: at1035, recurrence: 0 }, cfg)).toBe(false);
-    expect(recurredAfterMerge(firing(at1035, -60, 300), { mergedAtMs: at1035, recurrence: 0 }, cfg)).toBe(false);
+    expect(recurredAfterMerge(firing(at1035, -60, 63), { fromMs: at1035, recurrence: 0 }, cfg)).toBe(false);
+    expect(recurredAfterMerge(firing(at1035, -60, 300), { fromMs: at1035, recurrence: 0 }, cfg)).toBe(false);
     const at1055 = Date.parse("2026-10-06T10:55:00.000Z");
-    expect(recurredAfterMerge(firing(at1055, -60, 75), { mergedAtMs: at1055, recurrence: 0 }, cfg)).toBe(false);
+    expect(recurredAfterMerge(firing(at1055, -60, 75), { fromMs: at1055, recurrence: 0 }, cfg)).toBe(false);
     const at1200 = Date.parse("2026-10-06T12:00:00.000Z");
-    expect(recurredAfterMerge(firing(at1200, 70, 70), { mergedAtMs: at1200, recurrence: 0 }, { fastRevertMinutes: 15, fastRevertGraceMinutes: 10 })).toBe(false);
+    expect(recurredAfterMerge(firing(at1200, 70, 70), { fromMs: at1200, recurrence: 0 }, { fastRevertMinutes: 15, fastRevertGraceMinutes: 10 })).toBe(false);
   });
 
   it("never counts an occurrence from before the merge or from the grace, however late it was ingested (#201)", () => {
     const at1035 = Date.parse("2026-10-06T10:35:00.000Z");
-    expect(recurredAfterMerge(firing(at1035, -90, -1), { mergedAtMs: at1035, recurrence: 0 }, cfg)).toBe(false);
-    expect(recurredAfterMerge(firing(at1035, -90, 10), { mergedAtMs: at1035, recurrence: 0 }, cfg)).toBe(false);
+    expect(recurredAfterMerge(firing(at1035, -90, -1), { fromMs: at1035, recurrence: 0 }, cfg)).toBe(false);
+    expect(recurredAfterMerge(firing(at1035, -90, 10), { fromMs: at1035, recurrence: 0 }, cfg)).toBe(false);
     // An hour that starts during the grace is not after it.
     const at1055 = Date.parse("2026-10-06T10:55:00.000Z");
-    expect(recurredAfterMerge(firing(at1055, 2, 9), { mergedAtMs: at1055, recurrence: 0 }, cfg)).toBe(false);
+    expect(recurredAfterMerge(firing(at1055, 2, 9), { fromMs: at1055, recurrence: 0 }, cfg)).toBe(false);
   });
 
   it("keeps the watch open until the last counted hour has ended and been ingested", () => {

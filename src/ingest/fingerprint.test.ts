@@ -65,6 +65,44 @@ describe("fingerprint: one bug logged under two wrappers is one incident (#318)"
     expect(computeErrorFingerprint("api", "Upload failed: timeout")).not.toBe(computeErrorFingerprint("api", "Download failed: timeout"));
   });
 
+  it("strips a grouped export's `<short name> failed:` too: the name its own code logs under (#463)", () => {
+    // demo-app's `trackOutcome('weeklyDigest', ...)` in the export group `reports`, deployed as `reports-weeklyDigest`:
+    // the wrapped line and the runtime's own unwrapped one were two incidents (demo-app #43, #44).
+    const wrapped = "Error: weeklyDigest failed: 7 PERMISSION_DENIED: Missing or insufficient permissions.";
+    const unwrapped = "Error: 7 PERMISSION_DENIED: Missing or insufficient permissions.";
+    for (const fn of ["reports-weeklyDigest", "reports-weeklydigest", "weeklyDigest"]) {
+      expect(computeErrorFingerprint(fn, wrapped)).toBe(computeErrorFingerprint(fn, unwrapped));
+      expect(fingerprintOfLogEntry(fn, wrapped)).toBe(fingerprintOfLogEntry(fn, unwrapped));
+      expect(errorCore(wrapped, fn)).toBe("7 PERMISSION_DENIED: Missing or insufficient permissions.");
+    }
+    // Any trailing part of the name after a group separator, in either spelling: nested groups, and an export named
+    // with `_` (a second-generation service name maps it to `-`).
+    expect(errorCore("reports-weeklyDigest failed: boom", "admin-reports-weeklyDigest")).toBe("boom");
+    expect(errorCore("weeklyDigest failed: boom", "admin-reports-weeklyDigest")).toBe("boom");
+    expect(errorCore("weekly_digest failed: boom", "reports-weekly_digest")).toBe("boom");
+    expect(errorCore("weekly_digest failed: boom", "reports-weekly-digest")).toBe("boom");
+  });
+
+  it("still strips no other `<x> failed:` under a grouped name (#463)", () => {
+    const fn = "reports-weeklyDigest";
+    for (const message of [
+      // The group alone, part of a segment, another export of the group, a name that only ends the same.
+      "reports failed: boom",
+      "Digest failed: boom",
+      "reports-monthlyDigest failed: boom",
+      "monthlyDigest failed: boom",
+      "xweeklyDigest failed: boom",
+      "-weeklyDigest failed: boom",
+      "Upload failed: boom",
+    ]) {
+      expect(errorCore(message, fn)).toBe(message);
+    }
+    // A name with no group separator compares its whole name only, as before.
+    expect(errorCore("Digest failed: boom", "weeklyDigest")).toBe("Digest failed: boom");
+    // A name ending in a separator offers no empty short name.
+    expect(errorCore("- failed: boom", "reports-")).toBe("- failed: boom");
+  });
+
   it("never strips a wrapper that would leave nothing, nor prose that only looks like one", () => {
     for (const message of [
       "Error:",
@@ -177,14 +215,25 @@ describe("the fingerprint's versions (#432)", () => {
   const V1_TITLE = "8703bbced6713aec";
   const V2_WHOLE = "a624385816724193";
 
-  it("is at version 4", () => {
-    expect(FINGERPRINT_VERSION).toBe(4);
+  it("is at version 5", () => {
+    expect(FINGERPRINT_VERSION).toBe(5);
+  });
+
+  it("knows what versions 2 to 4 gave a grouped export's `<short name> failed:` line (#463)", () => {
+    const grouped = "reports-weeklyDigest";
+    const wrapped = "Error: weeklyDigest failed: 7 PERMISSION_DENIED: Missing or insufficient permissions.";
+    // Now the unwrapped line's fingerprint, which every version gave that line.
+    expect(fingerprintOf(grouped, wrapped)).toBe("2fe0e828186cb109");
+    expect(fingerprintOf(grouped, "Error: 7 PERMISSION_DENIED: Missing or insufficient permissions.")).toBe("2fe0e828186cb109");
+    // Versions 2 to 4 kept the wrapper (pinned from 117e835, version 4); version 1 hashed the whole line (checked by
+    // hand: sha256 of `reports-weeklydigest:error: weeklydigest failed: <n> permission_denied: ...`).
+    expect(earlierFingerprints({ functionName: grouped, errorMessage: wrapped })).toEqual(["c7b8aeb9d17f4d18", "e5b422b7044c5b4e"]);
   });
 
   it("gives the fingerprints each earlier version stored for the same occurrence, newest first, the current one left out", () => {
     const current = fingerprintOf(fn, title);
     expect(current).toBe("0e7952de852c22ef");
-    // Version 3 is the current one for a log error; version 2 stored the whole text with its wrappers off, version 1
+    // Versions 3 and 4 are the current one for this line (its function's whole name); version 2 stored the whole text with its wrappers off, version 1
     // the whole text, or the title where the message carried no frames.
     expect(earlierFingerprints({ functionName: fn, errorMessage: title, stackTrace: whole })).toEqual([V2_WHOLE, V1_TITLE, V1_WHOLE]);
   });

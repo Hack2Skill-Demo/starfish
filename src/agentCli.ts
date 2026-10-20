@@ -289,7 +289,7 @@ async function runPass(): Promise<number> {
 
       // Whether a MERGED fix (anyone's merge) was deployed and the error stopped (#390): reads GitHub's deployments of the merge
       // commit, the incident and ingest's checkpoint; records `summary.recovery` on the cycle. Observes only: it never resolves
-      // the incident, reverts or notifies. Without STARFISH_DEPLOY_ENVIRONMENT every merge is reported unverified.
+      // the incident, reverts or notifies. Without STARFISH_DEPLOY_ENVIRONMENT every merge waits as not verified yet (#423).
       try {
         const r = await observeRecoveries({ db, config: cfg, client: github, now: () => new Date() });
         console.log(`agent: recovery: ${r.considered} merged fix(es) observed, ${r.recorded} recorded, ${r.decided.length} reached a final answer`);
@@ -337,8 +337,9 @@ async function runPass(): Promise<number> {
       noteFailedStep(report, "escalation");
     }
 
-    // The guests' trimmed copies (#18) of the newest public records, for writes the pass's own refreshes cannot see (an
-    // operator's triage in the UI) or that failed. Never throws, and never fails the pass: a copy only lags.
+    // The guests' trimmed copies (#18) of the public records written since the last sweep and the newest ones, for
+    // writes the pass's own refreshes cannot see (an operator's triage in the UI) or that failed. Never throws, and
+    // never fails the pass: a copy only lags.
     if (cfg.publicEnvironments.length > 0) {
       const sweep = await syncRecentPublicView(db, cfg);
       console.log(

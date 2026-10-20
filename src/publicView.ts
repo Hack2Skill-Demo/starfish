@@ -236,7 +236,7 @@ const tokenOrNull: Shape = (v) => (v === null ? null : token(v));
  */
 export const PUBLIC_SUMMARY: Readonly<Record<string, Readonly<Record<string, Shape>>>> = {
   // `level` (noise, log, fix, merge) and `mergeCase` (an admin's case id) are engine tokens, not model text.
-  triage: { decision: token, rule: token, model: token, level: tokenOrNull, mergeCase: tokenOrNull, cap: tokenOrNull, capBy: tokenOrNull, capRule: tokenOrNull, counterCount: countOrNull, counterCapped: bool, counterWindow: token, counterCheckedAt: iso },
+  triage: { decision: token, rule: token, model: token, level: tokenOrNull, mergeCase: tokenOrNull, cap: tokenOrNull, capBy: tokenOrNull, capRule: tokenOrNull, counterCount: countOrNull, counterCapped: bool, counterWindow: token, counterCheckedAt: iso, counterRead: bool },
   // `source`, `sourceSearch`: which rule found the source the fixer was shown (#259), engine tokens; `sourceImports` a count (#347).
   fix: { outcome: token, rule: token, model: token, testAdded: boolOrNull, revisions: count, source: token, sourceFiles: count, sourceSearch: token, sourceImports: count },
   verify: { status: token, rule: token, patchSha256: hex, baseRevision: hex, files: count, exitCode: intOrNull, durationMs: nonNegative, isolation: token },
@@ -324,6 +324,10 @@ export function toPublicCycle(d: Record<string, unknown> | undefined, pub: Pick<
   put(out, "outcome", matching(OUTCOME_RE)(d.outcome));
   put(out, "attempts", count(d.attempts));
   put(out, "eventCount", count(d.eventCount));
+  // When the run last settled and how many times it was reopened (#436): a time and a count the engine wrote, so a guest
+  // reads the run's time and its round as the team does.
+  put(out, "settledAt", time(d.settledAt));
+  put(out, "reconsiderCount", count(d.reconsiderCount));
   if (d.synthetic === true) out.synthetic = true;
   return out;
 }

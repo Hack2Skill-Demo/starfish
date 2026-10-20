@@ -118,8 +118,28 @@ const UNHANDLED_ERROR_WRAPPER_RE = /^\s*unhandled error:?\s+/i;
  * and `Errors: ...` are left alone).
  */
 const ERROR_NAME_WRAPPER_RE = /^\s*(?:[A-Z][A-Za-z0-9_$]*)?Error:\s+/;
-/** `<token> failed: `, stripped only when the token IS the function's own name (checked by the caller). */
+/** `<token> failed: `, stripped only when the token names the function itself ({@link namesFunction}, checked by the caller). */
 const FUNCTION_FAILED_WRAPPER_RE = /^\s*([A-Za-z0-9_.-]+) failed:\s+/i;
+
+/**
+ * Which names a `<name> failed: ` wrapper may carry to be the function's own: `full` only its whole canonical name
+ * (versions 2 to 4), `grouped` also what follows one of its `-` (version 5, #463).
+ */
+type OwnNames = "full" | "grouped";
+
+/**
+ * Whether `token` (canonical) names the function `canonicalFn`: its whole name, or, with `grouped`, what follows one of
+ * its `-` (#463). A grouped Firebase export `reports.weeklyDigest` deploys as `reports-weeklyDigest`, while its own
+ * code logs under the name it knows, `weeklyDigest failed: ...`; nested groups (`admin-reports-weeklyDigest`) may log
+ * either tail. Only a whole tail counts: `digest`, the group `reports`, or another export of the group never do.
+ * The canonical spelling maps `_` to `-`, so `send_mail` also takes `mail failed: `: a tail of the function's own name,
+ * folding only two lines of the same function whose cores are the same text.
+ */
+function namesFunction(token: string, canonicalFn: string, ownNames: OwnNames): boolean {
+  if (canonicalFn === "" || token === "") return false;
+  if (token === canonicalFn) return true;
+  return ownNames === "grouped" && canonicalFn.endsWith(`-${token}`);
+}
 
 /**
  * The error's core text: `errorMessage` with the known WRAPPER prefixes taken off its start (#318). One failure
@@ -136,9 +156,10 @@ const FUNCTION_FAILED_WRAPPER_RE = /^\s*([A-Za-z0-9_.-]+) failed:\s+/i;
  *   - an error name and a colon: `Error: `, `TypeError: `, `FirebaseError: ` (a capitalised identifier ending
  *     in `Error`, then whitespace);
  *   - `<function> failed: `, only when `<function>` is this incident's own function under its canonical spelling
- *     (`orders-createOrder` for `orders-createorder`). Any other `x failed: ` (`Upload failed: timeout`,
- *     `order 1001 failed: ...`, another function's name) is ordinary text and is kept, so two distinct failures
- *     never merge.
+ *     (`orders-createOrder` for `orders-createorder`), or the part of its name after a group separator, which is
+ *     what a grouped export's own code calls it (`weeklyDigest` for `reports-weeklyDigest`, #463). Any other
+ *     `x failed: ` (`Upload failed: timeout`, `order 1001 failed: ...`, another function's name, the group's own
+ *     name) is ordinary text and is kept, so two distinct failures never merge.
  * A wrapper is never taken when nothing but whitespace would remain (`Error: ` alone keeps its text).
  *
  * Before any wrapper is looked for, a stack trace the message carries is cut off (#361, `messageTitle` in
@@ -152,14 +173,19 @@ const FUNCTION_FAILED_WRAPPER_RE = /^\s*([A-Za-z0-9_.-]+) failed:\s+/i;
  * the work. Only the fingerprint uses this: the stored message keeps the text as logged, for display.
  */
 export function errorCore(errorMessage: string, functionName: string): string {
-  return withoutWrappers(messageTitle(String(errorMessage ?? "")).substring(0, NORMALIZE_INPUT_CAP), functionName);
+  return coreOf(errorMessage, functionName, "grouped");
+}
+
+/** {@link errorCore}, with `<name> failed: ` taken off under the names `ownNames` allows. */
+function coreOf(errorMessage: string, functionName: string, ownNames: OwnNames): string {
+  return withoutWrappers(messageTitle(String(errorMessage ?? "")).substring(0, NORMALIZE_INPUT_CAP), functionName, ownNames);
 }
 
 /** `text` with the wrappers {@link errorCore} names taken off its start. */
-function withoutWrappers(text: string, functionName: string): string {
+function withoutWrappers(text: string, functionName: string, ownNames: OwnNames): string {
   const fn = canonicalFunctionName(functionName);
   for (let i = 0; i < MAX_ERROR_WRAPPERS; i += 1) {
-    const prefix = wrapperPrefix(text, fn);
+    const prefix = wrapperPrefix(text, fn, ownNames);
     if (prefix === undefined || text.slice(prefix).trim() === "") break;
     text = text.slice(prefix);
   }
@@ -167,11 +193,11 @@ function withoutWrappers(text: string, functionName: string): string {
 }
 
 /** The length of the one wrapper `text` starts with, or undefined when it starts with none. */
-function wrapperPrefix(text: string, canonicalFn: string): number | undefined {
+function wrapperPrefix(text: string, canonicalFn: string, ownNames: OwnNames): number | undefined {
   const plain = UNHANDLED_ERROR_WRAPPER_RE.exec(text) ?? ERROR_NAME_WRAPPER_RE.exec(text);
   if (plain) return plain[0].length;
   const failed = FUNCTION_FAILED_WRAPPER_RE.exec(text);
-  return failed && canonicalFn !== "" && canonicalFunctionName(failed[1]!) === canonicalFn ? failed[0].length : undefined;
+  return failed && namesFunction(canonicalFunctionName(failed[1]!), canonicalFn, ownNames) ? failed[0].length : undefined;
 }
 
 /** sha256 of the canonical function name and the first 100 characters of the normalized text, 16 hex characters. */
@@ -308,7 +334,17 @@ function pre361Messages(source: FingerprintSource): string[] {
 
 /** Wrappers taken off as #318 did, before #361: on the text cut to {@link NORMALIZE_INPUT_CAP}, with no stack cut. */
 function pre361Core(errorMessage: string, functionName: string): string {
-  return withoutWrappers(errorMessage.substring(0, NORMALIZE_INPUT_CAP), functionName);
+  return withoutWrappers(errorMessage.substring(0, NORMALIZE_INPUT_CAP), functionName, "full");
+}
+
+/**
+ * {@link fingerprintOf} as versions 3 and 4 computed it: `<name> failed: ` taken off under the function's whole name
+ * only (before #463). Only a log error's fingerprint differs; every other kind's is the current one.
+ */
+function fingerprintBefore463(source: FingerprintSource): string {
+  const kind = incidentKindOf({ signalSource: source.signalSource });
+  if (kind.fold !== "error-core") return fingerprintOf(source.functionName, source.errorMessage, source.signalSource);
+  return `${kind.prefix}${hashNormalized(source.functionName, coreOf(source.errorMessage, source.functionName, "full"))}`;
 }
 
 /** The overflow message before version 4 (#434): it keyed the fingerprint verbatim, so its exact text is kept here. */
@@ -338,6 +374,7 @@ const unchangedMessageKind = (source: FingerprintSource): string[] => [
  *   2. #318 (2026-10-13): wrappers (`Unhandled error`, `Error: `, `<fn> failed: `) taken off first.
  *   3. #361 (2026-10-14): a stack the message carries cut off; ingest stores the title alone.
  *   4. #434: an overflow incident keyed by function and UTC day, not by its message's wording.
+ *   5. #463: `<fn> failed: ` also taken off under a grouped export's own name (`weeklyDigest` for `reports-weeklyDigest`).
  */
 const FINGERPRINT_VERSIONS: Readonly<Record<number, (source: FingerprintSource) => string[]>> = {
   1: (s) => {
@@ -355,13 +392,14 @@ const FINGERPRINT_VERSIONS: Readonly<Record<number, (source: FingerprintSource) 
   3: (s) => {
     const kind = incidentKindOf({ signalSource: s.signalSource });
     if (kind.id === "overflow") return overflowBeforeV4(s);
-    return [fingerprintOf(s.functionName, s.errorMessage, s.signalSource)];
+    return [fingerprintBefore463(s)];
   },
-  4: (s) => [fingerprintOf(s.functionName, s.errorMessage, s.signalSource)],
+  4: (s) => [fingerprintBefore463(s)],
+  5: (s) => [fingerprintOf(s.functionName, s.errorMessage, s.signalSource)],
 };
 
 /** The version {@link fingerprintOf} computes. */
-export const FINGERPRINT_VERSION = 4;
+export const FINGERPRINT_VERSION = 5;
 
 /**
  * The fingerprints earlier versions gave the occurrence `source` that differ from the current one: newest version

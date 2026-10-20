@@ -75,6 +75,15 @@ const ev = (stage: string, type: string, offsetMs: number, summary = `${stage} $
 });
 
 describe("parseCycle / parseEvent", () => {
+  it("reads when the run settled and how many times it was reopened, and nothing malformed (#436)", () => {
+    const c = parseCycle("inc-1_r0", cycleDoc({ state: "declined", settledAt: ts(T0 + 5000), reconsiderCount: 3 }));
+    expect(c).toMatchObject({ settledAt: new Date(T0 + 5000), reconsiderCount: 3 });
+    const bad = parseCycle("inc-1_r0", cycleDoc({ settledAt: "yesterday", reconsiderCount: -1 }));
+    expect(bad).not.toHaveProperty("settledAt");
+    expect(bad).not.toHaveProperty("reconsiderCount");
+    expect(parseCycle("inc-1_r0", cycleDoc({ reconsiderCount: 0 }))).not.toHaveProperty("reconsiderCount");
+  });
+
   it("reads a cycle and keeps the stage records", () => {
     const c = parseCycle("inc-1_r0", cycleDoc({ path: "pr", outcome: "opened", summary: { pr: { url: "https://x.test/1", number: 1, bad: { nested: 1 } } } }));
     expect(c).toMatchObject({ id: "inc-1_r0", state: "running", path: "pr", outcome: "opened" });
@@ -293,7 +302,8 @@ describe("small helpers", () => {
       const w = buildWaterfall(declined(), events(), T0 + 9 * HOUR);
       const round = (n: number, summary: string, atMs: number, durationMs: number) => {
         const step = { round: n, stage: "triage", title: "Triage", outcome: "decision", summary, at: new Date(T0 + atMs) };
-        return { ...step, durationMs, steps: [{ ...step, failed: false }] };
+        // The engine's words for the reopening that began the round: a first round has none.
+        return { ...step, ...(n > 1 && { began: reopen }), durationMs, steps: [{ ...step, failed: false }] };
       };
       expect(w.earlier).toEqual([
         round(1, "first reason", 11_000, 11_000),
@@ -449,6 +459,20 @@ describe("small helpers", () => {
       expect(w.earlier.map((e) => e.round)).toEqual([3]);
       expect(parseEvent("000001", { seq: 1, stage: "triage", type: "decision", at: { toDate: () => new Date(T0) }, round: 4 })).toMatchObject({ round: 4 });
       expect(parseEvent("000001", { seq: 1, stage: "triage", type: "decision", at: { toDate: () => new Date(T0) }, round: 0 })).not.toHaveProperty("round");
+    });
+
+    it("takes the run's round from the engine's count of reopenings, the count Slack's round number comes from (#436)", () => {
+      // Older events, written before events carried their round, and the page read only the newest of them: one reopening.
+      const w = buildWaterfall({ ...declined(), reconsiderCount: 3 }, [ev("notify", "sent", 5000), ev("cycle", "reconsidered", HOUR, reopen), ev("triage", "decision", HOUR + 3000)], T0 + 9 * HOUR);
+      expect(w.rounds).toBe(4);
+      expect(w.earlier.map((e) => e.round)).toEqual([3]);
+    });
+
+    it("counts the reopenings it read when the page reached the run's first event", () => {
+      const first: EventRow = { ...ev("triage", "decision", 5000), seq: 1 };
+      const w = buildWaterfall({ ...declined(), reconsiderCount: 1 }, [first, ev("cycle", "reconsidered", HOUR, reopen), ev("triage", "decision", HOUR + 3000)], T0 + 9 * HOUR);
+      expect(w.rounds).toBe(2);
+      expect(w.earlier.map((e) => e.round)).toEqual([1]);
     });
 
     it("skips an earlier round that recorded no step, and counts it as a round all the same", () => {
@@ -633,6 +657,9 @@ describe("recoveryView: a merged fix, deployed, and whether the error stopped (#
 
   it("reads each state in plain words, with the facts it rests on", () => {
     expect(recoveryView(withRecovery({ ...base, state: "awaiting-deploy", reason: "waiting-for-deployment" }), NOW)).toMatchObject({ text: "Merged; waiting for the deployment", tone: "info", details: [] });
+    // A configuration gap waits, said as one, never as a verdict (#423).
+    expect(recoveryView(withRecovery({ ...base, state: "awaiting-deploy", reason: "no-deployment-environment" }), NOW)).toMatchObject({ text: expect.stringContaining("not verified yet: no deployment environment is configured"), tone: "neutral" });
+    expect(recoveryView(withRecovery({ ...base, state: "awaiting-deploy", reason: "deploy-unreadable" }), NOW)).toMatchObject({ text: "Merged; not verified yet: GitHub's deployments could not be read", tone: "neutral" });
     const observing = recoveryView(withRecovery({ ...base, state: "observing", reason: "waiting-for-window", deployedAt: at(2 * 3600_000), windowStart: at(110 * 60_000), windowEnd: at(50 * 60_000), expectedOccurrences: 10 }), NOW)!;
     expect(observing).toMatchObject({ text: "Deployed; watching for the error to come back", tone: "info" });
     expect(observing.details).toEqual([expect.stringContaining("Deployed 2h ago"), expect.stringContaining("Judged from"), "About 10 occurrences expected in that window at the error's rate before the merge"]);
@@ -642,7 +669,7 @@ describe("recoveryView: a merged fix, deployed, and whether the error stopped (#
   });
 
   it("names why a fix is unverified, and never as recovered", () => {
-    for (const reason of ["no-deployment-environment", "deploy-failed", "deploy-not-observed", "deploy-unreadable", "incident-gone", "low-traffic", "ingest-not-covering"]) {
+    for (const reason of ["no-deployment-environment", "deploy-failed", "deploy-not-observed", "deploy-unreadable", "incident-gone", "reverted", "low-traffic", "ingest-not-covering"]) {
       const v = recoveryView(withRecovery({ ...base, state: "unverified", reason }), NOW)!;
       expect(v.text.startsWith("Not verified")).toBe(true);
       expect(v.tone).toBe("neutral");

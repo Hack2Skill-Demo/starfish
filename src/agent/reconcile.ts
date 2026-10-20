@@ -10,9 +10,13 @@
  *     that takes deployment and recovery evidence (#9, #11), which this does not have. The PR's state is copied onto
  *     the incident's `githubPrState` for the UI's link, and nothing else of it is written (incidentLinks.ts).
  *   - Go backwards. Observations are ordered by when GitHub was read, and a merge is final (cycle.ts).
- *   - Read without bound. At most `maxPrChecksPerPass` PRs a pass, chosen among the newest `MAX_SCAN` cycles of this
- *     environment, least recently checked first; a PR whose merge and checks are both settled is not read again. A
- *     cycle older than the newest `MAX_SCAN` is not reconciled any more.
+ *   - Read without bound. At most `maxPrChecksPerPass` PRs a pass, the least recently observed first, chosen by the
+ *     cycle's own watch mark (`observedAt.pr`, cycle.ts, #422) however old the cycle is: a PR a person merges weeks
+ *     later is still read. The mark is set when the cycle finishes having opened a PR, moved by every read, and removed
+ *     once nothing about the PR can change that matters (cycle.ts `prWatchEnded`: merged with its checks settled and
+ *     its merge commit kept, or closed unmerged for a week). Until #422 the scan was the newest 200 cycles by
+ *     `updatedAt`, which these reads never move, so an older PR fell out of it; a cycle finished before the mark
+ *     existed is still found (among the first `MAX_SCAN` PR cycles) and gets one on its first read.
  *
  * Polling, not webhooks: a webhook would need a public endpoint and its secret; a pass already runs on a schedule.
  * Never run against real GitHub: tested with a fake GitHub API and the Firestore emulator.
@@ -21,14 +25,20 @@ import type { Firestore } from "firebase-admin/firestore";
 import type { StarfishConfig } from "../config.js";
 import { redactPii } from "../ingest/redact.js";
 import type { CheckRun, GithubClient } from "../integrations/githubPr.js";
-import { recordPrState, type CycleConfig, type CycleKey, type PrStateRecord } from "./cycle.js";
+import { markObserved, observedMs, prWatchEnded, recordPrState, unmarkWatched, type CycleConfig, type CycleKey, type ObservedBy, type PrStateRecord } from "./cycle.js";
 import { linkIncident } from "./incidentLinks.js";
 
 export type ReconcileConfig = Pick<StarfishConfig, "environment" | "verifyChecks" | "verifyCheckApp" | "maxPrChecksPerPass" | "incidentCollection"> & CycleConfig;
 export type PrReader = Pick<GithubClient, "readPullRequest" | "listCheckRuns">;
 
-/** Cycles scanned for an opened PR, newest first. Uses the Runs page's (environment, updatedAt) index. */
+/**
+ * The most cycles one bounded scan of the post-merge watchers reads: cycles finished before their watch mark existed
+ * (#422, here and recoveryStep.ts), and the cycles in a watched record state (autoMerge.ts `cyclesInState`).
+ */
 export const MAX_SCAN = 200;
+
+/** Whether a cycle carries the watch mark `observedAt.<by>` (cycle.ts, #422). */
+export const isMarked = (d: Record<string, unknown>, by: ObservedBy): boolean => (d.observedAt as Record<string, unknown> | undefined)?.[by] !== undefined;
 const MAX_FAILED_NAMES = 300;
 /** Errors after which the rest of the pass would only fail the same way. */
 const STOP_RULES: ReadonlySet<string> = new Set(["unauthorized", "forbidden", "rate-limited"]);
@@ -73,36 +83,53 @@ export interface PrCycle {
   url?: string;
 }
 
-const SETTLED_CHECKS: readonly string[] = ["passed", "failed", "not-configured"];
+/** The PR a finished cycle opened, if it is one reconcile still reads; null otherwise. */
+function prCandidate(id: string, d: Record<string, unknown>): PrCycle | null {
+  const summary = d.summary as { pr?: { opened?: unknown; number?: unknown; url?: unknown }; prState?: Record<string, unknown> } | undefined;
+  const pr = summary?.pr;
+  // A seeded synthetic cycle (seedDemo.ts) names a pull request that does not exist: never read from GitHub (#192).
+  if (d.synthetic === true || d.state !== "done" || pr?.opened !== true || typeof pr.number !== "number" || !Number.isInteger(pr.number) || pr.number < 1) return null;
+  // Nothing left that matters (a merged PR with settled checks and its merge commit kept; one closed for a week).
+  if (prWatchEnded(summary?.prState)) return null;
+  const key =
+    typeof d.incidentId === "string" && typeof d.environment === "string" && Number.isInteger(d.recurrence)
+      ? { incidentId: d.incidentId, environment: d.environment, recurrence: d.recurrence as number }
+      : undefined;
+  const url = typeof pr.url === "string" ? pr.url : undefined;
+  return { cycleId: id, number: pr.number, ...(key && { key }), ...(url !== undefined && { url }) };
+}
 
 /**
- * The finished cycles with an opened PR worth reading again, least recently checked first (never checked first), at
- * most `limit`. A merged PR whose checks are settled is left alone: nothing about it can change that matters here.
+ * The finished cycles with an opened PR worth reading again, least recently observed first (never observed first), at
+ * most `limit` (#422). Two bounded reads: the cycles carrying the watch mark, oldest mark first (the (environment,
+ * observedAt.pr) index), and, for cycles finished before the mark existed, up to `MAX_SCAN` finished PR cycles without
+ * one (equality filters only), ordered by when they were last checked. A marked cycle that turns out to have nothing to
+ * read loses its mark, so it never takes a turn from another.
  */
 export async function selectPrCycles(db: Firestore, cfg: ReconcileConfig, limit: number): Promise<PrCycle[]> {
   if (!Number.isInteger(limit) || limit < 1) return [];
-  const snap = await db.collection(cfg.cycleCollection).where("environment", "==", cfg.environment).orderBy("updatedAt", "desc").limit(MAX_SCAN).get();
-  const found: { cycleId: string; number: number; key?: CycleKey; url?: string; checkedMs: number }[] = [];
-  for (const doc of snap.docs) {
-    const d = doc.data();
-    const pr = d.summary?.pr as { opened?: unknown; number?: unknown; url?: unknown } | undefined;
-    // A seeded synthetic cycle (seedDemo.ts) names a pull request that does not exist: never read from GitHub (#192).
-    if (d.synthetic === true || d.state !== "done" || pr?.opened !== true || typeof pr.number !== "number" || !Number.isInteger(pr.number) || pr.number < 1) continue;
-    const prior = d.summary?.prState as { state?: unknown; checks?: unknown; checkedAt?: unknown } | undefined;
-    // A merged PR whose checks are settled is left alone, once its merge commit is on the record: recovery (#390) matches a
-    // deployment against it, so a merge recorded before that was kept is read once more.
-    const priorMerge = (prior as { mergeCommitSha?: unknown } | undefined)?.mergeCommitSha;
-    if (prior?.state === "merged" && SETTLED_CHECKS.includes(String(prior.checks)) && typeof priorMerge === "string") continue;
-    const checked = typeof prior?.checkedAt === "string" ? Date.parse(prior.checkedAt) : NaN;
-    const key =
-      typeof d.incidentId === "string" && typeof d.environment === "string" && Number.isInteger(d.recurrence)
-        ? { incidentId: d.incidentId, environment: d.environment, recurrence: d.recurrence as number }
-        : undefined;
-    const url = typeof pr.url === "string" ? pr.url : undefined;
-    found.push({ cycleId: doc.id, number: pr.number, ...(key && { key }), ...(url !== undefined && { url }), checkedMs: Number.isFinite(checked) ? checked : -Infinity });
+  const cycles = db.collection(cfg.cycleCollection).where("environment", "==", cfg.environment);
+  const [marked, unmarked] = await Promise.all([
+    cycles.orderBy("observedAt.pr", "asc").limit(limit).get(),
+    cycles.where("state", "==", "done").where("summary.pr.opened", "==", true).limit(MAX_SCAN).get(),
+  ]);
+  const found = new Map<string, PrCycle & { orderMs: number }>();
+  const ended: string[] = [];
+  for (const doc of marked.docs) {
+    const c = prCandidate(doc.id, doc.data());
+    if (c) found.set(doc.id, { ...c, orderMs: observedMs(doc.data(), "pr") });
+    else ended.push(doc.id);
   }
-  return found
-    .sort((a, b) => a.checkedMs - b.checkedMs)
+  for (const doc of unmarked.docs) {
+    const d = doc.data();
+    if (isMarked(d, "pr") || found.has(doc.id)) continue;
+    const c = prCandidate(doc.id, d);
+    const checked = Date.parse(String((d.summary as { prState?: { checkedAt?: unknown } } | undefined)?.prState?.checkedAt ?? ""));
+    if (c) found.set(doc.id, { ...c, orderMs: Number.isFinite(checked) ? checked : -Infinity });
+  }
+  for (const id of ended) await unmarkWatched(db, cfg, id, "pr");
+  return [...found.values()]
+    .sort((a, b) => a.orderMs - b.orderMs)
     .slice(0, limit)
     .map(({ cycleId, number, key, url }) => ({ cycleId, number, ...(key && { key }), ...(url !== undefined && { url }) }));
 }
@@ -148,6 +175,8 @@ export async function reconcilePullRequests(deps: ReconcileDeps): Promise<Reconc
         ...summarizeChecks(runs, cfg.verifyChecks, cfg.verifyCheckApp),
         checkedAt,
       });
+      // A read that wrote nothing still had its turn (#422): to the back of the line, or it would be first every pass.
+      if (!written.ok || !written.applied) await markObserved(db, cfg, cycleId, "pr", new Date(checkedAt));
       if (!written.ok) summary.errors.push({ cycleId, message: `not recorded: ${written.reason}` });
       else {
         if (written.applied) summary.recorded += 1;
@@ -164,6 +193,8 @@ export async function reconcilePullRequests(deps: ReconcileDeps): Promise<Reconc
       }
     } catch (err) {
       summary.errors.push({ cycleId, message: describeError(err) });
+      // A PR that cannot be read (deleted, say) must not hold the head of the line every pass (#422).
+      await markObserved(db, cfg, cycleId, "pr", deps.now());
       const rule = (err as { rule?: unknown } | null)?.rule;
       if (typeof rule === "string" && STOP_RULES.has(rule)) {
         summary.stoppedBecause = rule;

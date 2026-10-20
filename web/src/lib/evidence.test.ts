@@ -157,6 +157,16 @@ describe("buildEvidence", () => {
     expect(cc.note).toMatch(/missing is not zero/);
   });
 
+  it("never says triage waited for a recount it decided without reading (#436)", () => {
+    const missing = stage(buildEvidence(row, cycle({ triage: { decision: "decline", rule: "correction-cap", counterCount: null, counterRead: false } })), "counter-check");
+    expect(missing).toMatchObject({ status: "recorded", fields: [] });
+    expect(missing.note).toMatch(/^Not needed: triage decided before reading/);
+    expect(missing.note).not.toMatch(/waited/);
+    const present = stage(buildEvidence(row, cycle({ triage: { decision: "notify", rule: "high-cardinality-overflow", counterCount: 4, counterWindow: "24h", counterFilter: "f", counterRead: false } })), "counter-check");
+    expect(present.fields[0]).toMatchObject({ label: "Raw-log recount", value: "4" });
+    expect(present.note).toMatch(/decided before reading this recount/);
+  });
+
   it("does not show a number for a run recorded before the recount was kept, or before triage ran", () => {
     expect(stage(buildEvidence(row, cycle({ triage: { decision: "act" } })), "counter-check")).toMatchObject({ status: "not-stored", fields: [] });
     expect(stage(buildEvidence(row, null), "counter-check")).toMatchObject({ status: "not-reached", fields: [] });

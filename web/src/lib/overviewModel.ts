@@ -108,15 +108,16 @@ export interface RunKpis {
   /** Finished runs that failed, including the ones that timed out. */
   failed: Ratio;
   /**
-   * Median of (last write - start) over finished runs, in ms; undefined when there are none. A cycle's last
-   * write is its last event or its release, so for a run waiting on a human this is when the agent stopped.
+   * Median of (settled - start) over finished runs, in ms; undefined when there are none. Settled is when the engine
+   * last ended the run (`settledAt`, #365), so a phone escalation's later events do not lengthen it (#436); a run settled
+   * before the engine kept it falls back to its last write. A reopened run counts from its first start.
    */
   medianRunMs?: number;
 }
 
 export function runKpis(cycles: readonly CycleRow[]): RunKpis {
   const finished = cycles.filter((c) => c.state !== "running");
-  const durations = finished.map((c) => c.updatedAt.getTime() - c.createdAt.getTime()).filter((ms) => ms >= 0);
+  const durations = finished.map((c) => (c.settledAt ?? c.updatedAt).getTime() - c.createdAt.getTime()).filter((ms) => ms >= 0);
   return {
     finished: finished.length,
     pullRequests: { count: finished.filter((c) => c.path === "pr").length, of: finished.length },
