@@ -332,8 +332,8 @@ export interface StarfishConfig {
   /**
    * Recovery observation for MERGED pull requests, whoever merged them (#390, src/agent/recovery.ts). The target's
    * deployment is read from GitHub's Deployments API: the name of the deployment environment its pipeline deploys to
-   * (`production`). Empty by default: no deployment can be confirmed, so a merge is reported `unverified` and never
-   * `recovered`. The token needs read access to deployments.
+   * (`production`). Empty by default: no deployment can be confirmed, so a merge is never `recovered`; it waits as not
+   * verified yet, judged once this is set (within 14 days of the merge, #423). The token needs read access to deployments.
    */
   deployEnvironment: string;
   /**

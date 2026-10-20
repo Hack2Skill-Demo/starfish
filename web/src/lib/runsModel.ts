@@ -402,6 +402,9 @@ export function recoveryView(c: CycleRow, nowMs: number): RecoveryView | undefin
   const reason = String(r.reason ?? "");
   switch (r.state) {
     case "awaiting-deploy":
+      // A configuration gap (#423): not a result, and it is looked at again once a person closes it.
+      if (reason === "no-deployment-environment") return { ...base, tone: "neutral", text: "Merged; not verified yet: no deployment environment is configured, so Starfish cannot tell when the fix went live" };
+      if (reason === "deploy-unreadable") return { ...base, tone: "neutral", text: "Merged; not verified yet: GitHub's deployments could not be read" };
       return { ...base, tone: "info", text: reason === "waiting-for-deployment" ? "Merged; waiting for the deployment" : "Merged; waiting" };
     case "observing":
       return { ...base, tone: "info", text: reason === "waiting-for-ingest" ? "Deployed; quiet so far, waiting for ingest to read through the window" : "Deployed; watching for the error to come back" };

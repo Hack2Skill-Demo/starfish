@@ -115,8 +115,11 @@ Recovery has three pieces. All three are built; none has run against a real serv
    - **recurred:** the incident was seen again after the deployment and `STARFISH_RECOVERY_GRACE_MINUTES` (5) for the old revision to
      drain, from the incident's latest occurrence (which never moves back) or a regression the ingest marked. It does not wait for
      the window to end.
-   - **unverified, with a reason, never recovered:** no deployment environment is configured; the deployment failed, was not seen,
-     or could not be read within `STARFISH_RECOVERY_GIVE_UP_HOURS` (24) of the merge; the incident was retired or is gone (a
+   - **not verified yet, a configuration gap (#423):** no deployment environment is configured, or GitHub's deployments could not
+     be read past `STARFISH_RECOVERY_GIVE_UP_HOURS`. It waits (`awaiting-deploy`, with the reason) and is judged once a person
+     closes the gap, if that is within 14 days of the merge; after that it is unverified.
+   - **unverified, with a reason, never recovered:** the deployment failed or was not seen within `STARFISH_RECOVERY_GIVE_UP_HOURS`
+     (24) of the merge; a configuration gap still open 14 days after it; the incident was retired or is gone (a
      recurrence would be a new incident); the error was too rare for silence to mean anything (the window it would need is longer
      than the give-up time); ingest did not read through the window within a day of its end.
 
@@ -125,7 +128,8 @@ Recovery has three pieces. All three are built; none has run against a real serv
 
 **What the recovery check cannot do, and does not claim.**
 - It needs the target's pipeline to record a GitHub deployment (a workflow job that runs in an `environment:`; demo-app's does) and
-  the agent's token to read deployments; without either the answer is `unverified`, never a guess. Neither is set up in the demo
+  the agent's token to read deployments; without either the answer is "not verified yet" (then `unverified` 14 days after the
+  merge), never a guess. Neither is set up in the demo
   deployment yet: the variable `STARFISH_DEPLOY_ENVIRONMENT` is not among the ones the team lists, and the token's scope for
   deployments is unknown.
 - "The error did not show in a window where about N occurrences were expected" is evidence (about a `exp(-N)` chance of seeing none

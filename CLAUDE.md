@@ -311,8 +311,9 @@ src/
                    recurred, or unverified with a reason, never recovered from silence (the window starts at the deployment's
                    completion + `STARFISH_RECOVERY_GRACE_MINUTES`, is `STARFISH_RECOVERY_QUIET_MINUTES` lengthened until the error's
                    pre-merge rate, recorded once as a baseline, expects `STARFISH_RECOVERY_MIN_EXPECTED` occurrences, and ingest's
-                   checkpoint must have read through it; too rare, retired, no environment, no deployment seen, or unreadable =
-                   unverified). Observes only: never resolves, reverts, merges or notifies. The Runs and evidence pages show it; the
+                   checkpoint must have read through it; too rare, retired, no deployment seen, or a failed one = unverified; no
+                   environment or deployments unreadable are configuration gaps, #423: awaiting-deploy with that reason, read again
+                   once a person closes the gap, unverified only 14 days after the merge, `CONFIG_GAP_GIVE_UP_MS`). Observes only: never resolves, reverts, merges or notifies. The Runs and evidence pages show it; the
                    guests' copy carries the answer, reason and times. Pure decision unit-tested; the whole sequence (a person's merge,
                    the deployment, recovered, recurred, every unverified path) emulator-tested against a fake GitHub; never run against real GitHub
   agent/incidentLinks.ts  copies the issue and PR (number, URL, state) from the cycle onto the incident for the UI's links (#194):
@@ -636,7 +637,9 @@ Facts the team has confirmed (2026-10-15/16). Don't ask them again; check here f
   demo-app deploys on merge to its `main`.
 - **Recovery of merged fixes (#390) is built and off here:** `STARFISH_DEPLOY_ENVIRONMENT` (repo variable, `production` for demo-app, whose
   deploy job runs in `environment: production`) is not among the variables listed above, and whether the agent's GitHub token can read
-  deployments is unknown. Until both are done every merge is reported `unverified`. Setting it is a person's step (`docs/deploy.md`).
+  deployments is unknown. Until both are done every merge waits as "not verified yet" (`awaiting-deploy`, #423) and is judged once
+  they are, if that is within 14 days of the merge; a merge recorded `unverified` for this before #423 is read again the same way.
+  Setting it is a person's step (`docs/deploy.md`).
 - **Not known here:** the admin's merge cases (Settings → Auto-merge); the full `STARFISH_AGENT_EXTRA_ENV_VARS`. Ask for these
   only when a task needs them.
 - **Assumptions that turned out wrong, so don't repeat them:** that the team deploys the engine from a terminal (GitHub does);

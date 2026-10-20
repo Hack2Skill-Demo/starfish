@@ -41,6 +41,7 @@ import { clipWellFormed, isSensitiveKey } from "../ingest/redact.js";
 import type { PublicViewConfig } from "../publicView.js";
 import { refreshPublicCycle, writePublicEventInTx } from "../publicViewStore.js";
 import { ROUND_SCOPED_RECORDS, isReopenable, roundOf, type CycleState } from "./cycleStates.js";
+import { isFinalRecovery } from "./recovery.js";
 import { MAX_DECISION_HISTORY, reconsiderTrigger, recentReconsiderations, utcDay, type ReconsiderPolicy, type ReconsiderTrigger } from "./reconsider.js";
 
 /** With the public-view settings: a cycle of a public environment keeps its guest copy up to date (src/publicView.ts, #18). */
@@ -701,13 +702,13 @@ export type RecoveryWrite =
   | { ok: false; reason: "no-such-cycle" | "not-merged" | "invalid" };
 
 const RECOVERY_STATES: readonly string[] = ["awaiting-deploy", "observing", "recovered", "recurred", "unverified"];
-const RECOVERY_FINAL: readonly string[] = ["recovered", "recurred", "unverified"];
 
 /**
  * Record a merged fix's recovery state on its finished cycle. Like `recordPrState`: no lease (the cycle is done), only
  * `summary.recovery` is written, in a transaction, and only for the merge `summary.prState` recorded. It never changes the
  * cycle's state, path, outcome or `updatedAt`, and never touches the incident: an observation is not a resolution.
- *   - a result already final (`recovered`, `recurred`, `unverified`) is never replaced: it is a fact about what was seen then;
+ *   - a result already final (`recovered`, `recurred`, `unverified`; recovery.ts `isFinalRecovery`, which does not count a
+ *     configuration gap recorded before its bound, #423) is never replaced: it is a fact about what was seen then;
  *   - one read no later than the recorded one is ignored (`stale`).
  */
 export async function recordRecovery(db: Firestore, cfg: CycleConfig, id: string, observed: RecoveryRecord): Promise<RecoveryWrite> {
@@ -726,10 +727,10 @@ export async function recordRecovery(db: Firestore, cfg: CycleConfig, id: string
   const record = sanitizeFlat({ ...observed });
   return updateSettledCycle(db, cfg, id, new Date(observed.checkedAt), async (_tx, d): Promise<SettledUpdate<RecoveryWrite>> => {
     if (d === undefined) return { result: { ok: false, reason: "no-such-cycle" } };
-    const summary = (d.summary ?? {}) as { prState?: { state?: unknown; mergeCommitSha?: unknown }; recovery?: { state?: unknown; checkedAt?: unknown } };
+    const summary = (d.summary ?? {}) as { prState?: { state?: unknown; mergeCommitSha?: unknown }; recovery?: Record<string, unknown> };
     if (d.state !== "done" || summary.prState?.state !== "merged" || summary.prState.mergeCommitSha !== observed.mergeCommitSha) return { result: { ok: false, reason: "not-merged" } };
     const prior = summary.recovery;
-    if (typeof prior?.state === "string" && RECOVERY_FINAL.includes(prior.state)) return { result: { ok: true, applied: false, reason: "final" } };
+    if (isFinalRecovery(prior)) return { result: { ok: true, applied: false, reason: "final" } };
     const priorAt = isoMs(prior?.checkedAt);
     if (priorAt !== null && isoMs(observed.checkedAt)! <= priorAt) return { result: { ok: true, applied: false, reason: "stale" } };
     return { result: { ok: true, applied: true }, records: { recovery: record } };

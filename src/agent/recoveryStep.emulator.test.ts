@@ -14,6 +14,7 @@ import { GithubError, type DeploymentObservation } from "../integrations/githubP
 import { stateDocId } from "../ingest/run.js";
 import { PUBLIC_VIEW_OFF } from "../testConfig.js";
 import { recordRecovery } from "./cycle.js";
+import { CONFIG_GAP_GIVE_UP_MS } from "./recovery.js";
 import { observeRecoveries, selectMergedCycles, type DeploymentReader, type RecoveryStepConfig } from "./recoveryStep.js";
 
 if (!process.env.FIRESTORE_EMULATOR_HOST) {
@@ -195,14 +196,38 @@ describe("what it will not call recovered", () => {
     expect(await recovery("inc1_r0")).toMatchObject({ state: "unverified", reason: "low-traffic" });
   });
 
-  it("not with no deployment environment configured: every merge is unverified, and GitHub is not asked", async () => {
+  it("not with no deployment environment configured: it waits, GitHub is not asked, and once a person sets one it is judged (#423)", async () => {
     cfg = { ...cfg, deployEnvironment: "" };
     await seedIncident("inc1");
     await seedCycle("inc1_r0");
+    await seedCheckpoint(T_END + 5 * MIN);
     const gh = fakeGithub(deployedObs);
     await observe(gh.client, DEPLOYED + 3 * HOUR);
     expect(gh.calls).toEqual([]);
-    expect(await recovery("inc1_r0")).toMatchObject({ state: "unverified", reason: "no-deployment-environment" });
+    expect(await recovery("inc1_r0")).toMatchObject({ state: "awaiting-deploy", reason: "no-deployment-environment", baselineTaken: true });
+    // Days on, still unset: still waiting, never a final answer (the gap is a person's to close).
+    await observe(gh.client, MERGED + 3 * 24 * HOUR);
+    expect(await recovery("inc1_r0")).toMatchObject({ state: "awaiting-deploy", reason: "no-deployment-environment" });
+    // A person sets it: the merge is read again, its deployment found and judged.
+    cfg = { ...cfg, deployEnvironment: "production" };
+    const r = await observe(gh.client, MERGED + 3 * 24 * HOUR + HOUR);
+    expect(gh.calls).toHaveLength(1);
+    expect(r.decided).toEqual([{ cycleId: "inc1_r0", state: "recovered" }]);
+    expect(await recovery("inc1_r0")).toMatchObject({ state: "recovered", deployedAt: new Date(DEPLOYED).toISOString() });
+  });
+
+  it("re-reads a merge recorded unverified for a configuration gap before #423, and leaves one past the gap's bound final", async () => {
+    await seedIncident("inc1");
+    await seedCycle("inc1_r0");
+    await seedCycle("inc1_r1", { recurrence: 1 });
+    const old = (checkedAt: number) => ({ state: "unverified", reason: "no-deployment-environment", mergeCommitSha: MERGE_SHA, mergedAt: new Date(MERGED).toISOString(), baselineTaken: true, baselinePerHour: 10, baselineHours: 24, checkedAt: new Date(checkedAt).toISOString() });
+    await db.collection(cfg.cycleCollection).doc("inc1_r0").update({ "summary.recovery": old(MERGED + HOUR) });
+    await db.collection(cfg.cycleCollection).doc("inc1_r1").update({ "summary.recovery": old(MERGED + CONFIG_GAP_GIVE_UP_MS) });
+    await seedCheckpoint(T_END + 5 * MIN);
+    expect((await selectMergedCycles(db, cfg, 10)).map((c) => c.cycleId)).toEqual(["inc1_r0"]);
+    await observe(fakeGithub(deployedObs).client, MERGED + 2 * 24 * HOUR);
+    expect(await recovery("inc1_r0")).toMatchObject({ state: "recovered" });
+    expect(await recovery("inc1_r1")).toMatchObject({ state: "unverified", reason: "no-deployment-environment" });
   });
 
   it("not for a merge nobody can see deployed: it waits, then says so, naming a failed deployment as one", async () => {
@@ -238,10 +263,16 @@ describe("a GitHub that cannot be read", () => {
     expect(r.errors).toHaveLength(1);
     const first = (await Promise.all(["inc1_r0", "inc2_r0"].map(recovery))).find((x) => x !== undefined)!;
     expect(first).toMatchObject({ state: "awaiting-deploy", readError: "forbidden" });
-    // A day on, still unreadable: it says so rather than "never deployed".
+    // A day on, still unreadable: it says so rather than "never deployed", and keeps waiting: a permission is a gap a
+    // person can close, not a fact about the fix (#423).
     await observe(fakeGithub(new GithubError("forbidden", "x")).client, MERGED + 25 * HOUR);
     const states = await Promise.all(["inc1_r0", "inc2_r0"].map(recovery));
-    expect(states.some((s) => s && s.state === "unverified" && s.reason === "deploy-unreadable")).toBe(true);
+    expect(states.some((s) => s && s.state === "awaiting-deploy" && s.reason === "deploy-unreadable")).toBe(true);
+    expect(states.some((s) => s && s.state === "unverified")).toBe(false);
+    // The bound: still unreadable that long after the merge, it is final.
+    for (let i = 0; i < 2; i++) await observe(fakeGithub(new GithubError("forbidden", "x")).client, MERGED + CONFIG_GAP_GIVE_UP_MS + i * HOUR);
+    for (const id of ["inc1_r0", "inc2_r0"]) expect(await recovery(id)).toMatchObject({ state: "unverified", reason: "deploy-unreadable" });
+    expect(await selectMergedCycles(db, cfg, 10)).toEqual([]);
   });
 });
 

@@ -9,6 +9,8 @@
  *   - Write to GitHub (one GET family: deployments, their statuses, a compare), change the incident, resolve it, revert,
  *     merge or notify. It observes.
  *   - Decide a result twice: a `recovered`, `recurred` or `unverified` record is final and its cycle is not read again.
+ *     A configuration gap (no deployment environment, deployments unreadable) is not a result: it waits, and is read
+ *     again, until its bound (recovery.ts `CONFIG_GAP_GIVE_UP_MS`, #423).
  *   - Read without bound: at most `maxPrChecksPerPass` cycles a pass, among the newest `MAX_SCAN` of this environment, the
  *     least recently checked first; a deployment once found is recorded and not read again.
  *   - Take the baseline twice: the error's rate before the merge is recorded the first time the merge is seen, because the
@@ -23,7 +25,7 @@ import { readIngestCheckpoint } from "../ingest/run.js";
 import { redactPii } from "../ingest/redact.js";
 import type { GithubClient } from "../integrations/githubPr.js";
 import { recordRecovery, type CycleConfig, type RecoveryRecord } from "./cycle.js";
-import { baselineBefore, decideRecovery, FINAL_STATES, type Baseline, type DeploymentFact, type RecoveryConfig } from "./recovery.js";
+import { baselineBefore, decideRecovery, FINAL_STATES, isFinalRecovery, type Baseline, type DeploymentFact, type RecoveryConfig } from "./recovery.js";
 import { MAX_SCAN } from "./reconcile.js";
 
 export type RecoveryStepConfig = Pick<StarfishConfig, "environment" | "incidentCollection" | "runCollection" | "watchedProjectId" | "maxPrChecksPerPass"> & RecoveryConfig & CycleConfig;
@@ -83,7 +85,7 @@ export async function selectMergedCycles(db: Firestore, cfg: Pick<RecoveryStepCo
     const prior = rec(summary.recovery);
     // A record for another merge (the PR cannot be merged twice, so this is a hand edit) is not trusted: start again.
     const own = prior.mergeCommitSha === sha ? prior : {};
-    if (typeof own.state === "string" && (FINAL_STATES as readonly string[]).includes(own.state)) continue;
+    if (isFinalRecovery(own)) continue;
     const checked = isoMs(own.checkedAt);
     found.push({ cycleId: doc.id, incidentId: d.incidentId, recurrence: d.recurrence as number, mergeCommitSha: sha, mergedAt: new Date(mergedMs).toISOString(), prior: own, checkedMs: checked ?? -Infinity });
   }

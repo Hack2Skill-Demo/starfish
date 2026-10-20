@@ -657,6 +657,9 @@ describe("recoveryView: a merged fix, deployed, and whether the error stopped (#
 
   it("reads each state in plain words, with the facts it rests on", () => {
     expect(recoveryView(withRecovery({ ...base, state: "awaiting-deploy", reason: "waiting-for-deployment" }), NOW)).toMatchObject({ text: "Merged; waiting for the deployment", tone: "info", details: [] });
+    // A configuration gap waits, said as one, never as a verdict (#423).
+    expect(recoveryView(withRecovery({ ...base, state: "awaiting-deploy", reason: "no-deployment-environment" }), NOW)).toMatchObject({ text: expect.stringContaining("not verified yet: no deployment environment is configured"), tone: "neutral" });
+    expect(recoveryView(withRecovery({ ...base, state: "awaiting-deploy", reason: "deploy-unreadable" }), NOW)).toMatchObject({ text: "Merged; not verified yet: GitHub's deployments could not be read", tone: "neutral" });
     const observing = recoveryView(withRecovery({ ...base, state: "observing", reason: "waiting-for-window", deployedAt: at(2 * 3600_000), windowStart: at(110 * 60_000), windowEnd: at(50 * 60_000), expectedOccurrences: 10 }), NOW)!;
     expect(observing).toMatchObject({ text: "Deployed; watching for the error to come back", tone: "info" });
     expect(observing.details).toEqual([expect.stringContaining("Deployed 2h ago"), expect.stringContaining("Judged from"), "About 10 occurrences expected in that window at the error's rate before the merge"]);

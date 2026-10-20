@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { baselineBefore, decideRecovery, INGEST_GIVE_UP_MS, SETTLE_MS, seenAfter, type DeploymentFact, type RecoveryConfig, type RecoveryInput } from "./recovery.js";
+import { baselineBefore, CONFIG_GAP_GIVE_UP_MS, decideRecovery, INGEST_GIVE_UP_MS, isFinalRecovery, SETTLE_MS, seenAfter, type DeploymentFact, type RecoveryConfig, type RecoveryInput } from "./recovery.js";
 
 const MIN = 60_000;
 const HOUR = 60 * MIN;
@@ -17,8 +17,13 @@ function input(over: Partial<RecoveryInput> = {}): RecoveryInput {
 }
 
 describe("decideRecovery: before a deployment", () => {
-  it("cannot confirm anything with no deployment environment configured, and never says recovered", () => {
-    expect(decideRecovery(input({ cfg: { ...CFG, deployEnvironment: "" } }))).toEqual({ state: "unverified", reason: "no-deployment-environment" });
+  it("waits, never final, with no deployment environment configured: a gap a person can close, not a fact about the fix (#423)", () => {
+    const none = { ...CFG, deployEnvironment: "" };
+    expect(decideRecovery(input({ cfg: none }))).toEqual({ state: "awaiting-deploy", reason: "no-deployment-environment" });
+    expect(decideRecovery(input({ cfg: none, nowMs: MERGED + 25 * HOUR }))).toEqual({ state: "awaiting-deploy", reason: "no-deployment-environment" });
+    expect(decideRecovery(input({ cfg: none, nowMs: MERGED + CONFIG_GAP_GIVE_UP_MS - 1 }))).toEqual({ state: "awaiting-deploy", reason: "no-deployment-environment" });
+    // The bound: a gap still open that long after the merge is final.
+    expect(decideRecovery(input({ cfg: none, nowMs: MERGED + CONFIG_GAP_GIVE_UP_MS }))).toEqual({ state: "unverified", reason: "no-deployment-environment" });
   });
 
   it("is unverified when the incident is gone or retired: a recurrence would be a new incident it cannot see", () => {
@@ -33,7 +38,10 @@ describe("decideRecovery: before a deployment", () => {
 
   it("names a failed deployment, and an unreadable Deployments API, when it gives up, never as 'none'", () => {
     expect(decideRecovery(input({ nowMs: MERGED + 25 * HOUR, deployment: { state: "failed" } }))).toEqual({ state: "unverified", reason: "deploy-failed" });
-    expect(decideRecovery(input({ nowMs: MERGED + 25 * HOUR, deployment: { state: "unreadable" } }))).toEqual({ state: "unverified", reason: "deploy-unreadable" });
+    // Deployments that cannot be read (a token without the permission) is a gap too: it waits, named, until its bound (#423).
+    expect(decideRecovery(input({ nowMs: MERGED + 2 * HOUR, deployment: { state: "unreadable" } }))).toEqual({ state: "awaiting-deploy", reason: "waiting-for-deployment" });
+    expect(decideRecovery(input({ nowMs: MERGED + 25 * HOUR, deployment: { state: "unreadable" } }))).toEqual({ state: "awaiting-deploy", reason: "deploy-unreadable" });
+    expect(decideRecovery(input({ nowMs: MERGED + CONFIG_GAP_GIVE_UP_MS, deployment: { state: "unreadable" } }))).toEqual({ state: "unverified", reason: "deploy-unreadable" });
     expect(decideRecovery(input({ nowMs: MERGED + 2 * HOUR, deployment: { state: "failed" } }))).toMatchObject({ state: "awaiting-deploy" });
   });
 
@@ -140,5 +148,28 @@ describe("seenAfter", () => {
     expect(seenAfter({ lastOccurredAt: new Date(start).toISOString() }, start, 0)).toBeUndefined();
     expect(seenAfter({}, start, 0)).toBeUndefined();
     expect(seenAfter({ lastOccurredAt: "garbage" }, start, 0)).toBeUndefined();
+  });
+});
+
+describe("isFinalRecovery (#423)", () => {
+  const mergedAt = new Date(MERGED).toISOString();
+  const at = (ms: number) => new Date(ms).toISOString();
+  it("is final for a fact, never for a state that still waits", () => {
+    for (const state of ["recovered", "recurred"]) expect(isFinalRecovery({ state, mergedAt, checkedAt: at(MERGED + HOUR) })).toBe(true);
+    for (const reason of ["incident-gone", "deploy-failed", "deploy-not-observed", "low-traffic", "ingest-not-covering"]) {
+      expect(isFinalRecovery({ state: "unverified", reason, mergedAt, checkedAt: at(MERGED + HOUR) })).toBe(true);
+    }
+    for (const state of ["awaiting-deploy", "observing"]) expect(isFinalRecovery({ state, reason: "no-deployment-environment", mergedAt, checkedAt: at(MERGED) })).toBe(false);
+    expect(isFinalRecovery(undefined)).toBe(false);
+    expect(isFinalRecovery({})).toBe(false);
+  });
+
+  it("reads a configuration gap recorded unverified before its bound (as before #423) as still waiting, and one at its bound as final", () => {
+    for (const reason of ["no-deployment-environment", "deploy-unreadable"]) {
+      expect(isFinalRecovery({ state: "unverified", reason, mergedAt, checkedAt: at(MERGED + HOUR) })).toBe(false);
+      expect(isFinalRecovery({ state: "unverified", reason, mergedAt, checkedAt: at(MERGED + CONFIG_GAP_GIVE_UP_MS) })).toBe(true);
+      // Times it cannot read: not trusted to reopen anything.
+      expect(isFinalRecovery({ state: "unverified", reason, mergedAt: "garbage", checkedAt: at(MERGED + HOUR) })).toBe(true);
+    }
   });
 });

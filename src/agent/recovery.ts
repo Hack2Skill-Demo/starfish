@@ -2,7 +2,9 @@
  * Recovery of a MERGED fix (#390): was it deployed, and did the error stop? For every pull request Starfish opened that has
  * been merged, by Starfish or by a person, this says one of:
  *
- *   - `awaiting-deploy`  merged; no deployment of the merge commit has completed yet (reading GitHub's Deployments API).
+ *   - `awaiting-deploy`  merged; no deployment of the merge commit has completed yet (reading GitHub's Deployments API), or
+ *                        Starfish cannot look yet: no deployment environment is configured, or GitHub's deployments
+ *                        could not be read (`reason`). Those are configuration gaps, not facts about the fix (#423).
  *   - `observing`        deployed at `deployedAt`; the quiet window, or ingest's read of the logs through it, is not done.
  *   - `recovered`        deployed, the window passed with ingest having read through it, the error did not come back, and
  *                        the error's rate before the merge says it would have shown if the fix had not worked.
@@ -51,6 +53,16 @@ export type RecoveryReason =
 export const FINAL_STATES: readonly RecoveryState[] = ["recovered", "recurred", "unverified"];
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
+/**
+ * The reasons that are configuration gaps, not facts (#423): nothing was learned about the fix, only that Starfish could
+ * not look (no deployment environment named, or a token that cannot read deployments). A person can close the gap, so
+ * these never make a record final while the gap may still close: a merge waits `awaiting-deploy` with the reason, and is
+ * looked at again once the gap is closed. The bound: `CONFIG_GAP_GIVE_UP_MS` after the merge, a gap still open is
+ * recorded `unverified` with the same reason, and that is final (a deployment that old is past what
+ * githubPr.ts `deploymentOfCommit` reads anyway). Until then it is read at the watchers' bounded pace (recoveryStep.ts).
+ */
+export const CONFIG_GAP_REASONS: readonly RecoveryReason[] = ["no-deployment-environment", "deploy-unreadable"];
+export const CONFIG_GAP_GIVE_UP_MS = 14 * 24 * HOUR;
 /** After the window ends, wait this long for a late log entry before reading the checkpoint as having covered it. */
 export const SETTLE_MS = 10 * MINUTE;
 /** A window ingest still has not read through a day after it ended is `unverified: ingest-not-covering` (as fastRevert.ts does). */
@@ -115,6 +127,20 @@ const ms = (v: unknown): number | undefined => {
 };
 
 /**
+ * Whether a recorded `summary.recovery` is final: decided, never replaced (cycle.ts `recordRecovery`) and never read
+ * again (recoveryStep.ts). `recovered`, `recurred` and `unverified` are, except an `unverified` configuration gap
+ * (`CONFIG_GAP_REASONS`) checked before `CONFIG_GAP_GIVE_UP_MS` after the merge: today's code never records one, but a
+ * record from before #423 did, the moment the gap was seen, and it is read again once the gap is closed. Pure.
+ */
+export function isFinalRecovery(r: Record<string, unknown> | undefined): boolean {
+  if (typeof r?.state !== "string" || !(FINAL_STATES as readonly string[]).includes(r.state)) return false;
+  if (r.state !== "unverified" || !(CONFIG_GAP_REASONS as readonly unknown[]).includes(r.reason)) return true;
+  const merged = ms(r.mergedAt);
+  const checked = ms(r.checkedAt);
+  return merged === undefined || checked === undefined || checked >= merged + CONFIG_GAP_GIVE_UP_MS;
+}
+
+/**
  * The error's rate before the merge, from the incident's hourly buckets: the hours wholly before `mergedAtMs`, within a day
  * of it, from the hour the incident first occurred. Null when the buckets say nothing usable. Each ingest window's count is
  * put in the hour of its latest occurrence (store.ts), so this is an estimate, and `decideRecovery` treats it as one.
@@ -157,13 +183,17 @@ export function decideRecovery(i: RecoveryInput): RecoveryDecision {
   const { cfg } = i;
   const giveUpMs = i.mergedAtMs + cfg.recoveryGiveUpHours * HOUR;
 
+  // A configuration gap waits for a person to close it, up to its own bound (#423); only then is it final.
+  const gap = (reason: RecoveryReason): RecoveryDecision => ({ state: i.nowMs >= i.mergedAtMs + CONFIG_GAP_GIVE_UP_MS ? "unverified" : "awaiting-deploy", reason });
+
   if (i.incident === null || i.incident.retired === true) return { state: "unverified", reason: "incident-gone" };
-  if (cfg.deployEnvironment === "") return { state: "unverified", reason: "no-deployment-environment" };
+  if (cfg.deployEnvironment === "") return gap("no-deployment-environment");
 
   const d = i.deployment;
   if (d.state !== "deployed") {
     if (i.nowMs >= giveUpMs) {
-      return { state: "unverified", reason: d.state === "failed" ? "deploy-failed" : d.state === "unreadable" ? "deploy-unreadable" : "deploy-not-observed" };
+      if (d.state === "unreadable") return gap("deploy-unreadable");
+      return { state: "unverified", reason: d.state === "failed" ? "deploy-failed" : "deploy-not-observed" };
     }
     return { state: "awaiting-deploy", reason: "waiting-for-deployment" };
   }
