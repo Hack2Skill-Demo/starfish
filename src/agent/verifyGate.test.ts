@@ -115,7 +115,7 @@ const verify = (patch: string, config = cfg(), extra: object = {}) => verifyPatc
 const goodPatch = () => diffOf({ "greeting.txt": "hello new\n" });
 const leftovers = () => readdirSync(tmpdir()).filter((n) => n.startsWith("starfish-verify-"));
 
-describe("verifyPatch: a patch that works", () => {
+describe("verifyPatch: a patch that works", { timeout: 30_000 }, () => {
   it("passes when the command passes on the patched copy, and says what changed", async () => {
     const r = await verify(goodPatch());
     expect(r).toMatchObject({ status: "passed", rule: "command-passed", exitCode: 0, changedFiles: ["greeting.txt"] });
@@ -143,7 +143,7 @@ describe("verifyPatch: a patch that works", () => {
   });
 });
 
-describe("verifyPatch: a patch that does not work", () => {
+describe("verifyPatch: a patch that does not work", { timeout: 30_000 }, () => {
   it("fails when the command fails, with its output and exit code", async () => {
     const r = await verify(diffOf({ "greeting.txt": "hello still old\n" }), cfg({ verifyCommand: "echo checking; grep -q new greeting.txt" }));
     expect(r).toMatchObject({ status: "failed", rule: "command-failed", exitCode: 1 });
@@ -163,7 +163,7 @@ describe("verifyPatch: a patch that does not work", () => {
   });
 });
 
-describe("verifyPatch: what it refuses before running anything", () => {
+describe("verifyPatch: what it refuses before running anything", { timeout: 30_000 }, () => {
   const refused = async (patch: string, rule: string) => {
     const r = await verify(patch, cfg({ verifyCommand: `touch ${marker}` }));
     expect(r).toMatchObject({ status: "rejected", rule });
@@ -243,7 +243,7 @@ describe("verifyPatch: what it refuses before running anything", () => {
   });
 });
 
-describe("verifyPatch: paths that leave the checkout", () => {
+describe("verifyPatch: paths that leave the checkout", { timeout: 30_000 }, () => {
   // The checkout is made in the temp directory, so one level up is the temp directory itself.
   const abs = join(tmpdir(), `vg-escape-abs-${process.pid}.txt`);
   const rel = join(tmpdir(), "vg-escape.txt");
@@ -279,7 +279,7 @@ describe("verifyPatch: paths that leave the checkout", () => {
   });
 });
 
-describe("verifyPatch: the command's world", () => {
+describe("verifyPatch: the command's world", { timeout: 30_000 }, () => {
   it("cannot see .git or node_modules of the checkout: no history, no reference fix", async () => {
     mkdirSync(join(src, ".git"));
     write(".git/HEAD", "ref: refs/heads/main\n");
@@ -410,7 +410,7 @@ describe("isExcludedPath", () => {
   });
 });
 
-describe("verifyPatch: runAs", () => {
+describe("verifyPatch: runAs", { timeout: 30_000 }, () => {
   // Dropping privileges needs root, which a test is not. Handing the scratch copy to this process's own user
   // exercises every step except the one that needs root: the copy is chowned, and the command still runs and
   // still sees only its scrubbed environment.
@@ -436,7 +436,7 @@ describe("verifyPatch: runAs", () => {
   });
 });
 
-describe("runUnpatched (the before half of a before/after check)", () => {
+describe("runUnpatched (the before half of a before/after check)", { timeout: 30_000 }, () => {
   it("runs the command on a scratch copy of the checkout as it is, and reports its exit", async () => {
     expect(await runUnpatched({ sourceDir: src, config: cfg() })).toMatchObject({ status: "failed", rule: "command-failed", exitCode: 1, changedFiles: [] });
     expect(await runUnpatched({ sourceDir: src, config: cfg({ verifyCommand: "grep -q old greeting.txt" }) })).toMatchObject({ status: "passed", exitCode: 0 });

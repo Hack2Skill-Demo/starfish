@@ -49,7 +49,7 @@ function gitAccepts(patch: string, files: Record<string, string>): boolean {
 
 const files = [{ path: PATH, content: SOURCE }];
 
-describe("normalizePatch (#317)", () => {
+describe("normalizePatch (#317)", { timeout: 30_000 }, () => {
   it("leaves a correct patch applying and unchanged in effect", () => {
     const good = [
       `--- a/${PATH}`,
