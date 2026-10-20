@@ -867,7 +867,8 @@ kill switch, the auto-merge switches), On-call (phone numbers and the Twilio rou
   --collection-group=starfish_public_actions --enable-ttl --database=<db>`); without one, one small document per address and
   hour stays. The per-minute limit above still applies first. A claimed call that then fails still counts. There is no
   deployment-wide cap on ingest runs: each is the scheduled run, one at a time per instance.
-- **Reads**: as it starts, the admin API writes `starfish_runs/public_access` (`{enabled, environment}`, `STARFISH_RUN_COLLECTION`),
+- **Reads**: as it starts, and at each visitor's call from the runtime settings that call resolved (so it follows a change
+  of the environment in Settings, #430), the admin API writes `starfish_runs/public_access` (`{enabled, environment}`, `STARFISH_RUN_COLLECTION`),
   a document only the engine writes. `firestore.rules` let a guest read the demo's stored incidents, their corrections,
   cycles and run events only while it says `enabled: true, environment: 'demo'`, and still only the `demo` environment, a
   query's limit at most 500. Turned off, the next start of the admin API writes `enabled: false`; a deploy starts a new

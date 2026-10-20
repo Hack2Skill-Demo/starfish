@@ -12,17 +12,20 @@
  * anonymous account, and recording refusals would let them fill the audit trail at will (as src/oncall/optIn.ts).
  *
  * Each function checks the switch itself (`publicDemoActionsOn`), as each admin action checks the role itself: the
- * admin API wires them only when it is on, and a call that reaches one when it is off does nothing.
+ * admin API wires them only when it is on, and a call that reaches one when it is off does nothing. The environment
+ * they check is the runtime settings', resolved for each call (`publicDemoSettings`, #430), as every other job reads it.
  *
  * Reads. While the switch is on, the admin API writes the gate document `{runCollection}/public_access` (`enabled`,
- * `environment`) as it starts, and firestore.rules lets a guest read the full stored incidents, cycles, run events and
- * corrections of the demo environment only while that document says `enabled: true, environment: 'demo'`. Turned off,
- * the next start writes `enabled: false` (`syncPublicAccess`). Built and tested with stubs and the Firestore emulator;
- * never run on a real project.
+ * `environment`) as it starts and at each visitor's call, and firestore.rules lets a guest read the full stored
+ * incidents, cycles, run events and corrections of the demo environment only while that document says `enabled: true,
+ * environment: 'demo'`. Turned off, or the settings moved off a public environment, the next start or visitor's call
+ * writes `enabled: false` (`syncPublicAccess`). Built and tested with stubs and the Firestore emulator; never run on a
+ * real project.
  */
 import { FieldValue, Timestamp } from "firebase-admin/firestore";
 import type { Firestore, Transaction } from "firebase-admin/firestore";
 import type { StarfishConfig } from "./config.js";
+import type { ResolvedConfig } from "./runtimeSettings.js";
 import { isValidUid } from "./adminAuth.js";
 import { nextStatus, type IncidentAction, type TriageStatus } from "./incidentActions.js";
 import { redactPii } from "./ingest/redact.js";
@@ -185,12 +188,67 @@ export async function triggerAgentPassAsGuest(
   return { ok: true };
 }
 
+export type GateResult = "enabled" | "disabled" | "unchanged";
+
+/** What one gate sync did, for the service's log: where the actions stand, and the gate's outcome or why it failed. */
+export type GateEvent = { on: boolean; environment: string } & ({ gate: GateResult } | { error: string });
+
+export interface PublicDemoSettingsDeps {
+  /** The runtime settings over the environment's defaults (src/runtimeSettings.ts `RuntimeConfigLoader`, which never throws). */
+  resolve(): Promise<Pick<ResolvedConfig, "config" | "actionsAllowed">>;
+  /** `syncPublicAccess` against the store. May throw; the failure is reported, never passed on. */
+  syncGate(cfg: StarfishConfig): Promise<GateResult>;
+  onGate?(event: GateEvent): void;
+}
+
 /**
- * Bring the gate document in line with the switch, as the admin API starts: on, `{ enabled: true, environment }`; off,
+ * The configuration a visitor's call runs with (#430), resolved fresh for each call: the admin API is a long-running
+ * service, and the runtime settings' `environment`, which ingest, the agent and the UI follow, can change under it at
+ * any time. Before this, the service used the environment variable's label alone, so with STARFISH_ENV=x and Settings
+ * saying demo the open actions stayed off and the read gate was never written, and the reverse answered every visitor's
+ * action no-such-incident. Returns the frozen snapshot when the open actions are on for it, else null (the routes then
+ * answer as if they were not wired). Unusable settings with no last-good copy (`actionsAllowed` false) are off, as they
+ * stop every other job.
+ *
+ * Each call also brings the gate document in line with what it resolved (`syncPublicAccess`: a read, and a write only
+ * when the gate differs), so a Settings change reaches the gate at the next visitor's call or the next start, whichever
+ * comes first; the admin API also calls this once as it starts. Unusable settings close the gate. A failed sync is
+ * reported and leaves the gate as it was; it does not refuse the call. Never throws.
+ */
+export function publicDemoSettings(deps: PublicDemoSettingsDeps): () => Promise<StarfishConfig | null> {
+  const report = (event: GateEvent): void => {
+    try {
+      deps.onGate?.(event);
+    } catch {
+      // Reporting must never change the answer.
+    }
+  };
+  return async () => {
+    let resolved: Pick<ResolvedConfig, "config" | "actionsAllowed">;
+    try {
+      resolved = await deps.resolve();
+    } catch {
+      return null;
+    }
+    // Unusable settings: off, and the gate closed with them.
+    const cfg = resolved.actionsAllowed ? resolved.config : { ...resolved.config, publicDemoActions: false };
+    const on = publicDemoActionsOn(cfg);
+    try {
+      report({ on, environment: cfg.environment, gate: await deps.syncGate(cfg) });
+    } catch (e) {
+      const code = (e as { code?: unknown } | null)?.code;
+      report({ on, environment: cfg.environment, error: typeof code === "string" || typeof code === "number" ? String(code) : e instanceof Error ? e.name : "unknown" });
+    }
+    return on ? cfg : null;
+  };
+}
+
+/**
+ * Bring the gate document in line with the switch, as the admin API starts and at each visitor's call: on, `{ enabled: true, environment }`; off,
  * `enabled: false` where a document says otherwise, and nothing where there is none (a deployment that never turned it
  * on writes nothing). Throws when the store does; the caller logs it and serves on (reads then stay as they were).
  */
-export async function syncPublicAccess(db: Firestore, cfg: PublicDemoConfig & Pick<StarfishConfig, "publicEnvironments">, now: Date): Promise<"enabled" | "disabled" | "unchanged"> {
+export async function syncPublicAccess(db: Firestore, cfg: PublicDemoConfig & Pick<StarfishConfig, "publicEnvironments">, now: Date): Promise<GateResult> {
   const ref = db.collection(cfg.runCollection).doc(PUBLIC_ACCESS_DOC);
   const on = publicDemoActionsOn(cfg);
   return db.runTransaction(async (tx) => {

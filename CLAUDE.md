@@ -396,14 +396,15 @@ src/
                    each action checks it again. A per-address
                    limit (`ipRateLimit.ts`, `STARFISH_ADMIN_API_RATE_LIMIT_PER_MINUTE`, default 30) answers 429 before any token check. `adminApiServer.ts` is its HTTP
                    shell, `adminApiCli.ts` the Cloud Run service (`DEPLOY_ADMIN_API=1`): deployed once to the demo project (2026-10-07), "Run ingest now" run from the UI; Retire and the Twilio routes not yet tried.
-                   The public demo's OPEN ACTIONS (`publicDemo` dep, wired only with `STARFISH_PUBLIC_DEMO_ACTIONS` on a public environment,
-                   off by default): for an ANONYMOUS token (the verified sign-in provider) `/api/ingest/run`, `/api/agent/run` and
+                   The public demo's OPEN ACTIONS (`publicDemo` dep, wired only with `STARFISH_PUBLIC_DEMO_ACTIONS`, off by default, and on for
+                   a call only while the runtime settings' environment, resolved per call, is a public one, #430): for an ANONYMOUS token (the verified sign-in provider) `/api/ingest/run`, `/api/agent/run` and
                    `POST /api/incidents/<id>/status|retriage|correction` skip the admin check, each first claimed against hourly limits
                    (429 with the reason and `retry-after`); Retire and On-call stay 403; off, the three routes are a 404
   publicDemo.ts    those actions (`setIncidentStatusAsGuest`, `requestRetriageAsGuest`, `correctTriageAsGuest`, `triggerIngestAsGuest`,
                    `triggerAgentPassAsGuest`): Admin SDK writes in the shape firestore.rules require of an operator, own environment only,
                    never retired, audited in the same transaction (`actorKind: anonymous`, never the address), each checking the switch
-                   itself; `syncPublicAccess` writes the rules' gate `{runCollection}/public_access` as the admin API starts.
+                   itself; `syncPublicAccess` writes the rules' gate `{runCollection}/public_access` as the admin API starts and at each
+                   visitor's call, from that call's settings (`publicDemoSettings`, #430).
                    `incidentActions.ts` is the transition table shared with the UI. `publicDemoLimit.ts`: per-address (salted HMAC, never
                    the address) and deployment-wide hourly counters in `STARFISH_PUBLIC_ACTION_COLLECTION`, one transaction per claim
                    (30 actions and 3 runs per address, 6 visitor agent passes in all). Stub- and emulator-tested; never run on a real project

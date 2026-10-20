@@ -469,7 +469,8 @@ describe("admin API: phone escalation (#37)", () => {
 describe("admin API: the public demo's open actions", () => {
   const GUEST_TOKEN = "g".repeat(40);
   /** Two callers: TOKEN is the admin, GUEST_TOKEN an anonymous session; `limits` decides each claim. */
-  const withPublic = (opts: { publicDemo?: boolean; agent?: boolean; claim?: (kind: PublicActionKind, key: string) => Promise<ClaimResult> } = {}) => {
+  const withPublic = (opts: { publicDemo?: boolean; forCall?: "on" | "off" | "throws"; agent?: boolean; claim?: (kind: PublicActionKind, key: string) => Promise<ClaimResult> } = {}) => {
+    const resolved: string[] = [];
     const done: string[] = [];
     const claims: string[] = [];
     const publicDemo: PublicDemoDeps = {
@@ -485,9 +486,15 @@ describe("admin API: the public demo's open actions", () => {
       ...(opts.agent !== false && { runAgent: (uid: string) => (done.push(`agent:${uid}`), Promise.resolve({ ok: true as const })) }),
       sendOnCallCode: () => Promise.resolve({ ok: true as const }),
       confirmOnCallNumber: () => Promise.resolve({ ok: true as const }),
-      ...(opts.publicDemo !== false && { publicDemo }),
+      ...(opts.publicDemo !== false && {
+        publicDemo: () => {
+          resolved.push("resolve");
+          if (opts.forCall === "throws") return Promise.reject(new Error("store down"));
+          return Promise.resolve(opts.forCall === "off" ? null : publicDemo);
+        },
+      }),
     });
-    return { ...f, done, claims };
+    return { ...f, done, claims, publicDemo, resolved };
   };
   const asGuest = (path: string, body?: unknown): ApiRequest => ({ method: "POST", path, authorization: `Bearer ${GUEST_TOKEN}`, clientKey: "203.0.113.7", ...(body !== undefined && { body }) });
 
@@ -513,6 +520,41 @@ describe("admin API: the public demo's open actions", () => {
       expect((await api(post("/api/agent/run"))).status).toBe(202);
       expect(calls).toEqual(["ingest:admin-1"]);
       expect(done).toEqual(["agent:admin-1"]);
+    });
+  });
+
+  describe("switch on, but off for this call: the runtime settings' environment is not a public one (#430)", () => {
+    it("an anonymous caller gets what it gets with the switch off, and no limit is claimed", async () => {
+      const { api, done, claims, calls, resolved } = withPublic({ forCall: "off" });
+      for (const path of ["/api/ingest/run", "/api/agent/run"]) {
+        const r = await api(asGuest(path));
+        expect(r.status, path).toBe(403);
+        expect(r.body).toEqual({ error: "admins only" });
+      }
+      for (const kind of ["status", "retriage", "correction"]) {
+        expect((await api(asGuest(`/api/incidents/i1/${kind}`, { action: "resolve", level: "log" }))).status, kind).toBe(404);
+      }
+      expect(resolved).toHaveLength(5); // asked once per call
+      expect(done).toEqual([]);
+      expect(claims).toEqual([]);
+      expect(calls).toEqual([]);
+    });
+
+    it("is never asked for an admin's call, which runs as before", async () => {
+      const { api, done, calls, resolved } = withPublic({ forCall: "off" });
+      expect((await api(post("/api/ingest/run"))).status).toBe(200);
+      expect((await api(post("/api/agent/run"))).status).toBe(202);
+      expect(calls).toEqual(["ingest:admin-1"]);
+      expect(done).toEqual(["agent:admin-1"]);
+      expect(resolved).toEqual([]);
+    });
+
+    it("answers 500 and does nothing when the settings could not be read", async () => {
+      const { api, done, claims, calls } = withPublic({ forCall: "throws" });
+      for (const path of ["/api/ingest/run", "/api/agent/run", "/api/incidents/i1/retriage"]) {
+        expect((await api(asGuest(path))).status, path).toBe(500);
+      }
+      expect([...done, ...claims, ...calls]).toEqual([]);
     });
   });
 
@@ -599,7 +641,7 @@ describe("admin API: the public demo's open actions", () => {
       const cases: [string, number][] = [["no-such-incident", 404], ["not-applicable", 409], ["off", 403], ["bad-request", 400], ["invalid-id", 400]];
       for (const [reason, status] of cases) {
         const f = withPublic();
-        const api = createAdminApi({ ...f.deps, publicDemo: { ...f.deps.publicDemo!, setStatus: () => Promise.resolve({ ok: false, reason } as PublicIncidentResult) } });
+        const api = createAdminApi({ ...f.deps, publicDemo: () => Promise.resolve({ ...f.publicDemo, setStatus: () => Promise.resolve({ ok: false, reason } as PublicIncidentResult) }) });
         expect((await api(asGuest("/api/incidents/inc-1/status", { action: "resolve" }))).status, reason).toBe(status);
       }
     });
