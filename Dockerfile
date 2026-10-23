@@ -3,8 +3,11 @@
 # Cloud Run records the execution as failed. The agent job and the verify job run this same image with their
 # arguments replaced (scripts/deploy-gcp.sh, DEPLOY_AGENT=1). The web UI is not in this image: it deploys to Hosting.
 #
-# Node is pinned to the patch CI runs: 24.17.0 broke google-auth-library's STS exchange.
-FROM node:24.16.0-slim
+# Node is pinned to an exact patch. 24.22.1 is the first 24.x with the Node2Shell fix (CVE-2026-111497, a Brotli
+# decoder RCE reachable through fetch(), which decodes `Content-Encoding: br` unasked). CI stays on 24.16.0 because
+# 24.17.0 broke google-auth-library's STS exchange, which only the workload-identity login in CI uses: on Cloud Run
+# the job authenticates as its attached service account through the metadata server, with no STS exchange.
+FROM node:24.22.1-slim
 
 ENV NODE_ENV=production
 # git: the agent checks out the target repository and the verify gate applies a patch with `git apply`. tar and
