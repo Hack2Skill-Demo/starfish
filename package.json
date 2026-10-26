@@ -37,11 +37,11 @@
     "audit:contrast": "node scripts/contrast-audit.mjs"
   },
   "dependencies": {
-    "@google-cloud/logging": "^12.2.0",
-    "@google/genai": "^2.28.0",
+    "@google-cloud/logging": "^12.3.0",
+    "@google/genai": "^2.30.0",
     "firebase-admin": "^14.5.0",
     "tsx": "^4.19.0",
-    "undici": "^8.11.2"
+    "undici": "^8.12.2"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
