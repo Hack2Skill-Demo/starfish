@@ -38,10 +38,10 @@
   },
   "dependencies": {
     "@google-cloud/logging": "^12.3.0",
-    "@google/genai": "^2.30.0",
+    "@google/genai": "^2.31.0",
     "firebase-admin": "^14.5.0",
     "tsx": "^4.19.0",
-    "undici": "^8.12.2"
+    "undici": "^8.12.3"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
